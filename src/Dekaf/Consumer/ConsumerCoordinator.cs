@@ -3395,18 +3395,38 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     private async ValueTask LeaveGroupConsumerProtocolAsync(
         ConsumerGroupMembershipOperation operation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CancellationToken responseCancellationToken,
+        CancellationToken callbackCancellationToken)
     {
         // Callbacks queued for the membership that is leaving (an assignment whose
         // OnPartitionsAssigned cancellation deferred, a loss) are delivered while it is still
         // current, in order, as they would have been without the cancellation. The heartbeat is
         // stopped first so it cannot publish a newer assignment behind them.
         await StopHeartbeatAsyncCore(cancellationToken).ConfigureAwait(false);
-        await InvokePendingRebalanceCallbacksUnlessCancelledAsync(cancellationToken).ConfigureAwait(false);
+        await InvokePendingRebalanceCallbacksUnlessCancelledAsync(callbackCancellationToken).ConfigureAwait(false);
 
-        await SendConsumerProtocolLeaveRequestAsync(operation, cancellationToken).ConfigureAwait(false);
+        await SendConsumerProtocolLeaveRequestAsync(operation, cancellationToken, responseCancellationToken)
+            .ConfigureAwait(false);
 
-        await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        // The request is on the wire (or could not be sent), so the rest is local cleanup and no
+        // longer gets the grace in cancellationToken: a foreground rejoin can hold the lock
+        // across its network retries, and a close's leave stops waiting for it once close is
+        // cancelled. Disposal then discards the member state. A free lock is still taken after
+        // close was cancelled, so the usual case still resets the state.
+        if (!_lock.Wait(0))
+        {
+            try
+            {
+                await _lock.WaitAsync(callbackCancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (responseCancellationToken.CanBeCanceled &&
+                                                     callbackCancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+        }
+
         try
         {
             ResetMemberState();
@@ -3417,13 +3437,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
 
         // A fence recorded while leaving is still reported.
-        await InvokePendingRebalanceCallbacksUnlessCancelledAsync(cancellationToken).ConfigureAwait(false);
+        await InvokePendingRebalanceCallbacksUnlessCancelledAsync(callbackCancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask SendConsumerProtocolLeaveRequestAsync(
         ConsumerGroupMembershipOperation operation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CancellationToken responseCancellationToken = default)
     {
+        KafkaRequestWriteContext? writeContext = null;
         try
         {
             using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
@@ -3448,8 +3470,26 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 ConsumerGroupHeartbeatRequest.LowestSupportedVersion,
                 ConsumerGroupHeartbeatRequest.HighestSupportedVersion);
 
-            var response = await connection.SendWithClientTelemetryAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
-                request, version, TelemetryMetricCollector, cancellationToken).ConfigureAwait(false);
+            ConsumerGroupHeartbeatResponse response;
+            if (responseCancellationToken.CanBeCanceled && connection is KafkaConnection kafkaConnection)
+            {
+                // cancellationToken bounds getting the request onto the wire, to the end of the
+                // frame write; after that only responseCancellationToken bounds the wait for the
+                // answer, which the leave does not need to take effect.
+                writeContext = new KafkaRequestWriteContext(responseCancellationToken);
+                response = await kafkaConnection
+                    .SendWithResponseCancellationAfterWriteAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                        request, version, TelemetryMetricCollector, writeContext, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                // Only the pool's KafkaConnection can split the write and response tokens. Any
+                // other IKafkaConnection (today only test doubles) bounds the whole send, write
+                // included, by cancellationToken.
+                response = await connection.SendWithClientTelemetryAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                    request, version, TelemetryMetricCollector, cancellationToken).ConfigureAwait(false);
+            }
 
             if (response.ErrorCode != ErrorCode.None)
             {
@@ -3460,11 +3500,29 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 LogSuccessfullyLeftGroup(_options.GroupId!);
             }
         }
+        // The write is bounded by cancellationToken, so while it is still live a cancellation
+        // here came from the response wait, after the leave was written.
+        catch (OperationCanceledException) when (writeContext is { WriteStarted: true } &&
+                                                 !cancellationToken.IsCancellationRequested &&
+                                                 responseCancellationToken.IsCancellationRequested)
+        {
+            LogLeaveGroupSentWithoutResponse(_options.GroupId!);
+        }
         catch (Exception ex)
         {
             LogLeaveGroupRequestFailed(ex);
         }
     }
+
+    /// <summary>
+    /// True when <see cref="LeaveGroupAsync(ConsumerGroupMembershipOperation, CancellationToken, CancellationToken)"/>
+    /// would send a leave request: the member has joined and its coordinator is known.
+    /// </summary>
+    internal bool CanSendLeaveRequest =>
+        Volatile.Read(ref _disposed) == 0
+        && !string.IsNullOrEmpty(_options.GroupId)
+        && !string.IsNullOrEmpty(_memberId)
+        && _coordinatorId >= 0;
 
     /// <summary>
     /// Leaves the consumer group gracefully.
@@ -3475,15 +3533,31 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         await LeaveGroupAsync(ConsumerGroupMembershipOperation.Default, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <param name="operation">How the member leaves.</param>
+    /// <param name="cancellationToken">Bounds the whole leave, including getting the request onto the wire.</param>
+    /// <param name="responseCancellationToken">
+    /// When cancellable, also stops the wait for the response once the request has been written
+    /// (the coordinator acts on a written leave whether or not its answer is awaited), and bounds
+    /// delivering queued rebalance callbacks and the local state cleanup after the send.
+    /// </param>
     internal async ValueTask LeaveGroupAsync(
         ConsumerGroupMembershipOperation operation,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        CancellationToken responseCancellationToken = default)
     {
         if (!Enum.IsDefined(operation))
             throw new ArgumentOutOfRangeException(nameof(operation), operation, "The group membership operation is invalid.");
 
         if (Volatile.Read(ref _disposed) != 0)
             return;
+
+        // A close's leave (responseCancellationToken set) delivers queued rebalance callbacks
+        // only until close is cancelled: after that, what is left of cancellationToken is the
+        // grace for getting the leave onto the wire, and a callback delivered again would use it
+        // up (or, when no leave can be sent, only delay close). They stay queued for disposal.
+        var callbackCancellationToken = responseCancellationToken.CanBeCanceled
+            ? responseCancellationToken
+            : cancellationToken;
 
         // Only leave if we're part of a group and the coordinator is known. A fence can have
         // taken the member id; its partitions are still reported lost.
@@ -3492,11 +3566,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             || string.IsNullOrEmpty(_memberId)
             || _coordinatorId < 0)
         {
-            await InvokePendingRebalanceCallbacksUnlessCancelledAsync(cancellationToken).ConfigureAwait(false);
+            await InvokePendingRebalanceCallbacksUnlessCancelledAsync(callbackCancellationToken).ConfigureAwait(false);
             return;
         }
 
-        await LeaveGroupConsumerProtocolAsync(operation, cancellationToken).ConfigureAwait(false);
+        await LeaveGroupConsumerProtocolAsync(
+                operation,
+                cancellationToken,
+                responseCancellationToken,
+                callbackCancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -3623,6 +3702,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Successfully left group {GroupId}")]
     private partial void LogSuccessfullyLeftGroup(string groupId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Sent the LeaveGroup request for group {GroupId}; stopped waiting for its response because close was cancelled")]
+    private partial void LogLeaveGroupSentWithoutResponse(string groupId);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to send LeaveGroup request")]
     private partial void LogLeaveGroupRequestFailed(Exception exception);

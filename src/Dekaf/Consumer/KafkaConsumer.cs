@@ -13162,7 +13162,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
         try
         {
-            await CloseAsyncCore(options, apiTimeout.Token).ConfigureAwait(false);
+            await CloseAsyncCore(options, _options.DefaultApiTimeoutMs, apiTimeout.Token).ConfigureAwait(false);
             apiTimeout.Token.ThrowIfCancellationRequested();
         }
         catch (OperationCanceledException ex) when (apiTimeout.DefaultTimeoutExpired)
@@ -13175,10 +13175,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// Core teardown logic shared by <see cref="CloseAsync(CancellationToken)"/> and <see cref="DisposeAsync"/>.
     /// Callers must ensure this is invoked at most once via an atomic CAS on <c>_closed</c>.
     /// </summary>
+    /// <param name="options">How the member leaves the group.</param>
+    /// <param name="closeTimeoutMs">
+    /// The budget that bounds <paramref name="cancellationToken"/>; part of it is kept back for
+    /// the LeaveGroup request so the final commit cannot use it all.
+    /// </param>
+    /// <param name="cancellationToken">Cancelled by the caller or once the close budget runs out.</param>
     private async ValueTask CloseAsyncCore(
         ConsumerCloseOptions options,
+        int closeTimeoutMs,
         CancellationToken cancellationToken)
     {
+        var closeStartedAt = Stopwatch.GetTimestamp();
         LogClosingConsumer();
         _coordinator?.BeginClose();
 
@@ -13272,50 +13280,57 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var partitionStopCancellation = await InvokePartitionStopListenerAsync(noLongerOwned, cancellationToken)
             .ConfigureAwait(false);
 
-        // Step 6: Commit pending offsets (if auto-commit enabled and we have a coordinator)
+        var leavesGroup = _coordinator is not null &&
+            options.GroupMembershipOperation != ConsumerGroupMembershipOperation.RemainInGroup;
+        // Time is kept back only when a leave request will actually be sent: a member that never
+        // joined (or uses manual assignment) sends none, so its commit keeps the whole budget.
+        var sendsLeaveRequest = leavesGroup && _coordinator!.CanSendLeaveRequest;
+        var leaveReserveMs = GetCloseLeaveGroupReserveMs(closeTimeoutMs);
+
+        // Step 6: Commit pending offsets (if auto-commit enabled and we have a coordinator).
+        // A coordinator that answers nothing would let the commit wait out the whole close
+        // budget, and the leave after it would then be cancelled before it was sent. So when the
+        // member is leaving, the commit stops early enough to keep leaveReserveMs of the budget
+        // for step 7, as Java bounds its close commit and still sends the leave best-effort.
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null)
         {
-            for (var attempt = 0; attempt < 3; attempt++)
+            using var commitTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            if (sendsLeaveRequest && closeTimeoutMs > 0)
             {
-                try
-                {
-                    // Close commits proven offsets only — never the in-doubt last yielded
-                    // record. Callers that processed everything and want a clean handoff
-                    // should call CommitAsync() before CloseAsync().
-                    if (await CommitProvenOffsetsAsync(cancellationToken).ConfigureAwait(false))
-                    {
-                        LogCommittedPendingOffsets();
-                    }
-
-                    break;
-                }
-                catch (OperationCanceledException)
-                {
-                    break; // Caller cancelled — don't retry
-                }
-                catch (Exception ex)
-                {
-                    LogCommitOffsetsDuringCloseFailed(ex, attempt + 1);
-                    if (attempt < 2)
-                    {
-                        var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
-                            _options.RetryBackoffMs,
-                            _options.RetryBackoffMaxMs,
-                            attempt + 1);
-                        await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
-                    }
-                }
+                var elapsedMs = (long)Stopwatch.GetElapsedTime(closeStartedAt).TotalMilliseconds;
+                commitTimeout.CancelAfter((int)Math.Max(0, closeTimeoutMs - leaveReserveMs - elapsedMs));
             }
+
+            await CommitPendingOffsetsOnCloseAsync(commitTimeout.Token).ConfigureAwait(false);
+            if (commitTimeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                LogCloseCommitStoppedForLeave(leaveReserveMs);
         }
 
-        // Step 7: Send LeaveGroup request to coordinator
-        if (_coordinator is not null &&
-            options.GroupMembershipOperation != ConsumerGroupMembershipOperation.RemainInGroup)
+        // Step 7: Send LeaveGroup request to coordinator. Once the request is on the wire the
+        // coordinator acts on it whether or not the response is awaited, so close's token only
+        // stops the wait for the response. Getting the request onto the wire (stopping the
+        // heartbeat, leasing the connection, writing) is not cut short by it: whenever close is
+        // cancelled (by the caller, or by its budget running out), before or during the leave,
+        // that part gets leaveReserveMs more, rather than the leave being dropped and the member
+        // holding its partitions until the session timeout. The earlier steps catch their own
+        // cancellation, so a cancelled close always reaches this step. Rebalance callbacks still
+        // queued are delivered only until close is cancelled; after that the leave goes first and
+        // disposal delivers them.
+        if (leavesGroup)
         {
+            using var leaveTimeout = new CancellationTokenSource();
+            using var leaveGrace = cancellationToken.Register(
+                static state =>
+                {
+                    var (timeout, graceMs) = ((CancellationTokenSource, int))state!;
+                    timeout.CancelAfter(graceMs);
+                },
+                (leaveTimeout, leaveReserveMs));
             try
             {
-                await _coordinator.LeaveGroupAsync(
+                await _coordinator!.LeaveGroupAsync(
                     options.GroupMembershipOperation,
+                    leaveTimeout.Token,
                     cancellationToken).ConfigureAwait(false);
                 LogLeftConsumerGroup();
             }
@@ -13354,6 +13369,63 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         if (partitionStopCancellation is not null)
             ExceptionDispatchInfo.Capture(partitionStopCancellation).Throw();
+    }
+
+    // The part of the close budget kept for LeaveGroup (see CloseAsyncCore step 6). At most half
+    // the budget, so a short budget still leaves the commit at least the other half.
+    private const int CloseLeaveGroupReserveMaxMs = 5_000;
+
+    private static int GetCloseLeaveGroupReserveMs(int closeTimeoutMs) =>
+        closeTimeoutMs <= 0
+            ? CloseLeaveGroupReserveMaxMs
+            : Math.Max(1, Math.Min(CloseLeaveGroupReserveMaxMs, closeTimeoutMs / 2));
+
+    /// <summary>
+    /// The final commit of close: up to three attempts with backoff. Never throws; a failure or
+    /// a cancellation (including one during the backoff) ends it so that the leave and the
+    /// remaining cleanup steps still run.
+    /// </summary>
+    private async ValueTask CommitPendingOffsetsOnCloseAsync(CancellationToken cancellationToken)
+    {
+        const int maxAttempts = 3;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                // Close commits proven offsets only — never the in-doubt last yielded
+                // record. Callers that processed everything and want a clean handoff
+                // should call CommitAsync() before CloseAsync().
+                if (await CommitProvenOffsetsAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    LogCommittedPendingOffsets();
+                }
+
+                return;
+            }
+            catch (OperationCanceledException)
+            {
+                return; // Cancelled or out of budget — don't retry
+            }
+            catch (Exception ex)
+            {
+                LogCommitOffsetsDuringCloseFailed(ex, attempt);
+                if (attempt == maxAttempts)
+                    return;
+            }
+
+            try
+            {
+                var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
+                    _options.RetryBackoffMs,
+                    _options.RetryBackoffMaxMs,
+                    attempt);
+                await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
     }
 
     private async ValueTask<OperationCanceledException?> InvokePartitionStopListenerAsync(
@@ -13577,9 +13649,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             try
             {
-                using var cts = new CancellationTokenSource(
-                    Math.Min(_options.DefaultApiTimeoutMs, 30_000));
-                await CloseAsyncCore(new ConsumerCloseOptions(), cts.Token).ConfigureAwait(false);
+                var closeTimeoutMs = Math.Min(_options.DefaultApiTimeoutMs, 30_000);
+                using var cts = new CancellationTokenSource(closeTimeoutMs);
+                await CloseAsyncCore(new ConsumerCloseOptions(), closeTimeoutMs, cts.Token).ConfigureAwait(false);
             }
             catch
             {
@@ -13833,6 +13905,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Left consumer group during close")]
     private partial void LogLeftConsumerGroup();
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Offset commit during close did not finish in time; stopped it to keep {LeaveReserveMs}ms of the close timeout for leaving the group")]
+    private partial void LogCloseCommitStoppedForLeave(int leaveReserveMs);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to leave group during close")]
     private partial void LogLeaveGroupFailed(Exception exception);

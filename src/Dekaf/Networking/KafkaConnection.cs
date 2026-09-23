@@ -650,6 +650,20 @@ public sealed partial class KafkaConnection :
             : ((IKafkaRequestWriteObserverConnection)this).SendWithWriteObservationAsync<TRequest, TResponse>(
                 request, apiVersion, requestWriteStarted, cancellationToken);
 
+    /// <summary>
+    /// Sends a request whose write stays bounded by <paramref name="cancellationToken"/> until the
+    /// frame is fully written; only then does <see cref="KafkaRequestWriteContext.ResponseCancellationToken"/>
+    /// take over, bounding the wait for the response. Telemetry goes to the connection's own
+    /// collector, or else to <paramref name="collector"/>.
+    /// </summary>
+    internal ValueTask<TResponse> SendWithResponseCancellationAfterWriteAsync<TRequest, TResponse>(
+        TRequest request, short apiVersion, ClientTelemetryMetricCollector? collector,
+        KafkaRequestWriteContext context, CancellationToken cancellationToken)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+        => SendAsyncCore<TRequest, TResponse, ResponseCancellationAfterWriteObservation>(request, apiVersion,
+            requireReady: true, new ResponseCancellationAfterWriteObservation(collector, context), cancellationToken);
+
     internal ValueTask<PipelinedResponse<TResponse>> SendPipelinedWithTelemetryAfterWriteAsync<TRequest, TResponse>(
         TRequest request, short apiVersion, ClientTelemetryMetricCollector collector,
         Action requestWriteStarted, CancellationToken cancellationToken)
@@ -718,6 +732,7 @@ public sealed partial class KafkaConnection :
         bool IsReauthentication { get; }
         Action? WriteStartedCallback { get; }
         CancellationToken AfterWriteStarts(CancellationToken cancellationToken);
+        CancellationToken WhileWriting(CancellationToken cancellationToken);
     }
 
     private readonly struct WriteObservation(Action? callback) : IRequestObservation
@@ -727,6 +742,7 @@ public sealed partial class KafkaConnection :
         public bool IsReauthentication => false;
         public Action? WriteStartedCallback => callback;
         public CancellationToken AfterWriteStarts(CancellationToken cancellationToken) => cancellationToken;
+        public CancellationToken WhileWriting(CancellationToken cancellationToken) => AfterWriteStarts(cancellationToken);
     }
 
     private readonly struct CancellationObservation(KafkaRequestWriteContext context) : IRequestObservation
@@ -736,6 +752,21 @@ public sealed partial class KafkaConnection :
         public bool IsReauthentication => false;
         public Action? WriteStartedCallback => context.WriteStartedCallback;
         public CancellationToken AfterWriteStarts(CancellationToken cancellationToken) => context.ResponseCancellationToken;
+        public CancellationToken WhileWriting(CancellationToken cancellationToken) => AfterWriteStarts(cancellationToken);
+    }
+
+    // Control-path only (a consumer's close leave), so it carries two references. Unlike
+    // CancellationObservation, the caller's token keeps bounding the frame write; the response
+    // token only takes over once the frame is on the wire.
+    private readonly struct ResponseCancellationAfterWriteObservation(
+        ClientTelemetryMetricCollector? collector, KafkaRequestWriteContext context) : IRequestObservation
+    {
+        public void Release() { }
+        public ClientTelemetryMetricCollector? TelemetryMetricCollector => collector;
+        public bool IsReauthentication => false;
+        public Action? WriteStartedCallback => context.WriteStartedCallback;
+        public CancellationToken AfterWriteStarts(CancellationToken cancellationToken) => context.ResponseCancellationToken;
+        public CancellationToken WhileWriting(CancellationToken cancellationToken) => cancellationToken;
     }
 
     private readonly struct ReauthenticationObservation(Action? callback) : IRequestObservation
@@ -745,6 +776,7 @@ public sealed partial class KafkaConnection :
         public bool IsReauthentication => true;
         public Action? WriteStartedCallback => callback;
         public CancellationToken AfterWriteStarts(CancellationToken cancellationToken) => cancellationToken;
+        public CancellationToken WhileWriting(CancellationToken cancellationToken) => AfterWriteStarts(cancellationToken);
     }
 
     private readonly struct TelemetryObservation(ClientTelemetryMetricCollector collector) : IRequestObservation
@@ -754,6 +786,7 @@ public sealed partial class KafkaConnection :
         public bool IsReauthentication => false;
         public Action? WriteStartedCallback => null;
         public CancellationToken AfterWriteStarts(CancellationToken cancellationToken) => cancellationToken;
+        public CancellationToken WhileWriting(CancellationToken cancellationToken) => AfterWriteStarts(cancellationToken);
     }
 
     private readonly struct TelemetryWriteObservation(TelemetryWriteObservationState state) : IRequestObservation
@@ -763,6 +796,7 @@ public sealed partial class KafkaConnection :
         public bool IsReauthentication => false;
         public Action? WriteStartedCallback => state.Callback;
         public CancellationToken AfterWriteStarts(CancellationToken cancellationToken) => cancellationToken;
+        public CancellationToken WhileWriting(CancellationToken cancellationToken) => AfterWriteStarts(cancellationToken);
     }
 
     private async ValueTask<TResponse> SendAsyncCore<TRequest, TResponse, TObservation>(
@@ -2067,7 +2101,7 @@ public sealed partial class KafkaConnection :
                     segmentedWriteTask,
                     correlationId,
                     callerOwnsTimeout,
-                    observation.AfterWriteStarts(cancellationToken))
+                    observation.WhileWriting(cancellationToken))
                 .ConfigureAwait(false);
             return;
         }
@@ -2095,7 +2129,7 @@ public sealed partial class KafkaConnection :
             clearSerializedArray,
             observation.WriteStartedCallback);
         await AwaitFrameWriteAsync(writeTask, correlationId, callerOwnsTimeout,
-            observation.AfterWriteStarts(cancellationToken)).ConfigureAwait(false);
+            observation.WhileWriting(cancellationToken)).ConfigureAwait(false);
     }
 
     internal bool TryPreSerializeSingleBatchProduceRequest(

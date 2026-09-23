@@ -28,6 +28,7 @@ public class PipelinedResponseAllocationBenchmarks
     private CancellationTokenSource _serverCancellation = null!;
     private Task _serverTask = null!;
     private Func<ApiVersionsRequest, short, CancellationToken, ValueTask<ApiVersionsResponse>> _sendObserved = null!;
+    private Func<ApiVersionsRequest, short, CancellationToken, ValueTask<ApiVersionsResponse>> _sendObservedAfterWrite = null!;
 
     private static readonly Action WriteStarted = static () => { };
     private ClientTelemetryMetricCollector _telemetryCollector = null!;
@@ -53,6 +54,7 @@ public class PipelinedResponseAllocationBenchmarks
         _serverTask = RunServerAsync(_serverClient.GetStream(), _serverCancellation.Token);
         await connectTask.ConfigureAwait(false);
         _sendObserved = CreateObservedSender();
+        _sendObservedAfterWrite = CreateObservedAfterWriteSender();
         _telemetryCollector = new(ClientTelemetryClientRole.Producer);
         _telemetryCollector.RecordRequestLatency(1, TimeSpan.FromMilliseconds(1));
         _sendTelemetry = CreateTelemetrySender();
@@ -78,6 +80,28 @@ public class PipelinedResponseAllocationBenchmarks
         return Expression.Lambda<Func<ApiVersionsRequest, short, CancellationToken, ValueTask<ApiVersionsResponse>>>(
             Expression.Call(Expression.Convert(Expression.Constant(_connection), capability), method,
                 request, version, Expression.Constant(context, contextType), token),
+            request, version, token).Compile();
+    }
+
+    private Func<ApiVersionsRequest, short, CancellationToken, ValueTask<ApiVersionsResponse>> CreateObservedAfterWriteSender()
+    {
+        // The close-leave send: the caller's token bounds the frame write, the context's token
+        // only the response wait. A baseline without it measures the response-cancellation send.
+        var contextType = typeof(KafkaConnection).Assembly.GetType("Dekaf.Networking.KafkaRequestWriteContext");
+        var method = typeof(KafkaConnection).GetMethod("SendWithResponseCancellationAfterWriteAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        if (method is null || contextType is null)
+            return _sendObserved;
+        var context = Activator.CreateInstance(contextType, BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null, args: [_serverCancellation.Token], culture: null)!;
+        var request = Expression.Parameter(typeof(ApiVersionsRequest));
+        var version = Expression.Parameter(typeof(short));
+        var token = Expression.Parameter(typeof(CancellationToken));
+        return Expression.Lambda<Func<ApiVersionsRequest, short, CancellationToken, ValueTask<ApiVersionsResponse>>>(
+            Expression.Call(Expression.Constant(_connection),
+                method.MakeGenericMethod(typeof(ApiVersionsRequest), typeof(ApiVersionsResponse)),
+                request, version, Expression.Constant(null, typeof(ClientTelemetryMetricCollector)),
+                Expression.Constant(context, contextType), token),
             request, version, token).Compile();
     }
 
@@ -132,6 +156,13 @@ public class PipelinedResponseAllocationBenchmarks
     public async ValueTask<ErrorCode> ObservedRequest()
     {
         var response = await _sendObserved(CreateRequest(), 3, CancellationToken.None);
+        return response.ErrorCode;
+    }
+
+    [Benchmark]
+    public async ValueTask<ErrorCode> ObservedAfterWriteRequest()
+    {
+        var response = await _sendObservedAfterWrite(CreateRequest(), 3, CancellationToken.None);
         return response.ErrorCode;
     }
 
