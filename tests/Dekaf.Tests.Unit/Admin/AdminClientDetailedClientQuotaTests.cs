@@ -173,6 +173,28 @@ public sealed class AdminClientDetailedClientQuotaTests
         }
     }
 
+    [Test]
+    public async Task Deadline_AfterTransportRetries_TimeoutCarriesTheTransportFailure()
+    {
+        // Connecting to the controller keeps failing at the transport until the mutation's
+        // deadline. The timeout must carry that failure itself, not the retry loop's
+        // cancellation around it.
+        var (admin, _) = CreateAdmin();
+        await using var client = admin;
+        var pool = (IConnectionPool)typeof(AdminClient)
+            .GetField("_connectionPool", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(admin)!;
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns<ValueTask<IKafkaConnection>>(_ => throw new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionRefused));
+        var results = await admin.AlterClientQuotasDetailedAsync(Alterations(), new() { TimeoutMs = 300 }).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+        foreach (var result in results.Values)
+        {
+            await Assert.That(result.Outcome).IsEqualTo(AdminMutationOutcome.NotAttempted);
+            await Assert.That(result.Exception).IsTypeOf<KafkaTimeoutException>();
+            await Assert.That(result.Exception!.InnerException).IsTypeOf<System.Net.Sockets.SocketException>();
+        }
+    }
+
     private static async Task<T> WaitForCancellation<T>(CancellationToken token)
     {
         await Task.Delay(Timeout.InfiniteTimeSpan, token);
