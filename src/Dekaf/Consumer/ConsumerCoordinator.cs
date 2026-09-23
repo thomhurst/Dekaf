@@ -1933,6 +1933,26 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             cancellationToken);
 
     internal Telemetry.ClientTelemetryMetricCollector? TelemetryMetricCollector { get; init; }
+
+    /// <summary>
+    /// True when the owner (KafkaConsumer) keeps per-partition state for the assignment and
+    /// acknowledges each synchronization through <see cref="AcknowledgeAssignmentSync"/>. A fence's
+    /// commit block then lasts until that acknowledgement; otherwise a successful rejoin lifts it.
+    /// </summary>
+    internal bool SynchronizesAssignment { get; init; }
+
+    /// <summary>
+    /// The partitions revoked or lost since the owner last synchronized its assignment, without
+    /// consuming them. Used at close, when no further synchronization will run.
+    /// </summary>
+    internal HashSet<TopicPartition>? PeekPartitionsRevokedSinceLastSync()
+    {
+        if (_revokedPartitionsSinceLastSync.IsEmpty)
+            return null;
+
+        lock (_assignmentStateLock)
+            return _revokedPartitionsSinceLastSync.IsEmpty ? null : [.. _revokedPartitionsSinceLastSync];
+    }
     private Telemetry.StandardClientTelemetryMetrics? StandardTelemetryMetrics => TelemetryMetricCollector?.StandardMetrics;
 
     private void EnsureServerSideRegexSupported(IKafkaConnection connection, string? subscribedTopicRegex)
@@ -2583,8 +2603,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                     // The membership version was advanced before the response was processed.
                     _state = CoordinatorState.Stable;
-                    // _membershipFenced stays set until AcknowledgeAssignmentSync: the consumer
-                    // has not yet dropped the offsets it stored for the lost partitions.
+                    // With a consumer that synchronizes its assignment, _membershipFenced stays
+                    // set until AcknowledgeAssignmentSync: the consumer has not yet dropped the
+                    // offsets it stored for the lost partitions. A direct user of the coordinator
+                    // keeps no such state, so the rejoin itself lifts the fence.
+                    if (!SynchronizesAssignment)
+                        Volatile.Write(ref _membershipFenced, 0);
                     if (Volatile.Read(ref _foregroundPollActivityCount) != 0)
                         RefreshPollDeadline();
 

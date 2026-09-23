@@ -2038,7 +2038,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         StageRebalanceSeek,
                         GetRebalancePosition))
             {
-                TelemetryMetricCollector = _telemetryMetricCollector
+                TelemetryMetricCollector = _telemetryMetricCollector,
+                SynchronizesAssignment = true
             };
         }
 
@@ -13149,8 +13150,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
         }
 
+        // Partitions the coordinator already revoked or reported lost (a fence's loss the drain in
+        // step 1 delivered, say) are no longer owned: they are not reported stopped, and their
+        // stored offsets are dropped so the shutdown commit cannot include them.
+        var noLongerOwned = _coordinator?.PeekPartitionsRevokedSinceLastSync();
+        if (noLongerOwned is not null)
+        {
+            foreach (var partition in noLongerOwned)
+                ClearStoredOffset(partition);
+        }
+
         // Step 5: Notify partition-scoped resources of normal stop before final commit/leave.
-        var partitionStopCancellation = await InvokePartitionStopListenerAsync(cancellationToken).ConfigureAwait(false);
+        var partitionStopCancellation = await InvokePartitionStopListenerAsync(noLongerOwned, cancellationToken)
+            .ConfigureAwait(false);
 
         // Step 6: Commit pending offsets (if auto-commit enabled and we have a coordinator)
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null)
@@ -13236,12 +13248,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             ExceptionDispatchInfo.Capture(partitionStopCancellation).Throw();
     }
 
-    private async ValueTask<OperationCanceledException?> InvokePartitionStopListenerAsync(CancellationToken cancellationToken)
+    private async ValueTask<OperationCanceledException?> InvokePartitionStopListenerAsync(
+        HashSet<TopicPartition>? noLongerOwned,
+        CancellationToken cancellationToken)
     {
         if (_options.RebalanceListener is not IPartitionStopListener listener)
             return null;
 
-        var partitions = _assignmentSnapshot.ToArray();
+        var partitions = noLongerOwned is null
+            ? _assignmentSnapshot.ToArray()
+            : _assignmentSnapshot.Where(partition => !noLongerOwned.Contains(partition)).ToArray();
         if (partitions.Length == 0)
             return null;
 

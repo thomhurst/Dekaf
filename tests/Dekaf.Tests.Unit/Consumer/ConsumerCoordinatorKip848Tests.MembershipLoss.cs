@@ -999,6 +999,50 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     }
 
     [Test]
+    public async Task CommitOffsetsAsync_DirectCoordinatorUserAfterAFenceAndRejoin_IsSent()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetCommit, 9, 9);
+        var script = new HeartbeatScript(this);
+        var commitCount = 0;
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref commitCount);
+                return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
+            });
+
+        // The public constructor: no consumer acknowledges assignment syncs.
+        SetupFindCoordinator();
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 5, CreateAssignment(TestTopicId, 0, 1));
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(),
+            _connectionPool,
+            _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+
+        typeof(ConsumerCoordinator)
+            .GetMethod("FenceMembership", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(coordinator, [false]);
+        var fenced = await Assert.That(async () => await coordinator.CommitOffsetsAsync(
+                [new TopicPartitionOffset("test-topic", 0, 10)],
+                CancellationToken.None))
+            .Throws<GroupException>();
+        await Assert.That(fenced!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
+
+        // Once rejoined, the direct user commits again without any acknowledgement.
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 6, CreateAssignment(TestTopicId, 1));
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        await coordinator.CommitOffsetsAsync([new TopicPartitionOffset("test-topic", 1, 10)], CancellationToken.None);
+
+        await Assert.That(Volatile.Read(ref commitCount)).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task MembershipLoss_OffsetFetchUnknownMemberReceivedAsTheCallerCancels_IsStillApplied()
     {
         _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);
@@ -2140,7 +2184,11 @@ public sealed partial class ConsumerCoordinatorKip848Tests
             sessionTimeoutMs: sessionTimeoutMs,
             rebalanceTimeoutMs: rebalanceTimeoutMs,
             defaultApiTimeoutMs: defaultApiTimeoutMs);
-        var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        // Like KafkaConsumer, which acknowledges each assignment sync.
+        var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager)
+        {
+            SynchronizesAssignment = true
+        };
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
         await coordinator.StopHeartbeatAsync();
         return coordinator;

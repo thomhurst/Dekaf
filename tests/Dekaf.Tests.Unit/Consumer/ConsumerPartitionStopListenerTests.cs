@@ -238,6 +238,33 @@ public sealed class ConsumerPartitionStopListenerTests
     }
 
     [Test]
+    public async Task CloseAsync_PartitionReportedLost_IsNotReportedStopped()
+    {
+        var listener = new TrackingPartitionStopListener();
+        await using var consumer = CreateGroupConsumer(defaultApiTimeoutMs: 60_000, listener);
+        var coordinator = GetCoordinator(consumer);
+        var lost = new TopicPartition("topic-a", 0);
+        var kept = new TopicPartition("topic-a", 1);
+        consumer.Assign(lost, kept);
+
+        // The coordinator fences the member for partition 0 before the consumer synchronizes.
+        SetField(coordinator, "_assignedPartitions", new HashSet<TopicPartition> { lost });
+        typeof(ConsumerCoordinator)
+            .GetMethod("FenceMembership", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(coordinator, [false]);
+
+        await consumer.CloseAsync(
+            new ConsumerCloseOptions { GroupMembershipOperation = ConsumerGroupMembershipOperation.RemainInGroup },
+            CancellationToken.None);
+
+        // Partition 0 gets OnPartitionsLost only; partition 1 is still reported stopped.
+        await Assert.That(listener.LostPartitions).Count().IsEqualTo(1);
+        await Assert.That(listener.LostPartitions[0]).IsEquivalentTo([lost]);
+        await Assert.That(listener.StoppedPartitions).Count().IsEqualTo(1);
+        await Assert.That(listener.StoppedPartitions[0]).IsEquivalentTo([kept]);
+    }
+
+    [Test]
     public async Task DisposeAsync_BlockingPartitionStopListener_UsesShorterDefaultApiTimeout()
     {
         var listener = new TrackingPartitionStopListener
