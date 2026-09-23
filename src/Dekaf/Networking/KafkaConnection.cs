@@ -650,6 +650,17 @@ public sealed partial class KafkaConnection :
             : ((IKafkaRequestWriteObserverConnection)this).SendWithWriteObservationAsync<TRequest, TResponse>(
                 request, apiVersion, requestWriteStarted, cancellationToken);
 
+    internal ValueTask<TResponse> SendWithTelemetryAsync<TRequest, TResponse>(
+        TRequest request, short apiVersion, ClientTelemetryMetricCollector collector,
+        KafkaRequestWriteContext context, CancellationToken cancellationToken)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+        => _telemetryMetricCollector is null
+            ? SendAsyncCore<TRequest, TResponse, TelemetryCancellationObservation>(request, apiVersion,
+                requireReady: true, new TelemetryCancellationObservation(collector, context), cancellationToken)
+            : ((IKafkaRequestCancellationConnection)this).SendWithResponseCancellationAsync<TRequest, TResponse>(
+                request, apiVersion, context, cancellationToken);
+
     internal ValueTask<PipelinedResponse<TResponse>> SendPipelinedWithTelemetryAfterWriteAsync<TRequest, TResponse>(
         TRequest request, short apiVersion, ClientTelemetryMetricCollector collector,
         Action requestWriteStarted, CancellationToken cancellationToken)
@@ -733,6 +744,17 @@ public sealed partial class KafkaConnection :
     {
         public void Release() { }
         public ClientTelemetryMetricCollector? TelemetryMetricCollector => null;
+        public bool IsReauthentication => false;
+        public Action? WriteStartedCallback => context.WriteStartedCallback;
+        public CancellationToken AfterWriteStarts(CancellationToken cancellationToken) => context.ResponseCancellationToken;
+    }
+
+    // Control-path only (a consumer's close leave on a shared pool), so it carries two references.
+    private readonly struct TelemetryCancellationObservation(
+        ClientTelemetryMetricCollector collector, KafkaRequestWriteContext context) : IRequestObservation
+    {
+        public void Release() { }
+        public ClientTelemetryMetricCollector? TelemetryMetricCollector => collector;
         public bool IsReauthentication => false;
         public Action? WriteStartedCallback => context.WriteStartedCallback;
         public CancellationToken AfterWriteStarts(CancellationToken cancellationToken) => context.ResponseCancellationToken;

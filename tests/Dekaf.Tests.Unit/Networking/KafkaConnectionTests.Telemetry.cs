@@ -123,6 +123,46 @@ public sealed partial class KafkaConnectionTests
         }
     }
 
+    [Test]
+    [Timeout(10_000)]
+    public async Task SharedControlObservation_ResponseCancellation_RecordsTelemetryAndStopsOnlyTheResponseWait(
+        CancellationToken cancellationToken)
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var accept = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
+        await using var connection = new KafkaConnection(1, IPAddress.Loopback.ToString(), port);
+        await connection.ConnectAsync(cancellationToken);
+        using var client = await accept;
+        var collector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Consumer);
+        using var responseCancellation = new CancellationTokenSource();
+
+        // Answered: the shared collector records the request's latency.
+        var answeredContext = new KafkaRequestWriteContext(responseCancellation.Token);
+        var answered = connection.SendWithTelemetryAsync<ApiVersionsRequest, ApiVersionsResponse>(
+            TelemetryControlRequest(), 3, collector, answeredContext, cancellationToken).AsTask();
+        var frame = await ReadRequestFrameAsync(client.GetStream(), cancellationToken);
+        await client.GetStream().WriteAsync(
+            BuildApiVersionsV3ResponseFrame(BinaryPrimitives.ReadInt32BigEndian(frame.AsSpan(4, 4))),
+            cancellationToken);
+        await Assert.That((await answered).ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(answeredContext.WriteStarted).IsTrue();
+        var subscription = new ClientTelemetrySubscription(Guid.NewGuid(), 1, 0, 1000, 1024,
+            true, [ClientTelemetryMetricNames.ConsumerNodeRequestLatencyAvg]);
+        await Assert.That(collector.Collect(subscription).Metrics.Count).IsEqualTo(1);
+
+        // Unanswered: once written, the response token (not the send token) ends the wait.
+        var unansweredContext = new KafkaRequestWriteContext(responseCancellation.Token);
+        var unanswered = connection.SendWithTelemetryAsync<ApiVersionsRequest, ApiVersionsResponse>(
+            TelemetryControlRequest(), 3, collector, unansweredContext, cancellationToken).AsTask();
+        await ReadRequestFrameAsync(client.GetStream(), cancellationToken);
+        await Assert.That(unansweredContext.WriteStarted).IsTrue();
+        await responseCancellation.CancelAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await unanswered);
+        await Assert.That(GetPrivateField<int>(connection, "_pendingRequestCount")).IsEqualTo(0);
+    }
+
     private static ApiVersionsRequest TelemetryControlRequest() =>
         new() { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" };
 }

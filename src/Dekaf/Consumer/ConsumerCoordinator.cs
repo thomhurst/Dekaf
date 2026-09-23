@@ -3370,8 +3370,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 // does not need to take effect.
                 writeContext = new KafkaRequestWriteContext(responseCancellationToken);
                 response = await responseCancellable
-                    .SendWithResponseCancellationAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
-                        request, version, writeContext, cancellationToken)
+                    .SendWithClientTelemetryAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                        request, version, writeContext, TelemetryMetricCollector, cancellationToken)
                     .ConfigureAwait(false);
             }
             else

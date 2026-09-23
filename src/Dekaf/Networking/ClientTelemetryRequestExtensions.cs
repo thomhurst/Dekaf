@@ -23,6 +23,15 @@ internal static class ClientTelemetryRequestExtensions
             ? kafkaConnection.SendWithTelemetryAsync<TRequest, TResponse>(request, apiVersion, collector, requestWriteStarted, cancellationToken)
             : connection.SendWithWriteObservationAsync<TRequest, TResponse>(request, apiVersion, requestWriteStarted, cancellationToken);
 
+    internal static ValueTask<TResponse> SendWithClientTelemetryAsync<TRequest, TResponse>(
+        this IKafkaRequestCancellationConnection connection, TRequest request, short apiVersion,
+        KafkaRequestWriteContext context, ClientTelemetryMetricCollector? collector, CancellationToken cancellationToken)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+        => connection is KafkaConnection kafkaConnection && collector is not null
+            ? kafkaConnection.SendWithTelemetryAsync<TRequest, TResponse>(request, apiVersion, collector, context, cancellationToken)
+            : connection.SendWithResponseCancellationAsync<TRequest, TResponse>(request, apiVersion, context, cancellationToken);
+
     internal static ValueTask<PipelinedResponse<TResponse>> SendPipelinedWithClientTelemetryAsync<TRequest, TResponse>(
         this IKafkaRequestWriteObserverConnection connection, TRequest request, short apiVersion,
         Action requestWriteStarted, ClientTelemetryMetricCollector? collector, CancellationToken cancellationToken)
