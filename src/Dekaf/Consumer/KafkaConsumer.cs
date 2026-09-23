@@ -13196,6 +13196,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         var leavesGroup = _coordinator is not null &&
             options.GroupMembershipOperation != ConsumerGroupMembershipOperation.RemainInGroup;
+        // Time is kept back only when a leave request will actually be sent: a member that never
+        // joined (or uses manual assignment) sends none, so its commit keeps the whole budget.
+        var sendsLeaveRequest = leavesGroup && _coordinator!.CanSendLeaveRequest;
         var leaveReserveMs = GetCloseLeaveGroupReserveMs(closeTimeoutMs);
 
         // Step 6: Commit pending offsets (if auto-commit enabled and we have a coordinator).
@@ -13206,7 +13209,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null)
         {
             using var commitTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            if (leavesGroup && closeTimeoutMs > 0)
+            if (sendsLeaveRequest && closeTimeoutMs > 0)
             {
                 var elapsedMs = (long)Stopwatch.GetElapsedTime(closeStartedAt).TotalMilliseconds;
                 commitTimeout.CancelAfter((int)Math.Max(0, closeTimeoutMs - leaveReserveMs - elapsedMs));
@@ -13218,21 +13221,28 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         // Step 7: Send LeaveGroup request to coordinator. Once the request is on the wire the
-        // coordinator acts on it whether or not the response is awaited, so a leave that is
-        // cancelled while waiting still takes effect. If close was already cancelled (by the
-        // caller, or by its budget running out) before the leave started, the leave is still sent
-        // best-effort under its own leaveReserveMs bound, rather than dropped: otherwise the
-        // member would hold its partitions until the session timeout.
+        // coordinator acts on it whether or not the response is awaited, so close's token only
+        // stops the wait for the response. Getting the request onto the wire (stopping the
+        // heartbeat, delivering queued callbacks, leasing the connection, writing) is not cut
+        // short by it: whenever close is cancelled (by the caller, or by its budget running out),
+        // before or during the leave, that part gets leaveReserveMs more, rather than the leave
+        // being dropped and the member holding its partitions until the session timeout.
         if (leavesGroup)
         {
-            using var leaveTimeout = cancellationToken.IsCancellationRequested
-                ? new CancellationTokenSource(leaveReserveMs)
-                : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            using var leaveTimeout = new CancellationTokenSource();
+            using var leaveGrace = cancellationToken.Register(
+                static state =>
+                {
+                    var (timeout, graceMs) = ((CancellationTokenSource, int))state!;
+                    timeout.CancelAfter(graceMs);
+                },
+                (leaveTimeout, leaveReserveMs));
             try
             {
                 await _coordinator!.LeaveGroupAsync(
                     options.GroupMembershipOperation,
-                    leaveTimeout.Token).ConfigureAwait(false);
+                    leaveTimeout.Token,
+                    cancellationToken).ConfigureAwait(false);
                 LogLeftConsumerGroup();
             }
             catch (Exception ex)

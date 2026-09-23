@@ -225,8 +225,10 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <para><b>Leaving the group:</b> the final commit cannot use the whole close budget. When the
     /// coordinator does not answer, the commit is abandoned with up to five seconds (at most half the
     /// budget) still left, and that time goes to the LeaveGroup request, so the rest of the group can
-    /// rebalance without waiting out the session timeout. A close cancelled before the leave started
-    /// still sends the leave on a best-effort basis, bounded by that same reserve.</para>
+    /// rebalance without waiting out the session timeout. Time is kept back only when a leave will
+    /// actually be sent (the member has joined a group). Cancelling close, or its budget running
+    /// out, does not drop a leave that has not been sent yet: it still gets that same reserve to
+    /// reach the broker, and once it has been sent, close stops waiting for its response.</para>
     /// </remarks>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>A task representing the asynchronous close operation.</returns>

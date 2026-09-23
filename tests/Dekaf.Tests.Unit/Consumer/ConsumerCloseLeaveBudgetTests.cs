@@ -104,6 +104,50 @@ public sealed class ConsumerCloseLeaveBudgetTests
         await Assert.That(harness.LeaveEpochs).IsEmpty();
     }
 
+    [Test]
+    public async Task CloseAsync_CancelledWhileLeaveIsGettingItsConnection_StillSendsLeave()
+    {
+        // The cancellation lands after the leave started but before its request was written.
+        using var closeCancellation = new CancellationTokenSource();
+        var harness = new Harness(defaultApiTimeoutMs: 60_000)
+        {
+            OnGetConnection = closeCancellation.Cancel
+        };
+        await using var consumer = harness.CreateConsumer();
+        Harness.JoinGroup(consumer);
+
+        var stopwatch = Stopwatch.StartNew();
+        await Assert.That(async () => await consumer.CloseAsync(closeCancellation.Token))
+            .Throws<OperationCanceledException>();
+        stopwatch.Stop();
+
+        await Assert.That(harness.LeaveEpochs.ToArray()).IsEquivalentTo([-1]);
+        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(10));
+    }
+
+    [Test]
+    public async Task CloseAsync_MemberThatNeverJoined_CommitIsNotShortenedForALeave()
+    {
+        // A group consumer with manual assignment has no membership, so no leave is sent and the
+        // commit keeps the whole budget.
+        var harness = new Harness(defaultApiTimeoutMs: 2_000);
+        harness.OnOffsetCommit = static async (request, token) =>
+        {
+            await Task.Delay(1_500, token);
+            return CreateCommitResponse(request, ErrorCode.None);
+        };
+        await using var consumer = harness.CreateConsumer();
+        Harness.KnowCoordinator(consumer);
+        consumer.Assign(new TopicPartition(Topic, 0));
+        consumer.StoreOffset(CreateConsumeResult(offset: 41));
+
+        await consumer.CloseAsync(CancellationToken.None);
+
+        await Assert.That(harness.OffsetCommits).IsEqualTo(1);
+        await Assert.That(harness.CompletedOffsetCommits).IsEqualTo(1);
+        await Assert.That(harness.LeaveEpochs).IsEmpty();
+    }
+
     private static ConsumeResult<string, string> CreateConsumeResult(long offset) =>
         new(
             topic: Topic,
@@ -147,6 +191,9 @@ public sealed class ConsumerCloseLeaveBudgetTests
 
         public ConcurrentQueue<int> LeaveEpochs { get; } = new();
 
+        /// <summary>Runs whenever the consumer gets a connection to the coordinator.</summary>
+        public Action? OnGetConnection { get; init; }
+
         public int OffsetCommits => Volatile.Read(ref _offsetCommits);
 
         public int CompletedOffsetCommits => Volatile.Read(ref _completedOffsetCommits);
@@ -156,7 +203,11 @@ public sealed class ConsumerCloseLeaveBudgetTests
             var connectionPool = Substitute.For<IConnectionPool>();
             var connection = Substitute.For<IKafkaConnection>();
             connectionPool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
-                .Returns(ValueTask.FromResult(connection));
+                .Returns(_ =>
+                {
+                    OnGetConnection?.Invoke();
+                    return ValueTask.FromResult(connection);
+                });
 
             connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
                     Arg.Any<FindCoordinatorRequest>(),
@@ -188,6 +239,9 @@ public sealed class ConsumerCloseLeaveBudgetTests
                     Arg.Any<CancellationToken>())
                 .Returns(call =>
                 {
+                    // A cancelled request never reaches the wire.
+                    if (call.Arg<CancellationToken>().IsCancellationRequested)
+                        return ValueTask.FromCanceled<ConsumerGroupHeartbeatResponse>(call.Arg<CancellationToken>());
                     LeaveEpochs.Enqueue(call.Arg<ConsumerGroupHeartbeatRequest>().MemberEpoch);
                     return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                     {
@@ -231,15 +285,22 @@ public sealed class ConsumerCloseLeaveBudgetTests
         /// <summary>Makes the coordinator a joined member of coordinator 0, so close sends a leave.</summary>
         public static void JoinGroup(KafkaConsumer<string, string> consumer)
         {
+            var coordinator = KnowCoordinator(consumer);
+            typeof(ConsumerCoordinator)
+                .GetField("_memberId", BindingFlags.NonPublic | BindingFlags.Instance)!
+                .SetValue(coordinator, "member-1");
+        }
+
+        /// <summary>Makes coordinator 0 known without the consumer joining the group.</summary>
+        public static ConsumerCoordinator KnowCoordinator(KafkaConsumer<string, string> consumer)
+        {
             var coordinator = (ConsumerCoordinator)typeof(KafkaConsumer<string, string>)
                 .GetField("_coordinator", BindingFlags.NonPublic | BindingFlags.Instance)!
                 .GetValue(consumer)!;
             typeof(ConsumerCoordinator)
-                .GetField("_memberId", BindingFlags.NonPublic | BindingFlags.Instance)!
-                .SetValue(coordinator, "member-1");
-            typeof(ConsumerCoordinator)
                 .GetField("_coordinatorId", BindingFlags.NonPublic | BindingFlags.Instance)!
                 .SetValue(coordinator, 0);
+            return coordinator;
         }
 
         private async ValueTask<OffsetCommitResponse> CompleteCommitAsync(

@@ -3304,7 +3304,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     private async ValueTask LeaveGroupConsumerProtocolAsync(
         ConsumerGroupMembershipOperation operation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CancellationToken responseCancellationToken)
     {
         // Callbacks queued for the membership that is leaving (an assignment whose
         // OnPartitionsAssigned cancellation deferred, a loss) are delivered while it is still
@@ -3313,7 +3314,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         await StopHeartbeatAsyncCore(cancellationToken).ConfigureAwait(false);
         await InvokePendingRebalanceCallbacksUnlessCancelledAsync(cancellationToken).ConfigureAwait(false);
 
-        await SendConsumerProtocolLeaveRequestAsync(operation, cancellationToken).ConfigureAwait(false);
+        await SendConsumerProtocolLeaveRequestAsync(operation, cancellationToken, responseCancellationToken)
+            .ConfigureAwait(false);
 
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -3331,8 +3333,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private async ValueTask SendConsumerProtocolLeaveRequestAsync(
         ConsumerGroupMembershipOperation operation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CancellationToken responseCancellationToken = default)
     {
+        KafkaRequestWriteContext? writeContext = null;
         try
         {
             using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
@@ -3357,8 +3361,24 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 ConsumerGroupHeartbeatRequest.LowestSupportedVersion,
                 ConsumerGroupHeartbeatRequest.HighestSupportedVersion);
 
-            var response = await connection.SendWithClientTelemetryAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
-                request, version, TelemetryMetricCollector, cancellationToken).ConfigureAwait(false);
+            ConsumerGroupHeartbeatResponse response;
+            if (responseCancellationToken.CanBeCanceled &&
+                connection is IKafkaRequestCancellationConnection responseCancellable)
+            {
+                // cancellationToken bounds getting the request onto the wire; once it is written,
+                // only responseCancellationToken bounds the wait for the answer, which the leave
+                // does not need to take effect.
+                writeContext = new KafkaRequestWriteContext(responseCancellationToken);
+                response = await responseCancellable
+                    .SendWithResponseCancellationAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                        request, version, writeContext, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                response = await connection.SendWithClientTelemetryAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                    request, version, TelemetryMetricCollector, cancellationToken).ConfigureAwait(false);
+            }
 
             if (response.ErrorCode != ErrorCode.None)
             {
@@ -3369,11 +3389,26 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 LogSuccessfullyLeftGroup(_options.GroupId!);
             }
         }
+        catch (OperationCanceledException) when (writeContext is { WriteStarted: true } &&
+                                                 responseCancellationToken.IsCancellationRequested)
+        {
+            LogLeaveGroupSentWithoutResponse(_options.GroupId!);
+        }
         catch (Exception ex)
         {
             LogLeaveGroupRequestFailed(ex);
         }
     }
+
+    /// <summary>
+    /// True when <see cref="LeaveGroupAsync(ConsumerGroupMembershipOperation, CancellationToken, CancellationToken)"/>
+    /// would send a leave request: the member has joined and its coordinator is known.
+    /// </summary>
+    internal bool CanSendLeaveRequest =>
+        Volatile.Read(ref _disposed) == 0
+        && !string.IsNullOrEmpty(_options.GroupId)
+        && !string.IsNullOrEmpty(_memberId)
+        && _coordinatorId >= 0;
 
     /// <summary>
     /// Leaves the consumer group gracefully.
@@ -3384,9 +3419,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         await LeaveGroupAsync(ConsumerGroupMembershipOperation.Default, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <param name="operation">How the member leaves.</param>
+    /// <param name="cancellationToken">Bounds the whole leave, including getting the request onto the wire.</param>
+    /// <param name="responseCancellationToken">
+    /// When cancellable, also stops the wait for the response once the request has been written
+    /// (the coordinator acts on a written leave whether or not its answer is awaited).
+    /// </param>
     internal async ValueTask LeaveGroupAsync(
         ConsumerGroupMembershipOperation operation,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        CancellationToken responseCancellationToken = default)
     {
         if (!Enum.IsDefined(operation))
             throw new ArgumentOutOfRangeException(nameof(operation), operation, "The group membership operation is invalid.");
@@ -3405,7 +3447,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             return;
         }
 
-        await LeaveGroupConsumerProtocolAsync(operation, cancellationToken).ConfigureAwait(false);
+        await LeaveGroupConsumerProtocolAsync(operation, cancellationToken, responseCancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -3532,6 +3575,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Successfully left group {GroupId}")]
     private partial void LogSuccessfullyLeftGroup(string groupId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Sent the LeaveGroup request for group {GroupId}; stopped waiting for its response because close was cancelled")]
+    private partial void LogLeaveGroupSentWithoutResponse(string groupId);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to send LeaveGroup request")]
     private partial void LogLeaveGroupRequestFailed(Exception exception);
