@@ -840,9 +840,10 @@ public sealed partial class ConsumerCoordinatorKip848Tests
                 return (version, coordinator.Assignment.ToArray());
             });
 
-            // Give the snapshot every chance to be taken mid-publication; with the fix it waits
-            // for the publication to end instead, so this wait times out.
-            snapshot.Wait(TimeSpan.FromSeconds(1));
+            // Give the snapshot a chance to be taken mid-publication. With the fix it waits for
+            // the publication to end instead (or, past its bound, takes the previous version and
+            // is rejected), so this wait times out.
+            snapshot.Wait(TimeSpan.FromMilliseconds(50));
         }
 
         SetupFindCoordinator();
@@ -869,14 +870,132 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         await coordinator.StopHeartbeatAsync();
 
         var (version, partitions) = await snapshot!.WaitAsync(timeout.Token);
-        await coordinator.CommitOffsetsAsync(
-            partitions.Select(static tp => new TopicPartitionOffset(tp.Topic, tp.Partition, 10)).ToArray(),
-            retryUntilApiTimeout: false,
-            version,
-            timeout.Token);
+        try
+        {
+            await coordinator.CommitOffsetsAsync(
+                partitions.Select(static tp => new TopicPartitionOffset(tp.Topic, tp.Partition, 10)).ToArray(),
+                retryUntilApiTimeout: false,
+                version,
+                timeout.Token);
+        }
+        catch (GroupException ex) when (ex.ErrorCode == ErrorCode.FencedMemberEpoch)
+        {
+            // A snapshot that gave up waiting is rejected as one from the previous membership.
+        }
 
-        // Only the partition the new membership owns is committed under its identity.
-        await Assert.That(string.Join(" | ", committed)).IsEqualTo("test-topic-1@member-2");
+        // p0 moved to another member: it is never committed under the new identity.
+        await Assert.That(committed.Any(static entry => entry.StartsWith("test-topic-0", StringComparison.Ordinal)))
+            .IsFalse();
+    }
+
+    [Test]
+    public async Task CommitOffsetsAsync_FromARevokingHookDuringTheJoin_IsRejectedWithoutDeadlock()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetCommit, 9, 9);
+        var script = new HeartbeatScript(this);
+        var commitCount = 0;
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref commitCount);
+                return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
+            });
+
+        // The revoking hook, which the join's publication runs, starts a commit.
+        ConsumerCoordinator? coordinator = null;
+        Task? hookCommit = null;
+        var commitFromHook = 0;
+        void OnPartitionsRevoking(IReadOnlyList<TopicPartition> revoked)
+        {
+            if (Interlocked.Exchange(ref commitFromHook, 0) == 1)
+            {
+                hookCommit = coordinator!.CommitOffsetsAsync(
+                    [new TopicPartitionOffset("test-topic", 0, 10)],
+                    CancellationToken.None).AsTask();
+            }
+        }
+
+        SetupFindCoordinator();
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 5, CreateAssignment(TestTopicId, 0, 1));
+        coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(),
+            _connectionPool,
+            _metadataManager,
+            logger: null,
+            getConnectionCount: null,
+            onPartitionsRevoked: null,
+            onPartitionsRevoking: OnPartitionsRevoking);
+        await using var coordinatorLifetime = coordinator;
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+
+        coordinator.RequestRejoin();
+        Volatile.Write(ref commitFromHook, 1);
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 6, CreateAssignment(TestTopicId, 1));
+        var join = Task.Run(async () =>
+            await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None));
+
+        // The join completes, and the hook's commit is rejected as one from the previous
+        // membership instead of waiting for the publication it is running inside.
+        await join.WaitAsync(TimeSpan.FromSeconds(10));
+        var rejected = await Assert.That(async () => await hookCommit!.WaitAsync(TimeSpan.FromSeconds(10)))
+            .Throws<GroupException>();
+        await Assert.That(rejected!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
+        await Assert.That(Volatile.Read(ref commitCount)).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task MembershipLoss_LostListenerThatRejoins_GetsAClearErrorInsteadOfADeadlock()
+    {
+        var script = new HeartbeatScript(this);
+        var (recording, calls) = CreateRecordingListener();
+        ConsumerCoordinator? coordinator = null;
+        Exception? nestedFailure = null;
+        var rejoinFromCallback = 1;
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsLostAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => LostAsync(callInfo.Arg<IEnumerable<TopicPartition>>()!, callInfo.Arg<CancellationToken>()));
+        listener.OnPartitionsAssignedAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => recording.OnPartitionsAssignedAsync(
+                callInfo.Arg<IEnumerable<TopicPartition>>()!,
+                callInfo.Arg<CancellationToken>()));
+        coordinator = await JoinAsync(script, listener);
+        await using var coordinatorLifetime = coordinator;
+        calls.Clear();
+
+        // The member is fenced. Its OnPartitionsLost listener tries to rejoin from inside the
+        // callback, which the outer poll's rejoin is delivering.
+        typeof(ConsumerCoordinator)
+            .GetMethod("FenceMembership", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(coordinator, [false]);
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 6, CreateAssignment(TestTopicId, 1));
+        var poll = Task.Run(async () =>
+            await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None));
+
+        await poll.WaitAsync(TimeSpan.FromSeconds(10));
+        await Assert.That(nestedFailure).IsTypeOf<InvalidOperationException>();
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(string.Join(" | ", calls)).IsEqualTo("lost:test-topic-0,test-topic-1 | assigned:test-topic-1");
+
+        async ValueTask LostAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)
+        {
+            if (Interlocked.Exchange(ref rejoinFromCallback, 0) == 1)
+            {
+                try
+                {
+                    await coordinator!.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    nestedFailure = ex;
+                }
+            }
+
+            await recording.OnPartitionsLostAsync(partitions, cancellationToken);
+        }
     }
 
     [Test]

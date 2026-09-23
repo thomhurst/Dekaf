@@ -134,6 +134,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // captures only an even value (MembershipVersion waits out a publication), so its snapshot
     // is never taken half-way through one.
     private int _membershipVersion;
+    // The coordinator whose join publication this thread is running (the odd-version section
+    // is synchronous). A hook it calls that starts a commit must not wait for it.
+    [ThreadStatic]
+    private static ConsumerCoordinator? t_publishingCoordinator;
+    private static readonly long MembershipPublicationWaitTicks = Stopwatch.Frequency / 10;
     // Foreground assignment initialization and fetch waits are application poll activity. Track
     // concurrent callers without allocating a scope object on each poll cycle.
     private int _foregroundPollActivityCount;
@@ -1207,16 +1212,28 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     {
         get
         {
-            // A join publication is a short synchronous section under the state lock, with no
-            // callback that commits, so waiting it out is brief. Nothing on the poll path reads
-            // this; a commit reads it once.
+            // A join publication is a short synchronous section under the state lock, so waiting
+            // it out is brief. Nothing on the poll path reads this; a commit reads it once.
             var version = Volatile.Read(ref _membershipVersion);
             if ((version & 1) == 0)
                 return version;
 
+            // A commit started by a hook the publication itself runs, on this thread or on one
+            // that hook waits for, cannot wait for the publication to end. It gets the version
+            // from before the publication instead, so it is rejected as a commit from the
+            // previous membership: never a deadlock, never offsets sent under the wrong one.
+            if (ReferenceEquals(t_publishingCoordinator, this))
+                return version - 1;
+
+            var waitStarted = Stopwatch.GetTimestamp();
             var spinner = new SpinWait();
             while (((version = Volatile.Read(ref _membershipVersion)) & 1) != 0)
+            {
+                if (Stopwatch.GetTimestamp() - waitStarted > MembershipPublicationWaitTicks)
+                    return version - 1;
+
                 spinner.SpinOnce();
+            }
 
             return version;
         }
@@ -2086,6 +2103,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         if (!discardIfMembershipChanged)
         {
+            var previousPublisher = t_publishingCoordinator;
+            if (publishingMembership)
+                t_publishingCoordinator = this;
+
             try
             {
                 using (assignmentProcessing)
@@ -2102,7 +2123,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 // Identity and assignment are published (or processing failed): even again.
                 if (publishingMembership)
+                {
                     Interlocked.Increment(ref _membershipVersion);
+                    t_publishingCoordinator = previousPublisher;
+                }
             }
         }
 
@@ -2452,6 +2476,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         string? subscribedTopicRegex,
         CancellationToken cancellationToken)
     {
+        // A rebalance listener's callback cannot join the group: the join's own callbacks would
+        // wait for the delivery the listener is running in. The consumer rejoins once the
+        // callback has returned, on its next poll.
+        if (IsInsideOwnRebalanceCallback())
+        {
+            throw new InvalidOperationException(
+                "The consumer cannot rejoin its group from inside a rebalance listener callback. " +
+                "Return from the callback; the consumer rejoins on its next poll.");
+        }
+
         UpdateSubscription(topics, subscribedTopicRegex);
 
         ConsumerHeartbeatResult heartbeatResult = default;
@@ -2948,8 +2982,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private async ValueTask InvokePendingRebalanceCallbacksAsync(CancellationToken cancellationToken)
     {
-        if (!HasQueuedRebalanceCallbacks() ||
-            s_drainScope.Value is { IsActive: true } scope && ReferenceEquals(scope.Coordinator, this))
+        if (!HasQueuedRebalanceCallbacks() || IsInsideOwnRebalanceCallback())
             return;
 
         await _rebalanceListenerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -3050,6 +3083,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             scope.Deactivate();
         }
     }
+
+    private bool IsInsideOwnRebalanceCallback() =>
+        s_drainScope.Value is { IsActive: true } scope && ReferenceEquals(scope.Coordinator, this);
 
     private sealed class DrainScope(ConsumerCoordinator coordinator)
     {
