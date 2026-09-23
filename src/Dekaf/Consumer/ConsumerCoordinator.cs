@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using Dekaf.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Metadata;
@@ -48,6 +49,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         IRebalanceConsumerScope>? _createRebalanceConsumerScope;
     private readonly ConcurrentQueue<TopicPartition> _revokedPartitionsSinceLastSync = new();
     private Task _pendingRevocationCommit = Task.CompletedTask;
+    // Completes once the callbacks of the latest published assignment change with newly assigned
+    // partitions have been delivered. The consumer does not synchronize that assignment before
+    // then, so an OnPartitionsAssigned that seeks is applied before fetching starts.
+    private Task _pendingAssignmentCallbacks = Task.CompletedTask;
     // Assignment publication and revocation history form one snapshot. Rebalance callbacks
     // run only after this lock is released so user code cannot extend its critical section.
     private readonly Lock _assignmentStateLock = new();
@@ -83,6 +88,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private long _lastSuccessfulHeartbeatTimestamp;
     private string? _lastHeartbeatFailure;
     private int _disposed;
+    // Set by BeginClose; no join starts after it.
+    private int _closing;
+    // Set when disposal has finished with rebalance callbacks. A drain that outlives it (a
+    // listener that ignored the teardown token) invokes no further callbacks.
+    private int _callbackDeliveryClosed;
     private readonly Func<int> _getCoordinationConnectionIndex;
     // Where the next coordinator lookup starts. It rests on the last broker that answered, so a
     // broker that refuses or black-holes connections is not tried first by every lookup.
@@ -97,6 +107,44 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private long _maxPollExpiredAtPollVersion = -1;
     private long _maxPollExpirationVersion;
     private int _maxPollLossNotificationPending;
+    // Set when the coordinator fences this member (FENCED_MEMBER_EPOCH or UNKNOWN_MEMBER_ID).
+    // Commits are rejected locally until the member has rejoined and the consumer has
+    // synchronized the assignment (AcknowledgeAssignmentSync): its partitions are lost, and until
+    // the consumer drops the offsets it stored for them, a commit under the new epoch could move
+    // another member's committed offsets backwards.
+    private int _membershipFenced;
+    // Rebalance callbacks not yet delivered, in publication order: assignments a fence cleared,
+    // waiting for OnPartitionsLost, and assignment changes, reserved under the state lock when
+    // they are published. Drained under _rebalanceListenerLock so a rejoin can never publish
+    // OnPartitionsAssigned first.
+    private readonly ConcurrentQueue<PendingRebalanceCallback> _pendingRebalanceCallbacks = new();
+    // Entries no publisher is delivering: fence losses, and reserved assignment changes whose
+    // publisher's delivery ended without them (cancellation). The stable poll path checks it with
+    // one volatile read; it leaves an assignment change its publisher is still delivering alone,
+    // so steady-heartbeat callbacks do not suppress buffered polls.
+    private int _pendingRebalanceCallbackCount;
+    // Makes counting and enqueueing an entry one step for anyone who sees the count but not yet
+    // the entry: publishers count and enqueue under it, and such a reader takes it to wait for the
+    // publisher to finish. Never held while anything else is acquired.
+    private readonly object _pendingPublishLock = new();
+    // The drain the current async flow is running in. A listener that re-enters the coordinator
+    // (a poll or join from inside its callback) must not wait for the drain it is running in: its
+    // own entry stays queued until it returns. The scope is deactivated when the drain ends, so a
+    // task the listener started, which inherits the value, drains normally afterwards.
+    private static readonly AsyncLocal<DrainScope?> s_drainScope = new();
+    // Changes under _lock each time a join publishes a new membership and each time a fence ends
+    // one. A fence observed by a request sent under an earlier membership must not clear the
+    // assignment of a newer one, and a commit must not send offsets taken under an earlier one.
+    // Seqlock-style: odd while a join is publishing (from before the new member id and epoch are
+    // written until the new assignment is published), even otherwise; a fence adds 2. A commit
+    // captures only an even value (MembershipVersion waits out a publication), so its snapshot
+    // is never taken half-way through one.
+    private int _membershipVersion;
+    // The coordinator whose join publication this thread is running (the odd-version section
+    // is synchronous). A hook it calls that starts a commit must not wait for it.
+    [ThreadStatic]
+    private static ConsumerCoordinator? t_publishingCoordinator;
+    private static readonly long MembershipPublicationWaitTicks = Stopwatch.Frequency / 10;
     // Foreground assignment initialization and fetch waits are application poll activity. Track
     // concurrent callers without allocating a scope object on each poll cycle.
     private int _foregroundPollActivityCount;
@@ -276,6 +324,17 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private void ThrowIfMaxPollIntervalExpired()
     {
+        if (Volatile.Read(ref _membershipFenced) != 0)
+        {
+            throw new GroupException(
+                ErrorCode.FencedMemberEpoch,
+                "Offset commit rejected because the group coordinator fenced this member; its partitions were lost and " +
+                "the consumer has not rejoined the group yet; poll to rejoin before committing")
+            {
+                GroupId = _options.GroupId
+            };
+        }
+
         if (Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0
             && !IsCurrentPollGenerationExpired())
             return;
@@ -283,6 +342,66 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         throw new GroupException(
             ErrorCode.FencedMemberEpoch,
             $"Offset commit rejected because maximum poll interval of {_options.MaxPollIntervalMs}ms was exceeded")
+        {
+            GroupId = _options.GroupId
+        };
+    }
+
+    /// <summary>
+    /// Rejects a commit whose offsets were taken under a membership that a fence or rejoin has
+    /// since replaced. Its request would otherwise carry the new member id and epoch, and a
+    /// fence lifted by the rejoin's assignment sync no longer stops it.
+    /// </summary>
+    /// <summary>
+    /// Reads the member id and epoch as one consistent pair with the membership version, the
+    /// read side of the seqlock. Every change of membership (join publication, fence, leave)
+    /// makes the version odd before it touches the identity and even again afterwards, so an
+    /// identity read between two reads of the unchanged, even version the commit captured
+    /// belongs to that membership. Otherwise the commit is rejected. The epoch alone may still
+    /// move within a membership (a steady heartbeat's refresh), as the StaleMemberEpoch retry
+    /// expects.
+    /// </summary>
+    private void ReadCommitIdentity(int membershipVersion, out string? memberId, out int memberEpoch)
+    {
+        ThrowIfMembershipChangedSince(membershipVersion);
+        memberId = _memberId;
+        memberEpoch = _generationId;
+        ThrowIfMembershipChangedSince(membershipVersion);
+    }
+
+    /// <summary>
+    /// Opens a membership change: the version turns odd, and turns even again when the returned
+    /// scope is disposed. The change is synchronous and runs under the state lock; the thread is
+    /// marked so a hook it runs that starts a commit is rejected instead of waiting for it.
+    /// </summary>
+    private MembershipChangeScope BeginMembershipChange()
+    {
+        Interlocked.Increment(ref _membershipVersion);
+        var previous = t_publishingCoordinator;
+        t_publishingCoordinator = this;
+        return new MembershipChangeScope(this, previous);
+    }
+
+    private readonly struct MembershipChangeScope(
+        ConsumerCoordinator coordinator,
+        ConsumerCoordinator? previousPublisher) : IDisposable
+    {
+        public void Dispose()
+        {
+            Interlocked.Increment(ref coordinator._membershipVersion);
+            t_publishingCoordinator = previousPublisher;
+        }
+    }
+
+    private void ThrowIfMembershipChangedSince(int membershipVersion)
+    {
+        if (Volatile.Read(ref _membershipVersion) == membershipVersion)
+            return;
+
+        throw new GroupException(
+            ErrorCode.FencedMemberEpoch,
+            "Offset commit rejected because the group membership changed while the commit was in progress; its " +
+            "offsets may belong to partitions this member no longer owns; poll before committing again")
         {
             GroupId = _options.GroupId
         };
@@ -376,6 +495,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     internal void AcknowledgeAssignmentSync(int assignmentVersion)
     {
         if (Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0
+            && Volatile.Read(ref _membershipFenced) == 0
             && _revokedPartitionsSinceLastSync.IsEmpty)
         {
             return;
@@ -384,11 +504,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         lock (_assignmentStateLock)
         {
             if (Volatile.Read(ref _assignmentVersion) != assignmentVersion
-                || !_revokedPartitionsSinceLastSync.IsEmpty
-                || Volatile.Read(ref _maxPollExpiredAtPollVersion) == Volatile.Read(ref _pollVersion))
+                || !_revokedPartitionsSinceLastSync.IsEmpty)
             {
                 return;
             }
+
+            // The member has rejoined and the consumer has synchronized its assignment, dropping
+            // the positions and stored offsets of the partitions the fence took away. Lifting the
+            // fence on the join alone would let a commit made before this sync send those stale
+            // offsets under the new epoch.
+            if (_state == CoordinatorState.Stable)
+                Volatile.Write(ref _membershipFenced, 0);
+
+            if (Volatile.Read(ref _maxPollExpiredAtPollVersion) == Volatile.Read(ref _pollVersion))
+                return;
 
             Volatile.Write(ref _maxPollExpiredAtPollVersion, -1);
         }
@@ -498,10 +627,37 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// Forces the coordinator to rejoin the group on the next
     /// <see cref="EnsureActiveGroupAsync(StringSet, CancellationToken)"/> call by transitioning to <see cref="CoordinatorState.Unjoined"/>.
     /// </summary>
+    /// <summary>
+    /// True while the latest published assignment's OnPartitionsAssigned has not been delivered.
+    /// A listener's own flow (a poll from inside its callback) is never held back by it.
+    /// </summary>
+    internal bool HasPendingAssignmentCallbacks() =>
+        !Volatile.Read(ref _pendingAssignmentCallbacks).IsCompleted && !IsInsideOwnRebalanceCallback();
+
+    /// <summary>
+    /// Waits until the latest published assignment's callbacks have been delivered, so the
+    /// consumer synchronizes the assignment only after OnPartitionsAssigned (and any seek it
+    /// staged) has run. Completes at once in the steady state and inside a listener's callback.
+    /// </summary>
+    internal ValueTask WaitForAssignmentCallbacksAsync(CancellationToken cancellationToken)
+    {
+        var pending = Volatile.Read(ref _pendingAssignmentCallbacks);
+        return pending.IsCompleted || IsInsideOwnRebalanceCallback()
+            ? default
+            : new ValueTask(pending.WaitAsync(cancellationToken));
+    }
+
     internal void RequestRejoin()
     {
         _state = CoordinatorState.Unjoined;
     }
+
+    /// <summary>
+    /// Called when the owning consumer starts closing. From then on the coordinator never joins
+    /// the group again, whichever path asks (a straggling prefetch, an offset-fetch recovery),
+    /// so close cannot end with a new membership and a live heartbeat.
+    /// </summary>
+    internal void BeginClose() => Volatile.Write(ref _closing, 1);
 
     /// <summary>
     /// Ensures the consumer has joined the group.
@@ -526,6 +682,22 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         if (_state == CoordinatorState.Stable)
         {
+            // Callbacks cancellation deferred after the member became Stable: no rejoin will
+            // retry them, so the next poll delivers them before returning.
+            if (Volatile.Read(ref _pendingRebalanceCallbackCount) != 0)
+            {
+                await InvokePendingRebalanceCallbacksAsync(cancellationToken).ConfigureAwait(false);
+
+                // A fence or expiry that queued one of those callbacks ended the membership: fall
+                // through to recovery instead of carrying on as a member.
+                if (_state != CoordinatorState.Stable)
+                {
+                    await EnsureActiveGroupConsumerProtocolAsync(topics, subscribedTopicRegex, cancellationToken)
+                        .ConfigureAwait(false);
+                    return;
+                }
+            }
+
             if (SubscriptionMatches(topics, subscribedTopicRegex))
                 return;
 
@@ -820,6 +992,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         lock (_heartbeatGuard)
         {
+            // Once close or disposal has begun no heartbeat starts, whichever path asks: a join
+            // that was already in flight (a listener that ignored cancellation kept it past close's
+            // wait) completes as a member but is never kept alive. The stop in close or disposal
+            // takes this lock after setting the flag, so a heartbeat installed just before is
+            // stopped there.
+            if (Volatile.Read(ref _closing) != 0 || Volatile.Read(ref _disposed) != 0)
+                return;
+
             oldCts = _heartbeatCts;
             oldTask = _heartbeatTask;
 
@@ -859,6 +1039,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         Func<IRebalanceListener, IEnumerable<TopicPartition>, CancellationToken, ValueTask> callback,
         CancellationToken cancellationToken)
     {
+        ThrowIfCallbackDeliveryStopped(cancellationToken);
         try
         {
             LogRebalanceListenerCall(callbackName, partitions.Count);
@@ -881,14 +1062,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             CancellationToken,
             ValueTask> consumerAwareCallback,
         IEnumerable<TopicPartition> newlyAssigned,
+        HashSet<TopicPartition> assignment,
         CancellationToken cancellationToken)
     {
+        ThrowIfCallbackDeliveryStopped(cancellationToken);
         IRebalanceConsumerScope? consumerScope = null;
         try
         {
             LogRebalanceListenerCall(callbackName, partitions.Count);
             consumerScope = _createRebalanceConsumerScope!(
-                _assignedPartitions,
+                assignment,
                 newlyAssigned);
             await consumerAwareCallback(
                 listener,
@@ -917,10 +1100,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             CancellationToken,
             ValueTask> consumerAwareCallback,
         IEnumerable<TopicPartition> newlyAssigned,
+        PendingRebalanceCallback? progress,
         CancellationToken cancellationToken)
     {
+        // With progress, listeners that already completed this notification are skipped and each
+        // one that completes is recorded, so a retry after cancellation resumes at the interrupted
+        // listener. Configured listeners are fixed and the runtime listener is last, so a
+        // listener's position is stable across retries.
+        var completed = progress?.ListenersCompleted ?? 0;
+        var position = 0;
+
         var configuredListener = _rebalanceListener;
-        if (configuredListener is not null)
+        if (configuredListener is not null && position++ >= completed)
         {
             await InvokeRebalanceListenerAsync(
                 callbackName,
@@ -928,10 +1119,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 configuredListener,
                 callback,
                 cancellationToken).ConfigureAwait(false);
+            progress?.ListenersCompleted = position;
         }
 
         var consumerAwareListener = _consumerAwareRebalanceListener;
-        if (consumerAwareListener is not null)
+        if (consumerAwareListener is not null && position++ >= completed)
         {
             await InvokeConsumerAwareRebalanceListenerAsync(
                 callbackName,
@@ -939,7 +1131,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 consumerAwareListener,
                 consumerAwareCallback,
                 newlyAssigned,
+                // A queued callback's scope shows the assignment it was queued under, not one
+                // published since.
+                progress?.Assignment ?? _assignedPartitions,
                 cancellationToken).ConfigureAwait(false);
+            progress?.ListenersCompleted = position;
         }
 
         var additionalListeners = _additionalRebalanceListeners;
@@ -947,17 +1143,21 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             for (var index = 0; index < additionalListeners.Length; index++)
             {
+                if (position++ < completed)
+                    continue;
+
                 await InvokeRebalanceListenerAsync(
                     callbackName,
                     partitions,
                     additionalListeners[index],
                     callback,
                     cancellationToken).ConfigureAwait(false);
+                progress?.ListenersCompleted = position;
             }
         }
 
         var runtimeListener = Volatile.Read(ref _runtimeRebalanceListener);
-        if (runtimeListener is not null)
+        if (runtimeListener is not null && position++ >= completed)
         {
             await InvokeRebalanceListenerAsync(
                 callbackName,
@@ -965,16 +1165,161 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 runtimeListener,
                 callback,
                 cancellationToken).ConfigureAwait(false);
+            progress?.ListenersCompleted = position;
+        }
+    }
+
+    /// <summary>
+    /// A rebalance notification not yet delivered: the partitions a fence cleared when
+    /// <see cref="Lost"/> is set, otherwise a published assignment change, reserved when it was
+    /// published. Only the drainer holding <c>_rebalanceListenerLock</c> reads or advances the
+    /// progress fields, so a retry resumes where cancellation interrupted it.
+    /// </summary>
+    private sealed class PendingRebalanceCallback
+    {
+        public IReadOnlyList<TopicPartition>? Lost { get; init; }
+
+        public ConsumerHeartbeatResult Deferred { get; init; }
+
+        // The published assignment when this notification arose, for a consumer-aware
+        // listener's scope. Assignment sets are replaced, never mutated, so the reference is a
+        // stable snapshot.
+        public required HashSet<TopicPartition> Assignment { get; init; }
+
+        public bool RevokedDelivered;
+
+        // Set when the internal revocation commit starts, so it runs once whichever drain
+        // delivers this entry; cleared again if cancellation interrupts it, so it is retried.
+        public bool RevocationCommitStarted;
+
+        // 0: reserved, its publisher delivers it; 1: unowned, counted in
+        // _pendingRebalanceCallbackCount; 2: dequeued. Transitions are interlocked, so an entry is
+        // counted at most once and uncounted only if counted. The count always goes up before an
+        // entry becomes unowned and down only after it has left the queue, so the stable poll
+        // path never reads zero while an unowned entry is queued.
+        public int PollVisibility;
+
+        public int ListenersCompleted;
+    }
+
+    /// <summary>
+    /// Checked before every listener call and every queued entry. Once the delivery's token is
+    /// cancelled, or disposal has finished with callbacks, no further callback starts: the
+    /// undelivered entries stay queued. A callback already running is not interrupted.
+    /// </summary>
+    private void ThrowIfCallbackDeliveryStopped(CancellationToken cancellationToken)
+    {
+        if (Volatile.Read(ref _callbackDeliveryClosed) != 0)
+            throw new OperationCanceledException("The consumer coordinator has been disposed.");
+
+        cancellationToken.ThrowIfCancellationRequested();
+    }
+
+    private void EnqueuePendingRebalanceCallback(PendingRebalanceCallback callback, bool reserved = false)
+    {
+        // Count first: the stable poll path reads only the count, so it must never see zero
+        // while an unowned entry is queued. Both happen under the publish lock, so a reader that
+        // sees the count but not yet the entry waits for it (HasQueuedRebalanceCallbacks).
+        lock (_pendingPublishLock)
+        {
+            if (!reserved)
+            {
+                Interlocked.Increment(ref _pendingRebalanceCallbackCount);
+                callback.PollVisibility = 1;
+            }
+
+            _pendingRebalanceCallbacks.Enqueue(callback);
+        }
+    }
+
+    /// <summary>
+    /// Whether any rebalance callback is queued. A counted entry whose publisher has not finished
+    /// enqueueing it is waited for, so a count the stable poll path saw is never mistaken for an
+    /// empty queue.
+    /// </summary>
+    private bool HasQueuedRebalanceCallbacks()
+    {
+        if (!_pendingRebalanceCallbacks.IsEmpty)
+            return true;
+
+        if (Volatile.Read(ref _pendingRebalanceCallbackCount) == 0)
+            return false;
+
+        lock (_pendingPublishLock)
+            return !_pendingRebalanceCallbacks.IsEmpty;
+    }
+
+    /// <summary>
+    /// Called when a publisher's delivery ends. Reserved entries it did not deliver (cancellation
+    /// interrupted it) become visible to the stable poll path, which delivers them next.
+    /// Enumerates the queue only when it is not empty, which is rare.
+    /// </summary>
+    private void ReleaseReservedRebalanceCallbacks()
+    {
+        if (_pendingRebalanceCallbacks.IsEmpty)
+            return;
+
+        foreach (var pending in _pendingRebalanceCallbacks)
+        {
+            if (Volatile.Read(ref pending.PollVisibility) != 0)
+                continue;
+
+            // Count first, then make the entry unowned. If a drainer dequeued it (or another
+            // release counted it) in between, take the count back.
+            Interlocked.Increment(ref _pendingRebalanceCallbackCount);
+            if (Interlocked.CompareExchange(ref pending.PollVisibility, 1, 0) != 0)
+                Interlocked.Decrement(ref _pendingRebalanceCallbackCount);
         }
     }
 
     /// <summary>
     /// Commits offsets for the group.
     /// </summary>
+    /// <remarks>
+    /// The membership is captured when this is called, so the caller must take its offsets
+    /// under the current membership. Internal callers that snapshot offsets read
+    /// <see cref="MembershipVersion"/> before the snapshot and pass it to the versioned overload.
+    /// </remarks>
     public ValueTask CommitOffsetsAsync(
         IEnumerable<TopicPartitionOffset> offsets,
         CancellationToken cancellationToken)
-        => CommitOffsetsAsync(offsets, retryUntilApiTimeout: false, cancellationToken);
+        => CommitOffsetsAsync(offsets, retryUntilApiTimeout: false, MembershipVersion, cancellationToken);
+
+    /// <summary>
+    /// The current membership version. A caller that snapshots offsets reads it first and passes
+    /// it to <see cref="CommitOffsetsAsync(IEnumerable{TopicPartitionOffset}, bool, int, CancellationToken)"/>,
+    /// so offsets taken under a membership that has since been replaced are never sent.
+    /// </summary>
+    internal int MembershipVersion
+    {
+        get
+        {
+            // A join publication is a short synchronous section under the state lock, so waiting
+            // it out is brief. Nothing on the poll path reads this; a commit reads it once.
+            var version = Volatile.Read(ref _membershipVersion);
+            if ((version & 1) == 0)
+                return version;
+
+            // A commit started by a hook the publication itself runs, on this thread or on one
+            // that hook waits for, cannot wait for the publication to end. It gets the version
+            // from before the publication instead, so it is rejected as a commit from the
+            // previous membership: never a deadlock, never offsets sent under the wrong one.
+            if (ReferenceEquals(t_publishingCoordinator, this))
+                return version - 1;
+
+            var waitStarted = Stopwatch.GetTimestamp();
+            var spinner = new SpinWait();
+            while (((version = Volatile.Read(ref _membershipVersion)) & 1) != 0)
+            {
+                if (Stopwatch.GetTimestamp() - waitStarted > MembershipPublicationWaitTicks)
+                    return version - 1;
+
+                spinner.SpinOnce();
+            }
+
+            return version;
+        }
+    }
 
     /// <param name="retryUntilApiTimeout">
     /// True for an application-facing commit that runs under the consumer's aggregate API
@@ -984,15 +1329,24 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// short count-bounded retry: they swallow the failure, and must not hold the commit lock or
     /// delay a shutdown for the length of an outage.
     /// </param>
+    /// <param name="membershipVersion">
+    /// The membership version read before the offsets were taken. The commit is rejected if the
+    /// membership changes after that, up to the send.
+    /// </param>
     internal async ValueTask CommitOffsetsAsync(
         IEnumerable<TopicPartitionOffset> offsets,
         bool retryUntilApiTimeout,
+        int membershipVersion,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrEmpty(_options.GroupId))
             return;
 
+        // The version was read before the fence flag: FenceMembership sets the flag before it
+        // advances the version, so a commit that passes the check below under a membership that
+        // is being fenced still sees the version change before it sends.
         ThrowIfMaxPollIntervalExpired();
+        ThrowIfMembershipChangedSince(membershipVersion);
 
         LogCommitOffsetsStarted(_options.GroupId!);
         // Lock is intentionally held across retries to protect the shared _commitTopicGroups dictionary,
@@ -1077,16 +1431,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     });
                 }
 
+                ReadCommitIdentity(membershipVersion, out var commitMemberId, out var commitMemberEpoch);
                 var request = new OffsetCommitRequest
                 {
                     GroupId = _options.GroupId!,
-                    GenerationIdOrMemberEpoch = _generationId,
-                    MemberId = _memberId,
+                    GenerationIdOrMemberEpoch = commitMemberEpoch,
+                    MemberId = commitMemberId,
                     GroupInstanceId = _options.GroupInstanceId,
                     Topics = topicOffsets
                 };
 
                 ThrowIfMaxPollIntervalExpired();
+                ThrowIfMembershipChangedSince(membershipVersion);
                 var response = await connection.SendWithClientTelemetryAsync<OffsetCommitRequest, OffsetCommitResponse>(
                     request, offsetCommitVersion, TelemetryMetricCollector, cancellationToken).ConfigureAwait(false);
 
@@ -1110,17 +1466,29 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             if (staleMemberEpoch)
                             {
                                 // KIP-848: the coordinator bumped the member epoch (e.g. a
-                                // reassignment) after this request was built. The member is
-                                // still in the group; wait for the background heartbeat to
-                                // deliver the refreshed epoch, then retry the commit with it —
-                                // matching the Java client's commit semantics.
-                                await WaitForMemberEpochRefreshAsync(
-                                    request.GenerationIdOrMemberEpoch,
-                                    cancellationToken).ConfigureAwait(false);
+                                // reassignment) after this request was built. While the member
+                                // is active, wait for the background heartbeat to deliver the
+                                // refreshed epoch, then retry the commit with it, matching the
+                                // Java client's commit semantics. Once the heartbeat loop has
+                                // stopped (session lost, fenced, rejoining) no refresh will
+                                // come: fail now instead of retrying until the API timeout.
+                                if (_state == CoordinatorState.Stable)
+                                {
+                                    await WaitForMemberEpochRefreshAsync(
+                                        request.GenerationIdOrMemberEpoch,
+                                        cancellationToken).ConfigureAwait(false);
+                                }
+
+                                // A fence that stopped the wait is the more precise verdict.
+                                ThrowIfMaxPollIntervalExpired();
+                                staleMemberEpoch = _state == CoordinatorState.Stable;
                             }
 
                             throw new Errors.GroupException(partition.ErrorCode,
-                                $"OffsetCommit failed for {topicName}-{partition.PartitionIndex}: {partition.ErrorCode}",
+                                $"OffsetCommit failed for {topicName}-{partition.PartitionIndex}: {partition.ErrorCode}" +
+                                (partition.ErrorCode == ErrorCode.StaleMemberEpoch && !staleMemberEpoch
+                                    ? "; the consumer is not an active group member, poll to rejoin the group before committing"
+                                    : string.Empty),
                                 isRetriable: staleMemberEpoch || partition.ErrorCode.IsRetriable())
                             {
                                 GroupId = _options.GroupId
@@ -1147,14 +1515,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// <summary>
     /// Waits for the background heartbeat loop to advance the member epoch past the value a
     /// failed OffsetCommit was sent with. Bounded by one heartbeat interval plus slack: if the
-    /// epoch has not refreshed by then (e.g. the member was reset), the retry proceeds anyway
-    /// and surfaces the coordinator's verdict.
+    /// epoch has not refreshed by then, the retry proceeds anyway and surfaces the coordinator's
+    /// verdict. Stops early when the member leaves the active state (the heartbeat loop stopped).
     /// </summary>
     private async ValueTask WaitForMemberEpochRefreshAsync(int staleEpoch, CancellationToken cancellationToken)
     {
         var maxWait = TimeSpan.FromMilliseconds(_heartbeatIntervalMs + 1_000);
         var startedAt = Stopwatch.GetTimestamp();
-        while (_generationId == staleEpoch && Stopwatch.GetElapsedTime(startedAt) < maxWait)
+        while (_generationId == staleEpoch
+               && _state == CoordinatorState.Stable
+               && Stopwatch.GetElapsedTime(startedAt) < maxWait)
         {
             ThrowIfMaxPollIntervalExpired();
             await Task.Delay(50, cancellationToken).ConfigureAwait(false);
@@ -1182,6 +1552,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // which is reused across calls to avoid allocations. The operation token bounds lock acquisition,
             // membership recovery, retry delay, and every network request to one aggregate deadline.
             await _fetchLock.WaitAsync(operationToken).ConfigureAwait(false);
+            var fetchLockHeld = true;
             try
             {
                 return await RetryHelper.WithRetryAsync(async () =>
@@ -1246,6 +1617,24 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         });
                     }
 
+                    // A fence or rejoin changes the member id, epoch and membership version
+                    // together under the state lock; snapshot them the same way, so a fence this
+                    // request reports is applied to the membership it was sent under.
+                    string? memberId;
+                    int memberEpoch;
+                    int membershipVersion;
+                    await _lock.WaitAsync(operationToken).ConfigureAwait(false);
+                    try
+                    {
+                        memberId = _memberId;
+                        memberEpoch = _generationId;
+                        membershipVersion = _membershipVersion;
+                    }
+                    finally
+                    {
+                        _lock.Release();
+                    }
+
                     var request = new OffsetFetchRequest
                     {
                         GroupId = _options.GroupId!,
@@ -1255,8 +1644,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             new OffsetFetchRequestGroup
                         {
                             GroupId = _options.GroupId!,
-                            MemberId = _memberId,
-                            MemberEpoch = _generationId,
+                            MemberId = memberId,
+                            MemberEpoch = memberEpoch,
                             Topics = topicPartitions
                         }
                         ]
@@ -1320,7 +1709,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         {
                             if (group.ErrorCode != ErrorCode.None)
                             {
-                                var isRetriable = HandleOffsetFetchMembershipError(group.ErrorCode)
+                                var isRetriable = await HandleOffsetFetchMembershipErrorAsync(
+                                        group.ErrorCode,
+                                        membershipVersion).ConfigureAwait(false)
                                     || group.ErrorCode.IsRetriable();
                                 throw new GroupException(
                                     group.ErrorCode,
@@ -1374,7 +1765,23 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 operationToken,
                 _options.RetryBackoffMs,
                 _options.RetryBackoffMaxMs,
-                onRetry: RecoverOffsetFetchAsync,
+                onRetry: async retryToken =>
+                {
+                    // Recovery can rejoin and deliver rebalance callbacks, and a listener may
+                    // fetch committed offsets itself (GetCommittedOffsetAsync). The fetch lock
+                    // only guards building a request, so it is not held across recovery. A
+                    // recovery that failed is retried without the lock re-acquired, so release
+                    // it only while this call holds it; the next request never runs without it.
+                    if (fetchLockHeld)
+                    {
+                        fetchLockHeld = false;
+                        _fetchLock.Release();
+                    }
+
+                    await RecoverOffsetFetchAsync(retryToken).ConfigureAwait(false);
+                    await _fetchLock.WaitAsync(retryToken).ConfigureAwait(false);
+                    fetchLockHeld = true;
+                },
                 shouldRefreshMetadata: ShouldRefreshMetadataForGroupRetry,
                 // Position initialization runs on the application's poll: a coordinator that
                 // refuses connections while cluster metadata still names it is retried for the
@@ -1386,7 +1793,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             }
             finally
             {
-                _fetchLock.Release();
+                if (fetchLockHeld)
+                    _fetchLock.Release();
             }
         }
         catch (OperationCanceledException ex) when (
@@ -1421,7 +1829,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private static bool ShouldRefreshMetadataForGroupRetry(KafkaException exception) =>
         exception.ErrorCode is not ErrorCode.StaleMemberEpoch and not ErrorCode.UnknownMemberId;
 
-    private bool HandleOffsetFetchMembershipError(ErrorCode errorCode)
+    private async ValueTask<bool> HandleOffsetFetchMembershipErrorAsync(
+        ErrorCode errorCode,
+        int membershipVersion)
     {
         switch (errorCode)
         {
@@ -1430,7 +1840,21 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 return true;
 
             case ErrorCode.UnknownMemberId:
-                ResetMemberState();
+                // Under the state lock, like the join and heartbeat fences, so it cannot clear an
+                // assignment a concurrent rejoin is publishing. The retry's recovery rejoins and
+                // reports the lost partitions before the new assignment. The coordinator has
+                // already answered, so cancellation does not discard the fence: the lock is taken
+                // without the operation token, and only the callback delivery stays cancellable.
+                await _lock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+                try
+                {
+                    FenceMembershipIfCurrent(membershipVersion, forgetMember: true);
+                }
+                finally
+                {
+                    _lock.Release();
+                }
+
                 return true;
 
             default:
@@ -1442,7 +1866,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         bool AssignmentChanged,
         IReadOnlyList<TopicPartition>? Revoked,
         IReadOnlyList<TopicPartition>? Assigned,
-        TaskCompletionSource<bool>? RevocationCommitCompletion = null);
+        TaskCompletionSource<bool>? RevocationCommitCompletion = null,
+        TaskCompletionSource<bool>? AssignmentCallbacksCompletion = null);
 
     /// <summary>
     /// Resets member identity and assignment to the pre-join state.
@@ -1450,10 +1875,45 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     private void ResetMemberState()
     {
+        using var change = BeginMembershipChange();
         _memberId = null;
         _generationId = -1;
         _state = CoordinatorState.Unjoined;
+        Volatile.Write(ref _membershipFenced, 0);
         ClearAssignment();
+    }
+
+    /// <summary>
+    /// The coordinator fenced this member: it no longer owns its partitions. Clears the
+    /// assignment, queues it for OnPartitionsLost, and fences commits until the member rejoins.
+    /// A member fenced by epoch keeps its member id and rejoins with epoch 0 (-2 for static
+    /// members); an unknown member rejoins from scratch. Matches the Java client, which treats
+    /// both errors as partitions lost.
+    /// </summary>
+    private void FenceMembership(bool forgetMember)
+    {
+        // The version is odd from before the identity changes until the fence is complete, so a
+        // commit can never pair the reset identity with the previous membership's version.
+        using var change = BeginMembershipChange();
+        Volatile.Write(ref _membershipFenced, 1);
+        if (forgetMember)
+        {
+            _memberId = null;
+            _generationId = -1;
+        }
+        else
+        {
+            _generationId = _options.GroupInstanceId is not null ? -2 : 0;
+        }
+
+        _state = CoordinatorState.Unjoined;
+        var lost = ClearAssignment();
+        if (lost is not null)
+            EnqueuePendingRebalanceCallback(new PendingRebalanceCallback
+            {
+                Lost = lost,
+                Assignment = _assignedPartitions
+            });
     }
 
     private IReadOnlyList<TopicPartition>? ClearAssignment()
@@ -1491,63 +1951,92 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             await _rebalanceListenerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             rebalanceListenerLockHeld = true;
-            await FireConsumerProtocolRebalanceListenersCoreAsync(
-                result,
-                cancellationToken).ConfigureAwait(false);
+
+            // The result's callbacks were reserved in the pending queue when it was published,
+            // behind anything queued earlier, so draining the queue delivers everything in
+            // publication order. Cancellation leaves undelivered entries queued.
+            await InvokePendingRebalanceCallbacksCoreAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-            CompleteRevocationCommit(result);
+            // The revocation commit's completion belongs to the entry: whichever drain delivers
+            // it runs the commit and completes it, so assignment sync waits for it.
+            ReleaseReservedRebalanceCallbacks();
             if (rebalanceListenerLockHeld)
                 _rebalanceListenerLock.Release();
         }
     }
 
-    private async ValueTask FireConsumerProtocolRebalanceListenersCoreAsync(
-        ConsumerHeartbeatResult result,
-        CancellationToken cancellationToken)
+    /// <summary>
+    /// Reserves the callbacks of an assignment change in the pending queue. Called under the state
+    /// lock at the moment the change is published, so a later fence always queues its loss after
+    /// it, and the entry carries the assignment it published. Allocated once per assignment
+    /// change, never per message.
+    /// </summary>
+    private void ReserveRebalanceCallbacks(ConsumerHeartbeatResult result, HashSet<TopicPartition> published)
     {
-        if (!result.AssignmentChanged)
-            return;
-
-        if (result.Revoked is { Count: > 0 } revoked)
+        if (result.Revoked is { Count: > 0 } || result.Assigned is { Count: > 0 })
         {
-            try
-            {
-                if (_onPartitionsRevokedAsync is not null)
-                    await _onPartitionsRevokedAsync(revoked, cancellationToken).ConfigureAwait(false);
-            }
-            finally
-            {
-                CompleteRevocationCommit(result);
-            }
-
-            await InvokeRebalanceListenersAsync(
-                "OnPartitionsRevoked",
-                revoked,
-                static (listener, partitions, token) => listener.OnPartitionsRevokedAsync(partitions, token),
-                static (listener, consumer, partitions, token) =>
-                    listener.OnPartitionsRevokedAsync(consumer, partitions, token),
-                [],
-                cancellationToken).ConfigureAwait(false);
+            EnqueuePendingRebalanceCallback(
+                new PendingRebalanceCallback
+                {
+                    Deferred = result,
+                    Assignment = published
+                },
+                reserved: true);
         }
-
-        if (result.Assigned is { Count: > 0 })
-            await InvokeRebalanceListenersAsync(
-                "OnPartitionsAssigned",
-                result.Assigned,
-                static (listener, partitions, token) => listener.OnPartitionsAssignedAsync(partitions, token),
-                static (listener, consumer, partitions, token) =>
-                    listener.OnPartitionsAssignedAsync(consumer, partitions, token),
-                result.Assigned,
-                cancellationToken).ConfigureAwait(false);
     }
 
-    internal Telemetry.ClientTelemetryMetricCollector? TelemetryMetricCollector { get; init; }
-    private Telemetry.StandardClientTelemetryMetrics? StandardTelemetryMetrics => TelemetryMetricCollector?.StandardMetrics;
+    private ValueTask InvokePartitionsRevokedListenersAsync(
+        IReadOnlyList<TopicPartition> revoked,
+        PendingRebalanceCallback? progress,
+        CancellationToken cancellationToken) =>
+        InvokeRebalanceListenersAsync(
+            "OnPartitionsRevoked",
+            revoked,
+            static (listener, partitions, token) => listener.OnPartitionsRevokedAsync(partitions, token),
+            static (listener, consumer, partitions, token) =>
+                listener.OnPartitionsRevokedAsync(consumer, partitions, token),
+            [],
+            progress,
+            cancellationToken);
 
-    private static void CompleteRevocationCommit(ConsumerHeartbeatResult result)
-        => result.RevocationCommitCompletion?.TrySetResult(true);
+    private ValueTask InvokePartitionsAssignedListenersAsync(
+        IReadOnlyList<TopicPartition> assigned,
+        PendingRebalanceCallback? progress,
+        CancellationToken cancellationToken) =>
+        InvokeRebalanceListenersAsync(
+            "OnPartitionsAssigned",
+            assigned,
+            static (listener, partitions, token) => listener.OnPartitionsAssignedAsync(partitions, token),
+            static (listener, consumer, partitions, token) =>
+                listener.OnPartitionsAssignedAsync(consumer, partitions, token),
+            assigned,
+            progress,
+            cancellationToken);
+
+    internal Telemetry.ClientTelemetryMetricCollector? TelemetryMetricCollector { get; init; }
+
+    /// <summary>
+    /// True when the owner (KafkaConsumer) keeps per-partition state for the assignment and
+    /// acknowledges each synchronization through <see cref="AcknowledgeAssignmentSync"/>. A fence's
+    /// commit block then lasts until that acknowledgement; otherwise a successful rejoin lifts it.
+    /// </summary>
+    internal bool SynchronizesAssignment { get; init; }
+
+    /// <summary>
+    /// The partitions revoked or lost since the owner last synchronized its assignment, without
+    /// consuming them. Used at close, when no further synchronization will run.
+    /// </summary>
+    internal HashSet<TopicPartition>? PeekPartitionsRevokedSinceLastSync()
+    {
+        if (_revokedPartitionsSinceLastSync.IsEmpty)
+            return null;
+
+        lock (_assignmentStateLock)
+            return _revokedPartitionsSinceLastSync.IsEmpty ? null : [.. _revokedPartitionsSinceLastSync];
+    }
+    private Telemetry.StandardClientTelemetryMetrics? StandardTelemetryMetrics => TelemetryMetricCollector?.StandardMetrics;
 
     private void EnsureServerSideRegexSupported(IKafkaConnection connection, string? subscribedTopicRegex)
     {
@@ -1568,15 +2057,23 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// <see cref="_coordinatorId"/> here: a heartbeat loop that fails concurrently invalidates
     /// that field, and leasing broker -1 would surface as an unknown-broker failure.
     /// </param>
+    /// <param name="sentMembershipVersion">
+    /// Steady heartbeat only: receives the membership version the request was built under, so a
+    /// fence the response reports is applied to exactly the membership that sent it.
+    /// </param>
     private async ValueTask<ConsumerHeartbeatResult> SendConsumerGroupHeartbeatAsync(
         int coordinatorId,
         bool isInitial,
         bool discardIfMembershipChanged,
+        StrongBox<int>? sentMembershipVersion,
         CancellationToken cancellationToken)
     {
         var maxPollExpirationVersion = discardIfMembershipChanged
             ? Volatile.Read(ref _maxPollExpirationVersion)
             : 0;
+        int membershipVersion;
+        string? memberIdSnapshot;
+        int memberEpochSnapshot;
         ConsumerGroupHeartbeatResponse response;
         int assignmentVersion;
         IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? ownedTopicPartitions;
@@ -1587,11 +2084,38 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             var connection = connectionLease.Connection;
 
-            if (discardIfMembershipChanged &&
-                 (_state != CoordinatorState.Stable ||
-                 Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
-                 IsCurrentPollGenerationExpired()))
-                return default;
+            if (discardIfMembershipChanged)
+            {
+                // A rejoin can replace the membership while this heartbeat discovers or leases a
+                // connection. Snapshot the member id, epoch and membership version together under
+                // the state lock, where every change to them is made, so the request and any fence
+                // it reports describe the same membership.
+                await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    if (_state != CoordinatorState.Stable ||
+                        Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
+                        IsCurrentPollGenerationExpired())
+                        return default;
+
+                    memberIdSnapshot = _memberId;
+                    memberEpochSnapshot = _generationId;
+                    membershipVersion = _membershipVersion;
+                }
+                finally
+                {
+                    _lock.Release();
+                }
+
+                sentMembershipVersion!.Value = membershipVersion;
+            }
+            else
+            {
+                // The join path holds the state lock.
+                memberIdSnapshot = _memberId;
+                memberEpochSnapshot = _generationId;
+                membershipVersion = Volatile.Read(ref _membershipVersion);
+            }
 
             if (!_metadataManager.HasApiKey(connection, ApiKey.ConsumerGroupHeartbeat))
             {
@@ -1612,16 +2136,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // Generate once when _memberId is null; subsequent heartbeats reuse the stored ID.
             // Thread-safety: _memberId is only null on the initial join path (protected by _lock)
             // or after ResetMemberState() which also transitions to Unjoined before any heartbeat loop restart.
-            if (_memberId is null && version >= 1)
-                _memberId = Guid.NewGuid().ToString();
+            if (memberIdSnapshot is null && version >= 1 && !discardIfMembershipChanged)
+                _memberId = memberIdSnapshot = Guid.NewGuid().ToString();
 
-            var memberId = _memberId ?? string.Empty;
+            var memberId = memberIdSnapshot ?? string.Empty;
 
             // MemberEpoch: 0 for initial join, -2 for static rejoin (set by fencing handler),
             // or the current epoch for steady-state heartbeats
             var memberEpoch = isInitial
-                ? (_generationId == -2 && _options.GroupInstanceId is not null ? -2 : 0)
-                : _generationId;
+                ? (memberEpochSnapshot == -2 && _options.GroupInstanceId is not null ? -2 : 0)
+                : memberEpochSnapshot;
 
             // On initial join, send empty array (owns nothing). null means "unchanged" in KIP-848
             // which is invalid when there's no previous state.
@@ -1660,18 +2184,44 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 request, version, TelemetryMetricCollector, cancellationToken).ConfigureAwait(false);
         }
 
+        // A successful join replaces the membership. The version turns odd before the response's
+        // member id and epoch are written and even again once the new assignment is published
+        // (below), so a commit that started under the previous membership is rejected, and one
+        // that starts during the publication waits for it before taking its snapshot. A join
+        // error leaves the membership as it was, and commits under it stay valid.
+        var publishingMembership = !discardIfMembershipChanged && response.ErrorCode == ErrorCode.None;
+        var membershipChange = publishingMembership ? BeginMembershipChange() : default;
+
+        // A steady heartbeat reports a fence without waiting for the locks, so stopping the loop
+        // cannot discard it: the loop applies it under the state lock, checked against the
+        // membership version this request was sent under.
+        if (discardIfMembershipChanged &&
+            response.ErrorCode is ErrorCode.FencedMemberEpoch or ErrorCode.UnknownMemberId)
+        {
+            HandleConsumerGroupHeartbeatError(response, subscribedTopicRegex);
+        }
+
         var assignmentProcessing = BeginAssignmentProcessing(response.Assignment);
 
         if (!discardIfMembershipChanged)
         {
-            using (assignmentProcessing)
+            try
             {
-                return ProcessConsumerGroupHeartbeatResponse(
-                    response,
-                    isInitial,
-                    ownedTopicPartitions,
-                    assignmentVersion,
-                    subscribedTopicRegex);
+                using (assignmentProcessing)
+                {
+                    return ProcessConsumerGroupHeartbeatResponse(
+                        response,
+                        isInitial,
+                        ownedTopicPartitions,
+                        assignmentVersion,
+                        subscribedTopicRegex);
+                }
+            }
+            finally
+            {
+                // Identity and assignment are published (or processing failed): even again.
+                if (publishingMembership)
+                    membershipChange.Dispose();
             }
         }
 
@@ -1685,13 +2235,23 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 await _rebalanceListenerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
                 rebalanceListenerLockHeld = true;
+
+                // Queued callbacks describe earlier assignments; deliver them while those are
+                // still current, before this response publishes a newer one. Cancellation here
+                // drops the response as the lock wait does, and the entries stay queued.
+                if (HasQueuedRebalanceCallbacks())
+                    await InvokePendingRebalanceCallbacksCoreAsync(cancellationToken).ConfigureAwait(false);
+
                 await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
-                    // A foreground poll can expire the member while this request is in flight.
-                    // Validate and publish under the state lock. The listener lock preserves
-                    // callback ordering after this lock is released without blocking re-entrant APIs.
+                    // A foreground poll can expire or fence the member, and a rejoin replace it,
+                    // while this request is in flight: its response then describes a membership
+                    // that is gone. Validate and publish under the state lock. The listener lock
+                    // preserves callback ordering after this lock is released without blocking
+                    // re-entrant APIs.
                     if (_state != CoordinatorState.Stable ||
+                        _membershipVersion != membershipVersion ||
                         Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
                         IsCurrentPollGenerationExpired())
                         return default;
@@ -1709,16 +2269,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 }
             }
 
-            // Assignment state and the immediate stale-fetch marker are published. User
-            // callbacks remain serialized, but no longer suppress buffered polls while awaiting.
-            await FireConsumerProtocolRebalanceListenersCoreAsync(result, cancellationToken)
-                .ConfigureAwait(false);
+            // Assignment state and the immediate stale-fetch marker are published, and the
+            // result's callbacks reserved behind anything queued earlier. User callbacks remain
+            // serialized, but no longer suppress buffered polls while awaiting.
+            await InvokePendingRebalanceCallbacksCoreAsync(cancellationToken).ConfigureAwait(false);
             if (result.AssignmentChanged)
                 StandardTelemetryMetrics?.RebalanceCompleted(rebalanceStarted);
         }
         finally
         {
-            CompleteRevocationCommit(result);
+            // The revocation commit's completion belongs to the entry: whichever drain delivers
+            // it runs the commit and completes it, so assignment sync waits for it.
+            ReleaseReservedRebalanceCallbacks();
             if (rebalanceListenerLockHeld)
                 _rebalanceListenerLock.Release();
         }
@@ -1954,6 +2516,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
+        var assignmentCallbacksCompletion = assigned is { Count: > 0 }
+            ? new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)
+            : null;
+
         NotifyRevoking(revoked);
 
         var classificationChanged = false;
@@ -1979,6 +2545,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     EnqueueRevokedPartitions(revoked);
                 if (revocationCommitCompletion is not null)
                     _pendingRevocationCommit = revocationCommitCompletion.Task;
+                if (assignmentCallbacksCompletion is not null)
+                    _pendingAssignmentCallbacks = assignmentCallbacksCompletion.Task;
             }
         }
 
@@ -1988,7 +2556,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (changed)
             LogConsumerProtocolAssignmentUpdate(assigned?.Count ?? 0, revoked?.Count ?? 0);
 
-        return new ConsumerHeartbeatResult(changed, revoked, assigned, revocationCommitCompletion);
+        var result = new ConsumerHeartbeatResult(
+            changed,
+            revoked,
+            assigned,
+            revocationCommitCompletion,
+            assignmentCallbacksCompletion);
+        if (changed)
+            ReserveRebalanceCallbacks(result, newAssignment);
+
+        return result;
     }
 
     private void NotifyRevoking(IReadOnlyList<TopicPartition>? revoked)
@@ -2005,12 +2582,30 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         string? subscribedTopicRegex,
         CancellationToken cancellationToken)
     {
+        // A rebalance listener's callback cannot join the group: the join's own callbacks would
+        // wait for the delivery the listener is running in. The consumer rejoins once the
+        // callback has returned, on its next poll.
+        if (IsInsideOwnRebalanceCallback())
+        {
+            throw new InvalidOperationException(
+                "The consumer cannot rejoin its group from inside a rebalance listener callback. " +
+                "Return from the callback; the consumer rejoins on its next poll.");
+        }
+
+        if (Volatile.Read(ref _closing) != 0)
+        {
+            throw new ObjectDisposedException(
+                nameof(ConsumerCoordinator),
+                "The consumer is closing; it does not rejoin its group.");
+        }
+
         UpdateSubscription(topics, subscribedTopicRegex);
 
         ConsumerHeartbeatResult heartbeatResult = default;
         long rebalanceStarted = -1;
         var rebalanceTimeout = TimeSpan.FromMilliseconds(_options.RebalanceTimeoutMs);
         Exception? lastJoinFailure = null;
+        var joinFailed = false;
 
         // One attempt can outlast the rebalance timeout on its own: a coordinator lookup is five
         // connection attempts, each up to the connection-setup timeout against a broker that
@@ -2018,6 +2613,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // between attempts. Armed once the join actually starts.
         using var joinDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var joinToken = joinDeadline.Token;
+
+        // Queued callbacks describe earlier assignments; deliver them while those are still
+        // current, before the join publishes a newer one (a consumer-aware listener's scope is
+        // built from the published assignment).
+        // A max-poll expiry delivering its loss keeps the join from publishing until it
+        // completes (the poll generation cannot advance), and its owner drains the queue.
+        if (Volatile.Read(ref _maxPollLossNotificationPending) == 0)
+            await InvokePendingRebalanceCallbacksAsync(cancellationToken).ConfigureAwait(false);
 
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -2081,6 +2684,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             coordinatorId,
                             isInitial: _memberId is null || _generationId <= 0,
                             discardIfMembershipChanged: false,
+                            sentMembershipVersion: null,
                             joinToken).ConfigureAwait(false);
                     }
                     catch (Exception ex) when (
@@ -2090,7 +2694,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         throw;
                     }
 
+                    // The membership version was advanced before the response was processed.
                     _state = CoordinatorState.Stable;
+                    // With a consumer that synchronizes its assignment, _membershipFenced stays
+                    // set until AcknowledgeAssignmentSync: the consumer has not yet dropped the
+                    // offsets it stored for the lost partitions. A direct user of the coordinator
+                    // keeps no such state, so the rejoin itself lifts the fence.
+                    if (!SynchronizesAssignment)
+                        Volatile.Write(ref _membershipFenced, 0);
                     if (Volatile.Read(ref _foregroundPollActivityCount) != 0)
                         RefreshPollDeadline();
 
@@ -2103,10 +2714,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 }
                 catch (Errors.GroupException ex) when (ex.ErrorCode == ErrorCode.FencedMemberEpoch)
                 {
-                    // Stale epoch — reset generation so next attempt sends MemberEpoch=0 (or -2 for static members)
+                    // Stale epoch: the partitions are lost; the next attempt sends MemberEpoch=0
+                    // (or -2 for static members) and owns nothing.
                     LogRetriableCoordinatorError(ex.ErrorCode);
-                    _generationId = _options.GroupInstanceId is not null ? -2 : 0;
-                    _state = CoordinatorState.Unjoined;
+                    FenceMembership(forgetMember: false);
                 }
                 catch (Errors.GroupException ex) when (ex.ErrorCode == ErrorCode.UnreleasedInstanceId)
                 {
@@ -2118,9 +2729,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 }
                 catch (Errors.GroupException ex) when (ex.ErrorCode == ErrorCode.UnknownMemberId)
                 {
-                    // Broker forgot this member (e.g. broker restart after fencing) — full reset and retry
+                    // Broker forgot this member (e.g. its session expired during a coordinator
+                    // outage): the partitions are lost; full reset and retry.
                     LogRetriableCoordinatorError(ex.ErrorCode);
-                    ResetMemberState();
+                    FenceMembership(forgetMember: true);
                 }
                 catch (Errors.GroupException ex) when (IsRetriableCoordinatorError(ex.ErrorCode))
                 {
@@ -2163,19 +2775,38 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             !cancellationToken.IsCancellationRequested && joinDeadline.IsCancellationRequested)
         {
             // The join deadline, not the caller, ended an attempt or a backoff still in flight.
+            joinFailed = true;
             throw CreateJoinTimeoutException(rebalanceStarted, rebalanceTimeout, lastJoinFailure);
+        }
+        catch
+        {
+            joinFailed = true;
+            throw;
         }
         finally
         {
             _lock.Release();
+
+            // A fence can precede a failed attempt; the application still learns its partitions
+            // are gone rather than waiting for the next successful join.
+            if (joinFailed)
+            {
+                await InvokePendingRebalanceCallbacksUnlessCancelledAsync(cancellationToken).ConfigureAwait(false);
+                ReleaseReservedRebalanceCallbacks();
+            }
         }
 
-        await FireConsumerProtocolRebalanceListenersAsync(heartbeatResult, cancellationToken).ConfigureAwait(false);
-        StandardTelemetryMetrics?.RebalanceCompleted(rebalanceStarted);
-
-        if (_state == CoordinatorState.Stable)
+        try
         {
-            await StartConsumerProtocolHeartbeatAsync().ConfigureAwait(false);
+            await FireConsumerProtocolRebalanceListenersAsync(heartbeatResult, cancellationToken).ConfigureAwait(false);
+            StandardTelemetryMetrics?.RebalanceCompleted(rebalanceStarted);
+        }
+        finally
+        {
+            // The join succeeded even when cancellation interrupted its callbacks (they stay
+            // queued), so the membership is kept alive either way.
+            if (_state == CoordinatorState.Stable)
+                await StartConsumerProtocolHeartbeatAsync().ConfigureAwait(false);
         }
     }
 
@@ -2205,6 +2836,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // loop re-discovers the coordinator itself and beats on the retry backoff.
         var transientFailureCount = 0;
         var heartbeatCoordinatorId = -1;
+        // The membership version each request is built under; a fence it reports applies only
+        // to that membership. Allocated once per loop.
+        var membershipVersion = new StrongBox<int>(Volatile.Read(ref _membershipVersion));
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -2248,6 +2882,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     heartbeatCoordinatorId,
                     isInitial: false,
                     discardIfMembershipChanged: true,
+                    membershipVersion,
                     cancellationToken).ConfigureAwait(false);
                 transientFailureCount = 0;
             }
@@ -2255,8 +2890,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 break;
             }
-            catch (Exception) when (cancellationToken.IsCancellationRequested)
+            catch (Exception ex) when (cancellationToken.IsCancellationRequested && !IsMembershipFence(ex))
             {
+                // A fence the coordinator already returned is still applied below.
                 break;
             }
             catch (Exception ex)
@@ -2284,19 +2920,24 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     switch (ge.ErrorCode)
                     {
                         case ErrorCode.FencedMemberEpoch:
-                            // Reset generation so next EnsureActiveGroup sends MemberEpoch=0 (or -2 for static)
-                            _generationId = _options.GroupInstanceId is not null ? -2 : 0;
-                            _state = CoordinatorState.Unjoined;
-                            break;
-
                         case ErrorCode.UnknownMemberId:
-                            var lost = _assignedPartitions.ToList();
-                            if (lost.Count > 0)
+                            // The next EnsureActiveGroup rejoins with MemberEpoch=0 (or -2 for static).
+                            if (!await TryFenceFromHeartbeatAsync(
+                                    membershipVersion.Value,
+                                    forgetMember: ge.ErrorCode == ErrorCode.UnknownMemberId).ConfigureAwait(false))
+                                return;
+
+                            try
                             {
-                                await InvokePartitionsLostAsync(lost).ConfigureAwait(false);
+                                await InvokePendingRebalanceCallbacksAsync(cancellationToken).ConfigureAwait(false);
+                            }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                            {
+                                // Stopped mid-callback; anything still queued is reported before
+                                // the next assignment.
+                                return;
                             }
 
-                            ResetMemberState();
                             break;
 
                         case ErrorCode.UnreleasedInstanceId:
@@ -2402,6 +3043,17 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             Interlocked.Increment(ref _maxPollExpirationVersion);
             Volatile.Write(ref _maxPollExpiredAtPollVersion, pollVersion);
             var lost = ClearAssignment();
+            // Queued under the state lock like a fence's loss, so it follows any callbacks
+            // already queued and is delivered by the same ordered drain.
+            if (lost is not null)
+            {
+                EnqueuePendingRebalanceCallback(new PendingRebalanceCallback
+                {
+                    Lost = lost,
+                    Assignment = _assignedPartitions
+                });
+            }
+
             Volatile.Write(ref _maxPollLossNotificationPending, 1);
             _state = CoordinatorState.Unjoined;
 
@@ -2421,7 +3073,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     {
         try
         {
-            await InvokePartitionsLostAsync(lost).ConfigureAwait(false);
+            // The loss was queued behind earlier callbacks; the ordered drain delivers them all.
+            if (lost is { Count: > 0 })
+                await InvokePendingRebalanceCallbacksAsync(CancellationToken.None).ConfigureAwait(false);
         }
         finally
         {
@@ -2429,27 +3083,218 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
     }
 
-    private async ValueTask InvokePartitionsLostAsync(IReadOnlyList<TopicPartition>? lost)
+    private ValueTask InvokePartitionsLostCoreAsync(
+        IReadOnlyList<TopicPartition> lost,
+        PendingRebalanceCallback progress,
+        CancellationToken cancellationToken) =>
+        InvokeRebalanceListenersAsync(
+            "OnPartitionsLost",
+            lost,
+            static (listener, partitions, token) => listener.OnPartitionsLostAsync(partitions, token),
+            static (listener, consumer, partitions, token) =>
+                listener.OnPartitionsLostAsync(consumer, partitions, token),
+            [],
+            progress,
+            cancellationToken);
+
+    private async ValueTask InvokePendingRebalanceCallbacksAsync(CancellationToken cancellationToken)
     {
-        if (lost is not { Count: > 0 })
+        if (!HasQueuedRebalanceCallbacks() || IsInsideOwnRebalanceCallback())
             return;
 
-        await _rebalanceListenerLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        await _rebalanceListenerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await InvokeRebalanceListenersAsync(
-                "OnPartitionsLost",
-                lost,
-                static (listener, partitions, token) => listener.OnPartitionsLostAsync(partitions, token),
-                static (listener, consumer, partitions, token) =>
-                    listener.OnPartitionsLostAsync(consumer, partitions, token),
-                [],
-                CancellationToken.None).ConfigureAwait(false);
+            await InvokePendingRebalanceCallbacksCoreAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             _rebalanceListenerLock.Release();
         }
+    }
+
+    // Caller holds _rebalanceListenerLock, so it is the only drainer. An entry leaves the queue
+    // only once every listener's callback has completed: a cancelled callback is delivered again
+    // before the next assignment rather than dropped, and listeners that already completed it are
+    // not called a second time.
+    private async ValueTask InvokePendingRebalanceCallbacksCoreAsync(CancellationToken cancellationToken)
+    {
+        if (!HasQueuedRebalanceCallbacks())
+            return;
+
+        // The value reverts when this async method returns; tasks a listener starts inherit it,
+        // so the scope is also deactivated. Allocated once per drain of a non-empty queue.
+        var scope = new DrainScope(this);
+        s_drainScope.Value = scope;
+        try
+        {
+            while (_pendingRebalanceCallbacks.TryPeek(out var pending))
+            {
+                ThrowIfCallbackDeliveryStopped(cancellationToken);
+                if (pending.Lost is { } lost)
+                {
+                    await InvokePartitionsLostCoreAsync(lost, pending, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    var deferred = pending.Deferred;
+                    if (!pending.RevokedDelivered)
+                    {
+                        if (deferred.Revoked is { Count: > 0 } revoked)
+                        {
+                            // The internal revocation commit runs once, on whichever delivery reaches
+                            // this entry first, before the public callback. Assignment sync waits for
+                            // its completion, so the revoked partitions' stored offsets are still
+                            // there to commit even when an earlier callback's cancellation delayed it.
+                            if (deferred.RevocationCommitCompletion is { } commitCompletion &&
+                                !pending.RevocationCommitStarted)
+                            {
+                                pending.RevocationCommitStarted = true;
+                                try
+                                {
+                                    if (_onPartitionsRevokedAsync is not null)
+                                        await _onPartitionsRevokedAsync(revoked, cancellationToken).ConfigureAwait(false);
+                                }
+                                catch (OperationCanceledException)
+                                {
+                                    // Cancellation interrupted the commit: the next delivery runs it
+                                    // again (the same offsets, so a commit that did reach the broker
+                                    // is simply repeated), and sync keeps waiting until then.
+                                    pending.RevocationCommitStarted = false;
+                                    throw;
+                                }
+                                catch
+                                {
+                                    // Any other failure ends the attempt; the consumer's commit hook
+                                    // logs its own failures, and retrying could repeat it forever.
+                                    commitCompletion.TrySetResult(true);
+                                    throw;
+                                }
+
+                                commitCompletion.TrySetResult(true);
+                            }
+
+                            await InvokePartitionsRevokedListenersAsync(revoked, pending, cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+
+                        pending.RevokedDelivered = true;
+                        pending.ListenersCompleted = 0;
+                    }
+
+                    if (deferred.Assigned is { Count: > 0 } assigned)
+                    {
+                        await InvokePartitionsAssignedListenersAsync(assigned, pending, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                }
+
+                // Delivered: the consumer may now synchronize this assignment.
+                pending.Deferred.AssignmentCallbacksCompletion?.TrySetResult(true);
+
+                // Count down only after the entry has left the queue.
+                _pendingRebalanceCallbacks.TryDequeue(out _);
+                if (Interlocked.Exchange(ref pending.PollVisibility, 2) == 1)
+                    Interlocked.Decrement(ref _pendingRebalanceCallbackCount);
+            }
+        }
+        finally
+        {
+            scope.Deactivate();
+        }
+    }
+
+    private bool IsInsideOwnRebalanceCallback() =>
+        s_drainScope.Value is { IsActive: true } scope && ReferenceEquals(scope.Coordinator, this);
+
+    private sealed class DrainScope(ConsumerCoordinator coordinator)
+    {
+        private int _active = 1;
+
+        public ConsumerCoordinator Coordinator { get; } = coordinator;
+
+        public bool IsActive => Volatile.Read(ref _active) != 0;
+
+        public void Deactivate() => Volatile.Write(ref _active, 0);
+    }
+
+    /// <summary>
+    /// Reports a fence that preceded a failed join or a leave. The join's or leave's own outcome
+    /// stays the caller's: once the caller cancels, anything still queued is reported before the
+    /// next assignment instead.
+    /// </summary>
+    internal async ValueTask InvokePendingRebalanceCallbacksUnlessCancelledAsync(CancellationToken cancellationToken)
+    {
+        if (!HasQueuedRebalanceCallbacks())
+            return;
+
+        // The wait is bounded by the token even when a listener ignores it (close, disposal, a
+        // failed join or a leave must not hang on one). An abandoned drain keeps its entry queued
+        // and the listener lock until the running callback returns, then stops: its token is
+        // cancelled. Its outcome is still observed.
+        var drain = InvokePendingRebalanceCallbacksAsync(cancellationToken).AsTask();
+        try
+        {
+            await drain.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            if (!drain.IsCompleted)
+            {
+                _ = drain.ContinueWith(
+                    static (task, state) =>
+                        ((ConsumerCoordinator)state!).LogAbandonedRebalanceCallbacksFailed(task.Exception!),
+                    this,
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Applies a fence observed by a request sent under membership
+    /// <paramref name="membershipVersion"/>. Caller holds <c>_lock</c>. Ignored when a foreground
+    /// poll already expired or fenced the member, or when a later join replaced it: the fence
+    /// then belongs to a membership that is already gone.
+    /// </summary>
+    private void FenceMembershipIfCurrent(int membershipVersion, bool forgetMember)
+    {
+        if (_state == CoordinatorState.Stable && _membershipVersion == membershipVersion)
+            FenceMembership(forgetMember);
+    }
+
+    private static bool IsMembershipFence(Exception exception) =>
+        exception is GroupException { ErrorCode: ErrorCode.FencedMemberEpoch or ErrorCode.UnknownMemberId };
+
+    /// <summary>
+    /// Applies a fence the heartbeat loop observed, under the state lock so it cannot interleave
+    /// with a foreground join or max-poll expiry. The coordinator has already answered, so a
+    /// heartbeat stop does not discard it: the member stays fenced, its commits rejected and its
+    /// partitions queued as lost, whatever the stop's owner does next. Nothing that holds the
+    /// state lock waits for the heartbeat loop. Returns false only when the coordinator is disposed.
+    /// </summary>
+    private async ValueTask<bool> TryFenceFromHeartbeatAsync(int membershipVersion, bool forgetMember)
+    {
+        try
+        {
+            await _lock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;
+        }
+
+        try
+        {
+            FenceMembershipIfCurrent(membershipVersion, forgetMember);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -2461,9 +3306,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         ConsumerGroupMembershipOperation operation,
         CancellationToken cancellationToken)
     {
-        await SendConsumerProtocolLeaveRequestAsync(operation, cancellationToken).ConfigureAwait(false);
-
+        // Callbacks queued for the membership that is leaving (an assignment whose
+        // OnPartitionsAssigned cancellation deferred, a loss) are delivered while it is still
+        // current, in order, as they would have been without the cancellation. The heartbeat is
+        // stopped first so it cannot publish a newer assignment behind them.
         await StopHeartbeatAsyncCore(cancellationToken).ConfigureAwait(false);
+        await InvokePendingRebalanceCallbacksUnlessCancelledAsync(cancellationToken).ConfigureAwait(false);
+
+        await SendConsumerProtocolLeaveRequestAsync(operation, cancellationToken).ConfigureAwait(false);
 
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -2474,6 +3324,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             _lock.Release();
         }
+
+        // A fence recorded while leaving is still reported.
+        await InvokePendingRebalanceCallbacksUnlessCancelledAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask SendConsumerProtocolLeaveRequestAsync(
@@ -2541,16 +3394,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (Volatile.Read(ref _disposed) != 0)
             return;
 
-        if (operation == ConsumerGroupMembershipOperation.RemainInGroup)
+        // Only leave if we're part of a group and the coordinator is known. A fence can have
+        // taken the member id; its partitions are still reported lost.
+        if (operation == ConsumerGroupMembershipOperation.RemainInGroup
+            || string.IsNullOrEmpty(_options.GroupId)
+            || string.IsNullOrEmpty(_memberId)
+            || _coordinatorId < 0)
+        {
+            await InvokePendingRebalanceCallbacksUnlessCancelledAsync(cancellationToken).ConfigureAwait(false);
             return;
-
-        // Only leave if we're part of a group
-        if (string.IsNullOrEmpty(_options.GroupId) || string.IsNullOrEmpty(_memberId))
-            return;
-
-        // If coordinator is unknown, we can't send LeaveGroup
-        if (_coordinatorId < 0)
-            return;
+        }
 
         await LeaveGroupConsumerProtocolAsync(operation, cancellationToken).ConfigureAwait(false);
     }
@@ -2601,6 +3454,37 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         await StopHeartbeatAsync().ConfigureAwait(false);
 
+        // Rebalance callbacks the heartbeat stop interrupted (a fenced member's OnPartitionsLost,
+        // say) are delivered before the locks go away. Entries leave the queue only once
+        // delivered, so after a consumer close has drained there is nothing to repeat. Bounded
+        // by the API timeout so a listener that never returns cannot hang disposal.
+        if (HasQueuedRebalanceCallbacks())
+        {
+            using var drainTimeout = new CancellationTokenSource(_options.DefaultApiTimeoutMs);
+            try
+            {
+                await InvokePendingRebalanceCallbacksUnlessCancelledAsync(drainTimeout.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // A listener gave up its callback; disposal goes on.
+            }
+        }
+
+        // A drain still running (its listener ignored the token) starts no further callback.
+        // The listener lock it holds is never disposed.
+        Volatile.Write(ref _callbackDeliveryClosed, 1);
+
+        // Backstop: nothing starts a heartbeat once _disposed is set, but stop any that did.
+        await StopHeartbeatAsync().ConfigureAwait(false);
+
+        // Revocation commits that will now never run must not hold up an assignment sync.
+        foreach (var pending in _pendingRebalanceCallbacks)
+        {
+            pending.Deferred.RevocationCommitCompletion?.TrySetResult(true);
+            pending.Deferred.AssignmentCallbacksCompletion?.TrySetResult(true);
+        }
+
         _lock.Dispose();
         _commitLock.Dispose();
         _fetchLock.Dispose();
@@ -2629,6 +3513,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Found coordinator {NodeId} for group {GroupId}")]
     private partial void LogFoundCoordinator(int nodeId, string groupId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Rebalance callbacks abandoned at a timeout failed after the wait ended")]
+    private partial void LogAbandonedRebalanceCallbacksFailed(Exception exception);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Heartbeat failed")]
     private partial void LogHeartbeatFailed(Exception exception);

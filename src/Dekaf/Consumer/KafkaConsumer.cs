@@ -2038,7 +2038,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         StageRebalanceSeek,
                         GetRebalancePosition))
             {
-                TelemetryMetricCollector = _telemetryMetricCollector
+                TelemetryMetricCollector = _telemetryMetricCollector,
+                SynchronizesAssignment = true
             };
         }
 
@@ -7297,13 +7298,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
     {
-        _ = GetCommitCoordinator();
+        // Read before staging: offsets staged under a membership that a fence and rejoin replace
+        // before the send are rejected rather than sent under the new member's identity.
+        var membershipVersion = GetCommitCoordinator().MembershipVersion;
         StageExplicitCommitOffsets();
 
         using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
         try
         {
-            await CommitStoredOffsetsAsync(partitions: null, apiTimeout.Token, retryUntilApiTimeout: true)
+            await CommitStoredOffsetsAsync(
+                    partitions: null,
+                    apiTimeout.Token,
+                    retryUntilApiTimeout: true,
+                    membershipVersion)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException ex) when (apiTimeout.DefaultTimeoutExpired)
@@ -7337,13 +7344,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private async ValueTask<bool> CommitStoredOffsetsAsync(
         TopicPartitionSet? partitions,
         CancellationToken cancellationToken,
-        bool retryUntilApiTimeout = false)
+        bool retryUntilApiTimeout = false,
+        int? membershipVersion = null)
     {
         if (_coordinator is null)
             return false;
 
         TopicPartitionOffset[]? offsetsArray = null;
         int offsetCount;
+
+        // Read before the snapshot: offsets taken under a membership that a fence and rejoin
+        // replace before the send are rejected rather than sent under the new member's identity.
+        var commitMembershipVersion = membershipVersion ?? _coordinator.MembershipVersion;
 
         {
             // Commit only offsets that changed since the last successful commit.
@@ -7374,7 +7386,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 // Create array segment to pass only the used portion
                 var offsets = new ArraySegment<TopicPartitionOffset>(offsetsArray, 0, offsetCount);
 
-                await _coordinator.CommitOffsetsAsync(offsets, retryUntilApiTimeout, cancellationToken)
+                await _coordinator.CommitOffsetsAsync(offsets, retryUntilApiTimeout, commitMembershipVersion, cancellationToken)
                     .ConfigureAwait(false);
 
                 // Update committed offsets tracking
@@ -7439,13 +7451,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         var coordinator = GetCommitCoordinator();
 
+        // Read before the offsets are enumerated: offsets produced under a membership that a
+        // fence and rejoin replace before the send are rejected rather than sent under the new
+        // member's identity.
+        var membershipVersion = coordinator.MembershipVersion;
+
         using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
         try
         {
             // Materialize to list to allow iteration for both commit tracking and interceptors
             var offsetsList = offsets as IReadOnlyList<TopicPartitionOffset> ?? offsets.ToArray();
 
-            await coordinator.CommitOffsetsAsync(offsetsList, retryUntilApiTimeout: true, apiTimeout.Token)
+            await coordinator.CommitOffsetsAsync(offsetsList, retryUntilApiTimeout: true, membershipVersion, apiTimeout.Token)
                 .ConfigureAwait(false);
 
             foreach (var offset in offsetsList)
@@ -9488,6 +9505,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Readers use the volatile _assignmentSnapshot instead of acquiring this lock.
         while (true)
         {
+            // A new assignment is synchronized only after its OnPartitionsAssigned has run, so a
+            // seek the callback stages is applied before fetching starts. Waited for before the
+            // assignment lock: the callback's seek takes that lock.
+            if (coordinator is not null)
+                await coordinator.WaitForAssignmentCallbacksAsync(cancellationToken).ConfigureAwait(false);
+
             await SemaphoreHelper.AcquireOrThrowDisposedAsync(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
             (ConsumerCoordinator Coordinator, HashSet<TopicPartition> Partitions)? unacknowledgedCoordinatorRevocations = null;
             try
@@ -9495,6 +9518,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 coordinator = _coordinator;
                 if ((!_subscription.IsEmpty || topicPattern is not null) && coordinator is not null)
                 {
+                    // A newer assignment was published after the wait above: wait for its
+                    // callbacks too before taking the snapshot.
+                    if (coordinator.HasPendingAssignmentCallbacks())
+                        continue;
+
                     BeforeCoordinatorAssignmentSnapshotForTest?.Invoke();
                     var (
                         coordinatorAssignment,
@@ -13066,18 +13094,50 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         CancellationToken cancellationToken)
     {
         LogClosingConsumer();
+        _coordinator?.BeginClose();
 
-        // Step 1: Stop heartbeat background task
+        // Step 1: Stop the prefetch task first. It runs assignment synchronization, which could
+        // otherwise rejoin a fenced member and start a new heartbeat after the steps below
+        // stopped it. Its WaitAsync is bounded like step 4's: a mid-flight FetchAsync network
+        // operation could hang for up to RequestTimeoutMs. The coordinator also refuses any
+        // join once close has begun, whichever path asks.
+        Task? prefetchTask;
+        CancellationTokenSource? prefetchCts;
+        lock (_prefetchStartLock)
+        {
+            prefetchCts = _prefetchCts;
+            prefetchTask = _prefetchTask;
+        }
+
+        prefetchCts?.Cancel();
+        if (prefetchTask is not null)
+        {
+            try
+            {
+                await prefetchTask.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Ignore — task may not exit promptly after cancellation
+            }
+        }
+
+        // Step 2: Stop heartbeat background task
         if (_coordinator is not null)
         {
             await _coordinator.StopHeartbeatAsyncCore(cancellationToken).ConfigureAwait(false);
+
+            // Rebalance callbacks the heartbeat stop interrupted (a fenced member's
+            // OnPartitionsLost, say) are delivered now, whether or not a leave is sent.
+            await _coordinator.InvokePendingRebalanceCallbacksUnlessCancelledAsync(cancellationToken)
+                .ConfigureAwait(false);
         }
 
-        // Step 2: Stop leader-refresh tasks before metadata dependencies are disposed
+        // Step 3: Stop leader-refresh tasks before metadata dependencies are disposed
         _leaderRefreshCts.Cancel();
         await WaitForLeaderRefreshTasksAsync(cancellationToken).ConfigureAwait(false);
 
-        // Step 3: Stop auto-commit task
+        // Step 4: Stop auto-commit task
         // Use WaitAsync with both a hard timeout and the caller's cancellation token so that
         // DisposeAsync's 30s CTS actually bounds this step. Without this, a mid-flight
         // CommitAsync (which waits up to RequestTimeoutMs=30s for network I/O) would cause
@@ -13104,32 +13164,27 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
         }
 
-        // Step 4: Stop prefetch task
-        // Same rationale as Step 3: a mid-flight FetchAsync network operation could hang for
-        // up to RequestTimeoutMs without the WaitAsync timeout bounding it.
-        Task? prefetchTask;
-        CancellationTokenSource? prefetchCts;
-        lock (_prefetchStartLock)
+        // Partitions the coordinator revoked or reported lost since the last assignment sync (a
+        // fence's loss the drain in step 2 delivered, say). Their stored offsets all predate that
+        // loss: records of a partition assigned again are consumed only after a sync, which
+        // resets its position. So they are dropped, as the sync would drop them, and the shutdown
+        // commit cannot send them. Only the ones the coordinator does not own again are left out
+        // of the stop notification: a partition assigned again has its resources set up by the
+        // assigned callback, and they are stopped like any other.
+        HashSet<TopicPartition>? noLongerOwned = null;
+        if (_coordinator?.PeekPartitionsRevokedSinceLastSync() is { } revokedSinceSync)
         {
-            prefetchCts = _prefetchCts;
-            prefetchTask = _prefetchTask;
-        }
+            foreach (var partition in revokedSinceSync)
+                ClearStoredOffset(partition);
 
-        prefetchCts?.Cancel();
-        if (prefetchTask is not null)
-        {
-            try
-            {
-                await prefetchTask.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                // Ignore — task may not exit promptly after cancellation
-            }
+            revokedSinceSync.ExceptWith(_coordinator.Assignment);
+            if (revokedSinceSync.Count > 0)
+                noLongerOwned = revokedSinceSync;
         }
 
         // Step 5: Notify partition-scoped resources of normal stop before final commit/leave.
-        var partitionStopCancellation = await InvokePartitionStopListenerAsync(cancellationToken).ConfigureAwait(false);
+        var partitionStopCancellation = await InvokePartitionStopListenerAsync(noLongerOwned, cancellationToken)
+            .ConfigureAwait(false);
 
         // Step 6: Commit pending offsets (if auto-commit enabled and we have a coordinator)
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null)
@@ -13215,12 +13270,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             ExceptionDispatchInfo.Capture(partitionStopCancellation).Throw();
     }
 
-    private async ValueTask<OperationCanceledException?> InvokePartitionStopListenerAsync(CancellationToken cancellationToken)
+    private async ValueTask<OperationCanceledException?> InvokePartitionStopListenerAsync(
+        HashSet<TopicPartition>? noLongerOwned,
+        CancellationToken cancellationToken)
     {
         if (_options.RebalanceListener is not IPartitionStopListener listener)
             return null;
 
-        var partitions = _assignmentSnapshot.ToArray();
+        var partitions = noLongerOwned is null
+            ? _assignmentSnapshot.ToArray()
+            : _assignmentSnapshot.Where(partition => !noLongerOwned.Contains(partition)).ToArray();
         if (partitions.Length == 0)
             return null;
 

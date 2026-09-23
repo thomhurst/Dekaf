@@ -17,7 +17,7 @@ namespace Dekaf.Tests.Unit.Consumer;
 /// Verifies the ConsumerGroupHeartbeat-based state machine, assignment handling,
 /// error recovery, leave, and static membership.
 /// </summary>
-public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
+public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 {
     [Test]
     public async Task PublicConstructor_PreservesSixParameterBinarySignature()
@@ -245,22 +245,33 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             BindingFlags.NonPublic | BindingFlags.Instance);
 
         var coordinatorId = GetPrivateField<int>(coordinator, "_coordinatorId");
-        var result = method!.Invoke(coordinator, [coordinatorId, false, true, CancellationToken.None])!;
+        var result = method!.Invoke(
+            coordinator,
+            [coordinatorId, false, true, new System.Runtime.CompilerServices.StrongBox<int>(), CancellationToken.None])!;
         var task = (Task)result.GetType().GetMethod("AsTask")!.Invoke(result, null)!;
         await task;
     }
 
+    /// <summary>
+    /// Reports <paramref name="partitions"/> lost the way the coordinator does: a fence queues
+    /// them, and the ordered drain delivers them.
+    /// </summary>
     private static ValueTask InvokePartitionsLostAsync(
         ConsumerCoordinator coordinator,
         IReadOnlyList<TopicPartition> partitions)
     {
-        var method = typeof(ConsumerCoordinator).GetMethod(
-            "InvokePartitionsLostAsync",
-            BindingFlags.NonPublic | BindingFlags.Instance)
-            ?? throw new InvalidOperationException("InvokePartitionsLostAsync method not found.");
+        SetPrivateField(coordinator, "_assignedPartitions", new HashSet<TopicPartition>(partitions));
+        typeof(ConsumerCoordinator)
+            .GetMethod("FenceMembership", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .Invoke(coordinator, [false]);
 
-        return (ValueTask)(method.Invoke(coordinator, [partitions])
-            ?? throw new InvalidOperationException("InvokePartitionsLostAsync returned null."));
+        var drain = typeof(ConsumerCoordinator).GetMethod(
+            "InvokePendingRebalanceCallbacksAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("InvokePendingRebalanceCallbacksAsync method not found.");
+
+        return (ValueTask)(drain.Invoke(coordinator, [CancellationToken.None])
+            ?? throw new InvalidOperationException("InvokePendingRebalanceCallbacksAsync returned null."));
     }
 
     private static Task InvokeConsumerProtocolHeartbeatLoopAsync(
@@ -4327,6 +4338,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await coordinator.CommitOffsetsAsync(
             [new TopicPartitionOffset("test-topic", 0, 1)],
             retryUntilApiTimeout: true,
+            coordinator.MembershipVersion,
             CancellationToken.None);
 
         await Assert.That(commitRequests).IsEqualTo(1);
@@ -4353,6 +4365,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 await coordinator.CommitOffsetsAsync(
                     [new TopicPartitionOffset("test-topic", 0, 1)],
                     retryUntilApiTimeout: true,
+                    coordinator.MembershipVersion,
                     CancellationToken.None))
             .Throws<KafkaTimeoutException>();
 

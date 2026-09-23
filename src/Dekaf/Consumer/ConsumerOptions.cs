@@ -641,6 +641,12 @@ public enum AutoOffsetReset
 /// <c>{CallbackName} rebalance listener callback threw an exception</c> message,
 /// or handle the failure inside the callback itself.
 /// </para>
+/// <para>
+/// A callback must not make the consumer rejoin its group (for example by polling after it has
+/// been fenced, or by fetching committed offsets that need a rejoin): such a call throws
+/// <see cref="InvalidOperationException"/>, because the rejoin's own callbacks would wait for
+/// the one still running. The consumer rejoins on its next poll after the callback returns.
+/// </para>
 /// </summary>
 public interface IRebalanceListener
 {
