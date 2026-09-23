@@ -939,6 +939,85 @@ public class RecordAccumulatorTests
     }
 
     /// <summary>
+    /// When an abort closes appends while a two-phase rotation holds a completed batch, the
+    /// appender fails that unpublished batch. The rotation gate must stay set until the batch's
+    /// records have failed, so a concurrent purge (and the abort waiting on it) cannot finish first.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task CloseTransactionalAppends_DuringTwoPhaseRotation_PurgeWaitsForTheSealedBatchToFail(
+        CancellationToken cancellationToken)
+    {
+        var accumulator = new RecordAccumulator(CreateTestOptions(CompressionType.Gzip));
+        var value = new byte[600];
+        using var failReached = new ManualResetEventSlim();
+        using var releaseFail = new ManualResetEventSlim();
+        Task<bool>? second = null;
+        try
+        {
+            var first = accumulator.AppendAsync(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null, CopyToPooled(value), null, 0, null, null, CancellationToken.None);
+            await Assert.That(first.IsCompletedSuccessfully).IsTrue();
+
+            accumulator.AfterTwoPhaseRotationCompletedForTest = () =>
+            {
+                accumulator.AfterTwoPhaseRotationCompletedForTest = null;
+                accumulator.CloseTransactionalAppends();
+            };
+            accumulator.BeforeFailUnpublishedCompletedBatchForTest = () =>
+            {
+                accumulator.BeforeFailUnpublishedCompletedBatchForTest = null;
+                failReached.Set();
+                releaseFail.Wait(TimeSpan.FromSeconds(10));
+            };
+
+            second = RunOnDedicatedThread(() =>
+            {
+                try
+                {
+                    return accumulator.AppendAsync(
+                        "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        PooledMemory.Null, CopyToPooled(value), null, 0, null, null, CancellationToken.None)
+                        .AsTask().GetAwaiter().GetResult();
+                }
+                catch (ProduceException)
+                {
+                    return false;
+                }
+            });
+            await WaitUntilAsync(() => failReached.IsSet, TimeSpan.FromSeconds(5));
+
+            var purgeWaitObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            accumulator.PurgeAppendWaitObservedForTest = () => purgeWaitObserved.TrySetResult();
+            var purge = RunOnDedicatedThread(() => accumulator.Purge(PurgeOptions.Queue, CreatePurgedException()));
+
+            var first2 = await Task.WhenAny(purgeWaitObserved.Task, purge).WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            await Assert.That(first2 == purgeWaitObserved.Task).IsTrue();
+            await Assert.That(purge.IsCompleted).IsFalse();
+
+            releaseFail.Set();
+            await purge.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            await Assert.That(await second.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken)).IsFalse();
+        }
+        finally
+        {
+            releaseFail.Set();
+            if (second is not null)
+                await second.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+            accumulator.ReopenTransactionalAppends();
+            await accumulator.DisposeAsync();
+        }
+
+        static PooledMemory CopyToPooled(byte[] source)
+        {
+            var buffer = ProducerDataPool.BytePool.Rent(source.Length);
+            source.CopyTo(buffer, 0);
+            return new PooledMemory(buffer, source.Length);
+        }
+    }
+
+    /// <summary>
     /// A purge fails the queued pending appends while it holds the drain guard. An append that
     /// queues after the purge emptied the queue but before it released the guard loses its drain
     /// request to the purge; the purge must honor that request once it releases the guard, or the

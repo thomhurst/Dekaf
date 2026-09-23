@@ -4143,6 +4143,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         if (_accumulator.InFlightBatchCount > 0)
         {
+            // Batches a sender holds for a resend (retries, carry-over) have no request
+            // outstanding; each sender fails them on its own loop once it sees the accumulator
+            // closed. Wake them so a sender waiting out a retry backoff does so now. The wait
+            // below then covers only requests genuinely in flight.
+            foreach (var (_, sender) in _brokerSenders)
+                sender.WakeForTransactionAbort();
+
             using var timeoutCts = CreateTransactionRetryCancellationSource(retryBudget, cancellationToken);
             try
             {

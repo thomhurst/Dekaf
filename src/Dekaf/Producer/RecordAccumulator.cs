@@ -1304,6 +1304,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal Action? BeforeAppendWorkerAppendForTest;
     internal Action? AfterTwoPhaseRotationCompletedForTest;
     internal Action? PurgePendingAppendsGuardHeldForTest;
+    internal Action? BeforeFailUnpublishedCompletedBatchForTest;
 
     /// <summary>
     /// True after CloseAsync has been called. Used by the sender loop to know
@@ -3751,6 +3752,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 var messageTooLarge = false;
                 var actualBytesAdded = 0;
                 var releaseRotationAfterPublish = false;
+                var releaseRotationAfterFail = false;
 
                 {
                     using var guard = new SpinLockGuard(ref pd.Lock);
@@ -3771,7 +3773,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         sealedBatchToEnqueue = null;
                         if (ownsRotation)
                         {
-                            ClearRotationInProgressUnderLock(pd);
+                            // A sealed batch still to be failed keeps the rotation gate until
+                            // FailUnpublishedCompletedBatch has failed its records, so a purge
+                            // (and the abort waiting on it) cannot finish ahead of them.
+                            releaseRotationAfterFail =
+                                ClearRotationUnlessPublishPendingUnderLock(pd, batchToFail);
                             ownsRotation = false;
                         }
                         disposed = true;
@@ -3882,7 +3888,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     _batchPool.Return(batchToReturn);
 
                 if (batchToFail is not null)
-                    FailUnpublishedCompletedBatch(batchToFail, CreateAppendRejectedException());
+                {
+                    try
+                    {
+                        FailUnpublishedCompletedBatch(batchToFail, CreateAppendRejectedException());
+                    }
+                    finally
+                    {
+                        if (releaseRotationAfterFail)
+                            Volatile.Write(ref pd.RotationInProgress, false);
+                    }
+                }
 
                 if (!ownsRotation && sealedBatchToEnqueue is null && sealedBatchBytesToRelease > 0)
                 {
@@ -4260,6 +4276,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 var reservedActualBytesAdded = 0;
                 var reservedFirstAwaitedProduceInBatch = false;
                 var releaseRotationAfterPublish = false;
+                var releaseRotationAfterFail = false;
 
                 {
                     using var guard = new SpinLockGuard(ref pd.Lock);
@@ -4274,7 +4291,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         sealedBatchToEnqueue = null;
                         if (ownsRotation)
                         {
-                            ClearRotationInProgressUnderLock(pd);
+                            // A sealed batch still to be failed keeps the rotation gate until
+                            // FailUnpublishedCompletedBatch has failed its records, so a purge
+                            // (and the abort waiting on it) cannot finish ahead of them.
+                            releaseRotationAfterFail =
+                                ClearRotationUnlessPublishPendingUnderLock(pd, batchToFail);
                             ownsRotation = false;
                         }
                         disposed = true;
@@ -4357,7 +4378,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     _batchPool.Return(batchToReturn);
 
                 if (batchToFail is not null)
-                    FailUnpublishedCompletedBatch(batchToFail, CreateAppendRejectedException());
+                {
+                    try
+                    {
+                        FailUnpublishedCompletedBatch(batchToFail, CreateAppendRejectedException());
+                    }
+                    finally
+                    {
+                        if (releaseRotationAfterFail)
+                            Volatile.Write(ref pd.RotationInProgress, false);
+                    }
+                }
 
                 ReleaseDetachedBatchBytesIfSafe();
 
@@ -5371,6 +5402,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void FailUnpublishedCompletedBatch(ReadyBatch batch, Exception exception)
     {
+        BeforeFailUnpublishedCompletedBatchForTest?.Invoke();
         batch.ClearUnstartedPreSerializationTask();
         ReleaseUntrackedBudget(batch);
         FailBatchAndCleanup(
@@ -7346,6 +7378,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     internal void AdvanceTransactionalAppendGeneration() =>
         Interlocked.Increment(ref _transactionalAppendGeneration);
+
+    /// <summary>True while a transaction abort has the accumulator closed to appends.</summary>
+    internal bool TransactionalAppendsClosed => Volatile.Read(ref _transactionalAppendsClosed) != 0;
 
     /// <summary>Ends <see cref="CloseTransactionalAppends"/>.</summary>
     internal void ReopenTransactionalAppends() => Volatile.Write(ref _transactionalAppendsClosed, 0);

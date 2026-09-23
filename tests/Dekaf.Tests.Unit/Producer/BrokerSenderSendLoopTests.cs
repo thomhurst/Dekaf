@@ -1774,6 +1774,71 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     }
 
     /// <summary>
+    /// A transactional batch waiting in carry-over for a resend (here after a retriable error with
+    /// a long backoff) has no request outstanding. When a transaction abort closes the accumulator
+    /// and wakes the sender, the send loop fails it with TransactionAborted instead of resending
+    /// it until the delivery timeout while the abort waits for it.
+    /// </summary>
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionAbortWhileABatchWaitsInCarryOver_FailsItWithoutResending(
+        CancellationToken cancellationToken)
+    {
+        var response = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>([response]);
+        var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responses, () =>
+        {
+            Interlocked.Increment(ref sendCount);
+            sent.TrySetResult();
+        });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(
+            retryBackoffMs: 60_000,
+            retryBackoffMaxMs: 60_000,
+            transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) => acknowledged.TrySetResult(exception),
+            produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
+            isTransactional: true,
+            usesTransactionV2: true);
+
+        try
+        {
+            var batch = CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0);
+            sender.Enqueue(batch);
+            await sent.Task.WaitAsync(cancellationToken);
+            response.SetResult(CreateErrorResponse("test-topic", partition: 0, ErrorCode.NotEnoughReplicas));
+            await WaitUntilAsync(() => batch.IsRetry, cancellationToken);
+
+            accumulator.CloseTransactionalAppends();
+            typeof(BrokerSender).GetMethod(
+                    "WakeForTransactionAbort",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                ?.Invoke(sender, null);
+
+            var exception = await acknowledged.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            await Assert.That(exception).IsTypeOf<ProduceException>();
+            await Assert.That(((ProduceException)exception!).Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(1);
+        }
+        finally
+        {
+            accumulator.ReopenTransactionalAppends();
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
     /// Any other non-retriable produce error keeps its own exception for the caller, but the
     /// failed records are not part of the transaction, so it must not commit: the producer's
     /// transaction state is told about the failure too.
