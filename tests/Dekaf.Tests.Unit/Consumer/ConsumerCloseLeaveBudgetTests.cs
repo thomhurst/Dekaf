@@ -163,6 +163,38 @@ public sealed class ConsumerCloseLeaveBudgetTests
 
     [Test]
     [Timeout(30_000)]
+    public async Task CloseAsync_CancelledWhileDeliveringAQueuedCallback_WithoutMemberId_TakesNoLeaveGrace(
+        CancellationToken cancellationToken)
+    {
+        // A fenced member lost its member id, so no leave can be sent, and its lost callback is
+        // queued. Its listener runs until its token is cancelled, and close is cancelled while
+        // step 2 delivers it.
+        using var closeCancellation = new CancellationTokenSource();
+        var harness = new Harness(defaultApiTimeoutMs: 60_000);
+        await using var consumer = harness.CreateConsumer();
+        var coordinator = Harness.KnowCoordinator(consumer);
+        var listener = new BlockingLostListener();
+        using var registration = coordinator.RegisterRuntimeRebalanceListener(listener);
+        Harness.QueueLostCallback(coordinator, new TopicPartition(Topic, 0));
+
+        var stopwatch = Stopwatch.StartNew();
+        var close = consumer.CloseAsync(closeCancellation.Token).AsTask();
+        await listener.FirstCallStarted.WaitAsync(cancellationToken);
+        await closeCancellation.CancelAsync();
+
+        await Assert.That(async () => await close).Throws<OperationCanceledException>();
+        stopwatch.Stop();
+
+        // The leave's grace is kept for sending a leave. With none to send, the callback is not
+        // delivered again under it, which would hold close up to the whole grace after it was
+        // cancelled; it stays queued for disposal.
+        await Assert.That(harness.LeaveEpochs).IsEmpty();
+        await Assert.That(listener.Calls).IsEqualTo(1);
+        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(4));
+    }
+
+    [Test]
+    [Timeout(30_000)]
     public async Task CloseAsync_CancelledWhileWaitingForLeaderRefresh_StillSendsLeave(
         CancellationToken cancellationToken)
     {

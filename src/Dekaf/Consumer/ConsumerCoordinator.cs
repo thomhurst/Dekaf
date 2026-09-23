@@ -3305,18 +3305,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private async ValueTask LeaveGroupConsumerProtocolAsync(
         ConsumerGroupMembershipOperation operation,
         CancellationToken cancellationToken,
-        CancellationToken responseCancellationToken)
+        CancellationToken responseCancellationToken,
+        CancellationToken callbackCancellationToken)
     {
         // Callbacks queued for the membership that is leaving (an assignment whose
         // OnPartitionsAssigned cancellation deferred, a loss) are delivered while it is still
         // current, in order, as they would have been without the cancellation. The heartbeat is
-        // stopped first so it cannot publish a newer assignment behind them. A close's leave
-        // (responseCancellationToken set) delivers callbacks only until close is cancelled: after
-        // that, what is left of cancellationToken is the grace for getting the leave onto the
-        // wire, and a callback delivered again would use it up. They stay queued for disposal.
-        var callbackCancellationToken = responseCancellationToken.CanBeCanceled
-            ? responseCancellationToken
-            : cancellationToken;
+        // stopped first so it cannot publish a newer assignment behind them.
         await StopHeartbeatAsyncCore(cancellationToken).ConfigureAwait(false);
         await InvokePendingRebalanceCallbacksUnlessCancelledAsync(callbackCancellationToken).ConfigureAwait(false);
 
@@ -3444,6 +3439,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (Volatile.Read(ref _disposed) != 0)
             return;
 
+        // A close's leave (responseCancellationToken set) delivers queued rebalance callbacks
+        // only until close is cancelled: after that, what is left of cancellationToken is the
+        // grace for getting the leave onto the wire, and a callback delivered again would use it
+        // up (or, when no leave can be sent, only delay close). They stay queued for disposal.
+        var callbackCancellationToken = responseCancellationToken.CanBeCanceled
+            ? responseCancellationToken
+            : cancellationToken;
+
         // Only leave if we're part of a group and the coordinator is known. A fence can have
         // taken the member id; its partitions are still reported lost.
         if (operation == ConsumerGroupMembershipOperation.RemainInGroup
@@ -3451,11 +3454,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             || string.IsNullOrEmpty(_memberId)
             || _coordinatorId < 0)
         {
-            await InvokePendingRebalanceCallbacksUnlessCancelledAsync(cancellationToken).ConfigureAwait(false);
+            await InvokePendingRebalanceCallbacksUnlessCancelledAsync(callbackCancellationToken).ConfigureAwait(false);
             return;
         }
 
-        await LeaveGroupConsumerProtocolAsync(operation, cancellationToken, responseCancellationToken)
+        await LeaveGroupConsumerProtocolAsync(
+                operation,
+                cancellationToken,
+                responseCancellationToken,
+                callbackCancellationToken)
             .ConfigureAwait(false);
     }
 
