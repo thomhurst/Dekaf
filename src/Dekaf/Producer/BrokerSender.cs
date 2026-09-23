@@ -1981,7 +1981,21 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                             var delayMs = Math.Min(throttleDelayMs, nextDeadlineMs);
                             if (delayMs > 0)
-                                await _delayForThrottle(delayMs, cancellationToken).ConfigureAwait(false);
+                            {
+                                // A transactional sender waits out the throttle on the response
+                                // signal, so a transaction abort (WakeForTransactionAbort) can cut
+                                // it short and fail the carry-over; a spurious early wake only
+                                // recomputes the remaining throttle on the next pass.
+                                if (_options.TransactionalId is not null)
+                                {
+                                    await WaitForAnyResponseAsync(delayMs, cancellationToken)
+                                        .ConfigureAwait(false);
+                                }
+                                else
+                                {
+                                    await _delayForThrottle(delayMs, cancellationToken).ConfigureAwait(false);
+                                }
+                            }
                             continue;
                         }
                     }
@@ -5905,10 +5919,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     /// <summary>
     /// Wakes the send loop so it observes a transaction abort that has closed the accumulator
-    /// (see <see cref="FailCarryOverForTransactionAbort"/>) even while it waits out a retry
-    /// backoff. Thread-safe: only writes a signal to the loop's event channel.
+    /// (see <see cref="FailCarryOverForTransactionAbort"/>), whichever wait it is in: the event
+    /// channel (idle or pipelining), the response signal (waiting on outstanding requests or a
+    /// retry backoff), or a broker throttle delay, which a transactional sender waits out on the
+    /// same response signal. Thread-safe: it only writes a channel event and sets the signal;
+    /// the loop itself fails the batches. Abort path only.
     /// </summary>
-    internal void WakeForTransactionAbort() => _eventChannel.Writer.TryWrite(SendLoopEvent.ResponseReady());
+    internal void WakeForTransactionAbort()
+    {
+        _eventChannel.Writer.TryWrite(SendLoopEvent.ResponseReady());
+        _anyResponseCompleted.Signal();
+    }
 
     /// <summary>
     /// Sweeps carry-over for batches that have exceeded their delivery deadline.

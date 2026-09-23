@@ -1847,6 +1847,86 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     }
 
     /// <summary>
+    /// While another request is outstanding, the send loop waits on the response signal rather
+    /// than its event channel. The abort's wake must interrupt that wait too, so a batch waiting
+    /// in carry-over is failed promptly instead of when the unrelated response or its timeout
+    /// arrives.
+    /// </summary>
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionAbortWhileWaitingOnAnotherResponse_FailsCarryOverPromptly(
+        CancellationToken cancellationToken)
+    {
+        var firstResponse = new TaskCompletionSource<ProduceResponse>();
+        var secondResponse = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>([firstResponse, secondResponse]);
+        var sendCount = 0;
+        var firstSent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondSent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (pool, _) = CreateMockConnection(responses, () =>
+        {
+            if (Interlocked.Increment(ref sendCount) == 1)
+                firstSent.TrySetResult();
+            else
+                secondSent.TrySetResult();
+        });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(
+            retryBackoffMs: 60_000,
+            retryBackoffMaxMs: 60_000,
+            transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var partitionZeroAcknowledged = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (topicPartition, _, _, _, exception) =>
+            {
+                if (topicPartition.Partition == 0)
+                    partitionZeroAcknowledged.TrySetResult(exception);
+            },
+            produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
+            isTransactional: true,
+            usesTransactionV2: true);
+
+        try
+        {
+            var retried = CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0);
+            sender.Enqueue(retried);
+            await firstSent.Task.WaitAsync(cancellationToken);
+            firstResponse.SetResult(CreateErrorResponse("test-topic", partition: 0, ErrorCode.NotEnoughReplicas));
+            await WaitUntilAsync(() => retried.IsRetry, cancellationToken);
+
+            // Another request goes out and stays unanswered: the loop now waits on responses.
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 1));
+            await secondSent.Task.WaitAsync(cancellationToken);
+            // Let the loop settle into its response wait (bounded by the 30 s request timeout).
+            // With the fix the outcome does not depend on this: a loop that has not started
+            // waiting yet sees the closed accumulator on its next pass anyway.
+            await Task.Delay(500, cancellationToken);
+
+            accumulator.CloseTransactionalAppends();
+            sender.WakeForTransactionAbort();
+
+            var exception = await partitionZeroAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            await Assert.That(exception).IsTypeOf<ProduceException>();
+            await Assert.That(((ProduceException)exception!).Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(2);
+        }
+        finally
+        {
+            secondResponse.TrySetResult(CreateSuccessResponse("test-topic", partition: 1, baseOffset: 1));
+            accumulator.ReopenTransactionalAppends();
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
     /// A transactional batch waiting in carry-over for a resend (here after a retriable error with
     /// a long backoff) has no request outstanding. When a transaction abort closes the accumulator
     /// and wakes the sender, the send loop fails it with TransactionAborted instead of resending
