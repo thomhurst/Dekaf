@@ -465,6 +465,52 @@ internal sealed class PartitionInflightTracker : IDisposable
     }
 
     /// <summary>
+    /// True when the partition has an in-flight batch whose base sequence comes before
+    /// <paramref name="baseSequence"/>, or any in-flight batch at all when
+    /// <paramref name="baseSequence"/> is negative (a batch that was never sent). The tracker is
+    /// shared by every send loop, so this sees batches another loop sent, or has rerouted after a
+    /// leader move. Walks the partition's list under its lock: sequence-restart recovery only.
+    /// </summary>
+    public bool HasInflightBefore(TopicPartition topicPartition, int baseSequence)
+    {
+        if (!_partitions.TryGetValue(topicPartition, out var state))
+            return false;
+
+        var lockTaken = false;
+        try
+        {
+            state.Lock.Enter(ref lockTaken);
+            for (var entry = state.Head; entry is not null; entry = entry.Next)
+            {
+                if (baseSequence < 0 || !RecordAccumulator.IsSequenceAtOrAfter(entry.BaseSequence, baseSequence))
+                    return true;
+            }
+
+            return false;
+        }
+        finally
+        {
+            if (lockTaken) state.Lock.Exit();
+        }
+    }
+
+    /// <summary>
+    /// True when any partition with an in-flight batch satisfies <paramref name="predicate"/>.
+    /// Enumerates every tracked partition: sequence-restart recovery only, never steady state.
+    /// </summary>
+    public bool AnyInflightPartition<TArg>(Func<TopicPartition, TArg, bool> predicate, TArg arg)
+    {
+        foreach (var kvp in _partitions)
+        {
+            // Count is written under the partition lock; the lock release publishes it.
+            if (Volatile.Read(ref kvp.Value.Count) > 0 && predicate(kvp.Key, arg))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Gets the number of in-flight batches for a partition. Diagnostic/testing only.
     /// </summary>
     public int GetInflightCount(TopicPartition topicPartition)

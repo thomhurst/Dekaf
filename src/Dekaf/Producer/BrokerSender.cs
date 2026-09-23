@@ -817,12 +817,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // once per iteration (step 4c). Null for producers without epoch recovery.
     private ProducerIdAndEpoch? _iterationProducerState;
 
-    // Set when the snapshot changes and cleared once no pending request carries a batch stamped
-    // under another state. While set, _partitionsPendingUnderPreviousState is rebuilt each
-    // iteration and CoalesceBatch holds those partitions until their old-state batches are
-    // answered (Java's shouldStopDrainBatchesForPartition) so they can restart at sequence 0.
+    // Set when the snapshot changes and cleared once no batch stamped under another state is
+    // unresolved (pending here, queued here for a kept-stamp retry, or in flight in any loop on a
+    // partition that has not restarted). While set, _partitionsPendingUnderPreviousState is
+    // rebuilt each iteration and CoalesceBatch holds those partitions until their old-state
+    // batches are answered (Java's shouldStopDrainBatchesForPartition) so they can restart at sequence 0.
     private bool _sequenceRestartHoldArmed;
     private readonly HashSet<TopicPartition> _partitionsPendingUnderPreviousState = new();
+
+    // Set while armed when some partition that has not restarted under this iteration's state
+    // still has a batch in flight in the shared tracker, which may belong to another send loop
+    // (#3385): after a leader move the old-state batch is pending on, or being rerouted from,
+    // the previous leader's loop, where _partitionsPendingUnderPreviousState cannot see it.
+    private bool _previousStateBatchInflight;
 
     // Partitions whose oldest retry went back to carry-over in this coalescing pass (backoff, or
     // held for a sequence restart), with the time before which that retry will not be sent (0 when
@@ -3120,9 +3127,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Reads the producer state this iteration works under. When it changed, or while a batch
     /// stamped under a previous state is unresolved (its request still pending, or queued for a
     /// retry under that stamp), rebuilds the set of partitions such batches belong to so
-    /// <see cref="CoalesceBatch"/> can hold the batch that would restart the partition. Steady
-    /// state costs one delegate call and one reference compare per iteration; the pending and
-    /// carry-over scans run only from a bump until the old-state batches are resolved.
+    /// <see cref="CoalesceBatch"/> can hold the batch that would restart the partition, and checks
+    /// the shared inflight tracker for such batches of other send loops. Steady state costs one
+    /// delegate call and one reference compare per iteration; the pending, carry-over and tracker
+    /// scans run only from a bump until the old-state batches are resolved.
     /// </summary>
     private void RefreshIterationProducerState(PartitionCarryOver carryOver)
     {
@@ -3138,14 +3146,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         _partitionsPendingUnderPreviousState.Clear();
         var retryKeepsPreviousStamp = false;
+        _previousStateBatchInflight = false;
         if (state.Epoch >= 0)
         {
             CollectPartitionsPendingUnderOtherState(state, _partitionsPendingUnderPreviousState);
             retryKeepsPreviousStamp = CollectPartitionsQueuedUnderOtherState(
                 state, carryOver, _partitionsPendingUnderPreviousState);
+            _previousStateBatchInflight = _inflightTracker.AnyInflightPartition(
+                static (topicPartition, arg) => arg.Accumulator.HasStaleSequenceState(topicPartition, arg.State),
+                (Accumulator: _accumulator, State: state));
         }
 
-        _sequenceRestartHoldArmed = retryKeepsPreviousStamp || _partitionsPendingUnderPreviousState.Count > 0;
+        _sequenceRestartHoldArmed = retryKeepsPreviousStamp
+            || _partitionsPendingUnderPreviousState.Count > 0
+            || _previousStateBatchInflight;
     }
 
     /// <summary>
@@ -3245,13 +3259,36 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Sending now would put sequence 0 of the new epoch ahead of an old-epoch batch that may yet
     /// be retried, and reorder the partition. A retry that keeps its previous stamp restarts
     /// nothing and is never held (it is what the partition is waiting for). One bool in steady state.
+    /// <para/>
+    /// The unresolved batch may belong to another send loop (#3385): when the partition's leader
+    /// moves during a bump, the old-state batch is still pending on the previous leader's loop,
+    /// or on its way here as a reroute, while this loop already has the partition's next batch.
+    /// Sent now, that batch would restart the partition at sequence 0, and the rerouted batch,
+    /// which the broker may already hold, would then be re-stamped and appended a second time.
+    /// The shared inflight tracker covers that case: its entries are the batches sent and not yet
+    /// answered, rejected or re-stamped, whichever loop sent them.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool ShouldHoldForSequenceRestart(ReadyBatch batch)
-        => _sequenceRestartHoldArmed
-            && _partitionsPendingUnderPreviousState.Contains(batch.TopicPartition)
-            && _accumulator.HasStaleSequenceState(batch.TopicPartition, _iterationProducerState!)
-            && !KeepsPreviousStateStamp(batch, _iterationProducerState!);
+        => _sequenceRestartHoldArmed && ShouldHoldForSequenceRestartArmed(batch);
+
+    private bool ShouldHoldForSequenceRestartArmed(ReadyBatch batch)
+    {
+        var topicPartition = batch.TopicPartition;
+        var pendingHere = _partitionsPendingUnderPreviousState.Contains(topicPartition);
+        if (!pendingHere && !_previousStateBatchInflight)
+            return false;
+
+        var state = _iterationProducerState!;
+        if (!_accumulator.HasStaleSequenceState(topicPartition, state) || KeepsPreviousStateStamp(batch, state))
+            return false;
+
+        // Only a batch ahead of this one in the partition holds it: a batch that was sent and then
+        // definitively rejected (its own entry completed) restarts the partition ahead of any
+        // unanswered successors, exactly as for this loop's own queued retries.
+        return pendingHere
+            || _inflightTracker.HasInflightBefore(topicPartition, batch.RecordBatch.BaseSequence);
+    }
 
     private void HoldForSequenceRestart(
         BatchReference batchRef,

@@ -277,13 +277,15 @@ public abstract class ScriptedProduceResponseFixture
         Func<short, CancellationToken, ValueTask<ProducerIdAndEpoch>>? bumpEpoch = null,
         Func<ProducerIdAndEpoch>? getProducerState = null,
         Action<TopicPartition>? onSequenceRestartHeld = null,
-        Microsoft.Extensions.Logging.ILogger? logger = null) =>
+        Microsoft.Extensions.Logging.ILogger? logger = null,
+        int brokerId = 1,
+        PartitionInflightTracker? inflightTracker = null) =>
         new(
-            brokerId: 1, pool,
+            brokerId: brokerId, pool,
             metadataManager ?? new MetadataManager(pool, options.BootstrapServers),
             accumulator, options,
             new CompressionCodecRegistry(),
-            inflightTracker: new PartitionInflightTracker(),
+            inflightTracker: inflightTracker ?? new PartitionInflightTracker(),
             getProduceApiVersion: () => produceApiVersion,
             setProduceApiVersion: _ => { },
             isTransactional: () => isTransactional,

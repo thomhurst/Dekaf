@@ -1,4 +1,5 @@
 using System.Reflection;
+using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
 using Dekaf.Protocol;
@@ -552,6 +553,113 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
     }
 
     [Test]
+    public async Task LeaderMoveDuringBump_NewLeaderHoldsRestart_UntilReroutedOldEpochBatchIsAnswered(CancellationToken cancellationToken)
+    {
+        // Regression for #3385. Partition 1's epoch 5 request is pending on broker 1 when a
+        // partition 0 rejection bumps the epoch to 6 and partition 1's leader moves to broker 2.
+        // Broker 2's send loop has nothing of partition 1 pending, so its own hold did not apply:
+        // it sent the partition's next batch as (epoch 6, sequence 0). The epoch 5 response is
+        // then lost, the retry is rerouted to broker 2, and, the partition having restarted, was
+        // re-stamped (epoch 6, sequence 2): a broker that had appended the first send appended
+        // the records a second time. Broker 2 must hold the restart until the rerouted batch,
+        // sent under its original stamp, is answered.
+        var partition0Rejected = NewResponseSource();
+        var partition1Lost = NewResponseSource();
+        var partition0Retried = NewResponseSource();
+        var (poolA, connectionA) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>(
+            [partition0Rejected, partition1Lost, partition0Retried]));
+        connectionA.CaptureProduceRequests = true;
+        var partition1Retried = NewResponseSource();
+        var partition1Fresh = NewResponseSource();
+        var (poolB, connectionB) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>(
+            [partition1Retried, partition1Fresh]));
+        connectionB.CaptureProduceRequests = true;
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(maxInFlightRequestsPerConnection: 3);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var state = new ProducerStateHolder(new ProducerIdAndEpoch(1234, 5));
+        accumulator.PublishProducerState(state.Value);
+        var bumpRequests = new List<short>();
+        // Shared by both loops, as KafkaProducer shares its metadata and inflight tracker.
+        await using var metadataManager = new MetadataManager(poolA, options.BootstrapServers);
+        using var inflightTracker = new PartitionInflightTracker();
+        var heldOnB = new TaskCompletionSource<TopicPartition>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var senderB = CreateSender(
+            poolB, options, accumulator, (_, _, _, _, _) => { },
+            metadataManager,
+            bumpEpoch: LocalBump(accumulator, bumpRequests, state),
+            getProducerState: () => state.Read(),
+            onSequenceRestartHeld: topicPartition => heldOnB.TrySetResult(topicPartition),
+            brokerId: 2,
+            inflightTracker: inflightTracker);
+        var senderA = CreateSender(
+            poolA, options, accumulator, (_, _, _, _, _) => { },
+            metadataManager,
+            rerouteBatch: senderB.Enqueue,
+            bumpEpoch: LocalBump(accumulator, bumpRequests, state),
+            getProducerState: () => state.Read(),
+            brokerId: 1,
+            inflightTracker: inflightTracker);
+
+        try
+        {
+            // Broker 1 leads both partitions: partition 0, then partition 1, on the wire under epoch 5.
+            metadataManager.Metadata.Update(CreateLeaderMetadata(partition1Leader: 1));
+            var (batch0, delivery0) = CreateTrackedBatch(valueTaskSourcePool, Partition0, producerId: 1234, producerEpoch: 5);
+            senderA.Enqueue(batch0);
+            await WaitForSendsAsync(connectionA, 1, cancellationToken);
+            var (batch1, delivery1) = CreateTrackedBatch(valueTaskSourcePool, Partition1, producerId: 1234, producerEpoch: 5, recordCount: 2);
+            senderA.Enqueue(batch1);
+            await WaitForSendsAsync(connectionA, 2, cancellationToken);
+
+            // Partition 0 triggers the bump to epoch 6; its retry is answered.
+            partition0Rejected.SetResult(CreateErrorResponse(Topic, 0, ErrorCode.OutOfOrderSequenceNumber));
+            await WaitForSendsAsync(connectionA, 3, cancellationToken);
+            partition0Retried.SetResult(CreateSuccessResponse(Topic, 0, baseOffset: 0));
+            await delivery0.WaitAsync(cancellationToken);
+
+            // Partition 1 moves to broker 2, which gets the partition's next batch while the
+            // epoch 5 request is still unanswered on broker 1.
+            metadataManager.Metadata.Update(CreateLeaderMetadata(partition1Leader: 2));
+            var (batch1Fresh, delivery1Fresh) = CreateTrackedBatch(valueTaskSourcePool, Partition1, producerId: 1234, producerEpoch: 6, recordCount: 3);
+            senderB.Enqueue(batch1Fresh);
+            await Assert.That(await heldOnB.Task.WaitAsync(cancellationToken)).IsEqualTo(Partition1);
+            await Assert.That(connectionB.CapturedProduceRequestCount).IsEqualTo(0);
+
+            // The epoch 5 response is lost. Broker 1 reroutes the retry to broker 2, which sends
+            // it under its original stamp, where the broker deduplicates it.
+            partition1Lost.SetException(new IOException("connection reset"));
+            await WaitForSendsAsync(connectionB, 1, cancellationToken);
+            await Assert.That(StampsOf(connectionB, request: 0)).IsEquivalentTo([(1, 2, 1234L, (short)5, 0)]);
+
+            // Only once it is answered does the partition restart at 0 under epoch 6.
+            partition1Retried.SetResult(CreateSuccessResponse(Topic, 1, baseOffset: 0));
+            await delivery1.WaitAsync(cancellationToken);
+            await WaitForSendsAsync(connectionB, 2, cancellationToken);
+            await Assert.That(StampsOf(connectionB, request: 1)).IsEquivalentTo([(1, 3, 1234L, (short)6, 0)]);
+            partition1Fresh.SetResult(CreateSuccessResponse(Topic, 1, baseOffset: 2));
+            await delivery1Fresh.WaitAsync(cancellationToken);
+
+            short[] observedBumpRequests;
+            lock (bumpRequests)
+                observedBumpRequests = bumpRequests.ToArray();
+            await Assert.That(observedBumpRequests).IsEquivalentTo([(short)5]);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Assert.Fail($"A wait was cancelled before the send loops got there. Broker 1:{Environment.NewLine}{DescribeRequests(connectionA)}{Environment.NewLine}Broker 2:{Environment.NewLine}{DescribeRequests(connectionB)}");
+        }
+        finally
+        {
+            await senderA.DisposeAsync();
+            await senderB.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task UnaffectedPartition_WithRequestPendingUnderOldProducerId_IsHeldUntilItIsAnswered(CancellationToken cancellationToken)
     {
         // The producer ID reset is the same transition as a bump: a partition with a request still
@@ -967,6 +1075,45 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         public Task WaitForCapacityWaitsAsync(int count, CancellationToken cancellationToken)
             => WaitUntilAsync(() => Volatile.Read(ref _capacityWaits) >= count, cancellationToken);
     }
+
+    /// <summary>Broker 1 leads partition 0; <paramref name="partition1Leader"/> leads partition 1.</summary>
+    private static MetadataResponse CreateLeaderMetadata(int partition1Leader) => new()
+    {
+        Brokers =
+        [
+            new BrokerMetadata { NodeId = 1, Host = "broker-1", Port = 9093 },
+            new BrokerMetadata { NodeId = 2, Host = "broker-2", Port = 9094 }
+        ],
+        Topics =
+        [
+            new TopicMetadata
+            {
+                ErrorCode = ErrorCode.None,
+                Name = Topic,
+                Partitions =
+                [
+                    new PartitionMetadata
+                    {
+                        ErrorCode = ErrorCode.None,
+                        PartitionIndex = 0,
+                        LeaderId = 1,
+                        LeaderEpoch = 1,
+                        ReplicaNodes = [1],
+                        IsrNodes = [1]
+                    },
+                    new PartitionMetadata
+                    {
+                        ErrorCode = ErrorCode.None,
+                        PartitionIndex = 1,
+                        LeaderId = partition1Leader,
+                        LeaderEpoch = partition1Leader,
+                        ReplicaNodes = [partition1Leader],
+                        IsrNodes = [partition1Leader]
+                    }
+                ]
+            }
+        ]
+    };
 
     private static ProduceResponse CreateErrorResponse(string topic, int partition, ErrorCode errorCode) =>
         new()
