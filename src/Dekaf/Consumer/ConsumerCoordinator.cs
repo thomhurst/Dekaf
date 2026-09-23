@@ -3393,6 +3393,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             }
             else
             {
+                // Only the pool's KafkaConnection can split the write and response tokens. Any
+                // other IKafkaConnection (today only test doubles) bounds the whole send, write
+                // included, by cancellationToken.
                 response = await connection.SendWithClientTelemetryAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
                     request, version, TelemetryMetricCollector, cancellationToken).ConfigureAwait(false);
             }
