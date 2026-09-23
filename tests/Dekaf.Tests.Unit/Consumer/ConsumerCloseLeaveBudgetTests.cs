@@ -25,6 +25,22 @@ public sealed class ConsumerCloseLeaveBudgetTests
 {
     private const string Topic = "topic-a";
 
+    // A close budget for the tests that check a slow commit keeps it all when no leave is sent.
+    // A leave's reserve would be half of it, so a commit shortened for a leave is cancelled
+    // 2.5 s after close starts. The slow commit takes 3 s from its own start, which is later
+    // than that on any machine, and still leaves 2 s of the budget for the rest of close on a
+    // loaded runner. A late timer can only let the test pass, never fail it.
+    private const int SlowCommitCloseBudgetMs = 5_000;
+    private const int SlowCommitMs = 3_000;
+
+    private static async ValueTask<OffsetCommitResponse> SlowCommitAsync(
+        OffsetCommitRequest request,
+        CancellationToken cancellationToken)
+    {
+        await Task.Delay(SlowCommitMs, cancellationToken);
+        return CreateCommitResponse(request, ErrorCode.None);
+    }
+
     [Test]
     public async Task CloseAsync_BlackHoledCommit_StillSendsLeaveWithinTheCloseBudget()
     {
@@ -90,12 +106,8 @@ public sealed class ConsumerCloseLeaveBudgetTests
     public async Task CloseAsync_RemainInGroup_CommitIsNotShortenedForALeave()
     {
         // Without a leave to reserve time for, a slow commit may use the whole budget.
-        var harness = new Harness(defaultApiTimeoutMs: 2_000);
-        harness.OnOffsetCommit = static async (request, token) =>
-        {
-            await Task.Delay(1_500, token);
-            return CreateCommitResponse(request, ErrorCode.None);
-        };
+        var harness = new Harness(defaultApiTimeoutMs: SlowCommitCloseBudgetMs);
+        harness.OnOffsetCommit = SlowCommitAsync;
         await using var consumer = harness.CreateConsumer();
         Harness.JoinGroup(consumer);
         consumer.StoreOffset(CreateConsumeResult(offset: 41));
@@ -223,12 +235,8 @@ public sealed class ConsumerCloseLeaveBudgetTests
     {
         // A group consumer with manual assignment has no membership, so no leave is sent and the
         // commit keeps the whole budget.
-        var harness = new Harness(defaultApiTimeoutMs: 2_000);
-        harness.OnOffsetCommit = static async (request, token) =>
-        {
-            await Task.Delay(1_500, token);
-            return CreateCommitResponse(request, ErrorCode.None);
-        };
+        var harness = new Harness(defaultApiTimeoutMs: SlowCommitCloseBudgetMs);
+        harness.OnOffsetCommit = SlowCommitAsync;
         await using var consumer = harness.CreateConsumer();
         Harness.KnowCoordinator(consumer);
         consumer.Assign(new TopicPartition(Topic, 0));
