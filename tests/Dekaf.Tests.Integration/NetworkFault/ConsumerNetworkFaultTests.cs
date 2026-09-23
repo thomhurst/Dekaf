@@ -212,6 +212,81 @@ public sealed class ConsumerNetworkFaultTests(TransactionFaultKafkaContainer kaf
         await Assert.That(string.Join(',', offsets)).IsEqualTo(expected);
     }
 
+    [Test]
+    public async Task CloseAsync_CoordinatorResponsesBlackHoled_StillLeavesSoASuccessorNeedNotWaitOutTheSession()
+    {
+        using var testTimeout = new CancellationTokenSource(TestTimeout);
+        var cancellationToken = testTimeout.Token;
+        var topic = await kafka.CreateTestTopicAsync();
+        var groupId = $"network-fault-close-{Guid.NewGuid():N}";
+        await SeedAsync(topic, ["first", "second"], cancellationToken);
+        var closeBudget = TimeSpan.FromSeconds(6);
+
+        var closing = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.ConsumerBootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Auto)
+            .WithAutoCommitInterval(TimeSpan.FromMinutes(10))
+            .WithAutoOffsetStore(false)
+            .WithDefaultApiTimeout(closeBudget)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        try
+        {
+            closing.Subscribe(topic);
+            var first = await ConsumeNextAsync(closing, TimeSpan.FromSeconds(60), cancellationToken);
+            await Assert.That(first.Value).IsEqualTo("first");
+            // A stored offset gives close a final commit to make.
+            closing.StoreOffset(first);
+
+            TimeSpan closeElapsed;
+            try
+            {
+                // Requests still reach the broker but no response comes back, so the commit waits
+                // for an answer the request timeout (30 s) would only end long after the budget.
+                await kafka.AddTimeoutAsync(ToxiproxyLane.Consumer, cancellationToken);
+                var stopwatch = Stopwatch.StartNew();
+                try
+                {
+                    await closing.CloseAsync(cancellationToken);
+                }
+                catch (KafkaTimeoutException)
+                {
+                    // The leave's response is black-holed too, so close may run out its budget.
+                }
+
+                closeElapsed = stopwatch.Elapsed;
+            }
+            finally
+            {
+                await kafka.HealNetworkFaultsAsync(CancellationToken.None);
+            }
+
+            await Assert.That(closeElapsed).IsLessThan(closeBudget + TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            await closing.DisposeAsync();
+        }
+
+        // The commit stopped with part of the budget left and the leave was sent in it, so the
+        // broker already removed the member. Otherwise the successor would get the partition
+        // only once the closed member's 45 s session timed out.
+        var successorStarted = Stopwatch.StartNew();
+        await using var successor = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.ConsumerBootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        successor.Subscribe(topic);
+
+        var taken = await ConsumeNextAsync(successor, TimeSpan.FromSeconds(60), cancellationToken);
+        await Assert.That(successorStarted.Elapsed).IsLessThan(TimeSpan.FromSeconds(25));
+        await Assert.That(taken.Value).IsNotNull();
+    }
+
     private static async Task<ConsumeResult<string, string>> ConsumeNextAsync(
         IKafkaConsumer<string, string> consumer,
         TimeSpan timeout,

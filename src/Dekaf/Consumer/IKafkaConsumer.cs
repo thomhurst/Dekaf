@@ -222,6 +222,11 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// return immediately with no side effects. It is also safe to call <c>DisposeAsync</c>
     /// after <c>CloseAsync</c> — disposal will detect that close has already completed and
     /// skip the close step.</para>
+    /// <para><b>Leaving the group:</b> the final commit cannot use the whole close budget. When the
+    /// coordinator does not answer, the commit is abandoned with up to five seconds (at most half the
+    /// budget) still left, and that time goes to the LeaveGroup request, so the rest of the group can
+    /// rebalance without waiting out the session timeout. A close cancelled before the leave started
+    /// still sends the leave on a best-effort basis, bounded by that same reserve.</para>
     /// </remarks>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>A task representing the asynchronous close operation.</returns>
