@@ -126,9 +126,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // own entry stays queued until it returns. The scope is deactivated when the drain ends, so a
     // task the listener started, which inherits the value, drains normally afterwards.
     private static readonly AsyncLocal<DrainScope?> s_drainScope = new();
-    // Advanced under _lock each time a join receives its response, before the new member id and
-    // epoch are written, and each time a fence ends a membership. A fence observed by a request sent under an earlier membership must not clear
-    // the assignment of a newer one, and a commit must not send offsets taken under an earlier one.
+    // Changes under _lock each time a join publishes a new membership and each time a fence ends
+    // one. A fence observed by a request sent under an earlier membership must not clear the
+    // assignment of a newer one, and a commit must not send offsets taken under an earlier one.
+    // Seqlock-style: odd while a join is publishing (from before the new member id and epoch are
+    // written until the new assignment is published), even otherwise; a fence adds 2. A commit
+    // captures only an even value (MembershipVersion waits out a publication), so its snapshot
+    // is never taken half-way through one.
     private int _membershipVersion;
     // Foreground assignment initialization and fetch waits are application poll activity. Track
     // concurrent callers without allocating a scope object on each poll cycle.
@@ -1199,7 +1203,24 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// it to <see cref="CommitOffsetsAsync(IEnumerable{TopicPartitionOffset}, bool, int, CancellationToken)"/>,
     /// so offsets taken under a membership that has since been replaced are never sent.
     /// </summary>
-    internal int MembershipVersion => Volatile.Read(ref _membershipVersion);
+    internal int MembershipVersion
+    {
+        get
+        {
+            // A join publication is a short synchronous section under the state lock, with no
+            // callback that commits, so waiting it out is brief. Nothing on the poll path reads
+            // this; a commit reads it once.
+            var version = Volatile.Read(ref _membershipVersion);
+            if ((version & 1) == 0)
+                return version;
+
+            var spinner = new SpinWait();
+            while (((version = Volatile.Read(ref _membershipVersion)) & 1) != 0)
+                spinner.SpinOnce();
+
+            return version;
+        }
+    }
 
     /// <param name="retryUntilApiTimeout">
     /// True for an application-facing commit that runs under the consumer's aggregate API
@@ -1783,9 +1804,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
 
         _state = CoordinatorState.Unjoined;
-        // Flag first, then version: see CommitOffsetsAsync.
+        // Flag first, then version: see CommitOffsetsAsync. By 2, so the version stays even.
         Volatile.Write(ref _membershipFenced, 1);
-        Interlocked.Increment(ref _membershipVersion);
+        Interlocked.Add(ref _membershipVersion, 2);
         var lost = ClearAssignment();
         if (lost is not null)
             EnqueuePendingRebalanceCallback(new PendingRebalanceCallback
@@ -2043,11 +2064,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 request, version, TelemetryMetricCollector, cancellationToken).ConfigureAwait(false);
         }
 
-        // A successful join replaces the membership. Advance the version before the response's
-        // member id and epoch are written, so a commit that reads the new identity also sees the
-        // change and is rejected rather than sending offsets taken under the previous assignment.
-        // A join error leaves the membership as it was, and commits under it stay valid.
-        if (!discardIfMembershipChanged && response.ErrorCode == ErrorCode.None)
+        // A successful join replaces the membership. The version turns odd before the response's
+        // member id and epoch are written and even again once the new assignment is published
+        // (below), so a commit that started under the previous membership is rejected, and one
+        // that starts during the publication waits for it before taking its snapshot. A join
+        // error leaves the membership as it was, and commits under it stay valid.
+        var publishingMembership = !discardIfMembershipChanged && response.ErrorCode == ErrorCode.None;
+        if (publishingMembership)
             Interlocked.Increment(ref _membershipVersion);
 
         // A steady heartbeat reports a fence without waiting for the locks, so stopping the loop
@@ -2063,14 +2086,23 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         if (!discardIfMembershipChanged)
         {
-            using (assignmentProcessing)
+            try
             {
-                return ProcessConsumerGroupHeartbeatResponse(
-                    response,
-                    isInitial,
-                    ownedTopicPartitions,
-                    assignmentVersion,
-                    subscribedTopicRegex);
+                using (assignmentProcessing)
+                {
+                    return ProcessConsumerGroupHeartbeatResponse(
+                        response,
+                        isInitial,
+                        ownedTopicPartitions,
+                        assignmentVersion,
+                        subscribedTopicRegex);
+                }
+            }
+            finally
+            {
+                // Identity and assignment are published (or processing failed): even again.
+                if (publishingMembership)
+                    Interlocked.Increment(ref _membershipVersion);
             }
         }
 

@@ -800,6 +800,86 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     }
 
     [Test]
+    public async Task CommitOffsetsAsync_SnapshotStartedDuringARejoinPublication_WaitsForTheNewAssignment()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetCommit, 9, 9);
+        var script = new HeartbeatScript(this);
+        var committed = new List<string>();
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var request = callInfo.Arg<OffsetCommitRequest>()!;
+                lock (committed)
+                {
+                    foreach (var topic in request.Topics)
+                    {
+                        foreach (var partition in topic.Partitions)
+                            committed.Add($"{topic.Name}-{partition.PartitionIndex}@{request.MemberId}");
+                    }
+                }
+
+                return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
+            });
+
+        // A commit (the auto-commit loop, say) starts while the rejoin is publishing: it reads
+        // the membership version and snapshots the offsets of the assignment it sees.
+        ConsumerCoordinator? coordinator = null;
+        Task<(int Version, TopicPartition[] Snapshot)>? snapshot = null;
+        var snapshotDuringRejoin = 0;
+        void OnPartitionsRevoking(IReadOnlyList<TopicPartition> revoked)
+        {
+            if (Interlocked.Exchange(ref snapshotDuringRejoin, 0) != 1)
+                return;
+
+            snapshot = Task.Run(() =>
+            {
+                var version = coordinator!.MembershipVersion;
+                return (version, coordinator.Assignment.ToArray());
+            });
+
+            // Give the snapshot every chance to be taken mid-publication; with the fix it waits
+            // for the publication to end instead, so this wait times out.
+            snapshot.Wait(TimeSpan.FromSeconds(1));
+        }
+
+        SetupFindCoordinator();
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 5, CreateAssignment(TestTopicId, 0, 1));
+        coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(),
+            _connectionPool,
+            _metadataManager,
+            logger: null,
+            getConnectionCount: null,
+            onPartitionsRevoked: null,
+            onPartitionsRevoking: OnPartitionsRevoking);
+        await using var coordinatorLifetime = coordinator;
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+
+        // The coordinator was lost, with no fence: the member rejoins as member-2 and p0 moves
+        // to another member.
+        coordinator.RequestRejoin();
+        Volatile.Write(ref snapshotDuringRejoin, 1);
+        script.Respond = (_, _) => Joined("member-2", memberEpoch: 9, CreateAssignment(TestTopicId, 1));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, timeout.Token);
+        await coordinator.StopHeartbeatAsync();
+
+        var (version, partitions) = await snapshot!.WaitAsync(timeout.Token);
+        await coordinator.CommitOffsetsAsync(
+            partitions.Select(static tp => new TopicPartitionOffset(tp.Topic, tp.Partition, 10)).ToArray(),
+            retryUntilApiTimeout: false,
+            version,
+            timeout.Token);
+
+        // Only the partition the new membership owns is committed under its identity.
+        await Assert.That(string.Join(" | ", committed)).IsEqualTo("test-topic-1@member-2");
+    }
+
+    [Test]
     public async Task MembershipLoss_OffsetFetchUnknownMemberReceivedAsTheCallerCancels_IsStillApplied()
     {
         _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);
