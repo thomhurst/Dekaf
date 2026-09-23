@@ -4501,7 +4501,7 @@ public class RecordAccumulatorTests
         var pool = new PendingAppendPool(1);
         var op = CreatePendingAppend(accumulator, pool);
 
-        await Assert.That(op.TryClaim()).IsTrue();
+        await Assert.That(op.TryClaim(op.Generation)).IsTrue();
         op.CompleteResult(true);
         ((IValueTaskSource<bool>)op).GetResult(op.Version);
 
@@ -4537,9 +4537,9 @@ public class RecordAccumulatorTests
         await using var accumulator = new RecordAccumulator(CreatePendingAppendTestOptions());
         var pool = new PendingAppendPool(1);
         var op = CreatePendingAppend(accumulator, pool);
-        var queue = GetPrivateField<ConcurrentQueue<PendingAppend>>(accumulator, "_pendingAppends");
+        var queue = GetPrivateField<ConcurrentQueue<RecordAccumulator.QueuedPendingAppend>>(accumulator, "_pendingAppends");
 
-        queue.Enqueue(op);
+        queue.Enqueue(new RecordAccumulator.QueuedPendingAppend(op, op.Generation));
         SetPrivateField(accumulator, "_draining", 1);
         var requestVersion = GetPrivateField<long>(accumulator, "_pendingAppendDrainRequestVersion");
 
@@ -4583,7 +4583,7 @@ public class RecordAccumulatorTests
     {
         var pool = new PendingAppendPool(1);
         RecordAccumulator? accumulator = null;
-        ConcurrentQueue<PendingAppend>? queue = null;
+        ConcurrentQueue<RecordAccumulator.QueuedPendingAppend>? queue = null;
         Task<bool>? pendingResult = null;
         var resolverCalls = 0;
 
@@ -4596,14 +4596,14 @@ public class RecordAccumulatorTests
             pendingResult = new ValueTask<bool>(
                 (IValueTaskSource<bool>)pending,
                 pending.Version).AsTask();
-            queue!.Enqueue(pending);
+            queue!.Enqueue(new RecordAccumulator.QueuedPendingAppend(pending, pending.Generation));
             throw new InvalidOperationException("leader resolution failed");
         }
 
         accumulator = new RecordAccumulator(
             CreatePendingAppendTestOptions(),
             resolveLeaderId: ResolveLeaderId);
-        queue = GetPrivateField<ConcurrentQueue<PendingAppend>>(accumulator, "_pendingAppends");
+        queue = GetPrivateField<ConcurrentQueue<RecordAccumulator.QueuedPendingAppend>>(accumulator, "_pendingAppends");
 
         try
         {
@@ -4677,7 +4677,7 @@ public class RecordAccumulatorTests
         var first = CreatePendingAppend(accumulator, pool, partition: 0, partitionCount: 2);
         var second = CreatePendingAppend(accumulator, pool, partition: 1, partitionCount: 2);
         var firstResult = new ValueTask<bool>((IValueTaskSource<bool>)first, first.Version).AsTask();
-        var queue = GetPrivateField<ConcurrentQueue<PendingAppend>>(accumulator, "_pendingAppends");
+        var queue = GetPrivateField<ConcurrentQueue<RecordAccumulator.QueuedPendingAppend>>(accumulator, "_pendingAppends");
         var firstBudget = accumulator.GetBrokerUnackedBudget(0)!;
         var secondBudget = accumulator.GetBrokerUnackedBudget(1)!;
         // Oversized records may make one bounded admission while occupancy is within the
@@ -4686,8 +4686,8 @@ public class RecordAccumulatorTests
         var secondCharge = secondBudget.BudgetBytes + 1;
         firstBudget.Charge(firstCharge);
         secondBudget.Charge(secondCharge);
-        queue.Enqueue(first);
-        queue.Enqueue(second);
+        queue.Enqueue(new RecordAccumulator.QueuedPendingAppend(first, first.Generation));
+        queue.Enqueue(new RecordAccumulator.QueuedPendingAppend(second, second.Generation));
 
         var ownerDrain = Task.Run(accumulator.DrainPendingAppends);
         try
