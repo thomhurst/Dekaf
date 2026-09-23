@@ -925,6 +925,93 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
     }
 
     [Test]
+    public async Task SuccessorRestamp_ParkedBetweenItsTwoTrackerSteps_KeepsTheRestartFenceUp(CancellationToken cancellationToken)
+    {
+        // The last successor B behind a restart fence is re-stamped here. The re-stamp takes two
+        // tracker steps: register B's new entry, complete its old (fenced) one. It used to
+        // complete the old entry first, which lifted the fence, so another loop (one with an
+        // outdated leader) claiming a fresh batch of the partition between the steps got
+        // (epoch 6, sequence 4) ahead of B. The claim made while the re-stamp is parked
+        // between the steps must be refused, and B must get sequence 4.
+        var partition1Restarted = NewResponseSource();
+        var successorRestamped = NewResponseSource();
+        var (pool, connection) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>(
+            [partition1Restarted, successorRestamped]));
+        connection.CaptureProduceRequests = true;
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(maxInFlightRequestsPerConnection: 3);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var previous = new ProducerIdAndEpoch(1234, 5);
+        var current = new ProducerIdAndEpoch(1234, 6);
+        accumulator.PublishProducerState(previous);
+        using var inflightTracker = new PartitionInflightTracker(enablePruning: false);
+        await Assert.That(accumulator.GetAndIncrementSequence(Partition1, 4, previous, out _)).IsEqualTo(0);
+        var successorEntry = inflightTracker.Register(
+            Partition1, accumulator.GetAndIncrementSequence(Partition1, 2, previous, out _), recordCount: 2);
+        accumulator.PublishProducerState(current);
+        var claimsBetweenSteps = new List<InflightEntry?>();
+        var sender = CreateSender(
+            pool, options, accumulator, (_, _, _, _, _) => { },
+            getProducerState: () => current,
+            inflightTracker: inflightTracker,
+            onRestampRegistered: topicPartition =>
+            {
+                // Another loop's fresh batch of the partition, claimed between the two steps.
+                var otherLoopState = (ProducerIdAndEpoch?)current;
+                lock (claimsBetweenSteps)
+                    claimsBetweenSteps.Add(accumulator.RegisterWithNextSequence(
+                        inflightTracker, topicPartition, 3, -1, ref otherLoopState, out _));
+            });
+
+        try
+        {
+            // A's retry restarts the partition ahead of B: (6, 0), and fences it.
+            var (batchA, deliveryA) = CreateTrackedBatch(valueTaskSourcePool, Partition1, producerId: 1234, producerEpoch: 5, recordCount: 4);
+            batchA.RecordBatch.BaseSequence = 0;
+            sender.Enqueue(batchA);
+            await WaitForSendsAsync(connection, 1, cancellationToken);
+            await Assert.That(StampsOf(connection, request: 0)).IsEquivalentTo([(1, 4, 1234L, (short)6, 0)]);
+            partition1Restarted.SetResult(CreateSuccessResponse(Topic, 1, baseOffset: 0));
+            await deliveryA.WaitAsync(cancellationToken);
+
+            // B rerouted here and re-stamped, parked between its two steps by the hook.
+            var (batchB, deliveryB) = CreateTrackedBatch(valueTaskSourcePool, Partition1, producerId: 1234, producerEpoch: 5, recordCount: 2);
+            batchB.RecordBatch.BaseSequence = successorEntry.BaseSequence;
+            batchB.InflightEntry = successorEntry;
+            sender.Enqueue(batchB);
+            await WaitForSendsAsync(connection, 2, cancellationToken);
+
+            InflightEntry?[] observed;
+            lock (claimsBetweenSteps)
+                observed = claimsBetweenSteps.ToArray();
+            await Assert.That(observed.Length).IsEqualTo(1);
+            await Assert.That(observed[0]).IsNull();
+            await Assert.That(StampsOf(connection, request: 1)).IsEquivalentTo([(1, 2, 1234L, (short)6, 4)]);
+
+            // With B re-stamped, the fence is down and the other loop claims behind B.
+            await Assert.That(inflightTracker.IsRestartFencedBefore(Partition1, -1)).IsFalse();
+            var otherLoopState = (ProducerIdAndEpoch?)current;
+            var fresh = accumulator.RegisterWithNextSequence(inflightTracker, Partition1, 3, -1, ref otherLoopState, out _)!;
+            await Assert.That(fresh.BaseSequence).IsEqualTo(6);
+            inflightTracker.Complete(fresh);
+
+            successorRestamped.SetResult(CreateSuccessResponse(Topic, 1, baseOffset: 4));
+            await deliveryB.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Assert.Fail($"A wait was cancelled before the send loop got there. Requests written so far:{Environment.NewLine}{DescribeRequests(connection)}");
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task RestartHeldForAnotherLoopsBatch_WithUnrelatedRequestPending_IsSentAsSoonAsThatBatchIsAnswered(CancellationToken cancellationToken)
     {
         // The batch holding this loop's restart belongs to another send loop, so its answer is

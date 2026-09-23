@@ -179,6 +179,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly Action? _onWaveCoalesceStarted;
     private readonly Action? _onIdleWaitStarted;
     private readonly Action<TopicPartition>? _onSequenceRestartHeld;
+    // Test hook: a re-stamped batch registered its new entry and has not yet completed its old one.
+    private readonly Action<TopicPartition>? _onRestampRegistered;
     private readonly Func<long> _getTimestamp;
     private readonly Func<int, CancellationToken, ValueTask> _delayForThrottle;
     private readonly TimeSpan _disposalDrainTimeout;
@@ -1064,7 +1066,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Action? onWaveCoalesceStarted = null,
         Action? onIdleWaitStarted = null,
         Action<TopicPartition>? onSequenceRestartHeld = null,
-        Channel<SendLoopEvent>? eventChannel = null)
+        Channel<SendLoopEvent>? eventChannel = null,
+        Action<TopicPartition>? onRestampRegistered = null)
     {
         _unackedBudget = unackedBudget;
         _brokerId = brokerId;
@@ -1092,6 +1095,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _onWaveCoalesceStarted = onWaveCoalesceStarted;
         _onIdleWaitStarted = onIdleWaitStarted;
         _onSequenceRestartHeld = onSequenceRestartHeld;
+        _onRestampRegistered = onRestampRegistered;
         _disposalDrainTimeout = disposalDrainTimeout ?? DisposalDrainTimeout;
 
         _eventChannel = eventChannel ??
@@ -3116,7 +3120,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// <summary>
     /// Puts back a batch whose sequence restart <see cref="RegisterWithNextSequence"/> refused at
     /// send time: a batch of the previous state that another send loop registered after this
-    /// loop's step 5 must be answered first. The batch keeps its stamp and sequence (nothing was
+    /// loop's step 5 must be answered first, or an earlier successor behind a restart fence
+    /// re-stamped first. The batch keeps its stamp, sequence and inflight entry (nothing was
     /// claimed) and goes back to the front of its partition's queue, exactly as a batch
     /// <see cref="CoalesceBatch"/> holds; step 5 now sees the other loop's batch in the tracker
     /// and holds the partition until it is answered. A send-time fence already taken for the batch
@@ -4602,16 +4607,25 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     {
                         // Never sent, or definitively rejected (its inflight entry was completed
                         // with the rejection), or its partition already restarted under the
-                        // current state so the broker would fence the old stamp: complete old
-                        // inflight, assign fresh sequence, update epoch/PID.
+                        // current state so the broker would fence the old stamp: assign fresh
+                        // sequence, update epoch/PID, then complete the old inflight entry. The
+                        // new entry is registered first: while a restart fence counts the old
+                        // entry, removing it before the new sequence is claimed would let the
+                        // fence lift and another loop claim ahead of this successor (#3385).
+                        // A refused claim keeps the old entry, so the fence keeps counting it.
                         LogStaleEpochResequencing(_brokerId, tp.Topic, tp.Partition,
                             batch.RecordBatch.ProducerEpoch, currentEpoch);
-                        CompleteInflightEntry(batch);
+                        var previousEntry = batch.InflightEntry;
                         if (!RegisterWithNextSequence(batch, sequenceState, restamp: true))
                         {
                             HoldUnsentForSequenceRestart(batch, generations[i], carryOver);
                             batches[i] = null!;
                             heldForSequenceRestart = true;
+                        }
+                        else if (previousEntry is not null)
+                        {
+                            _onRestampRegistered?.Invoke(tp);
+                            _inflightTracker.Complete(previousEntry);
                         }
                     }
                     else if (batch.RecordBatch.BaseSequence < 0)
