@@ -1308,6 +1308,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal Action? AfterReservedAppendEncodedForTest;
 
     /// <summary>
+    /// AppContext switch that enables test hooks placed on per-record paths (for example
+    /// <see cref="AfterReservedAppendEncodedForTest"/>). The unit test assembly sets it from a
+    /// module initializer; nothing else does.
+    /// </summary>
+    internal const string PerRecordTestHooksSwitchName = "Dekaf.Producer.RecordAccumulator.PerRecordTestHooks";
+
+    // A static readonly bool is a JIT-time constant once the type is initialized, so a guarded
+    // per-record hook call is removed entirely when the switch is off: production pays nothing.
+    private static readonly bool s_perRecordTestHooks =
+        AppContext.TryGetSwitch(PerRecordTestHooksSwitchName, out var enabled) && enabled;
+
+    /// <summary>
     /// True after CloseAsync has been called. Used by the sender loop to know
     /// when to exit after draining remaining batches.
     /// </summary>
@@ -4407,7 +4419,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             valueIsNull,
                             headers,
                             headerCount);
-                        AfterReservedAppendEncodedForTest?.Invoke();
+                        if (s_perRecordTestHooks)
+                            AfterReservedAppendEncodedForTest?.Invoke();
 
                         var disposedAfterReserve = false;
                         {
