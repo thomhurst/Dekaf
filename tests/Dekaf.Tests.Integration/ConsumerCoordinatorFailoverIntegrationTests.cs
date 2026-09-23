@@ -436,7 +436,7 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
             if (!groups.ContainsKey(groupId))
                 throw new InvalidOperationException($"DescribeConsumerGroups did not return group {groupId}.");
 
-            await AssertCommittedOffsetsAsync(topic, groupId, cancellationToken).ConfigureAwait(false);
+            await AssertCommittedOffsetsAfterFailoverAsync(topic, groupId, cancellationToken).ConfigureAwait(false);
 
             await kafka.StartBrokerAsync(crashedBrokerId.Value, cancellationToken).ConfigureAwait(false);
             crashedBrokerId = null;
@@ -1292,6 +1292,61 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
                 if (!records.ContainsKey((partition, offset)))
                     throw new InvalidOperationException($"Record {partition}:{offset} was never delivered.");
             }
+        }
+    }
+
+    /// <summary>
+    /// Asserts the committed offsets right after the group coordinator failed over. The commit
+    /// was acknowledged (the synchronous CommitAsync completed) before the crash, so its record
+    /// is in the new coordinator's log. The new group coordinator serves a non-stable OffsetFetch
+    /// as a read at its last committed offset (the partition's high watermark). Just after it
+    /// takes over, that high watermark can still be below the commit record until the remaining
+    /// follower fetches, so the broker answers successfully without those offsets. Offsets that
+    /// are missing are therefore read again within a bound. An offset with a wrong value, or any
+    /// error the admin client raises, still fails immediately.
+    /// </summary>
+    private async Task AssertCommittedOffsetsAfterFailoverAsync(
+        string topic,
+        string groupId,
+        CancellationToken cancellationToken)
+    {
+        await using var admin = kafka.CreateAdminClient();
+        var visibility = System.Diagnostics.Stopwatch.StartNew();
+        for (var read = 1; ; read++)
+        {
+            var committed = await admin.ListConsumerGroupOffsetsAsync(groupId, cancellationToken)
+                .ConfigureAwait(false);
+            var missing = false;
+            for (var partition = 0; partition < PartitionCount; partition++)
+            {
+                var topicPartition = new TopicPartition(topic, partition);
+                if (!committed.TryGetValue(topicPartition, out var offset))
+                {
+                    missing = true;
+                    continue;
+                }
+
+                if (offset != MessagesPerPartition)
+                {
+                    throw new InvalidOperationException(
+                        $"Committed offset for {topicPartition} expected {MessagesPerPartition}, actual {offset}.");
+                }
+            }
+
+            if (!missing)
+            {
+                if (read > 1)
+                    Console.WriteLine($"Committed offsets became visible on read {read}, {visibility.Elapsed.TotalMilliseconds:F0} ms after the first.");
+                return;
+            }
+
+            if (visibility.Elapsed > TimeSpan.FromSeconds(30))
+            {
+                throw new InvalidOperationException(
+                    $"Committed offsets for group {groupId} were still missing 30 s after the coordinator failed over.");
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
         }
     }
 
