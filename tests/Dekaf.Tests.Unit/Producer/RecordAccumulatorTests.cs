@@ -939,6 +939,57 @@ public class RecordAccumulatorTests
     }
 
     /// <summary>
+    /// With compression on, completing a detached batch creates its pre-serialization task, which
+    /// only publication starts. An abort that closes appends after a two-phase rotation completed
+    /// the batch but before it was re-enqueued makes the appender fail that batch unpublished:
+    /// the never-started task must be cleared first, or the failure waits for it forever.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task CloseTransactionalAppends_DuringCompressedTwoPhaseRotation_FailsTheSealedBatchWithoutHanging(
+        CancellationToken cancellationToken)
+    {
+        var accumulator = new RecordAccumulator(CreateTestOptions(CompressionType.Gzip));
+        var value = new byte[600];
+        try
+        {
+            // Fills most of the 1000-byte batch; the next record needs a rotation.
+            var first = accumulator.AppendAsync(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null, CopyToPooled(value), null, 0, null, null, CancellationToken.None);
+            await Assert.That(first.IsCompletedSuccessfully).IsTrue();
+
+            accumulator.AfterTwoPhaseRotationCompletedForTest = () =>
+            {
+                accumulator.AfterTwoPhaseRotationCompletedForTest = null;
+                accumulator.CloseTransactionalAppends();
+            };
+
+            var second = RunOnDedicatedThread(() => accumulator.AppendAsync(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null, CopyToPooled(value), null, 0, null, null, CancellationToken.None)
+                .AsTask().GetAwaiter().GetResult());
+
+            var exception = await Assert.That(async () => await second.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken))
+                .Throws<ProduceException>();
+            await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        }
+        finally
+        {
+            accumulator.ReopenTransactionalAppends();
+            await accumulator.DisposeAsync();
+        }
+
+        static PooledMemory CopyToPooled(byte[] source)
+        {
+            var buffer = ProducerDataPool.BytePool.Rent(source.Length);
+            source.CopyTo(buffer, 0);
+            return new PooledMemory(buffer, source.Length);
+        }
+    }
+
+    /// <summary>
     /// While a transaction abort has the accumulator closed, every append path rejects its record
     /// with <see cref="ProduceErrorKind.TransactionAborted"/> and keeps no memory; reopening
     /// restores appends.

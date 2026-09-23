@@ -1302,6 +1302,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal Action? BeforeCompletedBatchEnqueueForTest;
     internal Action? BeforeCompletedBatchPublishForTest;
     internal Action? BeforeAppendWorkerAppendForTest;
+    internal Action? AfterTwoPhaseRotationCompletedForTest;
 
     /// <summary>
     /// True after CloseAsync has been called. Used by the sender loop to know
@@ -3880,11 +3881,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     _batchPool.Return(batchToReturn);
 
                 if (batchToFail is not null)
-                {
-                    batchToFail.Fail(CreateAppendRejectedException());
-                    ReleaseUntrackedBudget(batchToFail);
-                    ReleaseBatchMemory(batchToFail);
-                }
+                    FailUnpublishedCompletedBatch(batchToFail, CreateAppendRejectedException());
 
                 if (!ownsRotation && sealedBatchToEnqueue is null && sealedBatchBytesToRelease > 0)
                 {
@@ -3940,6 +3937,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             AttributeUntrackedBudget(
                                 sealedBatchToEnqueue,
                                 ResolveAndCacheUnackedBudget(pd, topic, partition));
+                            AfterTwoPhaseRotationCompletedForTest?.Invoke();
                         }
                     }
                     catch
@@ -4358,11 +4356,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     _batchPool.Return(batchToReturn);
 
                 if (batchToFail is not null)
-                {
-                    batchToFail.Fail(CreateAppendRejectedException());
-                    ReleaseUntrackedBudget(batchToFail);
-                    ReleaseBatchMemory(batchToFail);
-                }
+                    FailUnpublishedCompletedBatch(batchToFail, CreateAppendRejectedException());
 
                 ReleaseDetachedBatchBytesIfSafe();
 
@@ -4493,6 +4487,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             AttributeUntrackedBudget(
                                 sealedBatchToEnqueue,
                                 ResolveAndCacheUnackedBudget(pd, topic, partition));
+                            AfterTwoPhaseRotationCompletedForTest?.Invoke();
                         }
                     }
                     catch
@@ -5319,7 +5314,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             PublishEnqueuedBatch(pd, readyBatch, releaseRotation: true);
 
         if (rejectedBatch is not null)
-            FailCompletedBatchRejectedByDisposal(rejectedBatch);
+            FailUnpublishedCompletedBatch(rejectedBatch, new ObjectDisposedException(nameof(RecordAccumulator)));
 
         if (bytesToRelease > 0)
             ReleaseMemory(bytesToRelease);
@@ -5365,14 +5360,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return true;
     }
 
+    /// <summary>
+    /// Fails a batch that was completed (sealed) but never enqueued or published, because disposal
+    /// or a transaction abort rejected it first. With compression on, completion created its
+    /// pre-serialization task but only publication starts it; <c>Fail</c> waits for a task it
+    /// believes started, so the unstarted task is cleared first or the wait never ends. The batch
+    /// was never handed to anyone, so it goes back to the pool. Error paths only.
+    /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private void FailCompletedBatchRejectedByDisposal(ReadyBatch batch)
+    private void FailUnpublishedCompletedBatch(ReadyBatch batch, Exception exception)
     {
         batch.ClearUnstartedPreSerializationTask();
         ReleaseUntrackedBudget(batch);
         FailBatchAndCleanup(
             batch,
-            new ObjectDisposedException(nameof(RecordAccumulator)),
+            exception,
             beforeFailure: null,
             removeFromPipeline: false,
             returnToPool: true);

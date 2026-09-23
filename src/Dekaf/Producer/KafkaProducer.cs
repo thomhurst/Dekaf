@@ -890,15 +890,22 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             return ProduceAsyncWithRetry(message, continuationMode, cancellationToken);
         }
 
-        return ProduceAsyncCore(message, continuationMode, cancellationToken);
+        // Read before ProduceAsyncCore's state check (see ReadAdmissionTransactionalGeneration).
+        return ProduceAsyncCore(message, continuationMode, ReadAdmissionTransactionalGeneration(), cancellationToken);
     }
 
+    /// <param name="transactionalGeneration">
+    /// The generation the produce was admitted in, read by the caller before this method's state
+    /// check. The retry wrapper passes the one it read for the first attempt, so a retry that runs
+    /// after an abort is rejected at the append commit point instead of joining the next
+    /// transaction.
+    /// </param>
     private ValueTask<RecordMetadata> ProduceAsyncCore(
         ProducerMessage<TKey, TValue> message,
         ProduceContinuationMode continuationMode,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
     {
-        var transactionalGeneration = ReadAdmissionTransactionalGeneration();
         ThrowIfProduceCannotStart();
 
         // Check cancellation upfront before any work
@@ -1365,14 +1372,18 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>Test hook: runs before each retry attempt, after the retry's own generation check.</summary>
+    internal Action? BeforeProduceRetryAttemptForTest;
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private async ValueTask<RecordMetadata> ProduceAsyncWithRetry(
         ProducerMessage<TKey, TValue> message,
         ProduceContinuationMode continuationMode,
         CancellationToken cancellationToken)
     {
-        // Captured before ProduceAsyncCore's state check admits the first attempt. A retry after
-        // an abort started would be admitted again in the next transaction's state.
+        // Captured once, before ProduceAsyncCore's state check admits the first attempt, and
+        // passed to every attempt: a retry after an abort started would otherwise be admitted
+        // again in the next transaction's state and read that transaction's generation.
         var transactionalGeneration = CaptureTransactionalAppendGeneration();
         var attempt = 0;
         while (true)
@@ -1380,11 +1391,15 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             try
             {
                 if (attempt > 0)
+                {
                     ThrowIfTransactionAbortedSince(transactionalGeneration);
+                    BeforeProduceRetryAttemptForTest?.Invoke();
+                }
 
                 return await ProduceAsyncCore(
                     message,
                     continuationMode,
+                    transactionalGeneration,
                     cancellationToken).ConfigureAwait(false);
             }
             catch (KafkaException ex) when (ex.IsRetriable)

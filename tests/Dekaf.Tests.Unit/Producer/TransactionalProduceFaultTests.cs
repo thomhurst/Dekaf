@@ -496,6 +496,74 @@ public sealed class TransactionalProduceFaultTests
         await Assert.That(sentAfterRelease[0].RecordCount).IsEqualTo(1);
     }
 
+    /// <summary>
+    /// With a retry policy, a produce whose first attempt failed retriably is retried. If an abort
+    /// ran before the retry, the retry must carry the generation of the first admission to the
+    /// append commit point; admitting it afresh would read the next generation and let the record
+    /// join whatever follows the abort. The abort here runs between the retry wrapper's own check
+    /// and the attempt's admission.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task ProduceAsync_RetryAfterAnAbortStartedBeforeTheAttempt_IsRejected(
+        CancellationToken cancellationToken)
+    {
+        var serializer = new FailOnceStringSerializer(failingValue: "retried");
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion: 2,
+            produceError: static (_, _) => ErrorCode.None,
+            valueSerializer: serializer,
+            retryPolicy: new ImmediateRetryPolicy());
+
+        await using var transaction = harness.Producer.BeginTransaction();
+        var accumulator = harness.Producer.RecordAccumulator;
+        harness.Producer.BeforeProduceRetryAttemptForTest = () =>
+        {
+            harness.Producer.BeforeProduceRetryAttemptForTest = null;
+            // A whole abort cycle's generation change, in the window before the attempt.
+            accumulator.CloseTransactionalAppends();
+            accumulator.ReopenTransactionalAppends();
+        };
+
+        var exception = await Assert.That(async () => await transaction.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = Topic,
+                Key = "key",
+                Value = "retried",
+                Partition = 0
+            }, cancellationToken))
+            .Throws<ProduceException>();
+        await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+        await Assert.That(serializer.Calls).IsEqualTo(2);
+        await Assert.That(harness.Broker.ProducedBatches.Count).IsEqualTo(0);
+    }
+
+    private sealed class ImmediateRetryPolicy : Dekaf.Retry.IRetryPolicy
+    {
+        public TimeSpan? GetNextDelay(int attemptNumber, Exception exception) =>
+            attemptNumber <= 3 ? TimeSpan.Zero : null;
+    }
+
+    /// <summary>Throws a retriable error the first time it serializes one value.</summary>
+    private sealed class FailOnceStringSerializer(string failingValue) : ISerializer<string>
+    {
+        private int _calls;
+
+        public int Calls => Volatile.Read(ref _calls);
+
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : System.Buffers.IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            if (value == failingValue && Interlocked.Increment(ref _calls) == 1)
+                throw new KafkaException(ErrorCode.NotEnoughReplicas, "Transient failure for the test.");
+
+            Serializers.String.Serialize(value, ref destination, context);
+        }
+    }
+
     /// <summary>A synchronous UTF-8 string serializer that blocks on one value until released.</summary>
     private class BlockingStringSerializer(string heldValue) : ISerializer<string>, IDisposable
     {
@@ -618,7 +686,8 @@ public sealed class TransactionalProduceFaultTests
             int deliveryTimeoutMs = 30_000,
             int lingerMs = 0,
             IAsyncSerializer<string>? asyncValueSerializer = null,
-            ISerializer<string>? valueSerializer = null)
+            ISerializer<string>? valueSerializer = null,
+            Dekaf.Retry.IRetryPolicy? retryPolicy = null)
         {
             var broker = new ScriptedTransactionalBroker(produceError, bumpsEpochAtEndTxn: transactionVersion >= 2);
             var pool = new ConnectionPool(
@@ -683,7 +752,8 @@ public sealed class TransactionalProduceFaultTests
                     RetryBackoffMs = 10,
                     RetryBackoffMaxMs = 10,
                     MaxBlockMs = 10_000,
-                    CloseTimeoutMs = 1_000
+                    CloseTimeoutMs = 1_000,
+                    RetryPolicy = retryPolicy
                 },
                 Serializers.String,
                 valueSerializer ?? Serializers.String,
