@@ -1826,7 +1826,30 @@ public sealed partial class AdminClient :
         var result = new Dictionary<string, FenceProducersResultInfo>(StringComparer.Ordinal);
         var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
-        return await WithRetryAsync<IReadOnlyDictionary<string, FenceProducersResultInfo>>(async attemptToken =>
+        try
+        {
+            return await FenceOutstandingProducersAsync().ConfigureAwait(false);
+        }
+        catch (Errors.KafkaTimeoutException) when (!cancellationToken.IsCancellationRequested && result.Count > 0)
+        {
+            // The deadline ended the call after some fences were answered. Throwing would discard
+            // those results, and a caller retrying the whole call would fence them again. The
+            // results are returned instead: an ID whose fence was in flight already carries its
+            // unknown outcome, and an ID never sent is marked OPERATION_NOT_ATTEMPTED.
+            foreach (var transactionalId in transactionalIdList)
+            {
+                result.TryAdd(transactionalId, new FenceProducersResultInfo
+                {
+                    TransactionalId = transactionalId,
+                    ErrorCode = Protocol.ErrorCode.OperationNotAttempted
+                });
+            }
+
+            return result;
+        }
+
+        // Fences the IDs without a result yet; answered IDs stay in the shared result.
+        ValueTask<IReadOnlyDictionary<string, FenceProducersResultInfo>> FenceOutstandingProducersAsync() => WithRetryAsync<IReadOnlyDictionary<string, FenceProducersResultInfo>>(async attemptToken =>
         {
             await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var idsByCoordinator = new Dictionary<int, List<string>>();
@@ -1888,7 +1911,9 @@ public sealed partial class AdminClient :
                         // continue on the retry.
                         result[transactionalId] = UnknownFenceOutcome(
                             transactionalId,
-                            (exception as KafkaException)?.ErrorCode ?? Protocol.ErrorCode.NetworkException);
+                            exception is OperationCanceledException
+                                ? Protocol.ErrorCode.RequestTimedOut
+                                : (exception as KafkaException)?.ErrorCode ?? Protocol.ErrorCode.NetworkException);
                         throw;
                     }
 
@@ -1922,7 +1947,7 @@ public sealed partial class AdminClient :
             }
 
             return result;
-        }, cancellationToken, OperationTimeoutBudget(transactionTimeoutMs)).ConfigureAwait(false);
+        }, cancellationToken, OperationTimeoutBudget(transactionTimeoutMs), nameof(FenceProducersAsync));
     }
 
     // A fence whose outcome is unknown: the error code says why, and no producer ID or epoch is

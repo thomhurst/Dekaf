@@ -129,7 +129,11 @@ public interface IAdminClient : IAsyncDisposable
     /// Each fence bumps the producer epoch, so a fence that may have reached the coordinator is
     /// never sent again. When its response is lost, or the coordinator answers
     /// <c>REQUEST_TIMED_OUT</c>, that ID's result carries the error code with no producer ID or
-    /// epoch: the fence may or may not have applied.
+    /// epoch: the fence may or may not have applied. If the call's timeout expires after at least
+    /// one ID has a result, the results are returned instead of a timeout: an ID whose fence was in
+    /// flight reports <c>REQUEST_TIMED_OUT</c> (outcome unknown), and an ID never sent reports
+    /// <c>OPERATION_NOT_ATTEMPTED</c> (not fenced). Retry only the IDs that need it. If no ID has
+    /// a result yet, the call throws <see cref="Errors.KafkaTimeoutException"/>.
     /// </remarks>
     ValueTask<IReadOnlyDictionary<string, FenceProducersResultInfo>> FenceProducersAsync(
         IEnumerable<string> transactionalIds,
