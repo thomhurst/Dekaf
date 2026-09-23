@@ -468,6 +468,79 @@ public sealed class PartitionInflightTrackerTests
     }
 
     [Test]
+    public async Task PruneWithCutoff_RegisterHoldingPrunedState_RetriesOntoVisibleState()
+    {
+        var tracker = new PartitionInflightTracker(enablePruning: false);
+
+        var idle = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
+        // A Register whose GetOrAdd resolved this state before the pruner removed it.
+        var resolvedBeforePrune = idle.State!;
+        tracker.Complete(idle);
+        tracker.PruneWithCutoff(long.MaxValue);
+
+        var raced = new InflightEntry();
+        raced.Initialize(Tp0, baseSequence: 10, recordCount: 5);
+        await Assert.That(PartitionInflightTracker.TryAppend(resolvedBeforePrune, raced)).IsFalse();
+        await Assert.That(resolvedBeforePrune.Count).IsEqualTo(0);
+
+        // The retried registration lands on the state dictionary lookups see.
+        var entry = tracker.Register(Tp0, baseSequence: 10, recordCount: 5);
+        await Assert.That(entry.State).IsNotSameReferenceAs(resolvedBeforePrune);
+        await Assert.That(tracker.GetInflightCount(Tp0)).IsEqualTo(1);
+        await Assert.That(tracker.HasInflightBefore(Tp0, baseSequence: 15)).IsTrue();
+        await Assert.That(tracker.AnyInflightPartition(static (tp, _) => tp == Tp0, 0)).IsTrue();
+    }
+
+    [Test]
+    public async Task RestartFence_CoversOnlyEntriesInFlightAtTheRestart_AndLiftsWhenTheyLeave()
+    {
+        var tracker = new PartitionInflightTracker(enablePruning: false);
+        var successor = tracker.Register(Tp0, baseSequence: 5, recordCount: 5);
+        var state = successor.State!;
+        PartitionInflightTracker.FenceRestartLocked(state);
+        // Registered after the restart (sequence 0 of the new state): not part of the fence.
+        var restartHead = tracker.Register(Tp0, baseSequence: 0, recordCount: 5);
+
+        await Assert.That(successor.PrecedesRestart).IsTrue();
+        await Assert.That(restartHead.PrecedesRestart).IsFalse();
+        await Assert.That(tracker.IsRestartFencedBefore(Tp0, baseSequence: -1)).IsTrue();
+        await Assert.That(tracker.IsRestartFencedBefore(Tp0, baseSequence: 5)).IsFalse();
+        await Assert.That(tracker.IsRestartFencedBefore(Tp0, baseSequence: 10)).IsTrue();
+        await Assert.That(tracker.AnyInflightPartition(static (_, _) => false, 0)).IsTrue();
+
+        tracker.Complete(successor);
+        await Assert.That(tracker.IsRestartFencedBefore(Tp0, baseSequence: -1)).IsFalse();
+        await Assert.That(state.RestartFenced).IsFalse();
+        await Assert.That(tracker.AnyInflightPartition(static (_, _) => false, 0)).IsFalse();
+
+        // An empty list fences nothing.
+        tracker.Complete(restartHead);
+        PartitionInflightTracker.FenceRestartLocked(state);
+        await Assert.That(state.RestartFenced).IsFalse();
+    }
+
+    [Test]
+    public async Task CompletionWaiter_IsWokenByCompleteAndFailAll_UntilRemoved()
+    {
+        var tracker = new PartitionInflightTracker(enablePruning: false);
+        var wakes = 0;
+        Action wake = () => wakes++;
+
+        tracker.AddCompletionWaiter(wake);
+        tracker.AddCompletionWaiter(wake); // idempotent: still woken once per completion
+        tracker.Complete(tracker.Register(Tp0, baseSequence: 0, recordCount: 10));
+        await Assert.That(wakes).IsEqualTo(1);
+
+        tracker.Register(Tp1, baseSequence: 0, recordCount: 10);
+        tracker.FailAll(Tp1, new InvalidOperationException("test"));
+        await Assert.That(wakes).IsEqualTo(2);
+
+        tracker.RemoveCompletionWaiter(wake);
+        tracker.Complete(tracker.Register(Tp0, baseSequence: 10, recordCount: 10));
+        await Assert.That(wakes).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task Complete_MultipleEntries_WorksWithStoredState()
     {
         var tracker = new PartitionInflightTracker(enablePruning: false);

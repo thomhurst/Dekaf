@@ -584,6 +584,205 @@ public sealed class EpochBumpRecoveryTests
         await accumulator.DisposeAsync();
     }
 
+    [Test]
+    public async Task RegisterWithNextSequence_OutdatedSnapshot_StampsUnderTheStateThePartitionRestartedUnder()
+    {
+        var options = new ProducerOptions { BootstrapServers = ["localhost:9092"] };
+        var accumulator = new RecordAccumulator(options);
+        using var tracker = new PartitionInflightTracker(enablePruning: false);
+        var previous = new ProducerIdAndEpoch(100, 1);
+        var current = new ProducerIdAndEpoch(100, 2);
+        var untouchedPartition = new TopicPartition("test-topic", 1);
+        accumulator.PublishProducerState(previous);
+        accumulator.GetAndIncrementSequence(Tp0, 10, previous, out _);
+        accumulator.GetAndIncrementSequence(untouchedPartition, 10, previous, out _);
+        accumulator.PublishProducerState(current);
+
+        // Another send loop restarts Tp0 under the current state.
+        var restartState = (ProducerIdAndEpoch?)current;
+        var restartEntry = accumulator.RegisterWithNextSequence(tracker, Tp0, 3, -1, ref restartState, out var restarted)!;
+        await Assert.That(restartEntry.BaseSequence).IsEqualTo(0);
+        await Assert.That(restarted).IsTrue();
+        await Assert.That(restartState).IsSameReferenceAs(current);
+
+        // A loop still holding the previous snapshot gets the current state's next sequence, and
+        // the state it belongs to, instead of a current-state sequence under the previous epoch.
+        var stampState = (ProducerIdAndEpoch?)previous;
+        var followEntry = accumulator.RegisterWithNextSequence(tracker, Tp0, 2, -1, ref stampState, out restarted)!;
+        await Assert.That(followEntry.BaseSequence).IsEqualTo(3);
+        await Assert.That(restarted).IsFalse();
+        await Assert.That(stampState).IsSameReferenceAs(current);
+
+        // A partition not restarted yet keeps the snapshot's stamp and counter: an outdated
+        // snapshot never restarts it.
+        stampState = previous;
+        var untouchedEntry = accumulator.RegisterWithNextSequence(tracker, untouchedPartition, 2, -1, ref stampState, out restarted)!;
+        await Assert.That(untouchedEntry.BaseSequence).IsEqualTo(10);
+        await Assert.That(restarted).IsFalse();
+        await Assert.That(stampState).IsSameReferenceAs(previous);
+
+        await accumulator.DisposeAsync();
+    }
+
+    [Test]
+    public async Task RegisterWithNextSequence_SnapshotTwoStatesBehind_StampsUnderTheIntermediateStateItsCounterRestartedUnder()
+    {
+        // A send loop keeps state A for its iteration while the producer advances twice: the
+        // partition restarts under B, then C is published before anything restarts it again. The
+        // counter hands out B's sequences, so the batch must carry B's stamp, not A's (a sequence
+        // of one epoch under another) and not C's (C never restarted the partition at 0).
+        var options = new ProducerOptions { BootstrapServers = ["localhost:9092"] };
+        var accumulator = new RecordAccumulator(options);
+        using var tracker = new PartitionInflightTracker(enablePruning: false);
+        var stateA = new ProducerIdAndEpoch(100, 1);
+        var stateB = new ProducerIdAndEpoch(100, 2);
+        var stateC = new ProducerIdAndEpoch(100, 3);
+        accumulator.PublishProducerState(stateA);
+        accumulator.GetAndIncrementSequence(Tp0, 10, stateA, out _);
+        accumulator.PublishProducerState(stateB);
+        var restartState = (ProducerIdAndEpoch?)stateB;
+        tracker.Complete(accumulator.RegisterWithNextSequence(tracker, Tp0, 4, -1, ref restartState, out var restarted)!);
+        await Assert.That(restarted).IsTrue();
+        accumulator.PublishProducerState(stateC);
+
+        var stampState = (ProducerIdAndEpoch?)stateA;
+        var entry = accumulator.RegisterWithNextSequence(tracker, Tp0, 2, -1, ref stampState, out restarted)!;
+
+        await Assert.That(entry.BaseSequence).IsEqualTo(4);
+        await Assert.That(restarted).IsFalse();
+        await Assert.That(stampState).IsSameReferenceAs(stateB);
+
+        await accumulator.DisposeAsync();
+    }
+
+    [Test]
+    public async Task RegisterWithNextSequence_CurrentState_RefusesToClaimAheadOfAnInflightBatchOfThePreviousState()
+    {
+        // Another send loop claimed and registered a batch under the previous state after this
+        // loop last checked the tracker. The restart decision is made under the lock that
+        // registration takes, so it sees that batch and refuses: nothing is claimed or registered,
+        // so the caller holds its batch. Continuing the previous state's counter instead would
+        // send the later sequence on another connection than the unresolved batch, where the
+        // broker could receive it first. The partition restarts once the batch is answered.
+        var options = new ProducerOptions { BootstrapServers = ["localhost:9092"] };
+        var accumulator = new RecordAccumulator(options);
+        using var tracker = new PartitionInflightTracker(enablePruning: false);
+        var previous = new ProducerIdAndEpoch(100, 1);
+        var current = new ProducerIdAndEpoch(100, 2);
+        accumulator.PublishProducerState(previous);
+        accumulator.GetAndIncrementSequence(Tp0, 10, previous, out _);
+        var otherLoopState = (ProducerIdAndEpoch?)previous;
+        var otherLoopEntry = accumulator.RegisterWithNextSequence(tracker, Tp0, 5, -1, ref otherLoopState, out _)!;
+        accumulator.PublishProducerState(current);
+
+        var stampState = (ProducerIdAndEpoch?)current;
+        var entry = accumulator.RegisterWithNextSequence(tracker, Tp0, 2, -1, ref stampState, out var restarted);
+        await Assert.That(entry).IsNull();
+        await Assert.That(restarted).IsFalse();
+        await Assert.That(stampState).IsSameReferenceAs(current);
+        await Assert.That(tracker.GetInflightCount(Tp0)).IsEqualTo(1);
+        await Assert.That(accumulator.HasStaleSequenceState(Tp0, current)).IsTrue();
+
+        // Nothing was claimed: a loop still under the previous state continues right after the
+        // other loop's batch.
+        var previousState = (ProducerIdAndEpoch?)previous;
+        var previousEntry = accumulator.RegisterWithNextSequence(tracker, Tp0, 1, -1, ref previousState, out _)!;
+        await Assert.That(previousEntry.BaseSequence).IsEqualTo(15);
+        await Assert.That(previousState).IsSameReferenceAs(previous);
+
+        tracker.Complete(otherLoopEntry);
+        tracker.Complete(previousEntry);
+        stampState = current;
+        var restartEntry = accumulator.RegisterWithNextSequence(tracker, Tp0, 3, -1, ref stampState, out restarted)!;
+        await Assert.That(restartEntry.BaseSequence).IsEqualTo(0);
+        await Assert.That(restarted).IsTrue();
+        await Assert.That(stampState).IsSameReferenceAs(current);
+
+        await accumulator.DisposeAsync();
+    }
+
+    [Test]
+    public async Task RegisterWithNextSequence_RejectedBatch_RestartsAheadOfItsUnansweredSuccessors()
+    {
+        // A batch that was sent and definitively rejected (its entry completed) restarts the
+        // partition ahead of later batches still in flight, as the send loop's hold allows: they
+        // cannot have been appended after it and are re-stamped behind it.
+        var options = new ProducerOptions { BootstrapServers = ["localhost:9092"] };
+        var accumulator = new RecordAccumulator(options);
+        using var tracker = new PartitionInflightTracker(enablePruning: false);
+        var previous = new ProducerIdAndEpoch(100, 1);
+        var current = new ProducerIdAndEpoch(100, 2);
+        accumulator.PublishProducerState(previous);
+        var state = (ProducerIdAndEpoch?)previous;
+        var rejected = accumulator.RegisterWithNextSequence(tracker, Tp0, 5, -1, ref state, out _)!;
+        var successor = accumulator.RegisterWithNextSequence(tracker, Tp0, 5, -1, ref state, out _)!;
+        accumulator.PublishProducerState(current);
+        var rejectedSequence = rejected.BaseSequence;
+        tracker.Complete(rejected);
+
+        var stampState = (ProducerIdAndEpoch?)current;
+        var entry = accumulator.RegisterWithNextSequence(tracker, Tp0, 5, rejectedSequence, ref stampState, out var restarted)!;
+        await Assert.That(successor.BaseSequence).IsEqualTo(5);
+        await Assert.That(entry.BaseSequence).IsEqualTo(0);
+        await Assert.That(restarted).IsTrue();
+        await Assert.That(stampState).IsSameReferenceAs(current);
+
+        await accumulator.DisposeAsync();
+    }
+
+    [Test]
+    public async Task RegisterWithNextSequence_AfterRejectedHeadRestart_NothingClaimsAheadOfSuccessorsUntilTheyAreRestamped()
+    {
+        // The rejected head restarts the partition ahead of its successors S1 and S2, still in
+        // flight under the previous state (possibly in another send loop). They are re-stamped
+        // behind it, in order; a fresh batch claiming first would land ahead of them.
+        var options = new ProducerOptions { BootstrapServers = ["localhost:9092"] };
+        var accumulator = new RecordAccumulator(options);
+        using var tracker = new PartitionInflightTracker(enablePruning: false);
+        var previous = new ProducerIdAndEpoch(100, 1);
+        var current = new ProducerIdAndEpoch(100, 2);
+        accumulator.PublishProducerState(previous);
+        var state = (ProducerIdAndEpoch?)previous;
+        var rejected = accumulator.RegisterWithNextSequence(tracker, Tp0, 5, -1, ref state, out _)!;
+        var successor1 = accumulator.RegisterWithNextSequence(tracker, Tp0, 5, -1, ref state, out _)!;
+        var successor2 = accumulator.RegisterWithNextSequence(tracker, Tp0, 5, -1, ref state, out _)!;
+        accumulator.PublishProducerState(current);
+        tracker.Complete(rejected);
+
+        var stampState = (ProducerIdAndEpoch?)current;
+        var head = accumulator.RegisterWithNextSequence(tracker, Tp0, 5, 0, ref stampState, out var restarted)!;
+        await Assert.That(head.BaseSequence).IsEqualTo(0);
+        await Assert.That(restarted).IsTrue();
+
+        // A fresh batch, under the current state or a loop's outdated one, is refused.
+        stampState = current;
+        await Assert.That(accumulator.RegisterWithNextSequence(tracker, Tp0, 1, -1, ref stampState, out _)).IsNull();
+        stampState = previous;
+        await Assert.That(accumulator.RegisterWithNextSequence(tracker, Tp0, 1, -1, ref stampState, out _)).IsNull();
+        await Assert.That(tracker.IsRestartFencedBefore(Tp0, -1)).IsTrue();
+        await Assert.That(tracker.AnyInflightPartition(static (_, _) => false, 0)).IsTrue();
+
+        // S2 rejected first: it waits for S1, which comes before it.
+        tracker.Complete(successor2);
+        stampState = current;
+        await Assert.That(accumulator.RegisterWithNextSequence(tracker, Tp0, 5, 10, ref stampState, out _)).IsNull();
+
+        // S1, then S2, are re-stamped right behind the head; then the fence is lifted.
+        tracker.Complete(successor1);
+        stampState = current;
+        var restamped1 = accumulator.RegisterWithNextSequence(tracker, Tp0, 5, 5, ref stampState, out restarted)!;
+        await Assert.That(restamped1.BaseSequence).IsEqualTo(5);
+        await Assert.That(restarted).IsFalse();
+        var restamped2 = accumulator.RegisterWithNextSequence(tracker, Tp0, 5, 10, ref stampState, out _)!;
+        await Assert.That(restamped2.BaseSequence).IsEqualTo(10);
+        var fresh = accumulator.RegisterWithNextSequence(tracker, Tp0, 1, -1, ref stampState, out _)!;
+        await Assert.That(fresh.BaseSequence).IsEqualTo(15);
+        await Assert.That(stampState).IsSameReferenceAs(current);
+        await Assert.That(tracker.IsRestartFencedBefore(Tp0, -1)).IsFalse();
+        await Assert.That(tracker.AnyInflightPartition(static (_, _) => false, 0)).IsFalse();
+
+        await accumulator.DisposeAsync();
+    }
     #endregion
 
     #region PartitionInflightTracker.IsHeadOfLine Tests

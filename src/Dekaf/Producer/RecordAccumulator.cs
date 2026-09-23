@@ -1399,10 +1399,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// One partition's sequence counter plus the producer state under which it was last restarted
     /// at 0. The broker accepts the first batch of a new producer epoch on a partition only with
     /// sequence 0 (<c>ProducerAppendInfo.checkSequence</c>), so every partition restarts once per
-    /// producer state, lazily, the first time the send loop stamps a batch under that state
-    /// (Java's <c>maybeUpdateProducerIdAndEpoch</c>); the stamp records which state already did.
-    /// Stamps are written only under <see cref="_sequenceRestartLock"/>; the fast path reads the
-    /// stamp once and touches <see cref="Next"/> alone.
+    /// producer state, lazily, on the first batch stamped under that state once nothing sent
+    /// before it is in flight (Java's <c>maybeUpdateProducerIdAndEpoch</c>); the stamp records
+    /// which state the counter's sequences belong to. The fast path reads the stamp once and
+    /// touches <see cref="Next"/> alone. Stamps are written by the restart decision, which takes
+    /// no lock of its own: the send loops make it inside <see cref="RegisterWithNextSequence"/>,
+    /// under the partition's inflight-tracker lock, which already serializes every claim of the
+    /// partition across loops (a state the pruner removed refuses the claim before it runs, so two
+    /// tracker states of one partition never claim concurrently). The standalone
+    /// <see cref="GetAndIncrementSequence(TopicPartition, int, ProducerIdAndEpoch?, out bool)"/>
+    /// is for single-threaded tests and benchmarks.
     /// </summary>
     private sealed class PartitionSequence
     {
@@ -1415,30 +1421,28 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         public ProducerIdAndEpoch? ResetState;
     }
 
-    // Serializes stamp writes: the producer's publication of a new state and the send loops'
-    // restarts. Taken only when a partition's stamp differs from the state a batch is being
-    // stamped with, never on the steady-state path.
-    private readonly object _sequenceRestartLock = new();
-
     // The state the producer published last. Only this state may restart a partition: a send
     // loop that still holds the previous snapshot must not zero a counter that already hands
-    // out sequences under the current one. Null for producers without epoch recovery.
+    // out sequences under the current one. Null for producers without epoch recovery. Written
+    // under the producer's epoch-bump lock and read with Volatile.Read: a restart decided just
+    // before a publication is ordered before it, as if the publication came a moment later,
+    // and the partition then restarts again under the new state.
     private ProducerIdAndEpoch? _currentProducerState;
+
+    // Returned by ClaimSequence when a restart must wait: never a valid sequence.
+    private const int SequenceRestartPending = -1;
 
     /// <summary>
     /// Records <paramref name="state"/> as the state the producer now publishes to its send loops,
     /// without touching any counter: partitions restart under it lazily on their next send.
     /// </summary>
     internal void PublishProducerState(ProducerIdAndEpoch state)
-    {
-        lock (_sequenceRestartLock)
-            _currentProducerState = state;
-    }
+        => Volatile.Write(ref _currentProducerState, state);
 
     /// <summary>
     /// Gets the next base sequence number for a partition and increments by the record count,
-    /// without any producer-state restart: for transactional producers, which run no epoch
-    /// recovery, and for tests and benchmarks that need to manipulate a counter directly.
+    /// without any producer-state restart: for tests and benchmarks that need to manipulate a
+    /// counter directly.
     /// </summary>
     internal int GetAndIncrementSequence(TopicPartition topicPartition, int recordCount)
         => GetAndIncrementSequence(topicPartition, recordCount, null, out _);
@@ -1446,32 +1450,136 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Gets the next base sequence number for a partition and increments by the record count,
     /// restarting the counter at 0 first when <paramref name="state"/> is the producer's current
-    /// state and the partition was last restarted under an older one (or never): the broker
-    /// requires sequence 0 from every partition it holds state for under a new epoch, so
-    /// continuing the old counter would be rejected as an invalid sequence for the new epoch, and
-    /// every bump would re-stale every other active partition (#3342). The send loop calls this
-    /// for a partition only once nothing it sent under the previous state is pending.
-    /// <paramref name="restarted"/> reports the restart. Fast path: lock-free
-    /// ConcurrentDictionary.GetOrAdd (existing key), one stamp compare, one atomic increment.
-    /// Uses Interlocked.Add to be safe during leader migration when two BrokerSender threads
-    /// could call this concurrently for the same partition.
+    /// state and the partition was last restarted under an older one (or never), without regard
+    /// to batches in flight: for tests and benchmarks that drive a counter directly. The send loop
+    /// claims sequences through <see cref="RegisterWithNextSequence"/>, which checks the partition's
+    /// in-flight batches before a restart. Same fast path.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal int GetAndIncrementSequence(
+        TopicPartition topicPartition, int recordCount, ProducerIdAndEpoch? state, out bool restarted)
+        => ClaimSequence(
+            _sequenceNumbers.GetOrAdd(topicPartition, static _ => new PartitionSequence()),
+            recordCount, previousBaseSequence: -1, inflight: null, ref state, out restarted);
+
+    /// <summary>
+    /// Claims the next base sequence of a partition for a batch and registers the batch in
+    /// <paramref name="tracker"/>, both under the partition's tracker lock, and returns its entry
+    /// (<see cref="InflightEntry.BaseSequence"/> is the claimed sequence).
     /// <para/>
+    /// The broker requires sequence 0 from every partition it holds state for under a new epoch,
+    /// so each partition restarts at 0 once per producer state, lazily, on the first batch stamped
+    /// under that state (Java's <c>maybeUpdateProducerIdAndEpoch</c>, #3342). A restart must not
+    /// overtake a batch of the previous state that the broker may still receive, or the new
+    /// epoch's sequence 0 lands ahead of it and the partition is reordered (#3385). Every send loop
+    /// claims and registers under the same lock, so the restart decision sees each such batch of
+    /// any loop: a partition restarts only when <paramref name="state"/> is the current state and
+    /// no in-flight batch comes before <paramref name="previousBaseSequence"/> (negative for a
+    /// batch never sent: none at all).
+    /// <para/>
+    /// When <paramref name="state"/> is the current state but such a batch is still in flight, the
+    /// restart must wait: nothing is claimed or registered and null comes back, so the caller holds
+    /// the batch until that batch is answered. Continuing the previous epoch's counter instead
+    /// would not order the batch behind it: the in-flight batch was registered by another send
+    /// loop, so the two travel on different connections and the new leader could receive the
+    /// later sequence first and reject it as out of order.
+    /// <para/>
+    /// A batch that was sent and definitively rejected restarts the partition ahead of its
+    /// unanswered successors, which the broker cannot have appended after it. They are re-stamped
+    /// behind the restart, so the restart fences the partition
+    /// (<see cref="PartitionInflightTracker.FenceRestartLocked"/>): until each has been re-stamped
+    /// or answered, a batch never sent is refused like a restart that must wait, and a re-stamped
+    /// successor only claims once no earlier successor is still in flight.
+    /// <para/>
+    /// A caller whose snapshot is out of date, however many states ago, never restarts a partition:
+    /// the counter keeps handing out sequences of the state it was last restarted under, and
+    /// <paramref name="state"/> comes back as that state, which the batch must be stamped with (a
+    /// sequence is only valid on the wire under the epoch its counter belongs to).
+    /// <paramref name="restarted"/> reports a restart.
+    /// <para/>
+    /// Steady state (the counter already belongs to <paramref name="state"/>): one dictionary
+    /// lookup, one reference compare and one atomic add, moved inside the lock registration
+    /// already takes, plus one read of the partition's fence flag.
+    /// </summary>
+    internal InflightEntry? RegisterWithNextSequence(
+        PartitionInflightTracker tracker,
+        TopicPartition topicPartition,
+        int recordCount,
+        int previousBaseSequence,
+        ref ProducerIdAndEpoch? state,
+        out bool restarted)
+    {
+        var claim = new SequenceClaim(
+            this,
+            _sequenceNumbers.GetOrAdd(topicPartition, static _ => new PartitionSequence()),
+            recordCount,
+            previousBaseSequence,
+            state);
+        var entry = tracker.TryRegister(topicPartition, recordCount, ref claim);
+        state = claim.State;
+        restarted = claim.Restarted;
+        return entry;
+    }
+
+    /// <summary>
+    /// The claim <see cref="RegisterWithNextSequence"/> hands the tracker, run once under the
+    /// partition's lock. A struct, so the registration is specialized for it and nothing is boxed.
+    /// </summary>
+    private struct SequenceClaim(
+        RecordAccumulator accumulator,
+        PartitionSequence sequence,
+        int recordCount,
+        int previousBaseSequence,
+        ProducerIdAndEpoch? state) : IInflightSequenceClaim
+    {
+        public ProducerIdAndEpoch? State = state;
+        public bool Restarted;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool TryClaim(PartitionState partition, out int baseSequence)
+        {
+            // The partition restarted ahead of batches of an earlier state still in flight: they
+            // are re-stamped behind the restart, so nothing may claim a sequence ahead of them.
+            if (partition.RestartFenced && PartitionInflightTracker.IsRestartFencedLocked(partition, previousBaseSequence))
+            {
+                baseSequence = SequenceRestartPending;
+                return false;
+            }
+
+            baseSequence = accumulator.ClaimSequence(
+                sequence, recordCount, previousBaseSequence, partition, ref State, out Restarted);
+            return baseSequence != SequenceRestartPending;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int ClaimSequence(
+        PartitionSequence sequence,
+        int recordCount,
+        int previousBaseSequence,
+        PartitionState? inflight,
+        ref ProducerIdAndEpoch? state,
+        out bool restarted)
+    {
+        if (state is not null && !ReferenceEquals(Volatile.Read(ref sequence.ResetState), state))
+            return ClaimSequenceUnderOtherState(sequence, recordCount, previousBaseSequence, inflight, ref state, out restarted);
+
+        restarted = false;
+        return IncrementSequence(sequence, recordCount);
+    }
+
+    /// <summary>
     /// Sequences live in [0, int.MaxValue] and the one after int.MaxValue is 0 (Java's
     /// <c>DefaultRecordBatch.incrementSequence</c>). The counter itself runs through the whole
     /// 32-bit space and is reduced modulo 2^31 on the way out, which is the same sequence and
     /// needs no compare-and-swap loop. A partition reaches the end after 2^31 records under one
     /// epoch; without the wrap its base sequence went negative, which the broker rejects and
-    /// the send loop reads as "not assigned yet".
+    /// the send loop reads as "not assigned yet". Interlocked: during a leader move two send
+    /// loops can claim for the same partition, and the transactional reset zeroes it.
     /// </summary>
-    internal int GetAndIncrementSequence(
-        TopicPartition topicPartition, int recordCount, ProducerIdAndEpoch? state, out bool restarted)
-    {
-        var sequence = _sequenceNumbers.GetOrAdd(topicPartition, static _ => new PartitionSequence());
-        restarted = state is not null
-            && !ReferenceEquals(Volatile.Read(ref sequence.ResetState), state)
-            && TryRestartSequence(sequence, state);
-        return unchecked(Interlocked.Add(ref sequence.Next, recordCount) - recordCount) & int.MaxValue;
-    }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int IncrementSequence(PartitionSequence sequence, int recordCount)
+        => unchecked(Interlocked.Add(ref sequence.Next, recordCount) - recordCount) & int.MaxValue;
 
     /// <summary>
     /// The sequence <paramref name="offset"/> records after <paramref name="baseSequence"/>,
@@ -1498,20 +1606,55 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         => _sequenceNumbers.TryGetValue(topicPartition, out var sequence)
             && !ReferenceEquals(Volatile.Read(ref sequence.ResetState), state);
 
-    private bool TryRestartSequence(PartitionSequence sequence, ProducerIdAndEpoch state)
+    /// <summary>
+    /// The counter belongs to a state other than <paramref name="state"/>. Restarts it under
+    /// <paramref name="state"/> when that is the current state and nothing in
+    /// <paramref name="inflight"/> (whose lock the caller holds, or null) comes before
+    /// <paramref name="previousBaseSequence"/>, and returns <see cref="SequenceRestartPending"/>
+    /// without claiming when the current state's restart must wait for such a batch. A caller with
+    /// an outdated state gets the counter's next sequence and <paramref name="state"/> becomes the
+    /// state the counter belongs to (see <see cref="RegisterWithNextSequence"/>). A counter that
+    /// never belonged to any state is adopted by the first one to claim from it. Takes no lock:
+    /// the caller serializes the partition's claims (the tracker lock), so no other claim comes
+    /// between the decision and the sequence. Runs once per partition per state, and while a
+    /// partition waits for its restart.
+    /// </summary>
+    private int ClaimSequenceUnderOtherState(
+        PartitionSequence sequence,
+        int recordCount,
+        int previousBaseSequence,
+        PartitionState? inflight,
+        ref ProducerIdAndEpoch? state,
+        out bool restarted)
     {
-        lock (_sequenceRestartLock)
+        var resetState = sequence.ResetState;
+        restarted = false;
+        if (ReferenceEquals(state, Volatile.Read(ref _currentProducerState)))
         {
-            // Already restarted under this state, or the caller read the producer state before
-            // another send loop advanced it and must not zero sequences that may already be in
-            // flight under the newer state.
-            if (ReferenceEquals(sequence.ResetState, state) || !ReferenceEquals(state, _currentProducerState))
-                return false;
+            if (inflight is not null && PartitionInflightTracker.HasInflightBeforeLocked(inflight, previousBaseSequence))
+                return SequenceRestartPending;
 
             Interlocked.Exchange(ref sequence.Next, 0);
             Volatile.Write(ref sequence.ResetState, state);
-            return true;
+            restarted = true;
+
+            // Whatever is still in flight comes after this batch (a rejected head restarting the
+            // partition ahead of its unanswered successors). Those successors are rejected and
+            // re-stamped behind it, so the partition is fenced until they have been: a fresh
+            // batch claiming the next sequence first would reorder them (#3385).
+            if (inflight is not null)
+                PartitionInflightTracker.FenceRestartLocked(inflight);
         }
+        else if (resetState is not null)
+        {
+            state = resetState;
+        }
+        else
+        {
+            Volatile.Write(ref sequence.ResetState, state);
+        }
+
+        return IncrementSequence(sequence, recordCount);
     }
 
     /// <summary>
@@ -1540,20 +1683,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     internal void ResetSequenceNumbers(ProducerIdAndEpoch? state)
     {
-        lock (_sequenceRestartLock)
+        if (state is not null)
         {
-            if (state is not null)
-            {
-                _currentProducerState = state;
-                return;
-            }
+            PublishProducerState(state);
+            return;
+        }
 
-            foreach (var kvp in _sequenceNumbers)
-            {
-                var sequence = kvp.Value;
-                Interlocked.Exchange(ref sequence.Next, 0);
-                Volatile.Write(ref sequence.ResetState, null);
-            }
+        // Transactional producers claim without a state, so their claims never write a stamp:
+        // nothing here races a restart decision.
+        foreach (var kvp in _sequenceNumbers)
+        {
+            var sequence = kvp.Value;
+            Interlocked.Exchange(ref sequence.Next, 0);
+            Volatile.Write(ref sequence.ResetState, null);
         }
     }
 

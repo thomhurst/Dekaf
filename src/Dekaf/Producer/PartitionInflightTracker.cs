@@ -11,7 +11,7 @@ namespace Dekaf.Producer;
 internal sealed class InflightEntry
 {
     public TopicPartition TopicPartition { get; private set; }
-    public int BaseSequence { get; private set; }
+    public int BaseSequence { get; internal set; }
     public int RecordCount { get; private set; }
 
     /// <summary>
@@ -26,6 +26,13 @@ internal sealed class InflightEntry
     // Protected by the per-partition SpinLock — both Complete and FailAll acquire
     // the same lock before checking/clearing this flag, so plain bool is sufficient.
     internal bool InList;
+
+    /// <summary>
+    /// Set under the partition lock when the partition restarted its sequences under a new
+    /// producer state while this entry, a batch of an earlier state, was still in flight (see
+    /// <see cref="PartitionState.RestartFenced"/>). Cleared when the entry returns to the pool.
+    /// </summary>
+    internal bool PrecedesRestart;
 
     /// <summary>
     /// Checks and clears the InList flag under the partition lock.
@@ -94,6 +101,7 @@ internal sealed class InflightEntry
         Previous = null;
         Next = null;
         InList = false;
+        PrecedesRestart = false;
         _completionSignal = null;
     }
 }
@@ -122,6 +130,50 @@ internal sealed class PartitionState
     /// Zero means the partition is active (has in-flight entries).
     /// </summary>
     public long LastIdleTicks;
+
+    /// <summary>
+    /// Set under <see cref="Lock"/> once the pruner has removed this state from the tracker's
+    /// dictionary. A registration that resolved the state before the removal sees it under the
+    /// same lock and retries against a fresh state, so no in-flight entry ever lives on a state
+    /// that dictionary lookups (FailAll, GetInflightCount, the sequence-restart queries) cannot see.
+    /// </summary>
+    public bool Removed;
+
+    /// <summary>
+    /// Set under <see cref="Lock"/> when the partition restarted its sequences at 0 under a new
+    /// producer state ahead of batches of an earlier state that were still in flight (a rejected
+    /// head restarts it ahead of its unanswered successors); those entries are marked
+    /// <see cref="InflightEntry.PrecedesRestart"/>. The successors are re-stamped behind the
+    /// restart, so until they have been, no batch may claim a sequence ahead of them (#3385).
+    /// Lifted lazily, by the next check that finds no marked entry left. False outside that
+    /// recovery window, so the claim path pays one field read.
+    /// </summary>
+    public bool RestartFenced;
+}
+
+/// <summary>
+/// Supplies the base sequence of a batch being registered, called under the partition's lock
+/// before the entry is linked (see <see cref="PartitionInflightTracker.TryRegister{TClaim}"/>).
+/// </summary>
+internal interface IInflightSequenceClaim
+{
+    /// <summary>
+    /// Supplies the base sequence for the entry being registered, or returns false to refuse the
+    /// registration (nothing is claimed and the entry is not linked). <paramref name="partition"/>'s
+    /// lock is held; its list holds every other in-flight entry of the partition.
+    /// </summary>
+    bool TryClaim(PartitionState partition, out int baseSequence);
+}
+
+/// <summary>A base sequence the caller assigned before registering.</summary>
+internal readonly struct FixedSequence(int baseSequence) : IInflightSequenceClaim
+{
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryClaim(PartitionState partition, out int sequence)
+    {
+        sequence = baseSequence;
+        return true;
+    }
 }
 
 /// <summary>
@@ -205,6 +257,14 @@ internal sealed class PartitionInflightTracker : IDisposable
     private readonly InflightEntryPool _pool;
     private readonly Timer? _pruneTimer;
 
+    /// <summary>
+    /// Wake-ups of send loops holding a sequence restart for another loop's batch
+    /// (<see cref="AddCompletionWaiter"/>). Empty outside that recovery window, so
+    /// <see cref="Complete"/> and <see cref="FailAll"/> pay one reference read and a length check.
+    /// Replaced copy-on-write, never mutated in place.
+    /// </summary>
+    private Action[] _completionWaiters = [];
+
     public PartitionInflightTracker(InflightEntryPool? pool = null, bool enablePruning = true)
     {
         _pool = pool ?? new InflightEntryPool();
@@ -222,19 +282,82 @@ internal sealed class PartitionInflightTracker : IDisposable
     /// Registers a batch as in-flight. Rents an entry from the pool and appends to partition's tail.
     /// Called from the single-threaded drain loop, so registration order matches sequence order.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public InflightEntry Register(TopicPartition topicPartition, int baseSequence, int recordCount)
     {
+        var claim = new FixedSequence(baseSequence);
+        return TryRegister(topicPartition, recordCount, ref claim)!;
+    }
+
+    /// <summary>
+    /// Registers a batch whose base sequence <paramref name="claim"/> takes under the partition's
+    /// lock, so the sequence is claimed and the entry becomes visible to every other send loop in
+    /// one step: a loop deciding under the same lock whether the partition may restart its
+    /// sequences sees every sequence already handed out that the broker could still receive
+    /// (#3385). Returns null, with nothing claimed or registered, when the claim refuses. Same
+    /// cost as <see cref="Register(TopicPartition, int, int)"/>; the claim is a struct, so the
+    /// call is specialized and nothing is boxed.
+    /// </summary>
+    public InflightEntry? TryRegister<TClaim>(TopicPartition topicPartition, int recordCount, ref TClaim claim)
+        where TClaim : struct, IInflightSequenceClaim
+    {
         var entry = _pool.Rent();
-        entry.Initialize(topicPartition, baseSequence, recordCount);
+        entry.Initialize(topicPartition, -1, recordCount);
 
-        var state = _partitions.GetOrAdd(topicPartition, static _ => new PartitionState());
-        entry.State = state;
+        // A state the pruner removed between GetOrAdd and the lock is refused before anything is
+        // claimed; the retry resolves (or creates) the state now in the dictionary. Pruning only
+        // removes states idle for the full TTL, so the loop body runs a second time only in that race.
+        bool claimed;
+        while (!TryAppend(_partitions.GetOrAdd(topicPartition, static _ => new PartitionState()), entry, ref claim, out claimed))
+        {
+        }
 
+        if (claimed)
+            return entry;
+
+        // Refused: a sequence restart that must wait. Recovery only, never steady state.
+        _pool.Return(entry);
+        return null;
+    }
+
+    /// <summary>
+    /// Appends <paramref name="entry"/> to <paramref name="state"/>'s list unless the pruner has
+    /// already removed the state from the dictionary. Internal for deterministic race tests.
+    /// </summary>
+    internal static bool TryAppend(PartitionState state, InflightEntry entry)
+    {
+        var claim = new FixedSequence(entry.BaseSequence);
+        return TryAppend(state, entry, ref claim, out _);
+    }
+
+    /// <summary>
+    /// False when the pruner removed <paramref name="state"/> (the caller retries on the
+    /// dictionary's current state); otherwise true, with <paramref name="claimed"/> reporting
+    /// whether the claim supplied a sequence and the entry was linked.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool TryAppend<TClaim>(PartitionState state, InflightEntry entry, ref TClaim claim, out bool claimed)
+        where TClaim : struct, IInflightSequenceClaim
+    {
+        claimed = false;
         var lockTaken = false;
         try
         {
             state.Lock.Enter(ref lockTaken);
 
+            if (state.Removed)
+            {
+                return false;
+            }
+
+            if (!claim.TryClaim(state, out var baseSequence))
+            {
+                return true;
+            }
+
+            claimed = true;
+            entry.BaseSequence = baseSequence;
+            entry.State = state;
             entry.InList = true;
 
             // Clear idle timestamp — partition is now active
@@ -255,13 +378,12 @@ internal sealed class PartitionInflightTracker : IDisposable
             }
 
             state.Count++;
+            return true;
         }
         finally
         {
             if (lockTaken) state.Lock.Exit();
         }
-
-        return entry;
     }
 
     /// <summary>
@@ -330,6 +452,83 @@ internal sealed class PartitionInflightTracker : IDisposable
         entry.SignalComplete();
 
         _pool.Return(entry);
+        WakeCompletionWaiters();
+    }
+
+    /// <summary>
+    /// Asks <see cref="Complete"/> and <see cref="FailAll"/> to invoke <paramref name="wake"/>
+    /// whenever an entry leaves the tracker. A send loop holds a partition's sequence restart
+    /// while an older batch of the partition is in flight, and that batch may belong to another
+    /// send loop (#3385), whose response does not reach the holding loop's own wake-ups. The
+    /// holder registers before it checks the tracker, so an entry answered after the check
+    /// still wakes it. Idempotent; recovery only, so the copy-on-write allocation is per hold.
+    /// </summary>
+    internal void AddCompletionWaiter(Action wake)
+    {
+        while (true)
+        {
+            var current = Volatile.Read(ref _completionWaiters);
+            if (IndexOfWaiter(current, wake) >= 0)
+                return;
+
+            var updated = new Action[current.Length + 1];
+            current.CopyTo(updated, 0);
+            updated[^1] = wake;
+            if (ReferenceEquals(Interlocked.CompareExchange(ref _completionWaiters, updated, current), current))
+                return;
+        }
+    }
+
+    /// <summary>Stops invoking <paramref name="wake"/>; see <see cref="AddCompletionWaiter"/>.</summary>
+    internal void RemoveCompletionWaiter(Action wake)
+    {
+        while (true)
+        {
+            var current = Volatile.Read(ref _completionWaiters);
+            var index = IndexOfWaiter(current, wake);
+            if (index < 0)
+                return;
+
+            Action[] updated;
+            if (current.Length == 1)
+            {
+                updated = [];
+            }
+            else
+            {
+                updated = new Action[current.Length - 1];
+                Array.Copy(current, 0, updated, 0, index);
+                Array.Copy(current, index + 1, updated, index, current.Length - index - 1);
+            }
+
+            if (ReferenceEquals(Interlocked.CompareExchange(ref _completionWaiters, updated, current), current))
+                return;
+        }
+    }
+
+    private static int IndexOfWaiter(Action[] waiters, Action wake)
+    {
+        for (var i = 0; i < waiters.Length; i++)
+        {
+            if (ReferenceEquals(waiters[i], wake))
+                return i;
+        }
+
+        return -1;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void WakeCompletionWaiters()
+    {
+        var waiters = Volatile.Read(ref _completionWaiters);
+        if (waiters.Length != 0)
+            WakeCompletionWaitersSlow(waiters);
+    }
+
+    private static void WakeCompletionWaitersSlow(Action[] waiters)
+    {
+        foreach (var wake in waiters)
+            wake();
     }
 
     /// <summary>
@@ -435,6 +634,8 @@ internal sealed class PartitionInflightTracker : IDisposable
             entry.SignalFailed(exception);
             _pool.Return(entry);
         }
+
+        WakeCompletionWaiters();
     }
 
     /// <summary>
@@ -462,6 +663,134 @@ internal sealed class PartitionInflightTracker : IDisposable
         {
             if (lockTaken) state.Lock.Exit();
         }
+    }
+
+    /// <summary>
+    /// True when the partition has an in-flight batch whose base sequence comes before
+    /// <paramref name="baseSequence"/>, or any in-flight batch at all when
+    /// <paramref name="baseSequence"/> is negative (a batch that was never sent). The tracker is
+    /// shared by every send loop, so this sees batches another loop sent, or has rerouted after a
+    /// leader move. Walks the partition's list under its lock: sequence-restart recovery only.
+    /// </summary>
+    public bool HasInflightBefore(TopicPartition topicPartition, int baseSequence)
+    {
+        if (!_partitions.TryGetValue(topicPartition, out var state))
+            return false;
+
+        var lockTaken = false;
+        try
+        {
+            state.Lock.Enter(ref lockTaken);
+            return HasInflightBeforeLocked(state, baseSequence);
+        }
+        finally
+        {
+            if (lockTaken) state.Lock.Exit();
+        }
+    }
+
+    /// <summary>
+    /// <see cref="HasInflightBefore"/> for a caller that already holds <paramref name="state"/>'s
+    /// lock (an <see cref="IInflightSequenceClaim"/>).
+    /// </summary>
+    internal static bool HasInflightBeforeLocked(PartitionState state, int baseSequence)
+    {
+        for (var entry = state.Head; entry is not null; entry = entry.Next)
+        {
+            if (baseSequence < 0 || !RecordAccumulator.IsSequenceAtOrAfter(entry.BaseSequence, baseSequence))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Marks every entry in <paramref name="state"/>'s list as a batch that precedes the
+    /// partition's sequence restart, and fences the partition until they are resolved (see
+    /// <see cref="PartitionState.RestartFenced"/>). Called under the lock by the claim that
+    /// restarts the partition, before its own entry is linked. Recovery only.
+    /// </summary>
+    internal static void FenceRestartLocked(PartitionState state)
+    {
+        if (state.Head is null)
+            return;
+
+        for (var entry = state.Head; entry is not null; entry = entry.Next)
+            entry.PrecedesRestart = true;
+
+        Volatile.Write(ref state.RestartFenced, true);
+    }
+
+    /// <summary>
+    /// True when a batch that preceded the partition's sequence restart is still in flight ahead
+    /// of a batch about to claim a sequence: any such batch for one never sent (negative
+    /// <paramref name="baseSequence"/>), or one with an earlier sequence of the same earlier state
+    /// for a successor being re-stamped, so successors are re-stamped in their original order.
+    /// Lifts the fence once no marked entry is left. The caller holds <paramref name="state"/>'s
+    /// lock. Recovery only.
+    /// </summary>
+    internal static bool IsRestartFencedLocked(PartitionState state, int baseSequence)
+    {
+        var anyMarked = false;
+        for (var entry = state.Head; entry is not null; entry = entry.Next)
+        {
+            if (!entry.PrecedesRestart)
+                continue;
+
+            if (baseSequence < 0 || !RecordAccumulator.IsSequenceAtOrAfter(entry.BaseSequence, baseSequence))
+                return true;
+
+            anyMarked = true;
+        }
+
+        if (!anyMarked)
+            Volatile.Write(ref state.RestartFenced, false);
+
+        return false;
+    }
+
+    /// <summary>
+    /// <see cref="IsRestartFencedLocked"/> for a partition by key, taking its lock only while the
+    /// fence is up.
+    /// </summary>
+    public bool IsRestartFencedBefore(TopicPartition topicPartition, int baseSequence)
+        => _partitions.TryGetValue(topicPartition, out var state) && IsRestartFenced(state, baseSequence);
+
+    private static bool IsRestartFenced(PartitionState state, int baseSequence)
+    {
+        if (!Volatile.Read(ref state.RestartFenced))
+            return false;
+
+        var lockTaken = false;
+        try
+        {
+            state.Lock.Enter(ref lockTaken);
+            return IsRestartFencedLocked(state, baseSequence);
+        }
+        finally
+        {
+            if (lockTaken) state.Lock.Exit();
+        }
+    }
+
+    /// <summary>
+    /// True when any partition with an in-flight batch satisfies <paramref name="predicate"/> or
+    /// is fenced behind batches that preceded its sequence restart
+    /// (<see cref="PartitionState.RestartFenced"/>). Enumerates every tracked partition:
+    /// sequence-restart recovery only, never steady state.
+    /// </summary>
+    public bool AnyInflightPartition<TArg>(Func<TopicPartition, TArg, bool> predicate, TArg arg)
+    {
+        foreach (var kvp in _partitions)
+        {
+            // Count is written under the partition lock; the lock release publishes it.
+            var state = kvp.Value;
+            if (Volatile.Read(ref state.Count) > 0
+                && (IsRestartFenced(state, baseSequence: -1) || predicate(kvp.Key, arg)))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -527,13 +856,11 @@ internal sealed class PartitionInflightTracker : IDisposable
             }
 
             // Double-check under lock: a concurrent Register may have reactivated this partition.
-            // TryRemove is inside the lock to close the window where Register's GetOrAdd
-            // returns the existing state, then blocks on the SpinLock while the pruner removes it.
-            // A narrow race remains: Register's GetOrAdd can resolve *before* the pruner acquires
-            // the lock, causing the entry to reference a state that gets removed from the dict.
-            // This is benign — Complete/WaitForPredecessor/IsHeadOfLine use stored entry.State
-            // and work correctly; only FailAll (which targets Count>0 partitions the pruner
-            // won't touch) and GetInflightCount would miss the orphaned state.
+            // TryRemove and the Removed flag are set inside the lock, so a Register whose
+            // GetOrAdd resolved this state before the removal sees Removed under the same lock
+            // and retries against the dictionary's current state: an active entry never lives
+            // on a state that dictionary lookups (FailAll, GetInflightCount, HasInflightBefore,
+            // AnyInflightPartition) cannot see.
             var lockTaken = false;
             try
             {
@@ -551,7 +878,10 @@ internal sealed class PartitionInflightTracker : IDisposable
                     continue;
                 }
 
-                _partitions.TryRemove(kvp);
+                if (_partitions.TryRemove(kvp))
+                {
+                    state.Removed = true;
+                }
             }
             finally
             {
