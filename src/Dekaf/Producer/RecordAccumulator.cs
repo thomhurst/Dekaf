@@ -1305,6 +1305,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal Action? AfterTwoPhaseRotationCompletedForTest;
     internal Action? PurgePendingAppendsGuardHeldForTest;
     internal Action? BeforeFailUnpublishedCompletedBatchForTest;
+    internal Action? AfterReservedAppendEncodedForTest;
 
     /// <summary>
     /// True after CloseAsync has been called. Used by the sender loop to know
@@ -4406,12 +4407,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             valueIsNull,
                             headers,
                             headerCount);
+                        AfterReservedAppendEncodedForTest?.Invoke();
 
                         var disposedAfterReserve = false;
                         {
                             using var guard = new SpinLockGuard(ref pd.Lock);
 
-                            if (Volatile.Read(ref _disposed) != 0)
+                            // This lock hold publishes the record, so the transaction checks made
+                            // at reservation are repeated here: encoding ran outside the lock, and
+                            // an abort, or a BeginTransaction that advanced the generation, can
+                            // have happened since.
+                            if (Volatile.Read(ref _disposed) != 0
+                                || Volatile.Read(ref _transactionalAppendsClosed) != 0
+                                || IsStaleTransactionalGeneration(transactionalGeneration))
                             {
                                 PartitionBatch.CancelReservedAppend(reservedAppend);
                                 ClearAppendAndRotationInProgressUnderLock();
@@ -4458,6 +4466,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         if (disposedAfterReserve)
                         {
                             ReleaseOwnedAppendState();
+                            ThrowIfTransactionalAppendRejected();
                             return false;
                         }
 

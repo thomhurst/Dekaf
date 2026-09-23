@@ -939,6 +939,43 @@ public class RecordAccumulatorTests
     }
 
     /// <summary>
+    /// The two-phase span append (records with headers) checks the transaction fences when it
+    /// reserves space, encodes outside the partition lock, and publishes the record in a second
+    /// lock hold. A BeginTransaction that advances the generation between the two must reject the
+    /// record at the publishing hold, with its reservation cancelled and its memory returned.
+    /// </summary>
+    [Test]
+    public async Task AppendFromSpans_TwoPhase_GenerationAdvancedDuringEncoding_RejectsAtCommit()
+    {
+        var accumulator = new RecordAccumulator(CreateTestOptions());
+        try
+        {
+            // The accumulator owns (and returns to the pool) the header array of an append.
+            var headers = ProducerContainerPools.Headers.Rent(1);
+            headers[0] = new Header("h", new byte[] { 1 });
+            var admitted = accumulator.TransactionalAppendGeneration;
+            accumulator.AfterReservedAppendEncodedForTest = () =>
+            {
+                accumulator.AfterReservedAppendEncodedForTest = null;
+                accumulator.AdvanceTransactionalAppendGeneration();
+            };
+
+            var exception = await Assert.That(async () => await accumulator.AppendFromSpansAsync(
+                    "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    "key"u8.ToArray(), keyIsNull: false, "value"u8.ToArray(), valueIsNull: false,
+                    headers, headerCount: 1, callback: null, CancellationToken.None,
+                    partitionCount: 0, transactionalGeneration: admitted))
+                .Throws<ProduceException>();
+            await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    /// <summary>
     /// When an abort closes appends while a two-phase rotation holds a completed batch, the
     /// appender fails that unpublished batch. The rotation gate must stay set until the batch's
     /// records have failed, so a concurrent purge (and the abort waiting on it) cannot finish first.
