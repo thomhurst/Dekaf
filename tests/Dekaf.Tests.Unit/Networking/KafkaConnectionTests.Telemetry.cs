@@ -125,7 +125,7 @@ public sealed partial class KafkaConnectionTests
 
     [Test]
     [Timeout(10_000)]
-    public async Task SharedControlObservation_ResponseCancellation_RecordsTelemetryAndStopsOnlyTheResponseWait(
+    public async Task ResponseCancellationAfterWrite_RecordsTelemetryAndStopsOnlyTheResponseWait(
         CancellationToken cancellationToken)
     {
         using var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -140,7 +140,7 @@ public sealed partial class KafkaConnectionTests
 
         // Answered: the shared collector records the request's latency.
         var answeredContext = new KafkaRequestWriteContext(responseCancellation.Token);
-        var answered = connection.SendWithTelemetryAsync<ApiVersionsRequest, ApiVersionsResponse>(
+        var answered = connection.SendWithResponseCancellationAfterWriteAsync<ApiVersionsRequest, ApiVersionsResponse>(
             TelemetryControlRequest(), 3, collector, answeredContext, cancellationToken).AsTask();
         var frame = await ReadRequestFrameAsync(client.GetStream(), cancellationToken);
         await client.GetStream().WriteAsync(
@@ -154,13 +154,21 @@ public sealed partial class KafkaConnectionTests
 
         // Unanswered: once written, the response token (not the send token) ends the wait.
         var unansweredContext = new KafkaRequestWriteContext(responseCancellation.Token);
-        var unanswered = connection.SendWithTelemetryAsync<ApiVersionsRequest, ApiVersionsResponse>(
+        var unanswered = connection.SendWithResponseCancellationAfterWriteAsync<ApiVersionsRequest, ApiVersionsResponse>(
             TelemetryControlRequest(), 3, collector, unansweredContext, cancellationToken).AsTask();
         await ReadRequestFrameAsync(client.GetStream(), cancellationToken);
         await Assert.That(unansweredContext.WriteStarted).IsTrue();
         await responseCancellation.CancelAsync();
         await Assert.ThrowsAsync<OperationCanceledException>(async () => await unanswered);
         await Assert.That(GetPrivateField<int>(connection, "_pendingRequestCount")).IsEqualTo(0);
+
+        // Already cancelled response token: the frame is still written in full, then the wait ends.
+        var cancelledContext = new KafkaRequestWriteContext(responseCancellation.Token);
+        var cancelled = connection.SendWithResponseCancellationAfterWriteAsync<ApiVersionsRequest, ApiVersionsResponse>(
+            TelemetryControlRequest(), 3, collector, cancelledContext, cancellationToken).AsTask();
+        await ReadRequestFrameAsync(client.GetStream(), cancellationToken);
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await cancelled);
+        await Assert.That(cancelledContext.WriteStarted).IsTrue();
     }
 
     private static ApiVersionsRequest TelemetryControlRequest() =>

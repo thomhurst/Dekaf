@@ -3362,16 +3362,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 ConsumerGroupHeartbeatRequest.HighestSupportedVersion);
 
             ConsumerGroupHeartbeatResponse response;
-            if (responseCancellationToken.CanBeCanceled &&
-                connection is IKafkaRequestCancellationConnection responseCancellable)
+            if (responseCancellationToken.CanBeCanceled && connection is KafkaConnection kafkaConnection)
             {
-                // cancellationToken bounds getting the request onto the wire; once it is written,
-                // only responseCancellationToken bounds the wait for the answer, which the leave
-                // does not need to take effect.
+                // cancellationToken bounds getting the request onto the wire, to the end of the
+                // frame write; after that only responseCancellationToken bounds the wait for the
+                // answer, which the leave does not need to take effect.
                 writeContext = new KafkaRequestWriteContext(responseCancellationToken);
-                response = await responseCancellable
-                    .SendWithClientTelemetryAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
-                        request, version, writeContext, TelemetryMetricCollector, cancellationToken)
+                response = await kafkaConnection
+                    .SendWithResponseCancellationAfterWriteAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                        request, version, TelemetryMetricCollector, writeContext, cancellationToken)
                     .ConfigureAwait(false);
             }
             else
@@ -3389,7 +3388,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 LogSuccessfullyLeftGroup(_options.GroupId!);
             }
         }
+        // The write is bounded by cancellationToken, so while it is still live a cancellation
+        // here came from the response wait, after the leave was written.
         catch (OperationCanceledException) when (writeContext is { WriteStarted: true } &&
+                                                 !cancellationToken.IsCancellationRequested &&
                                                  responseCancellationToken.IsCancellationRequested)
         {
             LogLeaveGroupSentWithoutResponse(_options.GroupId!);
