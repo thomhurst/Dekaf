@@ -84,12 +84,22 @@ public partial class OutboxMetricTests
         var sampling = StartSampling(relay, store, cancellation.Token);
         try
         {
+            // The sampler found the expired lease and waits for a new one without a query.
+            await time.WaitForArmedTimerAsync(TimeSpan.FromSeconds(30));
             await Assert.That(store.Calls).IsEqualTo(0);
-            await cycle(default); // Reacquire a valid lease.
+
+            // Reacquiring the lease wakes the sampler at once. Its next wait is armed only
+            // after the query, so the clock moves only once the sampler is back in it; moving
+            // it any earlier could let that wait end straight away and query twice.
+            await cycle(default);
+            await store.Started.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+            await time.WaitForArmedTimerAsync(TimeSpan.FromSeconds(30));
+            await Assert.That(store.Calls).IsEqualTo(1);
+
+            // Sampling then resumes at the interval.
             time.Advance(TimeSpan.FromSeconds(30));
             await store.Started.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30));
-            await time.WaitForTimerAsync(TimeSpan.FromSeconds(30));
-            await Assert.That(store.Calls).IsEqualTo(1);
+            await Assert.That(store.Calls).IsEqualTo(2);
         }
         finally
         {

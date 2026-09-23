@@ -28,6 +28,31 @@ internal sealed class ManualTimeProvider : TimeProvider
         while (await _scheduled.Reader.ReadAsync(timeout.Token) != dueTime) { }
     }
 
+    /// <summary>
+    /// Waits until a live timer is due exactly <paramref name="dueIn"/> from now. Unlike
+    /// <see cref="WaitForTimerAsync"/>, which reads every schedule ever made, including those
+    /// of timers since cancelled, this sees only timers still armed, and consumes nothing.
+    /// </summary>
+    public async Task WaitForArmedTimerAsync(TimeSpan dueIn)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        while (!HasArmedTimer(dueIn))
+            await Task.Delay(1, timeout.Token);
+    }
+
+    private bool HasArmedTimer(TimeSpan dueIn)
+    {
+        lock (_gate)
+        {
+            for (var index = 0; index < _timers.Count; index++)
+            {
+                if (_timers[index].Due != long.MaxValue && _timers[index].Due - _ticks == dueIn.Ticks)
+                    return true;
+            }
+            return false;
+        }
+    }
+
     public void Advance(TimeSpan elapsed)
     {
         List<ManualTimer> due = [];

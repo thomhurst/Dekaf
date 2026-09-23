@@ -120,6 +120,10 @@ public sealed class OutboxNotificationTransportTests
         try
         {
             var incoming = await ownerTransport.Listener.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            // Both services subscribe from a worker of their own. A service stopped before its
+            // worker starts never subscribes, so the check below that each subscription ended
+            // needs each to have begun.
+            await writerTransport.Listener.Task.WaitAsync(TimeSpan.FromSeconds(30));
             writer.NotifyCommitted(1);
             var sent = await writerTransport.Sent.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30));
             await Assert.That(sent).IsEquivalentTo([1]);
