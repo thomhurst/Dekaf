@@ -1351,6 +1351,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // which is reused across calls to avoid allocations. The operation token bounds lock acquisition,
             // membership recovery, retry delay, and every network request to one aggregate deadline.
             await _fetchLock.WaitAsync(operationToken).ConfigureAwait(false);
+            var fetchLockHeld = true;
             try
             {
                 return await RetryHelper.WithRetryAsync(async () =>
@@ -1563,7 +1564,17 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 operationToken,
                 _options.RetryBackoffMs,
                 _options.RetryBackoffMaxMs,
-                onRetry: RecoverOffsetFetchAsync,
+                onRetry: async retryToken =>
+                {
+                    // Recovery can rejoin and deliver rebalance callbacks, and a listener may
+                    // fetch committed offsets itself (GetCommittedOffsetAsync). The fetch lock
+                    // only guards building a request, so it is not held across recovery.
+                    _fetchLock.Release();
+                    fetchLockHeld = false;
+                    await RecoverOffsetFetchAsync(retryToken).ConfigureAwait(false);
+                    await _fetchLock.WaitAsync(retryToken).ConfigureAwait(false);
+                    fetchLockHeld = true;
+                },
                 shouldRefreshMetadata: ShouldRefreshMetadataForGroupRetry,
                 // Position initialization runs on the application's poll: a coordinator that
                 // refuses connections while cluster metadata still names it is retried for the
@@ -1575,7 +1586,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             }
             finally
             {
-                _fetchLock.Release();
+                if (fetchLockHeld)
+                    _fetchLock.Release();
             }
         }
         catch (OperationCanceledException ex) when (

@@ -246,6 +246,47 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     }
 
     [Test]
+    public async Task MembershipLoss_OffsetFetchRecovery_LetsALostListenerFetchCommittedOffsets()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);
+        var script = new HeartbeatScript(this);
+        ConsumerCoordinator? coordinator = null;
+        Exception? nestedFetchFailure = null;
+        var nestedFetchCompleted = false;
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsLostAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => FetchCommittedAsync(callInfo.Arg<CancellationToken>()));
+
+        // A short request timeout bounds the fetch that would otherwise wait on the fetch lock.
+        coordinator = await JoinAsync(script, listener, requestTimeoutMs: 2000);
+        await using var coordinatorLifetime = coordinator;
+        script.Reset();
+        script.Respond = (_, _) => Joined("member-2", memberEpoch: 1, CreateAssignment(TestTopicId, 1));
+        SetupOffsetFetch(firstErrorCode: ErrorCode.UnknownMemberId);
+
+        // The fetch is fenced; its recovery rejoins and reports the loss, and the listener
+        // fetches committed offsets itself, as GetCommittedOffsetAsync does on a cache miss.
+        await coordinator.FetchOffsetsAsync([new TopicPartition("test-topic", 1)], CancellationToken.None);
+
+        await Assert.That(nestedFetchFailure).IsNull();
+        await Assert.That(nestedFetchCompleted).IsTrue();
+        await Assert.That(coordinator.MemberId).IsEqualTo("member-2");
+
+        async ValueTask FetchCommittedAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                await coordinator!.FetchOffsetsAsync([new TopicPartition("test-topic", 0)], cancellationToken);
+                nestedFetchCompleted = true;
+            }
+            catch (Exception ex)
+            {
+                nestedFetchFailure = ex;
+            }
+        }
+    }
+
+    [Test]
     public async Task MembershipLoss_OffsetFetchUnknownMemberReceivedAsTheCallerCancels_IsStillApplied()
     {
         _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);
@@ -1367,13 +1408,15 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         int sessionTimeoutMs = 45000,
         int rebalanceTimeoutMs = 30000,
         int defaultApiTimeoutMs = 60000,
-        IRebalanceListener[]? additionalRebalanceListeners = null)
+        IRebalanceListener[]? additionalRebalanceListeners = null,
+        int requestTimeoutMs = 30000)
     {
         SetupFindCoordinator();
         script.Respond = (_, _) => Joined("member-1", memberEpoch: 5, CreateAssignment(TestTopicId, 0, 1));
         var options = CreateConsumerProtocolOptions(
             rebalanceListener: listener,
             additionalRebalanceListeners: additionalRebalanceListeners,
+            requestTimeoutMs: requestTimeoutMs,
             retryBackoffMs: 1,
             retryBackoffMaxMs: 1,
             sessionTimeoutMs: sessionTimeoutMs,
