@@ -348,6 +348,47 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// since replaced. Its request would otherwise carry the new member id and epoch, and a
     /// fence lifted by the rejoin's assignment sync no longer stops it.
     /// </summary>
+    /// <summary>
+    /// Reads the member id and epoch as one consistent pair with the membership version, the
+    /// read side of the seqlock. Every change of membership (join publication, fence, leave)
+    /// makes the version odd before it touches the identity and even again afterwards, so an
+    /// identity read between two reads of the unchanged, even version the commit captured
+    /// belongs to that membership. Otherwise the commit is rejected. The epoch alone may still
+    /// move within a membership (a steady heartbeat's refresh), as the StaleMemberEpoch retry
+    /// expects.
+    /// </summary>
+    private void ReadCommitIdentity(int membershipVersion, out string? memberId, out int memberEpoch)
+    {
+        ThrowIfMembershipChangedSince(membershipVersion);
+        memberId = _memberId;
+        memberEpoch = _generationId;
+        ThrowIfMembershipChangedSince(membershipVersion);
+    }
+
+    /// <summary>
+    /// Opens a membership change: the version turns odd, and turns even again when the returned
+    /// scope is disposed. The change is synchronous and runs under the state lock; the thread is
+    /// marked so a hook it runs that starts a commit is rejected instead of waiting for it.
+    /// </summary>
+    private MembershipChangeScope BeginMembershipChange()
+    {
+        Interlocked.Increment(ref _membershipVersion);
+        var previous = t_publishingCoordinator;
+        t_publishingCoordinator = this;
+        return new MembershipChangeScope(this, previous);
+    }
+
+    private readonly struct MembershipChangeScope(
+        ConsumerCoordinator coordinator,
+        ConsumerCoordinator? previousPublisher) : IDisposable
+    {
+        public void Dispose()
+        {
+            Interlocked.Increment(ref coordinator._membershipVersion);
+            t_publishingCoordinator = previousPublisher;
+        }
+    }
+
     private void ThrowIfMembershipChangedSince(int membershipVersion)
     {
         if (Volatile.Read(ref _membershipVersion) == membershipVersion)
@@ -1358,14 +1399,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     });
                 }
 
-                // Volatile fields, read before the membership check below: a join advances the
-                // version before it writes the new member id and epoch, so a request that picked
-                // up the new identity is rejected there.
+                ReadCommitIdentity(membershipVersion, out var commitMemberId, out var commitMemberEpoch);
                 var request = new OffsetCommitRequest
                 {
                     GroupId = _options.GroupId!,
-                    GenerationIdOrMemberEpoch = _generationId,
-                    MemberId = _memberId,
+                    GenerationIdOrMemberEpoch = commitMemberEpoch,
+                    MemberId = commitMemberId,
                     GroupInstanceId = _options.GroupInstanceId,
                     Topics = topicOffsets
                 };
@@ -1803,6 +1842,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     private void ResetMemberState()
     {
+        using var change = BeginMembershipChange();
         _memberId = null;
         _generationId = -1;
         _state = CoordinatorState.Unjoined;
@@ -1819,6 +1859,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     private void FenceMembership(bool forgetMember)
     {
+        // The version is odd from before the identity changes until the fence is complete, so a
+        // commit can never pair the reset identity with the previous membership's version.
+        using var change = BeginMembershipChange();
+        Volatile.Write(ref _membershipFenced, 1);
         if (forgetMember)
         {
             _memberId = null;
@@ -1830,9 +1874,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
 
         _state = CoordinatorState.Unjoined;
-        // Flag first, then version: see CommitOffsetsAsync. By 2, so the version stays even.
-        Volatile.Write(ref _membershipFenced, 1);
-        Interlocked.Add(ref _membershipVersion, 2);
         var lost = ClearAssignment();
         if (lost is not null)
             EnqueuePendingRebalanceCallback(new PendingRebalanceCallback
@@ -2116,8 +2157,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // that starts during the publication waits for it before taking its snapshot. A join
         // error leaves the membership as it was, and commits under it stay valid.
         var publishingMembership = !discardIfMembershipChanged && response.ErrorCode == ErrorCode.None;
-        if (publishingMembership)
-            Interlocked.Increment(ref _membershipVersion);
+        var membershipChange = publishingMembership ? BeginMembershipChange() : default;
 
         // A steady heartbeat reports a fence without waiting for the locks, so stopping the loop
         // cannot discard it: the loop applies it under the state lock, checked against the
@@ -2132,10 +2172,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         if (!discardIfMembershipChanged)
         {
-            var previousPublisher = t_publishingCoordinator;
-            if (publishingMembership)
-                t_publishingCoordinator = this;
-
             try
             {
                 using (assignmentProcessing)
@@ -2152,10 +2188,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 // Identity and assignment are published (or processing failed): even again.
                 if (publishingMembership)
-                {
-                    Interlocked.Increment(ref _membershipVersion);
-                    t_publishingCoordinator = previousPublisher;
-                }
+                    membershipChange.Dispose();
             }
         }
 
