@@ -682,6 +682,91 @@ public sealed class TransactionalProduceFaultTests
         await Assert.That(sent[0].RecordCount).IsEqualTo(1);
     }
 
+    /// <summary>
+    /// FireAsync applies the same transaction-state guard as ProduceAsync. In AbortableError or
+    /// FatalError a fired record is refused: reported to the delivery handler (or logged by the
+    /// overloads without one) and never appended or sent under the broken transaction.
+    /// </summary>
+    [Test]
+    [Arguments(false, 0)]
+    [Arguments(true, 0)]
+    [Arguments(false, 1)]
+    [Arguments(false, 2)]
+    [Timeout(60_000)]
+    public async Task FireAsync_InAnAbortableOrFatalTransaction_IsRefusedAndNeverSent(
+        bool fatal,
+        int overload,
+        CancellationToken cancellationToken)
+    {
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion: 2,
+            produceError: static (_, _) => ErrorCode.None);
+
+        var transaction = harness.Producer.BeginTransaction();
+        if (fatal)
+            harness.Producer.OnTransactionalBatchFailed(4242, harness.Broker.CurrentEpoch, ErrorCode.ProducerFenced);
+        else
+            harness.Producer.MarkTransactionAbortable(ErrorCode.MessageTooLarge);
+
+        var delivery = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        switch (overload)
+        {
+            case 0:
+                await harness.Producer.FireAsync(Message(partition: 0), (_, error) => delivery.TrySetResult(error));
+                var error = await delivery.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+                if (fatal)
+                    await Assert.That(error).IsTypeOf<FatalTransactionException>();
+                else
+                    await Assert.That(error).IsTypeOf<AbortableTransactionException>();
+                break;
+            case 1:
+                await harness.Producer.FireAsync(Message(partition: 0));
+                break;
+            default:
+                await harness.Producer.FireAsync(Topic, "key", "value");
+                break;
+        }
+
+        await Assert.That(harness.Producer.RecordAccumulator.BufferedBytes).IsEqualTo(0);
+        await Assert.That(harness.Broker.ProducedBatches.Count).IsEqualTo(0);
+        GC.KeepAlive(transaction);
+    }
+
+    /// <summary>
+    /// A produce admitted before the transaction became abortable, and still in its async
+    /// serializer when it did, must not be appended to the broken transaction: entering
+    /// AbortableError (or FatalError) advances the generation, so the append commit point
+    /// rejects it.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task ProduceAsync_StillSerializingWhenTheTransactionBecomesAbortable_IsNotAppended(
+        CancellationToken cancellationToken)
+    {
+        var serializer = new HeldAsyncStringSerializer(heldValue: "admitted-before-the-error");
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion: 2,
+            produceError: static (_, _) => ErrorCode.None,
+            asyncValueSerializer: serializer);
+
+        await using var transaction = harness.Producer.BeginTransaction();
+        var produce = transaction.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "admitted-before-the-error",
+            Partition = 0
+        }, cancellationToken).AsTask();
+        await serializer.Entered.WaitAsync(cancellationToken);
+
+        harness.Producer.MarkTransactionAbortable(ErrorCode.MessageTooLarge);
+        serializer.Release();
+
+        var exception = await Assert.That(async () => await produce).Throws<ProduceException>();
+        await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+        await Assert.That(harness.Broker.ProducedBatches.Count).IsEqualTo(0);
+    }
+
     private sealed class ImmediateRetryPolicy : Dekaf.Retry.IRetryPolicy
     {
         public TimeSpan? GetNextDelay(int attemptNumber, Exception exception) =>

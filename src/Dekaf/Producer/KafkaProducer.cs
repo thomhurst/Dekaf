@@ -1737,9 +1737,17 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
         ThrowIfNotInitialized();
-        // Read before serialization: the append commit point rejects the record if a transaction
-        // abort starts while serializers or interceptors run (non-transactional: a constant).
-        return FireMessageAsync(message, CaptureTransactionalAppendGeneration());
+        // The same admission as ProduceAsync: the generation (read before the state check, so
+        // the append commit point rejects the record if an abort starts while serializers or
+        // interceptors run) and the transaction-state guard. Fire-and-forget: a refused record
+        // is logged, like every other FireAsync failure.
+        if (AdmitFire(out var transactionalGeneration) is { } rejection)
+        {
+            LogFireAndForgetProduceFailed(rejection, message.Topic);
+            return default;
+        }
+
+        return FireMessageAsync(message, transactionalGeneration);
     }
 
     /// <summary>
@@ -1877,9 +1885,12 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
         ThrowIfNotInitialized();
-        // Read before serialization: the append commit point rejects the record if a transaction
-        // abort starts while serializers or interceptors run (non-transactional: a constant).
-        var transactionalGeneration = CaptureTransactionalAppendGeneration();
+        // See FireAsync(ProducerMessage): generation and transaction-state guard at admission.
+        if (AdmitFire(out var transactionalGeneration) is { } rejection)
+        {
+            LogFireAndForgetProduceFailed(rejection, topic);
+            return default;
+        }
 
         // When interceptors are configured, fall back to ProducerMessage overload
         // so interceptors can inspect/modify the message before serialization.
@@ -2393,11 +2404,15 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
         ThrowIfNotInitialized();
-        // Read before serialization: the append commit point rejects the record if a transaction
-        // abort starts while serializers or interceptors run (non-transactional: a constant).
-        var transactionalGeneration = CaptureTransactionalAppendGeneration();
-
         ArgumentNullException.ThrowIfNull(deliveryHandler);
+
+        // See FireAsync(ProducerMessage): generation and transaction-state guard at admission.
+        // A refused record is reported to the delivery handler, like every other failure here.
+        if (AdmitFire(out var transactionalGeneration) is { } rejection)
+        {
+            try { deliveryHandler(default, rejection); } catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
+            return default;
+        }
 
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
@@ -5663,6 +5678,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
             if (fatal)
             {
+                // As in MarkTransactionFatal: reject every admitted record at the commit point.
+                _accumulator.AdvanceTransactionalAppendGeneration();
                 _lastTransactionError = errorCode;
                 _transactionState = TransactionState.FatalError;
                 LogTransactionalBatchFailedFatal(errorCode, _options.TransactionalId);
@@ -5713,6 +5730,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             if (_transactionState == TransactionState.FatalError)
                 return false;
 
+            // Records admitted before this point are part of a transaction that can only be
+            // aborted now: advancing the generation rejects them at the append commit point.
+            _accumulator.AdvanceTransactionalAppendGeneration();
             _lastTransactionError = errorCode;
             _transactionState = TransactionState.AbortableError;
             return true;
@@ -5734,6 +5754,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             if (_transactionState == TransactionState.FatalError)
                 return;
 
+            // The producer can send nothing more: reject every admitted record at the commit point.
+            _accumulator.AdvanceTransactionalAppendGeneration();
             _lastTransactionError = errorCode;
             _transactionState = TransactionState.FatalError;
         }
@@ -5985,18 +6007,27 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void ThrowIfTransactionCannotProduce()
     {
+        if (CreateTransactionProduceRejection() is { } rejection)
+            throw rejection;
+    }
+
+    /// <summary>
+    /// The transaction-state guard every produce entry point applies at admission: the exception
+    /// a produce is refused with, or null when the state allows it. ProduceAsync throws it;
+    /// FireAsync reports it through its delivery handler or log. Transactional producers only.
+    /// </summary>
+    private TransactionException? CreateTransactionProduceRejection()
+    {
         var txnState = _transactionState;
         if (txnState == TransactionState.AbortableError)
-            throw CreateAbortableTransactionError("Cannot produce");
+            return CreateAbortableTransactionError("Cannot produce");
 
         if (txnState == TransactionState.FatalError)
-        {
-            ThrowFatalTransactionError("Cannot produce");
-        }
+            return CreateFatalTransactionError("Cannot produce");
 
         if (txnState == TransactionState.PreparedTransaction)
         {
-            throw new TransactionException(ErrorCode.InvalidTxnState,
+            return new TransactionException(ErrorCode.InvalidTxnState,
                 "Cannot produce: the current transaction is prepared. Only commit, abort, or complete are permitted.")
             {
                 TransactionalId = _options.TransactionalId
@@ -6007,12 +6038,39 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // passed this check before the abort began (RecordAccumulator.CloseTransactionalAppends).
         if (txnState == TransactionState.AbortingTransaction)
         {
-            throw new TransactionException(ErrorCode.InvalidTxnState,
+            return new TransactionException(ErrorCode.InvalidTxnState,
                 "Cannot produce: the current transaction is being aborted.")
             {
                 TransactionalId = _options.TransactionalId
             };
         }
+
+        return null;
+    }
+
+    /// <summary>
+    /// FireAsync's admission: reads the transactional append generation (as ProduceAsync does,
+    /// before the state check) and applies the same transaction-state guard, returning the
+    /// rejection rather than throwing so each FireAsync overload reports it its own way. A
+    /// non-transactional producer pays one constant comparison.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private TransactionException? AdmitFire(out int transactionalGeneration)
+    {
+        if (_options.TransactionalId is null)
+        {
+            transactionalGeneration = RecordAccumulator.NoTransactionalGeneration;
+            return null;
+        }
+
+        return AdmitTransactionalFire(out transactionalGeneration);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private TransactionException? AdmitTransactionalFire(out int transactionalGeneration)
+    {
+        transactionalGeneration = CaptureTransactionalAppendGeneration();
+        return CreateTransactionProduceRejection();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -6023,14 +6081,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private void ThrowFatalTransactionError(string operation)
-    {
-        throw new FatalTransactionException(_lastTransactionError,
+    private void ThrowFatalTransactionError(string operation) => throw CreateFatalTransactionError(operation);
+
+    private FatalTransactionException CreateFatalTransactionError(string operation) =>
+        new(_lastTransactionError,
             $"{operation}: the producer is in a fatal error state and must be closed.")
         {
             TransactionalId = _options.TransactionalId
         };
-    }
 
     /// <summary>
     /// Commit and prepare must refuse an abortable transaction exactly as produce does: records
