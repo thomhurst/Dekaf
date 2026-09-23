@@ -104,12 +104,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // the consumer drops the offsets it stored for them, a commit under the new epoch could move
     // another member's committed offsets backwards.
     private int _membershipFenced;
-    // Rebalance callbacks not yet delivered, in order: assignments a fence cleared, waiting for
-    // OnPartitionsLost, and published assignments whose callbacks cancellation deferred behind
-    // them. Drained under _rebalanceListenerLock so a rejoin can never publish
-    // OnPartitionsAssigned first. The count lets the stable poll path check it with one read.
+    // Rebalance callbacks not yet delivered, in publication order: assignments a fence cleared,
+    // waiting for OnPartitionsLost, and assignment changes, reserved under the state lock when
+    // they are published. Drained under _rebalanceListenerLock so a rejoin can never publish
+    // OnPartitionsAssigned first.
     private readonly ConcurrentQueue<PendingRebalanceCallback> _pendingRebalanceCallbacks = new();
+    // Entries no publisher is delivering: fence losses, and reserved assignment changes whose
+    // publisher's delivery ended without them (cancellation). The stable poll path checks it with
+    // one volatile read; it leaves an assignment change its publisher is still delivering alone,
+    // so steady-heartbeat callbacks do not suppress buffered polls.
     private int _pendingRebalanceCallbackCount;
+    // The coordinator whose pending callbacks the current async flow is delivering. A listener
+    // that re-enters the coordinator (a poll or join from inside its callback) must not wait for
+    // the drain it is running in: its own entry stays queued until it returns.
+    private static readonly AsyncLocal<ConsumerCoordinator?> s_drainingCoordinator = new();
     // Advanced under _lock each time a join receives its response, before the new member id and
     // epoch are written, and each time a fence ends a membership. A fence observed by a request sent under an earlier membership must not clear
     // the assignment of a newer one, and a commit must not send offsets taken under an earlier one.
@@ -1051,8 +1059,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     /// <summary>
     /// A rebalance notification not yet delivered: the partitions a fence cleared when
-    /// <see cref="Lost"/> is set, otherwise a published assignment change whose callbacks were
-    /// deferred. Only the drainer holding <c>_rebalanceListenerLock</c> reads or advances the
+    /// <see cref="Lost"/> is set, otherwise a published assignment change, reserved when it was
+    /// published. Only the drainer holding <c>_rebalanceListenerLock</c> reads or advances the
     /// progress fields, so a retry resumes where cancellation interrupted it.
     /// </summary>
     private sealed class PendingRebalanceCallback
@@ -1068,16 +1076,43 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         public bool RevokedDelivered;
 
+        // 0: reserved, its publisher delivers it; 1: counted in _pendingRebalanceCallbackCount;
+        // 2: dequeued. Transitions are interlocked, so an entry is counted at most once and
+        // uncounted only if counted.
+        public int PollVisibility;
+
         public int ListenersCompleted;
     }
 
-    private void EnqueuePendingRebalanceCallback(PendingRebalanceCallback callback)
+    private void EnqueuePendingRebalanceCallback(PendingRebalanceCallback callback, bool reserved = false)
     {
         // Count first: the stable poll path reads only the count, so it must never see zero
-        // while an entry is queued. A drainer that sees the count before the entry finds the
-        // queue empty and simply returns; the entry is drained by the next check.
-        Interlocked.Increment(ref _pendingRebalanceCallbackCount);
+        // while an unowned entry is queued. A drainer that sees the count before the entry finds
+        // the queue empty and simply returns; the entry is drained by the next check.
+        if (!reserved)
+        {
+            callback.PollVisibility = 1;
+            Interlocked.Increment(ref _pendingRebalanceCallbackCount);
+        }
+
         _pendingRebalanceCallbacks.Enqueue(callback);
+    }
+
+    /// <summary>
+    /// Called when a publisher's delivery ends. Reserved entries it did not deliver (cancellation
+    /// interrupted it) become visible to the stable poll path, which delivers them next.
+    /// Enumerates the queue only when it is not empty, which is rare.
+    /// </summary>
+    private void ReleaseReservedRebalanceCallbacks()
+    {
+        if (_pendingRebalanceCallbacks.IsEmpty)
+            return;
+
+        foreach (var pending in _pendingRebalanceCallbacks)
+        {
+            if (Interlocked.CompareExchange(ref pending.PollVisibility, 1, 0) == 0)
+                Interlocked.Increment(ref _pendingRebalanceCallbackCount);
+        }
     }
 
     /// <summary>
@@ -1692,102 +1727,42 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         var rebalanceListenerLockHeld = false;
         try
         {
-            try
-            {
-                await _rebalanceListenerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                DeferRebalanceCallbacks(result);
-                throw;
-            }
-
+            await _rebalanceListenerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             rebalanceListenerLockHeld = true;
-            await FireConsumerProtocolRebalanceListenersCoreAsync(
-                result,
-                cancellationToken).ConfigureAwait(false);
+
+            // The result's callbacks were reserved in the pending queue when it was published,
+            // behind anything queued earlier, so draining the queue delivers everything in
+            // publication order. Cancellation leaves undelivered entries queued.
+            await InvokePendingRebalanceCallbacksCoreAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             CompleteRevocationCommit(result);
+            ReleaseReservedRebalanceCallbacks();
             if (rebalanceListenerLockHeld)
                 _rebalanceListenerLock.Release();
         }
     }
 
-    private async ValueTask FireConsumerProtocolRebalanceListenersCoreAsync(
-        ConsumerHeartbeatResult result,
-        CancellationToken cancellationToken)
-    {
-        // Partitions a fence took away are reported lost before any assignment is published,
-        // whichever path (join or steady heartbeat) publishes it.
-        try
-        {
-            await InvokePendingRebalanceCallbacksCoreAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            DeferRebalanceCallbacks(result);
-            throw;
-        }
-
-        if (CreateDeferredRebalanceCallback(result) is not { } progress)
-            return;
-
-        // The assignment is already published, so a cancelled callback is queued with its
-        // progress and resumed by the next drain instead of dropped. Allocated once per
-        // assignment change, never per message.
-        try
-        {
-            if (result.Revoked is { Count: > 0 } revoked)
-            {
-                try
-                {
-                    if (_onPartitionsRevokedAsync is not null)
-                        await _onPartitionsRevokedAsync(revoked, cancellationToken).ConfigureAwait(false);
-                }
-                finally
-                {
-                    CompleteRevocationCommit(result);
-                }
-
-                await InvokePartitionsRevokedListenersAsync(revoked, progress, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-
-            progress.RevokedDelivered = true;
-            progress.ListenersCompleted = 0;
-
-            if (result.Assigned is { Count: > 0 } assigned)
-                await InvokePartitionsAssignedListenersAsync(assigned, progress, cancellationToken)
-                    .ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            EnqueuePendingRebalanceCallback(progress);
-            throw;
-        }
-    }
-
     /// <summary>
-    /// Queues the callbacks of a published result that cancellation stopped before any of them
-    /// ran. They follow the callbacks already queued, on the next drain: the steady heartbeat,
-    /// the next poll or close. The revocation commit is not replayed; its window has ended.
+    /// Reserves the callbacks of an assignment change in the pending queue. Called under the state
+    /// lock at the moment the change is published, so a later fence always queues its loss after
+    /// it, and the entry carries the assignment it published. Allocated once per assignment
+    /// change, never per message.
     /// </summary>
-    private void DeferRebalanceCallbacks(ConsumerHeartbeatResult result)
+    private void ReserveRebalanceCallbacks(ConsumerHeartbeatResult result, HashSet<TopicPartition> published)
     {
-        if (CreateDeferredRebalanceCallback(result) is { } deferred)
-            EnqueuePendingRebalanceCallback(deferred);
+        if (result.Revoked is { Count: > 0 } || result.Assigned is { Count: > 0 })
+        {
+            EnqueuePendingRebalanceCallback(
+                new PendingRebalanceCallback
+                {
+                    Deferred = result,
+                    Assignment = published
+                },
+                reserved: true);
+        }
     }
-
-    private PendingRebalanceCallback? CreateDeferredRebalanceCallback(ConsumerHeartbeatResult result) =>
-        result.AssignmentChanged && (result.Revoked is { Count: > 0 } || result.Assigned is { Count: > 0 })
-            ? new PendingRebalanceCallback
-            {
-                Deferred = result with { RevocationCommitCompletion = null },
-                Assignment = _assignedPartitions
-            }
-            : null;
 
     private ValueTask InvokePartitionsRevokedListenersAsync(
         IReadOnlyList<TopicPartition> revoked,
@@ -2014,7 +1989,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 // Queued callbacks describe earlier assignments; deliver them while those are
                 // still current, before this response publishes a newer one. Cancellation here
                 // drops the response as the lock wait does, and the entries stay queued.
-                if (Volatile.Read(ref _pendingRebalanceCallbackCount) != 0)
+                if (!_pendingRebalanceCallbacks.IsEmpty)
                     await InvokePendingRebalanceCallbacksCoreAsync(cancellationToken).ConfigureAwait(false);
 
                 await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -2044,16 +2019,17 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 }
             }
 
-            // Assignment state and the immediate stale-fetch marker are published. User
-            // callbacks remain serialized, but no longer suppress buffered polls while awaiting.
-            await FireConsumerProtocolRebalanceListenersCoreAsync(result, cancellationToken)
-                .ConfigureAwait(false);
+            // Assignment state and the immediate stale-fetch marker are published, and the
+            // result's callbacks reserved behind anything queued earlier. User callbacks remain
+            // serialized, but no longer suppress buffered polls while awaiting.
+            await InvokePendingRebalanceCallbacksCoreAsync(cancellationToken).ConfigureAwait(false);
             if (result.AssignmentChanged)
                 StandardTelemetryMetrics?.RebalanceCompleted(rebalanceStarted);
         }
         finally
         {
             CompleteRevocationCommit(result);
+            ReleaseReservedRebalanceCallbacks();
             if (rebalanceListenerLockHeld)
                 _rebalanceListenerLock.Release();
         }
@@ -2323,7 +2299,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (changed)
             LogConsumerProtocolAssignmentUpdate(assigned?.Count ?? 0, revoked?.Count ?? 0);
 
-        return new ConsumerHeartbeatResult(changed, revoked, assigned, revocationCommitCompletion);
+        var result = new ConsumerHeartbeatResult(changed, revoked, assigned, revocationCommitCompletion);
+        if (changed)
+            ReserveRebalanceCallbacks(result, newAssignment);
+
+        return result;
     }
 
     private void NotifyRevoking(IReadOnlyList<TopicPartition>? revoked)
@@ -2524,7 +2504,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // A fence can precede a failed attempt; the application still learns its partitions
             // are gone rather than waiting for the next successful join.
             if (joinFailed)
+            {
                 await InvokePendingRebalanceCallbacksUnlessCancelledAsync(cancellationToken).ConfigureAwait(false);
+                ReleaseReservedRebalanceCallbacks();
+            }
         }
 
         try
@@ -2833,7 +2816,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private async ValueTask InvokePendingRebalanceCallbacksAsync(CancellationToken cancellationToken)
     {
-        if (Volatile.Read(ref _pendingRebalanceCallbackCount) == 0)
+        if (_pendingRebalanceCallbacks.IsEmpty ||
+            ReferenceEquals(s_drainingCoordinator.Value, this))
             return;
 
         await _rebalanceListenerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -2853,6 +2837,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // not called a second time.
     private async ValueTask InvokePendingRebalanceCallbacksCoreAsync(CancellationToken cancellationToken)
     {
+        if (_pendingRebalanceCallbacks.IsEmpty)
+            return;
+
+        // Scoped to this async method: the value reverts when it returns.
+        s_drainingCoordinator.Value = this;
         while (_pendingRebalanceCallbacks.TryPeek(out var pending))
         {
             if (pending.Lost is { } lost)
@@ -2866,6 +2855,21 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 {
                     if (deferred.Revoked is { Count: > 0 } revoked)
                     {
+                        // The revocation commit runs only on the delivery that publishing awaits;
+                        // once that delivery ends, cancelled or not, its window is over.
+                        if (deferred.RevocationCommitCompletion is { Task.IsCompleted: false } commitCompletion)
+                        {
+                            try
+                            {
+                                if (_onPartitionsRevokedAsync is not null)
+                                    await _onPartitionsRevokedAsync(revoked, cancellationToken).ConfigureAwait(false);
+                            }
+                            finally
+                            {
+                                commitCompletion.TrySetResult(true);
+                            }
+                        }
+
                         await InvokePartitionsRevokedListenersAsync(revoked, pending, cancellationToken)
                             .ConfigureAwait(false);
                     }
@@ -2882,7 +2886,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             }
 
             _pendingRebalanceCallbacks.TryDequeue(out _);
-            Interlocked.Decrement(ref _pendingRebalanceCallbackCount);
+            if (Interlocked.Exchange(ref pending.PollVisibility, 2) == 1)
+                Interlocked.Decrement(ref _pendingRebalanceCallbackCount);
         }
     }
 
@@ -3104,7 +3109,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // say) are delivered before the locks go away. Entries leave the queue only once
         // delivered, so after a consumer close has drained there is nothing to repeat. Bounded
         // by the API timeout so a listener that never returns cannot hang disposal.
-        if (Volatile.Read(ref _pendingRebalanceCallbackCount) != 0)
+        if (!_pendingRebalanceCallbacks.IsEmpty)
         {
             using var drainTimeout = new CancellationTokenSource(_options.DefaultApiTimeoutMs);
             await InvokePendingRebalanceCallbacksUnlessCancelledAsync(drainTimeout.Token).ConfigureAwait(false);

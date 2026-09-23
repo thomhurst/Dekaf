@@ -1070,6 +1070,92 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     }
 
     [Test]
+    public async Task MembershipLoss_FenceWhileAPublishedAssignmentAwaitsDelivery_ReportsItAfterTheAssignment()
+    {
+        var script = new HeartbeatScript(this);
+        var calls = new List<string>();
+        TopicPartition[] scopeAssignment = [];
+        var listener = Substitute.For<IConsumerAwareRebalanceListener>();
+        listener.OnPartitionsLostAsync(
+                Arg.Any<IRebalanceConsumer>(),
+                Arg.Any<IEnumerable<TopicPartition>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo => Record("lost", callInfo.Arg<IEnumerable<TopicPartition>>()!));
+        listener.OnPartitionsAssignedAsync(
+                Arg.Any<IRebalanceConsumer>(),
+                Arg.Any<IEnumerable<TopicPartition>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo => Record("assigned", callInfo.Arg<IEnumerable<TopicPartition>>()!));
+        var consumer = Substitute.For<IKafkaConsumer<byte[], byte[]>>();
+        consumer.Positions.Returns(Substitute.For<IConsumerPositions>());
+        SetupFindCoordinator();
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(consumerAwareRebalanceListener: listener),
+            _connectionPool,
+            _metadataManager,
+            logger: null,
+            getConnectionCount: null,
+            onPartitionsRevoked: null,
+            onPartitionsRevoking: null,
+            onPartitionsRevokedAsync: null,
+            createRebalanceConsumerScope: (current, added) =>
+            {
+                scopeAssignment = current.ToArray();
+                return new RebalanceConsumerScope<byte[], byte[]>(consumer, current, added);
+            });
+
+        // The join publishes [p0, p1], then waits for the listener lock (another delivery holds
+        // it). Meanwhile an OffsetFetch fences the member, and the join's caller cancels.
+        var listenerLock = GetPrivateField<SemaphoreSlim>(coordinator, "_rebalanceListenerLock");
+        var coordinatorLock = GetPrivateField<SemaphoreSlim>(coordinator, "_lock");
+        await listenerLock.WaitAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+        var published = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        script.Respond = (_, _) =>
+        {
+            published.TrySetResult();
+            return Joined("member-1", memberEpoch: 5, CreateAssignment(TestTopicId, 0, 1));
+        };
+        var join = coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, caller.Token).AsTask();
+        await published.Task.WaitAsync(timeout.Token);
+
+        // The join holds the state lock until it has published and become Stable.
+        await coordinatorLock.WaitAsync(timeout.Token);
+        try
+        {
+            typeof(ConsumerCoordinator)
+                .GetMethod("FenceMembership", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(coordinator, [true]);
+        }
+        finally
+        {
+            coordinatorLock.Release();
+        }
+
+        caller.Cancel();
+        await Assert.That(async () => await join).Throws<OperationCanceledException>();
+        listenerLock.Release();
+        await coordinator.InvokePendingRebalanceCallbacksUnlessCancelledAsync(timeout.Token);
+
+        // The assignment was published before the fence: it is reported first, with the
+        // assignment it published, and the loss follows.
+        await Assert.That(string.Join(" | ", calls)).IsEqualTo(
+            "assigned:test-topic-0,test-topic-1@[test-topic-0,test-topic-1] | lost:test-topic-0,test-topic-1@[]");
+
+        ValueTask Record(string callback, IEnumerable<TopicPartition> partitions)
+        {
+            static string Names(IEnumerable<TopicPartition> tps) => string.Join(
+                ',',
+                tps.OrderBy(static partition => partition.Partition)
+                    .Select(static partition => $"{partition.Topic}-{partition.Partition}"));
+            lock (calls)
+                calls.Add($"{callback}:{Names(partitions)}@[{Names(scopeAssignment)}]");
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    [Test]
     public async Task MembershipLoss_CallbacksQueuedBeforeARejoin_SeeTheirOwnAssignment()
     {
         var script = new HeartbeatScript(this);
