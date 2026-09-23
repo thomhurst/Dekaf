@@ -265,6 +265,41 @@ public sealed class ConsumerPartitionStopListenerTests
     }
 
     [Test]
+    public async Task CloseAsync_PartitionLostThenAssignedAgain_IsReportedStopped()
+    {
+        var listener = new TrackingPartitionStopListener();
+        await using var consumer = CreateGroupConsumer(defaultApiTimeoutMs: 60_000, listener);
+        var coordinator = GetCoordinator(consumer);
+        var reassigned = new TopicPartition("topic-a", 0);
+        var lost = new TopicPartition("topic-a", 1);
+        consumer.Assign(reassigned, lost);
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 42));
+        var dirty = (System.Collections.IDictionary)GetField(consumer, "_dirtyStoredOffsets");
+        await Assert.That(dirty.Contains(reassigned)).IsTrue();
+
+        // Both partitions are lost to a fence, and partition 0 is assigned again before the
+        // consumer synchronizes. Its stored offset was taken before the loss.
+        SetField(coordinator, "_assignedPartitions", new HashSet<TopicPartition> { reassigned, lost });
+        typeof(ConsumerCoordinator)
+            .GetMethod("FenceMembership", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(coordinator, [false]);
+        SetField(coordinator, "_assignedPartitions", new HashSet<TopicPartition> { reassigned });
+
+        await consumer.CloseAsync(
+            new ConsumerCloseOptions { GroupMembershipOperation = ConsumerGroupMembershipOperation.RemainInGroup },
+            CancellationToken.None);
+
+        // Partition 0 is owned again and reported stopped; partition 1 only lost.
+        await Assert.That(listener.LostPartitions).Count().IsEqualTo(1);
+        await Assert.That(listener.LostPartitions[0]).IsEquivalentTo([reassigned, lost]);
+        await Assert.That(listener.StoppedPartitions).Count().IsEqualTo(1);
+        await Assert.That(listener.StoppedPartitions[0]).IsEquivalentTo([reassigned]);
+
+        // The offset from before the loss is dropped, so no shutdown commit can send it.
+        await Assert.That(dirty.Contains(reassigned)).IsFalse();
+    }
+
+    [Test]
     public async Task DisposeAsync_BlockingPartitionStopListener_UsesShorterDefaultApiTimeout()
     {
         var listener = new TrackingPartitionStopListener

@@ -13150,14 +13150,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
         }
 
-        // Partitions the coordinator already revoked or reported lost (a fence's loss the drain in
-        // step 1 delivered, say) are no longer owned: they are not reported stopped, and their
-        // stored offsets are dropped so the shutdown commit cannot include them.
-        var noLongerOwned = _coordinator?.PeekPartitionsRevokedSinceLastSync();
-        if (noLongerOwned is not null)
+        // Partitions the coordinator revoked or reported lost since the last assignment sync (a
+        // fence's loss the drain in step 1 delivered, say). Their stored offsets all predate that
+        // loss: records of a partition assigned again are consumed only after a sync, which
+        // resets its position. So they are dropped, as the sync would drop them, and the shutdown
+        // commit cannot send them. Only the ones the coordinator does not own again are left out
+        // of the stop notification: a partition assigned again has its resources set up by the
+        // assigned callback, and they are stopped like any other.
+        HashSet<TopicPartition>? noLongerOwned = null;
+        if (_coordinator?.PeekPartitionsRevokedSinceLastSync() is { } revokedSinceSync)
         {
-            foreach (var partition in noLongerOwned)
+            foreach (var partition in revokedSinceSync)
                 ClearStoredOffset(partition);
+
+            revokedSinceSync.ExceptWith(_coordinator.Assignment);
+            if (revokedSinceSync.Count > 0)
+                noLongerOwned = revokedSinceSync;
         }
 
         // Step 5: Notify partition-scoped resources of normal stop before final commit/leave.
