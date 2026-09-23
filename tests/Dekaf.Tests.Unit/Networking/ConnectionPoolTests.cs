@@ -1105,24 +1105,35 @@ public sealed class ConnectionPoolTests
                 return 1;
             }
         };
-        var added = new TestIdleConnection(1, "host-a", 9092);
-        var scaleUpFactoryEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseScaleUpFactory = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // Disposal cancels a scale-up that is still waiting for its setups, and the setup it
+        // abandons is disposed in the background whenever it returns. To reach the publish, the
+        // scale-up has to be past that wait when disposal begins. Its connection is checked twice:
+        // once by the setup attempt, then by the scale-up itself after every setup has finished.
+        // The second check holds the scale-up there until disposal has begun.
+        using var scaleUpGate = new ManualResetEventSlim();
+        var scaleUpChecksAdded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var addedChecks = 0;
+        var added = new TestIdleConnection(1, "host-a", 9092)
+        {
+            IsConnectedRead = () =>
+            {
+                if (Interlocked.Increment(ref addedChecks) == 2)
+                {
+                    scaleUpChecksAdded.TrySetResult();
+                    scaleUpGate.Wait();
+                }
+            }
+        };
         var factoryCalls = 0;
         var pool = new ConnectionPool(
             clientId: "test-client",
             // Long enough that the background reaper never ticks during the test.
             connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = 600_000 },
             connectionsPerBroker: 1,
-            connectionFactory: async (_, _, _, _, _) =>
-            {
-                if (Interlocked.Increment(ref factoryCalls) == 1)
-                    return existing;
-
-                scaleUpFactoryEntered.TrySetResult();
-                await releaseScaleUpFactory.Task.ConfigureAwait(false);
-                return added;
-            });
+            connectionFactory: (_, _, _, _, _) =>
+                ValueTask.FromResult<IKafkaConnection>(
+                    Interlocked.Increment(ref factoryCalls) == 1 ? existing : added));
         pool.RegisterBroker(1, "host-a", 9092);
         await pool.ScaleConnectionGroupAsync(1, 1, cancellationToken);
 
@@ -1131,12 +1142,16 @@ public sealed class ConnectionPoolTests
         var reap = Task.Run(async () => await pool.ReapIdleConnectionsAsync(), cancellationToken);
         await reaperHoldsDisposeLock.Task.WaitAsync(cancellationToken);
 
-        var scaleUp = pool.ScaleConnectionGroupAsync(1, 2, cancellationToken).AsTask();
-        await scaleUpFactoryEntered.Task.WaitAsync(cancellationToken);
+        var scaleUp = Task.Run(
+            async () => await pool.ScaleConnectionGroupAsync(1, 2, cancellationToken),
+            cancellationToken);
+        await scaleUpChecksAdded.Task.WaitAsync(cancellationToken);
+
+        // DisposeAsync marks the pool disposed before its first await, then waits for the lock.
         var disposal = pool.DisposeAsync().AsTask();
 
         // The scale-up publishes [existing, added] and then sees the pool disposed.
-        releaseScaleUpFactory.TrySetResult();
+        scaleUpGate.Set();
         await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
             await scaleUp.WaitAsync(cancellationToken));
 
@@ -3460,7 +3475,17 @@ public sealed class ConnectionPoolTests
         public int BrokerId { get; } = brokerId;
         public string Host { get; } = host;
         public int Port { get; } = port;
-        public bool IsConnected => Volatile.Read(ref _connected) != 0;
+        public bool IsConnected
+        {
+            get
+            {
+                IsConnectedRead?.Invoke();
+                return Volatile.Read(ref _connected) != 0;
+            }
+        }
+
+        public Action? IsConnectedRead { get; init; }
+
         public int DisposeCount => Volatile.Read(ref _disposeCount);
         public int RetirementState => Volatile.Read(ref _retirementState);
 
