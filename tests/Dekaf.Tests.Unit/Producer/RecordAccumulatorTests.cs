@@ -803,6 +803,429 @@ public class RecordAccumulatorTests
         }
     }
 
+    /// <summary>
+    /// A rotation detaches the current batch and enqueues it only once it is sealed; in between
+    /// the partition has no current batch and an empty queue. The purge must wait for the
+    /// rotation, or the sealed batch is enqueued (and sent) after the purge returned.
+    /// </summary>
+    [Test]
+    public async Task Purge_Queue_WaitsForRotationAndFailsTheSealedBatch()
+    {
+        var accumulator = new RecordAccumulator(CreateTestOptions());
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var topicPartition = new TopicPartition("test-topic", 0);
+        using var enqueueReached = new ManualResetEventSlim();
+        using var releaseEnqueue = new ManualResetEventSlim();
+        Task<bool>? appendTask = null;
+
+        accumulator.BeforeCompletedBatchEnqueueForTest = () =>
+        {
+            enqueueReached.Set();
+            if (!releaseEnqueue.Wait(TimeSpan.FromSeconds(10)))
+                throw new TimeoutException("Timed out waiting to release completed batch enqueue.");
+        };
+
+        try
+        {
+            var completion = pool.Rent();
+            var completionTask = completion.Task;
+            appendTask = RunOnDedicatedThread(() => accumulator.TryAppendFromSpansWithCompletion(
+                topicPartition.Topic,
+                topicPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                "value"u8,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                completion));
+            await WaitUntilAsync(() => enqueueReached.IsSet, TimeSpan.FromSeconds(5));
+
+            var purgeWaitObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            accumulator.PurgeAppendWaitObservedForTest = () => purgeWaitObserved.TrySetResult();
+            var purgeTask = RunOnDedicatedThread(() =>
+                accumulator.Purge(PurgeOptions.Queue, CreatePurgedException()));
+            await purgeWaitObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.That(purgeTask.IsCompleted).IsFalse();
+
+            releaseEnqueue.Set();
+
+            await Assert.That(await purgeTask.WaitAsync(TimeSpan.FromSeconds(5))).IsEqualTo(1);
+            await Assert.That(await appendTask.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+            var exception = await Assert.ThrowsAsync<ProduceException>(async () =>
+                await completionTask.AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
+            await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.Purged);
+            await Assert.That(accumulator.InFlightBatchCount).IsEqualTo(0);
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        }
+        finally
+        {
+            releaseEnqueue.Set();
+            if (appendTask is not null)
+                await appendTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// The rotation has enqueued the sealed batch but not yet published it (StartPreSerialization
+    /// still has to touch it). A purge in that gap must wait: failing the batch then would return
+    /// it to the pool while the rotation thread still dereferences it. Before the fix the rotation
+    /// gate was cleared at enqueue, so the purge took, failed and pooled the batch right away.
+    /// </summary>
+    [Test]
+    public async Task Purge_Queue_WaitsUntilTheRotationHasPublishedTheEnqueuedBatch()
+    {
+        var accumulator = new RecordAccumulator(CreateTestOptions());
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var topicPartition = new TopicPartition("test-topic", 0);
+        using var publishReached = new ManualResetEventSlim();
+        using var releasePublish = new ManualResetEventSlim();
+        Task<bool>? appendTask = null;
+
+        accumulator.BeforeCompletedBatchPublishForTest = () =>
+        {
+            publishReached.Set();
+            if (!releasePublish.Wait(TimeSpan.FromSeconds(10)))
+                throw new TimeoutException("Timed out waiting to release the batch publication.");
+        };
+
+        try
+        {
+            var completion = pool.Rent();
+            var completionTask = completion.Task;
+            appendTask = RunOnDedicatedThread(() => accumulator.TryAppendFromSpansWithCompletion(
+                topicPartition.Topic,
+                topicPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                "value"u8,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                completion));
+            await WaitUntilAsync(() => publishReached.IsSet, TimeSpan.FromSeconds(5));
+
+            var purgeWaitObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            accumulator.PurgeAppendWaitObservedForTest = () => purgeWaitObserved.TrySetResult();
+            var purgeTask = RunOnDedicatedThread(() =>
+                accumulator.Purge(PurgeOptions.Queue, CreatePurgedException()));
+
+            var first = await Task.WhenAny(purgeWaitObserved.Task, purgeTask).WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.That(first == purgeWaitObserved.Task).IsTrue();
+            await Assert.That(purgeTask.IsCompleted).IsFalse();
+
+            releasePublish.Set();
+
+            await Assert.That(await purgeTask.WaitAsync(TimeSpan.FromSeconds(5))).IsEqualTo(1);
+            await Assert.That(await appendTask.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+            var exception = await Assert.ThrowsAsync<ProduceException>(async () =>
+                await completionTask.AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
+            await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.Purged);
+            await Assert.That(accumulator.InFlightBatchCount).IsEqualTo(0);
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        }
+        finally
+        {
+            releasePublish.Set();
+            if (appendTask is not null)
+                await appendTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// The two-phase span append (records with headers) checks the transaction fences when it
+    /// reserves space, encodes outside the partition lock, and publishes the record in a second
+    /// lock hold. A BeginTransaction that advances the generation between the two must reject the
+    /// record at the publishing hold, with its reservation cancelled and its memory returned.
+    /// </summary>
+    [Test]
+    public async Task AppendFromSpans_TwoPhase_GenerationAdvancedDuringEncoding_RejectsAtCommit()
+    {
+        var accumulator = new RecordAccumulator(CreateTestOptions());
+        try
+        {
+            // The accumulator owns (and returns to the pool) the header array of an append.
+            var headers = ProducerContainerPools.Headers.Rent(1);
+            headers[0] = new Header("h", new byte[] { 1 });
+            var admitted = accumulator.TransactionalAppendGeneration;
+            accumulator.AfterReservedAppendEncodedForTest = () =>
+            {
+                accumulator.AfterReservedAppendEncodedForTest = null;
+                accumulator.AdvanceTransactionalAppendGeneration();
+            };
+
+            var exception = await Assert.That(async () => await accumulator.AppendFromSpansAsync(
+                    "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    "key"u8.ToArray(), keyIsNull: false, "value"u8.ToArray(), valueIsNull: false,
+                    headers, headerCount: 1, callback: null, CancellationToken.None,
+                    partitionCount: 0, transactionalGeneration: admitted))
+                .Throws<ProduceException>();
+            await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// When an abort closes appends while a two-phase rotation holds a completed batch, the
+    /// appender fails that unpublished batch. The rotation gate must stay set until the batch's
+    /// records have failed, so a concurrent purge (and the abort waiting on it) cannot finish first.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task CloseTransactionalAppends_DuringTwoPhaseRotation_PurgeWaitsForTheSealedBatchToFail(
+        CancellationToken cancellationToken)
+    {
+        var accumulator = new RecordAccumulator(CreateTestOptions(CompressionType.Gzip));
+        var value = new byte[600];
+        using var failReached = new ManualResetEventSlim();
+        using var releaseFail = new ManualResetEventSlim();
+        Task<bool>? second = null;
+        try
+        {
+            var first = accumulator.AppendAsync(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null, CopyToPooled(value), null, 0, null, null, CancellationToken.None);
+            await Assert.That(first.IsCompletedSuccessfully).IsTrue();
+
+            accumulator.AfterTwoPhaseRotationCompletedForTest = () =>
+            {
+                accumulator.AfterTwoPhaseRotationCompletedForTest = null;
+                accumulator.CloseTransactionalAppends();
+            };
+            accumulator.BeforeFailUnpublishedCompletedBatchForTest = () =>
+            {
+                accumulator.BeforeFailUnpublishedCompletedBatchForTest = null;
+                failReached.Set();
+                releaseFail.Wait(TimeSpan.FromSeconds(10));
+            };
+
+            second = RunOnDedicatedThread(() =>
+            {
+                try
+                {
+                    return accumulator.AppendAsync(
+                        "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        PooledMemory.Null, CopyToPooled(value), null, 0, null, null, CancellationToken.None)
+                        .AsTask().GetAwaiter().GetResult();
+                }
+                catch (ProduceException)
+                {
+                    return false;
+                }
+            });
+            await WaitUntilAsync(() => failReached.IsSet, TimeSpan.FromSeconds(5));
+
+            var purgeWaitObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            accumulator.PurgeAppendWaitObservedForTest = () => purgeWaitObserved.TrySetResult();
+            var purge = RunOnDedicatedThread(() => accumulator.Purge(PurgeOptions.Queue, CreatePurgedException()));
+
+            var first2 = await Task.WhenAny(purgeWaitObserved.Task, purge).WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            await Assert.That(first2 == purgeWaitObserved.Task).IsTrue();
+            await Assert.That(purge.IsCompleted).IsFalse();
+
+            releaseFail.Set();
+            await purge.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            await Assert.That(await second.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken)).IsFalse();
+        }
+        finally
+        {
+            releaseFail.Set();
+            if (second is not null)
+                await second.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+            accumulator.ReopenTransactionalAppends();
+            await accumulator.DisposeAsync();
+        }
+
+        static PooledMemory CopyToPooled(byte[] source)
+        {
+            var buffer = ProducerDataPool.BytePool.Rent(source.Length);
+            source.CopyTo(buffer, 0);
+            return new PooledMemory(buffer, source.Length);
+        }
+    }
+
+    /// <summary>
+    /// A purge fails the queued pending appends while it holds the drain guard. An append that
+    /// queues after the purge emptied the queue but before it released the guard loses its drain
+    /// request to the purge; the purge must honor that request once it releases the guard, or the
+    /// append waits for an unrelated memory release or max.block.ms even though memory is free.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task Purge_AppendQueuedWhilePurgeHoldsTheDrainGuard_IsDrainedWhenThePurgeReturns(
+        CancellationToken cancellationToken)
+    {
+        const int BufferMemory = 64 * 1024;
+        var accumulator = new RecordAccumulator(new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = BufferMemory,
+            BatchSize = 1000,
+            LingerMs = 10,
+            MaxBlockMs = 60_000
+        });
+        Task<bool>? pendingAppend = null;
+        try
+        {
+            // Exhaust buffer memory so the next append queues as a pending append.
+            await Assert.That(accumulator.TryReserveMemory(BufferMemory)).IsTrue();
+
+            accumulator.PurgePendingAppendsGuardHeldForTest = () =>
+            {
+                accumulator.PurgePendingAppendsGuardHeldForTest = null;
+                pendingAppend = accumulator.AppendAsync(
+                    "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    PooledMemory.Null, PooledMemory.Null, null, 0, null, null, CancellationToken.None).AsTask();
+                // Memory becomes free without anyone draining the queue.
+                typeof(RecordAccumulator)
+                    .GetMethod("ReleaseMemoryWithoutDrain", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(accumulator, [BufferMemory]);
+            };
+
+            accumulator.Purge(PurgeOptions.Queue, CreatePurgedException());
+
+            await Assert.That(pendingAppend is not null).IsTrue();
+            await Assert.That(await pendingAppend!.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken)).IsTrue();
+            await Assert.That(accumulator.PendingAppendCountForTest).IsEqualTo(0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            if (pendingAppend is not null)
+            {
+                try { await pendingAppend.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None); }
+                catch (Exception) { }
+            }
+        }
+    }
+
+    /// <summary>
+    /// With compression on, completing a detached batch creates its pre-serialization task, which
+    /// only publication starts. An abort that closes appends after a two-phase rotation completed
+    /// the batch but before it was re-enqueued makes the appender fail that batch unpublished:
+    /// the never-started task must be cleared first, or the failure waits for it forever.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task CloseTransactionalAppends_DuringCompressedTwoPhaseRotation_FailsTheSealedBatchWithoutHanging(
+        CancellationToken cancellationToken)
+    {
+        var accumulator = new RecordAccumulator(CreateTestOptions(CompressionType.Gzip));
+        var value = new byte[600];
+        try
+        {
+            // Fills most of the 1000-byte batch; the next record needs a rotation.
+            var first = accumulator.AppendAsync(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null, CopyToPooled(value), null, 0, null, null, CancellationToken.None);
+            await Assert.That(first.IsCompletedSuccessfully).IsTrue();
+
+            accumulator.AfterTwoPhaseRotationCompletedForTest = () =>
+            {
+                accumulator.AfterTwoPhaseRotationCompletedForTest = null;
+                accumulator.CloseTransactionalAppends();
+            };
+
+            var second = RunOnDedicatedThread(() => accumulator.AppendAsync(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null, CopyToPooled(value), null, 0, null, null, CancellationToken.None)
+                .AsTask().GetAwaiter().GetResult());
+
+            var exception = await Assert.That(async () => await second.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken))
+                .Throws<ProduceException>();
+            await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        }
+        finally
+        {
+            accumulator.ReopenTransactionalAppends();
+            await accumulator.DisposeAsync();
+        }
+
+        static PooledMemory CopyToPooled(byte[] source)
+        {
+            var buffer = ProducerDataPool.BytePool.Rent(source.Length);
+            source.CopyTo(buffer, 0);
+            return new PooledMemory(buffer, source.Length);
+        }
+    }
+
+    /// <summary>
+    /// While a transaction abort has the accumulator closed, every append path rejects its record
+    /// with <see cref="ProduceErrorKind.TransactionAborted"/> and keeps no memory; reopening
+    /// restores appends.
+    /// </summary>
+    [Test]
+    public async Task CloseTransactionalAppends_RejectsEveryAppendPathUntilReopened()
+    {
+        var accumulator = new RecordAccumulator(CreateTestOptions());
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        try
+        {
+            // Open batches exist on partitions 0 and 1, so the fast paths would otherwise take
+            // the records.
+            await Assert.That(accumulator.TryAppendFromSpansWithCompletion(
+                "test-topic", 0, timestamp, ReadOnlySpan<byte>.Empty, keyIsNull: true, "value"u8,
+                valueIsNull: false, headers: null, headerCount: 0, pool.Rent())).IsTrue();
+            await Assert.That(await accumulator.AppendFromSpansAsync(
+                "test-topic", 1, timestamp, ReadOnlySpan<byte>.Empty, keyIsNull: true, "value"u8,
+                valueIsNull: false, headers: null, headerCount: 0, callback: null,
+                CancellationToken.None)).IsTrue();
+
+            accumulator.CloseTransactionalAppends();
+
+            var spansException = Assert.Throws<ProduceException>(() => accumulator.AppendFromSpansAsync(
+                "test-topic", 1, timestamp, ReadOnlySpan<byte>.Empty, keyIsNull: true, "value"u8,
+                valueIsNull: false, headers: null, headerCount: 0, callback: null, CancellationToken.None));
+            await Assert.That(spansException!.Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+
+            var completion = pool.Rent();
+            var completionException = Assert.Throws<ProduceException>(() =>
+                accumulator.TryAppendFromSpansWithCompletion(
+                    "test-topic", 0, timestamp, ReadOnlySpan<byte>.Empty, keyIsNull: true, "value"u8,
+                    valueIsNull: false, headers: null, headerCount: 0, completion));
+            await Assert.That(completionException!.Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+            PooledCompletionSource.TrySetException(completion, completionException);
+
+            var pooledException = await Assert.ThrowsAsync<ProduceException>(async () =>
+                await accumulator.AppendAsync(
+                    "test-topic", 2, timestamp,
+                    new PooledMemory(null, 0, isNull: true),
+                    new PooledMemory(null, 0, isNull: true),
+                    headers: null, headerCount: 0, completionSource: null, callback: null,
+                    CancellationToken.None));
+            await Assert.That(pooledException!.Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+
+            // Only the two records appended before the close are buffered.
+            await Assert.That(accumulator.Purge(PurgeOptions.Queue, CreatePurgedException())).IsEqualTo(2);
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+
+            accumulator.ReopenTransactionalAppends();
+
+            await Assert.That(accumulator.TryAppendFromSpansWithCompletion(
+                "test-topic", 0, timestamp, ReadOnlySpan<byte>.Empty, keyIsNull: true, "value"u8,
+                valueIsNull: false, headers: null, headerCount: 0, pool.Rent())).IsTrue();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
     [Test]
     public async Task Purge_Queue_FailsSealedQueuedBatch()
     {
@@ -3666,6 +4089,110 @@ public class RecordAccumulatorTests
 
             // If the pool didn't corrupt, we're good. Extra validation: rent and check
             // that each rented batch is distinct (no duplicates from double-return).
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task SweepExpiredInFlightBatches_TransactionalOrphan_ReportsFailureBeforeCompleting()
+    {
+        // An orphaned batch fell out of every BrokerSender structure, so only the sweep can tell
+        // the transaction that its records are gone.
+        var accumulator = new RecordAccumulator(CreateTestOptions());
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+
+        try
+        {
+            var sources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(1);
+            sources[0] = pool.Rent();
+            var completionTask = sources[0].Task;
+            var reports = new List<(long ProducerId, short Epoch, ErrorCode ErrorCode, bool Completed)>();
+            accumulator.OnTransactionalBatchFailed = (producerId, epoch, errorCode, _) =>
+            {
+                reports.Add((producerId, epoch, errorCode, completionTask.IsCompleted));
+                return true;
+            };
+
+            // As rented from the accumulator's pool: it reports its failure to the accumulator.
+            var batch = new ReadyBatch(accumulator);
+            batch.Initialize(
+                new TopicPartition("test-topic", 0),
+                new RecordBatch
+                {
+                    Records = Array.Empty<Record>(),
+                    ProducerId = 42,
+                    ProducerEpoch = 5,
+                    Attributes = RecordBatchAttributes.IsTransactional
+                },
+                sources,
+                completionSourcesCount: 1,
+                recordCount: 1,
+                dataSize: 100,
+                // Created an hour ago: well past the sweep's 3x delivery timeout.
+                createdStopwatchTimestamp: Stopwatch.GetTimestamp() - Stopwatch.Frequency * 3_600);
+            InvokeOnBatchEntersPipeline(accumulator, batch);
+
+            await Assert.That(accumulator.SweepExpiredInFlightBatches()).IsEqualTo(1);
+
+            await Assert.That(reports).IsEquivalentTo(
+                [(42L, (short)5, ErrorCode.RequestTimedOut, false)]);
+            await Assert.ThrowsAsync<KafkaTimeoutException>(async () => await completionTask);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task SweepExpiredInFlightBatches_TransactionalBatchAlreadyCompletedBySender_ReportsNothing()
+    {
+        // The response handler won CompleteSend but has not cleaned the batch up yet when the
+        // sweep removes it from the pipeline: the produce succeeded, so the transaction must not
+        // hear of a failure.
+        var accumulator = new RecordAccumulator(CreateTestOptions());
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+
+        try
+        {
+            var sources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(1);
+            sources[0] = pool.Rent();
+            var completionTask = sources[0].Task;
+            var reports = 0;
+            accumulator.OnTransactionalBatchFailed = (_, _, _, _) =>
+            {
+                reports++;
+                return true;
+            };
+
+            var batch = new ReadyBatch(accumulator);
+            batch.Initialize(
+                new TopicPartition("test-topic", 0),
+                new RecordBatch
+                {
+                    Records = Array.Empty<Record>(),
+                    ProducerId = 42,
+                    ProducerEpoch = 5,
+                    Attributes = RecordBatchAttributes.IsTransactional
+                },
+                sources,
+                completionSourcesCount: 1,
+                recordCount: 1,
+                dataSize: 100,
+                createdStopwatchTimestamp: Stopwatch.GetTimestamp() - Stopwatch.Frequency * 3_600);
+            InvokeOnBatchEntersPipeline(accumulator, batch);
+            batch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
+
+            accumulator.SweepExpiredInFlightBatches();
+
+            await Assert.That(reports).IsEqualTo(0);
+            var metadata = await completionTask;
+            await Assert.That(metadata.Offset).IsEqualTo(7L);
         }
         finally
         {

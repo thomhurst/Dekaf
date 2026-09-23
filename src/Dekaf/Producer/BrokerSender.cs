@@ -1683,6 +1683,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 coalescedCount = 0;
                 coalescedRequestBudgetUsed = 0;
 
+                // While a transaction abort settles its batches (the accumulator is closed to
+                // appends), a batch this sender holds for a resend (a retry, or one carried over)
+                // belongs to the aborting transaction. It is failed here, on the loop thread,
+                // instead of being resent until the delivery timeout while the abort waits for it.
+                // Only when carry-over exists: one field read and one volatile read per pass.
+                if (carryOver.Count > 0
+                    && _options.TransactionalId is not null
+                    && _accumulator.TransactionalAppendsClosed)
+                {
+                    FailCarryOverForTransactionAbort(carryOver);
+                }
+
                 // Drain carry-over into temp list for iteration. Per-partition FIFO order
                 // ensures oldest batch per partition is seen first (Java's Deque.pollFirst).
                 drainList.Clear();
@@ -2022,6 +2034,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // Finalize retry batches now that we know they will actually be sent
                         // (epoch bump check passed). Clear IsRetry and unmute partitions.
                         FinalizeCoalescedRetries(coalescedBatches, coalescedCount, carryOver);
+
+                        // The abort fence at the write commit point. A transaction abort that
+                        // closed the accumulator after this pass's carry-over check (for example
+                        // during the enrollment step above) must not get a new request it would
+                        // then wait for. None of these batches has a request outstanding, so
+                        // they fail here instead. One volatile read per coalesced send, for a
+                        // transactional producer only.
+                        if (_options.TransactionalId is not null && _accumulator.TransactionalAppendsClosed)
+                        {
+                            FailCoalescedForTransactionAbort(
+                                coalescedBatches, coalescedGenerations, ref coalescedCount);
+                            continue;
+                        }
 
                         LogSendingCoalesced(_brokerId, coalescedCount);
                         for (var si = 0; si < coalescedCount; si++)
@@ -5811,6 +5836,79 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             batch.ReleaseResourcePin();
         }
     }
+
+    /// <summary>
+    /// Fails every batch in carry-over with <see cref="ProduceErrorKind.TransactionAborted"/>: a
+    /// transaction abort is settling its batches (<see cref="RecordAccumulator.CloseTransactionalAppends"/>),
+    /// and these were drained to this sender before the abort's purge but have no request
+    /// outstanding, so waiting for them would mean resending them. Batches with a request in
+    /// flight stay in the pending responses and are answered normally. Send loop only (the
+    /// carry-over is loop-owned); abort path only.
+    /// </summary>
+    private void FailCarryOverForTransactionAbort(PartitionCarryOver carryOver)
+    {
+        var aborted = RecordAccumulator.CreateTransactionAbortedException(
+            "The transaction was aborted before this record's batch could be sent again.");
+        foreach (var kvp in carryOver.Partitions)
+        {
+            var queue = kvp.Value;
+            for (var i = queue.Count - 1; i >= 0; i--)
+            {
+                var batchRef = queue[i];
+                if (!batchRef.IsCurrentIncarnation())
+                {
+                    carryOver.RemoveAt(queue, i);
+                    continue;
+                }
+
+                var batch = batchRef.Batch;
+                if (batch.IsRetry)
+                {
+                    batch.IsRetry = false;
+                    batch.RetryNotBefore = 0;
+                    UnmuteUnlessRetryQueued(batch.TopicPartition, carryOver);
+                }
+
+                FailAndCleanupBatch(batch, aborted);
+                carryOver.RemoveAt(queue, i);
+            }
+        }
+
+        carryOver.SetEarliestCreatedTicks(long.MaxValue);
+    }
+
+    /// <summary>
+    /// Fails the coalesced batches of a send that a transaction abort fenced at the write commit
+    /// point (see <see cref="FailCarryOverForTransactionAbort"/>): none has a request outstanding.
+    /// Send loop only; abort path only.
+    /// </summary>
+    private void FailCoalescedForTransactionAbort(ReadyBatch[] batches, int[] generations, ref int count)
+    {
+        var aborted = RecordAccumulator.CreateTransactionAbortedException(
+            "The transaction was aborted before this record's batch was sent.");
+        for (var i = 0; i < count; i++)
+        {
+            var batch = batches[i];
+            if (!batch.IsCurrentIncarnation(generations[i]))
+            {
+                LogStaleBatchInSendSkipped(_instanceId, _brokerId);
+                continue;
+            }
+
+            FailAndCleanupBatch(batch, aborted);
+        }
+
+        Array.Clear(batches, 0, count);
+        Array.Clear(generations, 0, count);
+        count = 0;
+    }
+
+    /// <summary>
+    /// Wakes the send loop so it observes a transaction abort that has closed the accumulator
+    /// (see <see cref="FailCarryOverForTransactionAbort"/>) even while it waits out a retry
+    /// backoff. Thread-safe: only writes a signal to the loop's event channel.
+    /// </summary>
+    internal void WakeForTransactionAbort() => _eventChannel.Writer.TryWrite(SendLoopEvent.ResponseReady());
 
     /// <summary>
     /// Sweeps carry-over for batches that have exceeded their delivery deadline.

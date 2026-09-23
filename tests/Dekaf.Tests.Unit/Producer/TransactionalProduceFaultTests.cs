@@ -223,6 +223,578 @@ public sealed class TransactionalProduceFaultTests
         await Assert.That(async () => await completion).Throws<KafkaException>();
     }
 
+    /// <summary>
+    /// Records of an aborted transaction that the abort finds still buffered fail with it and are
+    /// never sent; records already sent are answered first. Either way the next transaction sends
+    /// only its own record, under the epoch the abort left, from sequence 0.
+    /// </summary>
+    [Test]
+    [Arguments((short)1)]
+    [Arguments((short)2)]
+    [Timeout(60_000)]
+    public async Task AbortAsync_WithUnsentRecords_NeverSendsThemInTheNextTransaction(
+        short transactionVersion,
+        CancellationToken cancellationToken)
+    {
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion,
+            produceError: static (_, _) => ErrorCode.None,
+            // Keeps fire-and-forget records buffered until the abort.
+            lingerMs: 60_000);
+
+        var aborted = harness.Producer.BeginTransaction();
+        var abortedDeliveries = new TaskCompletionSource<Exception?>[3];
+        for (var i = 0; i < abortedDeliveries.Length; i++)
+        {
+            var delivery = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            abortedDeliveries[i] = delivery;
+            await harness.Producer.FireAsync(Message(partition: 0), (_, error) => delivery.TrySetResult(error));
+        }
+
+        await aborted.AbortAsync(cancellationToken);
+        await aborted.DisposeAsync();
+
+        // The abort settles every record of the aborted transaction before it completes.
+        foreach (var delivery in abortedDeliveries)
+        {
+            await Assert.That(delivery.Task.IsCompleted).IsTrue();
+            var error = await delivery.Task;
+            if (error is not null)
+            {
+                await Assert.That(error).IsTypeOf<ProduceException>();
+                await Assert.That(((ProduceException)error).Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+            }
+        }
+
+        var sentBeforeNext = harness.Broker.ProducedBatches.Count;
+        var epochAfterAbort = harness.Broker.CurrentEpoch;
+        await harness.CommitOneRecordAsync(partition: 0, cancellationToken);
+
+        var sentInNext = harness.Broker.ProducedBatches.Skip(sentBeforeNext).ToArray();
+        await Assert.That(sentInNext.Length).IsEqualTo(1);
+        await Assert.That(sentInNext[0].ProducerEpoch).IsEqualTo(epochAfterAbort);
+        await Assert.That(sentInNext[0].RecordCount).IsEqualTo(1);
+        await Assert.That(sentInNext[0].BaseSequence).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// A batch in flight when the transaction aborts belongs to it: EndTxn(abort) waits for its
+    /// answer (an abort marker ahead of the batch would leave its records outside the aborted
+    /// transaction, TV1's hanging-transaction risk). The answer here rejects the epoch, which is
+    /// abortable and changes nothing for a transaction already aborting; the abort completes and
+    /// the next transaction starts under the new epoch at sequence 0.
+    /// </summary>
+    [Test]
+    [Arguments((short)1)]
+    [Arguments((short)2)]
+    [Timeout(60_000)]
+    public async Task AbortAsync_WithARequestInFlight_WaitsForItsAnswerAndLeavesTheNextTransactionUsable(
+        short transactionVersion,
+        CancellationToken cancellationToken)
+    {
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion,
+            produceError: static (_, attempt) => attempt == 1 ? ErrorCode.InvalidProducerEpoch : ErrorCode.None,
+            deliveryTimeoutMs: 120_000);
+        harness.Broker.HoldProduceResponse = attempt => attempt == 1 ? releaseFirst.Task : null;
+
+        var aborted = harness.Producer.BeginTransaction();
+        var inFlight = aborted.ProduceAsync(Message(partition: 0), cancellationToken).AsTask();
+        await harness.Broker.WaitForProduceAttemptsAsync(1, cancellationToken);
+        var abort = aborted.AbortAsync(cancellationToken).AsTask();
+
+        // Gives an abort that does not wait for the batch the time to send EndTxn.
+        await Task.Delay(200, cancellationToken);
+        await Assert.That(harness.Broker.AbortRequests).IsEqualTo(0);
+
+        releaseFirst.SetResult();
+        await abort;
+        await aborted.DisposeAsync();
+        await Assert.That(async () => await inFlight).Throws<AbortableTransactionException>();
+        await Assert.That(harness.Broker.AbortRequests).IsEqualTo(1);
+
+        var epochAfterAbort = harness.Broker.CurrentEpoch;
+        await harness.CommitOneRecordAsync(partition: 0, cancellationToken);
+        var last = harness.Broker.ProducedBatches[^1];
+        await Assert.That(last.ProducerEpoch).IsEqualTo(epochAfterAbort);
+        await Assert.That(last.BaseSequence).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// A produce that passed its state check before the abort but is still awaiting its async
+    /// serializer when the abort ends belongs to the aborted transaction. Once it resumes it must
+    /// fail with <see cref="ProduceErrorKind.TransactionAborted"/>; it must not be appended after
+    /// the abort reopens appends and then be sent outside the aborted transaction or in the next.
+    /// </summary>
+    [Test]
+    [Arguments((short)1)]
+    [Arguments((short)2)]
+    [Timeout(60_000)]
+    public async Task AbortAsync_ProduceStillSerializingWhenTheAbortEnds_FailsAndIsNeverSent(
+        short transactionVersion,
+        CancellationToken cancellationToken)
+    {
+        var serializer = new HeldAsyncStringSerializer(heldValue: "admitted-before-abort");
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion,
+            produceError: static (_, _) => ErrorCode.None,
+            asyncValueSerializer: serializer);
+
+        var aborted = harness.Producer.BeginTransaction();
+        var stale = aborted.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "admitted-before-abort",
+            Partition = 0
+        }, cancellationToken).AsTask();
+        await serializer.Entered.WaitAsync(cancellationToken);
+
+        await aborted.AbortAsync(cancellationToken);
+        await aborted.DisposeAsync();
+        var sentBeforeRelease = harness.Broker.ProducedBatches.Count;
+
+        serializer.Release();
+        var exception = await Assert.That(async () => await stale).Throws<ProduceException>();
+        await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+
+        await harness.CommitOneRecordAsync(partition: 0, cancellationToken);
+        var sentAfterRelease = harness.Broker.ProducedBatches.Skip(sentBeforeRelease).ToArray();
+        await Assert.That(sentAfterRelease.Length).IsEqualTo(1);
+        await Assert.That(sentAfterRelease[0].RecordCount).IsEqualTo(1);
+        await Assert.That(sentAfterRelease[0].BaseSequence).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// The fire-and-forget form of the test above: a FireAsync admitted before the abort that is
+    /// still awaiting its async serializer when the abort ends must not append after the abort
+    /// reopens appends. With a delivery handler the handler receives
+    /// <see cref="ProduceErrorKind.TransactionAborted"/>; either way the record is never sent.
+    /// </summary>
+    [Test]
+    [Arguments((short)1, false)]
+    [Arguments((short)1, true)]
+    [Arguments((short)2, false)]
+    [Arguments((short)2, true)]
+    [Timeout(60_000)]
+    public async Task AbortAsync_FireStillSerializingWhenTheAbortEnds_IsNeverSent(
+        short transactionVersion,
+        bool withDeliveryHandler,
+        CancellationToken cancellationToken)
+    {
+        var serializer = new HeldAsyncStringSerializer(heldValue: "admitted-before-abort");
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion,
+            produceError: static (_, _) => ErrorCode.None,
+            asyncValueSerializer: serializer);
+
+        var aborted = harness.Producer.BeginTransaction();
+        var message = new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "admitted-before-abort",
+            Partition = 0
+        };
+        var delivery = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stale = (withDeliveryHandler
+            ? harness.Producer.FireAsync(message, (_, error) => delivery.TrySetResult(error))
+            : harness.Producer.FireAsync(message)).AsTask();
+        await serializer.Entered.WaitAsync(cancellationToken);
+
+        await aborted.AbortAsync(cancellationToken);
+        await aborted.DisposeAsync();
+        var sentBeforeRelease = harness.Broker.ProducedBatches.Count;
+
+        serializer.Release();
+        await stale.WaitAsync(cancellationToken);
+        if (withDeliveryHandler)
+        {
+            var error = await delivery.Task.WaitAsync(cancellationToken);
+            await Assert.That(error).IsTypeOf<ProduceException>();
+            await Assert.That(((ProduceException)error!).Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+        }
+
+        await harness.CommitOneRecordAsync(partition: 0, cancellationToken);
+        var sentAfterRelease = harness.Broker.ProducedBatches.Skip(sentBeforeRelease).ToArray();
+        await Assert.That(sentAfterRelease.Length).IsEqualTo(1);
+        await Assert.That(sentAfterRelease[0].RecordCount).IsEqualTo(1);
+        await Assert.That(sentAfterRelease[0].BaseSequence).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// A produce passes its admission check and then blocks in a synchronous serializer (or an
+    /// interceptor) for the whole abort: close, purge, EndTxn and reopen. The generation read at
+    /// admission reaches the accumulator's commit point, so the record is rejected with
+    /// TransactionAborted instead of being appended after appends reopen and sent outside the
+    /// aborted transaction. Covers the awaited ProduceAsync fast path and the FireAsync path, with
+    /// the block in the serializer or in a serializer preparer (IAsyncSerializerPreparer) that
+    /// completes synchronously.
+    /// </summary>
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    [Arguments(true, true)]
+    [Timeout(60_000)]
+    public async Task AbortAsync_ProduceBlockedInASynchronousSerializerAcrossTheAbort_FailsAndIsNeverSent(
+        bool fireAndForget,
+        bool blockInPreparer,
+        CancellationToken cancellationToken)
+    {
+        using var serializer = blockInPreparer
+            ? new BlockingPreparedStringSerializer(heldValue: "admitted-before-abort")
+            : new BlockingStringSerializer(heldValue: "admitted-before-abort");
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion: 2,
+            produceError: static (_, _) => ErrorCode.None,
+            valueSerializer: serializer);
+
+        var aborted = harness.Producer.BeginTransaction();
+        var stale = new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "admitted-before-abort",
+            Partition = 0
+        };
+        var delivery = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var produce = Task.Run(async () =>
+        {
+            if (fireAndForget)
+            {
+                await harness.Producer.FireAsync(stale, (_, error) => delivery.TrySetResult(error));
+                return;
+            }
+
+            try
+            {
+                await aborted.ProduceAsync(stale, cancellationToken);
+                delivery.TrySetResult(null);
+            }
+            catch (Exception ex)
+            {
+                delivery.TrySetResult(ex);
+            }
+        }, cancellationToken);
+        await serializer.Entered.WaitAsync(cancellationToken);
+
+        await aborted.AbortAsync(cancellationToken);
+        await aborted.DisposeAsync();
+        var sentBeforeRelease = harness.Broker.ProducedBatches.Count;
+
+        serializer.Release();
+        await produce.WaitAsync(cancellationToken);
+        var error = await delivery.Task.WaitAsync(cancellationToken);
+        await Assert.That(error).IsTypeOf<ProduceException>();
+        await Assert.That(((ProduceException)error!).Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+
+        await harness.CommitOneRecordAsync(partition: 0, cancellationToken);
+        var sentAfterRelease = harness.Broker.ProducedBatches.Skip(sentBeforeRelease).ToArray();
+        await Assert.That(sentAfterRelease.Length).IsEqualTo(1);
+        await Assert.That(sentAfterRelease[0].RecordCount).IsEqualTo(1);
+    }
+
+    /// <summary>
+    /// With a retry policy, a produce whose first attempt failed retriably is retried. If an abort
+    /// ran before the retry, the retry must carry the generation of the first admission to the
+    /// append commit point; admitting it afresh would read the next generation and let the record
+    /// join whatever follows the abort. The abort here runs between the retry wrapper's own check
+    /// and the attempt's admission.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task ProduceAsync_RetryAfterAnAbortStartedBeforeTheAttempt_IsRejected(
+        CancellationToken cancellationToken)
+    {
+        var serializer = new FailOnceStringSerializer(failingValue: "retried");
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion: 2,
+            produceError: static (_, _) => ErrorCode.None,
+            valueSerializer: serializer,
+            retryPolicy: new ImmediateRetryPolicy());
+
+        await using var transaction = harness.Producer.BeginTransaction();
+        var accumulator = harness.Producer.RecordAccumulator;
+        harness.Producer.BeforeProduceRetryAttemptForTest = () =>
+        {
+            harness.Producer.BeforeProduceRetryAttemptForTest = null;
+            // A whole abort cycle's generation change, in the window before the attempt.
+            accumulator.CloseTransactionalAppends();
+            accumulator.ReopenTransactionalAppends();
+        };
+
+        var exception = await Assert.That(async () => await transaction.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = Topic,
+                Key = "key",
+                Value = "retried",
+                Partition = 0
+            }, cancellationToken))
+            .Throws<ProduceException>();
+        await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+        await Assert.That(serializer.Calls).IsEqualTo(2);
+        await Assert.That(harness.Broker.ProducedBatches.Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// A transaction handle is bound to the generation it was created in. A produce through the
+    /// handle that passes the handle's own checks while an abort starts (here the abort's
+    /// generation change lands between those checks and the producer's admission) carries the
+    /// handle's generation and is rejected at the append commit point; reading the generation at
+    /// the producer's admission would pick up the post-abort value and let the record through.
+    /// </summary>
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    [Timeout(60_000)]
+    public async Task TransactionHandleProduce_AfterTheHandlesGenerationWasAborted_IsRejected(
+        bool componentwise,
+        CancellationToken cancellationToken)
+    {
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion: 2,
+            produceError: static (_, _) => ErrorCode.None);
+
+        await using var transaction = harness.Producer.BeginTransaction();
+        var accumulator = harness.Producer.RecordAccumulator;
+        // An abort's generation change after the handle was created; the transaction state is
+        // left as it was, as it is for a produce that already passed the handle's checks.
+        accumulator.CloseTransactionalAppends();
+        accumulator.ReopenTransactionalAppends();
+
+        var exception = await Assert.That(async () =>
+            {
+                if (componentwise)
+                    await transaction.ProduceAsync(Topic, "key", "value", cancellationToken);
+                else
+                    await transaction.ProduceAsync(Message(partition: 0), cancellationToken);
+            })
+            .Throws<ProduceException>();
+        await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+        await Assert.That(harness.Broker.ProducedBatches.Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// The componentwise FireAsync falls back to the message-based path when interceptors are
+    /// configured. The fallback must forward the generation the componentwise entry point read,
+    /// not read it again: here the abort's generation change lands during the interceptor, after
+    /// the componentwise admission, and the record must be rejected at the append commit point.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task FireAsync_ComponentwiseWithInterceptors_KeepsTheAdmissionGeneration(
+        CancellationToken cancellationToken)
+    {
+        RecordAccumulator? accumulator = null;
+        var interceptor = new CallbackInterceptor(() =>
+        {
+            accumulator!.CloseTransactionalAppends();
+            accumulator.ReopenTransactionalAppends();
+        });
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion: 2,
+            produceError: static (_, _) => ErrorCode.None,
+            interceptors: [interceptor]);
+        accumulator = harness.Producer.RecordAccumulator;
+
+        await using var transaction = harness.Producer.BeginTransaction();
+        try
+        {
+            // Fire-and-forget: the rejection is logged, not thrown.
+            await harness.Producer.FireAsync(Topic, "key", "value");
+        }
+        catch (ProduceException)
+        {
+        }
+
+        await harness.Producer.FlushAsync(cancellationToken);
+        await Assert.That(interceptor.Calls).IsEqualTo(1);
+        await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        await Assert.That(harness.Broker.ProducedBatches.Count).IsEqualTo(0);
+    }
+
+    private sealed class CallbackInterceptor(Action onSend) : IProducerInterceptor<string, string>
+    {
+        private int _calls;
+
+        public int Calls => Volatile.Read(ref _calls);
+
+        public ProducerMessage<string, string> OnSend(ProducerMessage<string, string> message)
+        {
+            if (Interlocked.Increment(ref _calls) == 1)
+                onSend();
+            return message;
+        }
+
+        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception)
+        {
+        }
+    }
+
+    /// <summary>
+    /// A produce whose admission read the generation during an abort (after the abort advanced
+    /// it) and whose state check then ran only after the next transaction began carries that
+    /// value into the next transaction. BeginTransaction gives every transaction a generation of
+    /// its own, so a value read during the abort can never match it: the record is rejected at
+    /// the append commit point instead of joining the next transaction.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task ProduceAsync_AdmittedDuringAnAbort_IsRejectedInTheNextTransaction(
+        CancellationToken cancellationToken)
+    {
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion: 2,
+            produceError: static (_, _) => ErrorCode.None);
+        var accumulator = harness.Producer.RecordAccumulator;
+
+        var aborted = harness.Producer.BeginTransaction();
+        await aborted.AbortAsync(cancellationToken);
+        await aborted.DisposeAsync();
+        // What an admission read during the abort sees: the abort has advanced the generation
+        // and nothing has changed it since.
+        var readDuringAbort = accumulator.TransactionalAppendGeneration;
+
+        await using var next = harness.Producer.BeginTransaction();
+        var sentBefore = harness.Broker.ProducedBatches.Count;
+
+        // The produce's state check runs now, in the next transaction, with the generation it
+        // read during the abort.
+        var produce = typeof(KafkaProducer<string, string>)
+            .GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
+            .Single(m => m.Name == "ProduceAsync"
+                && m.GetParameters() is { Length: 4 } p
+                && p[0].ParameterType == typeof(ProducerMessage<string, string>)
+                && p[2].ParameterType == typeof(int));
+        var mode = Enum.Parse(produce.GetParameters()[1].ParameterType, "Async");
+        var result = (ValueTask<RecordMetadata>)produce.Invoke(
+            harness.Producer, [Message(partition: 0), mode, readDuringAbort, cancellationToken])!;
+
+        var exception = await Assert.That(async () => await result).Throws<ProduceException>();
+        await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+
+        await next.ProduceAsync(Message(partition: 0), cancellationToken);
+        await next.CommitAsync(cancellationToken);
+        var sent = harness.Broker.ProducedBatches.Skip(sentBefore).ToArray();
+        await Assert.That(sent.Length).IsEqualTo(1);
+        await Assert.That(sent[0].RecordCount).IsEqualTo(1);
+    }
+
+    private sealed class ImmediateRetryPolicy : Dekaf.Retry.IRetryPolicy
+    {
+        public TimeSpan? GetNextDelay(int attemptNumber, Exception exception) =>
+            attemptNumber <= 3 ? TimeSpan.Zero : null;
+    }
+
+    /// <summary>Throws a retriable error the first time it serializes one value.</summary>
+    private sealed class FailOnceStringSerializer(string failingValue) : ISerializer<string>
+    {
+        private int _calls;
+
+        public int Calls => Volatile.Read(ref _calls);
+
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : System.Buffers.IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            if (value == failingValue && Interlocked.Increment(ref _calls) == 1)
+                throw new KafkaException(ErrorCode.NotEnoughReplicas, "Transient failure for the test.");
+
+            Serializers.String.Serialize(value, ref destination, context);
+        }
+    }
+
+    /// <summary>A synchronous UTF-8 string serializer that blocks on one value until released.</summary>
+    private class BlockingStringSerializer(string heldValue) : ISerializer<string>, IDisposable
+    {
+        private readonly ManualResetEventSlim _release = new();
+        private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Entered => _entered.Task;
+
+        protected virtual bool BlocksInSerialize => true;
+
+        public void Release() => _release.Set();
+
+        public void Dispose()
+        {
+            _release.Set();
+            _release.Dispose();
+        }
+
+        protected void BlockIfHeld(string value)
+        {
+            if (value != heldValue)
+                return;
+
+            _entered.TrySetResult();
+            _release.Wait(TimeSpan.FromSeconds(30));
+        }
+
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : System.Buffers.IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            if (BlocksInSerialize)
+                BlockIfHeld(value);
+
+            Serializers.String.Serialize(value, ref destination, context);
+        }
+    }
+
+    /// <summary>
+    /// A serializer preparer whose PrepareAsync blocks synchronously on one value until released
+    /// (then returns a completed task), before the synchronous serialize runs.
+    /// </summary>
+    private sealed class BlockingPreparedStringSerializer(string heldValue)
+        : BlockingStringSerializer(heldValue), IAsyncSerializerPreparer<string>
+    {
+        protected override bool BlocksInSerialize => false;
+
+        public ValueTask PrepareAsync(
+            string value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            BlockIfHeld(value);
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    /// <summary>A UTF-8 string serializer that holds one value until released.</summary>
+    private sealed class HeldAsyncStringSerializer(string heldValue) : IAsyncSerializer<string>
+    {
+        private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Entered => _entered.Task;
+
+        public void Release() => _release.TrySetResult();
+
+        public async ValueTask SerializeAsync(
+            string value,
+            System.Buffers.IBufferWriter<byte> destination,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            if (value == heldValue)
+            {
+                _entered.TrySetResult();
+                await _release.Task.WaitAsync(cancellationToken);
+            }
+
+            var bytes = System.Text.Encoding.UTF8.GetBytes(value);
+            bytes.CopyTo(destination.GetSpan(bytes.Length));
+            destination.Advance(bytes.Length);
+        }
+    }
+
     private static ProducerMessage<string, string> Message(int partition) => new()
     {
         Topic = Topic,
@@ -256,7 +828,11 @@ public sealed class TransactionalProduceFaultTests
             short transactionVersion,
             Func<int, int, ErrorCode> produceError,
             int deliveryTimeoutMs = 30_000,
-            int lingerMs = 0)
+            int lingerMs = 0,
+            IAsyncSerializer<string>? asyncValueSerializer = null,
+            ISerializer<string>? valueSerializer = null,
+            Dekaf.Retry.IRetryPolicy? retryPolicy = null,
+            IReadOnlyList<object>? interceptors = null)
         {
             var broker = new ScriptedTransactionalBroker(produceError, bumpsEpochAtEndTxn: transactionVersion >= 2);
             var pool = new ConnectionPool(
@@ -321,13 +897,16 @@ public sealed class TransactionalProduceFaultTests
                     RetryBackoffMs = 10,
                     RetryBackoffMaxMs = 10,
                     MaxBlockMs = 10_000,
-                    CloseTimeoutMs = 1_000
+                    CloseTimeoutMs = 1_000,
+                    RetryPolicy = retryPolicy,
+                    Interceptors = interceptors
                 },
                 Serializers.String,
-                Serializers.String,
+                valueSerializer ?? Serializers.String,
                 pool,
                 metadata,
-                DekafMemoryBudget.Global);
+                DekafMemoryBudget.Global,
+                asyncValueSerializer: asyncValueSerializer);
 
             var harness = new TransactionalProduceHarness(pool, metadata, broker, producer);
             await producer.InitializeAsync();

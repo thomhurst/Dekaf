@@ -672,6 +672,9 @@ internal readonly struct AppendWorkItem
     public readonly PooledValueTaskSource<RecordMetadata> Completion;
     public readonly CancellationToken CancellationToken;
 
+    /// <summary>The <see cref="RecordAccumulator.TransactionalAppendGeneration"/> the produce was admitted in.</summary>
+    public readonly int TransactionalGeneration;
+
     public AppendWorkItem(
         string topic,
         int partition,
@@ -682,8 +685,10 @@ internal readonly struct AppendWorkItem
         Header[]? headers,
         int headerCount,
         PooledValueTaskSource<RecordMetadata> completion,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
     {
+        TransactionalGeneration = transactionalGeneration;
         Topic = topic;
         Partition = partition;
         PartitionCount = partitionCount;
@@ -1277,10 +1282,42 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private int _disposed;
     private int _closed;
 
+    // Nonzero while a transaction abort settles its batches: every append commit point checks it
+    // under the partition lock, next to _disposed, and rejects the record (see
+    // CloseTransactionalAppends).
+    private int _transactionalAppendsClosed;
+
+    // See TransactionalAppendGeneration.
+    private int _transactionalAppendGeneration;
+
+    /// <summary>
+    /// Passed in place of a captured <see cref="TransactionalAppendGeneration"/> by a
+    /// non-transactional produce: the append commit point skips the generation check.
+    /// </summary>
+    internal const int NoTransactionalGeneration = int.MinValue;
+
     internal Action? PurgeAppendWaitObservedForTest;
     internal Action? AfterLingerQueueSnapshotForTest;
     internal Action<TopicPartition>? AfterFlushPartitionVisitedForTest;
     internal Action? BeforeCompletedBatchEnqueueForTest;
+    internal Action? BeforeCompletedBatchPublishForTest;
+    internal Action? BeforeAppendWorkerAppendForTest;
+    internal Action? AfterTwoPhaseRotationCompletedForTest;
+    internal Action? PurgePendingAppendsGuardHeldForTest;
+    internal Action? BeforeFailUnpublishedCompletedBatchForTest;
+    internal Action? AfterReservedAppendEncodedForTest;
+
+    /// <summary>
+    /// AppContext switch that enables test hooks placed on per-record paths (for example
+    /// <see cref="AfterReservedAppendEncodedForTest"/>). The unit test assembly sets it from a
+    /// module initializer; nothing else does.
+    /// </summary>
+    internal const string PerRecordTestHooksSwitchName = "Dekaf.Producer.RecordAccumulator.PerRecordTestHooks";
+
+    // A static readonly bool is a JIT-time constant once the type is initialized, so a guarded
+    // per-record hook call is removed entirely when the switch is off: production pays nothing.
+    private static readonly bool s_perRecordTestHooks =
+        AppContext.TryGetSwitch(PerRecordTestHooksSwitchName, out var enabled) && enabled;
 
     /// <summary>
     /// True after CloseAsync has been called. Used by the sender loop to know
@@ -2676,7 +2713,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             op.Topic, op.Partition, op.Timestamp,
                             op.Key, op.Value, op.Headers, op.HeaderCount,
                             op.CompletionSource, op.Callback, op.RecordSize, op.PartitionCount,
-                            drainable.AdmissionReservation);
+                            drainable.AdmissionReservation, op.TransactionalGeneration);
 
                         op.ReleasePendingCountAfterClaim();
                         op.CompleteResult(result);
@@ -3179,6 +3216,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 workItem.CancellationToken.ThrowIfCancellationRequested();
 
+                // Admitted before a transaction abort that has since started: the record belongs
+                // to the aborted transaction and must not join whatever follows it. This early
+                // exit only saves the memory reservation; the append commit point validates the
+                // generation again under the partition lock, which is what makes it binding.
+                if (workItem.TransactionalGeneration != NoTransactionalGeneration
+                    && workItem.TransactionalGeneration != Volatile.Read(ref _transactionalAppendGeneration))
+                {
+                    CleanupWorkItemResources(in workItem);
+                    PooledCompletionSource.TrySetException(
+                        workItem.Completion,
+                        CreateStaleTransactionalAppendException());
+                    continue;
+                }
+
+                BeforeAppendWorkerAppendForTest?.Invoke();
                 appendStarted = true;
                 var appendTask = AppendAsync(
                     workItem.Topic,
@@ -3191,7 +3243,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     workItem.Completion,
                     null,
                     workItem.CancellationToken,
-                    partitionCount: workItem.PartitionCount);
+                    partitionCount: workItem.PartitionCount,
+                    transactionalGeneration: workItem.TransactionalGeneration);
 
                 if (!await appendTask.ConfigureAwait(false))
                 {
@@ -3269,12 +3322,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int headerCount,
         PooledValueTaskSource<RecordMetadata> completion,
         CancellationToken cancellationToken,
-        int partitionCount = 0)
+        int partitionCount = 0,
+        int? transactionalGeneration = null)
     {
         EnsureAppendWorkersStarted();
         var workerIndex = (int)((uint)partition % (uint)_appendWorkerCount);
         var workItem = new AppendWorkItem(topic, partition, partitionCount, timestamp, key, value,
-            headers, headerCount, completion, cancellationToken);
+            headers, headerCount, completion,
+            transactionalGeneration ?? NoTransactionalGeneration, cancellationToken);
 
         IncrementSlowPathAppendCount(topic, partition);
         if (!_appendWorkerChannels[workerIndex].Writer.TryWrite(workItem))
@@ -3305,7 +3360,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int headerCount,
         PooledValueTaskSource<RecordMetadata> completion,
         CancellationToken cancellationToken,
-        int partitionCount = 0)
+        int partitionCount = 0,
+        int? transactionalGeneration = null)
     {
         var key = PooledMemory.Null;
         var value = PooledMemory.Null;
@@ -3318,7 +3374,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 value = CopySpanToPooledMemory(valueData);
 
             EnqueueAppend(topic, partition, timestamp, key, value, headers, headerCount,
-                completion, cancellationToken, partitionCount);
+                completion, cancellationToken, partitionCount, transactionalGeneration);
         }
         catch
         {
@@ -3614,7 +3670,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         CancellationToken cancellationToken,
-        int partitionCount = 0)
+        int partitionCount = 0,
+        int transactionalGeneration = NoTransactionalGeneration)
     {
         if (Volatile.Read(ref _disposed) != 0)
             return new ValueTask<bool>(false);
@@ -3641,12 +3698,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (TryAdmitAndReserve(pd, topic, partition, recordSize, out var admissionReservation))
             return new ValueTask<bool>(AppendPooledAfterReservationCore(pd, topic, partition, timestamp, key, value,
                 headers, headerCount, completionSource, callback, recordSize, partitionCount,
-                admissionReservation));
+                admissionReservation, transactionalGeneration));
 
         // Cold path: buffer full or broker over budget — enqueue pooled PendingAppend
         // (zero async state machine allocation)
         return AppendSlowPathPooled(topic, partition, timestamp, key, value,
-            headers, headerCount, completionSource, callback, recordSize, cancellationToken, partitionCount);
+            headers, headerCount, completionSource, callback, recordSize, cancellationToken, partitionCount,
+            transactionalGeneration);
     }
 
     private bool AppendPooledAfterReservationCore(
@@ -3662,7 +3720,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
         int partitionCount,
-        AdmissionReservation admissionReservation)
+        AdmissionReservation admissionReservation,
+        int transactionalGeneration = NoTransactionalGeneration)
     {
         var topicPartition = new TopicPartition(topic, partition);
         ReadyBatch? sealedBatchToEnqueue = null;
@@ -3705,11 +3764,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 var disposed = false;
                 var messageTooLarge = false;
                 var actualBytesAdded = 0;
+                var releaseRotationAfterPublish = false;
+                var releaseRotationAfterFail = false;
 
                 {
                     using var guard = new SpinLockGuard(ref pd.Lock);
 
-                    if (Volatile.Read(ref _disposed) != 0)
+                    // A queued produce admitted before an abort that has since started (or even
+                    // finished and reopened appends) carries a stale generation and is rejected
+                    // here, at the commit point, not only when the worker dequeued it. The abort
+                    // advances the generation before its purge takes this lock, so the check and
+                    // the commit cannot straddle an abort. Non-transactional appends pass
+                    // NoTransactionalGeneration and skip it.
+                    if (Volatile.Read(ref _disposed) != 0
+                        || Volatile.Read(ref _transactionalAppendsClosed) != 0
+                        || IsStaleTransactionalGeneration(transactionalGeneration))
                     {
                         batchToReturn = rentedBatch;
                         rentedBatch = null;
@@ -3717,7 +3786,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         sealedBatchToEnqueue = null;
                         if (ownsRotation)
                         {
-                            ClearRotationInProgressUnderLock(pd);
+                            // A sealed batch still to be failed keeps the rotation gate until
+                            // FailUnpublishedCompletedBatch has failed its records, so a purge
+                            // (and the abort waiting on it) cannot finish ahead of them.
+                            releaseRotationAfterFail =
+                                ClearRotationUnlessPublishPendingUnderLock(pd, batchToFail);
                             ownsRotation = false;
                         }
                         disposed = true;
@@ -3800,7 +3873,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 else
                                 {
                                     TrackCurrentBatchForLinger(pd, topicPartition, newBatch);
-                                    ClearRotationInProgressUnderLock(pd);
+                                    releaseRotationAfterPublish =
+                                        ClearRotationUnlessPublishPendingUnderLock(pd, batchToPublish);
                                     ownsRotation = false;
                                 }
                                 appendSucceeded = true;
@@ -3810,7 +3884,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 pd.CurrentBatch = null;
                                 ClearLingerPartitionTracking(pd);
                                 Interlocked.Decrement(ref _unsealedBatchCount);
-                                ClearRotationInProgressUnderLock(pd);
+                                releaseRotationAfterPublish =
+                                    ClearRotationUnlessPublishPendingUnderLock(pd, batchToPublish);
                                 ownsRotation = false;
                                 batchToReturn = newBatch;
                                 messageTooLarge = true;
@@ -3820,17 +3895,22 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
 
                 if (batchToPublish is not null)
-                    StartPreSerialization(batchToPublish);
+                    PublishEnqueuedBatch(pd, batchToPublish, releaseRotationAfterPublish);
 
                 if (batchToReturn is not null)
                     _batchPool.Return(batchToReturn);
 
                 if (batchToFail is not null)
                 {
-                    var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
-                    batchToFail.Fail(disposedException);
-                    ReleaseUntrackedBudget(batchToFail);
-                    ReleaseBatchMemory(batchToFail);
+                    try
+                    {
+                        FailUnpublishedCompletedBatch(batchToFail, CreateAppendRejectedException());
+                    }
+                    finally
+                    {
+                        if (releaseRotationAfterFail)
+                            Volatile.Write(ref pd.RotationInProgress, false);
+                    }
                 }
 
                 if (!ownsRotation && sealedBatchToEnqueue is null && sealedBatchBytesToRelease > 0)
@@ -3843,6 +3923,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (disposed)
                 {
                     ReleaseOwnedAppendState();
+                    ThrowIfTransactionalAppendRejected();
                     return false;
                 }
 
@@ -3858,9 +3939,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     NotifyRecordAppended(topic, partition, actualBytesAdded, partitionCount);
                     if (batchToComplete is not null)
                     {
-                        var readyBatch = CompleteDetachedBatchAndEnqueue(pd, batchToComplete);
-                        if (readyBatch is not null)
-                            StartPreSerialization(readyBatch);
+                        CompleteDetachedBatchAndPublish(pd, batchToComplete);
                     }
 
                     if (drainPendingAfterAppend)
@@ -3888,6 +3967,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             AttributeUntrackedBudget(
                                 sealedBatchToEnqueue,
                                 ResolveAndCacheUnackedBudget(pd, topic, partition));
+                            AfterTwoPhaseRotationCompletedForTest?.Invoke();
                         }
                     }
                     catch
@@ -3925,7 +4005,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
         CancellationToken cancellationToken,
-        int partitionCount = 0)
+        int partitionCount = 0,
+        int transactionalGeneration = NoTransactionalGeneration)
     {
         if (Volatile.Read(ref _disposed) != 0)
         {
@@ -3949,6 +4030,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         op.Initialize(topic, partition, partitionCount, timestamp, key, value, headers, headerCount,
             completionSource, callback, recordSize, startTicks, deadline,
             this, _pendingAppendPool, cancellationToken);
+        op.TransactionalGeneration = transactionalGeneration;
 
         bool wasQueueEmpty = false;
         bool enqueueRejected;
@@ -4048,7 +4130,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Header[]? headers,
         int headerCount,
         PooledValueTaskSource<RecordMetadata> completionSource,
-        int partitionCount = 0)
+        int partitionCount = 0,
+        int transactionalGeneration = NoTransactionalGeneration)
     {
         if (Volatile.Read(ref _disposed) != 0)
             return false;
@@ -4063,7 +4146,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         if (headers is null && headerCount == 0
             && TryAppendFromSpansSingleLock(pd, topic, partition, timestamp, keyData, keyIsNull,
-                valueData, valueIsNull, completionSource, callback: null, recordSize, partitionCount))
+                valueData, valueIsNull, completionSource, callback: null, recordSize, partitionCount,
+                transactionalGeneration))
         {
             return true;
         }
@@ -4073,7 +4157,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         return AppendFromSpansAfterReservationCore(pd, topic, partition, timestamp, keyData, keyIsNull,
             valueData, valueIsNull, headers, headerCount, completionSource, callback: null,
-            recordSize, partitionCount, returnHeadersOnFailure: false, admissionReservation);
+            recordSize, partitionCount, returnHeadersOnFailure: false, admissionReservation,
+            transactionalGeneration);
     }
 
     /// <summary>
@@ -4095,7 +4180,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int recordSize,
         int partitionCount,
         bool returnHeadersOnFailure,
-        AdmissionReservation admissionReservation)
+        AdmissionReservation admissionReservation,
+        int transactionalGeneration)
     {
         // Headerless records normally commit in TryAppendFromSpansSingleLock; this path runs
         // after that attempt yielded (a two-phase appender held the admission slot, rotation or
@@ -4122,6 +4208,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     recordSize,
                     partitionCount,
                     admissionReservation,
+                    transactionalGeneration,
                     out appendCommitted))
                 {
                     return true;
@@ -4201,11 +4288,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 var messageTooLarge = false;
                 var reservedActualBytesAdded = 0;
                 var reservedFirstAwaitedProduceInBatch = false;
+                var releaseRotationAfterPublish = false;
+                var releaseRotationAfterFail = false;
 
                 {
                     using var guard = new SpinLockGuard(ref pd.Lock);
 
-                    if (Volatile.Read(ref _disposed) != 0)
+                    if (Volatile.Read(ref _disposed) != 0
+                        || Volatile.Read(ref _transactionalAppendsClosed) != 0
+                        || IsStaleTransactionalGeneration(transactionalGeneration))
                     {
                         batchToReturn = rentedBatch;
                         rentedBatch = null;
@@ -4213,7 +4304,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         sealedBatchToEnqueue = null;
                         if (ownsRotation)
                         {
-                            ClearRotationInProgressUnderLock(pd);
+                            // A sealed batch still to be failed keeps the rotation gate until
+                            // FailUnpublishedCompletedBatch has failed its records, so a purge
+                            // (and the abort waiting on it) cannot finish ahead of them.
+                            releaseRotationAfterFail =
+                                ClearRotationUnlessPublishPendingUnderLock(pd, batchToFail);
                             ownsRotation = false;
                         }
                         disposed = true;
@@ -4279,7 +4374,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 pd.CurrentBatch = null;
                                 ClearLingerPartitionTracking(pd);
                                 Interlocked.Decrement(ref _unsealedBatchCount);
-                                ClearRotationInProgressUnderLock(pd);
+                                releaseRotationAfterPublish =
+                                    ClearRotationUnlessPublishPendingUnderLock(pd, batchToPublish);
                                 ownsRotation = false;
                                 batchToReturn = newBatch;
                                 messageTooLarge = true;
@@ -4289,17 +4385,22 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
 
                 if (batchToPublish is not null)
-                    StartPreSerialization(batchToPublish);
+                    PublishEnqueuedBatch(pd, batchToPublish, releaseRotationAfterPublish);
 
                 if (batchToReturn is not null)
                     _batchPool.Return(batchToReturn);
 
                 if (batchToFail is not null)
                 {
-                    var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
-                    batchToFail.Fail(disposedException);
-                    ReleaseUntrackedBudget(batchToFail);
-                    ReleaseBatchMemory(batchToFail);
+                    try
+                    {
+                        FailUnpublishedCompletedBatch(batchToFail, CreateAppendRejectedException());
+                    }
+                    finally
+                    {
+                        if (releaseRotationAfterFail)
+                            Volatile.Write(ref pd.RotationInProgress, false);
+                    }
                 }
 
                 ReleaseDetachedBatchBytesIfSafe();
@@ -4318,12 +4419,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             valueIsNull,
                             headers,
                             headerCount);
+                        if (s_perRecordTestHooks)
+                            AfterReservedAppendEncodedForTest?.Invoke();
 
                         var disposedAfterReserve = false;
                         {
                             using var guard = new SpinLockGuard(ref pd.Lock);
 
-                            if (Volatile.Read(ref _disposed) != 0)
+                            // This lock hold publishes the record, so the transaction checks made
+                            // at reservation are repeated here: encoding ran outside the lock, and
+                            // an abort, or a BeginTransaction that advanced the generation, can
+                            // have happened since.
+                            if (Volatile.Read(ref _disposed) != 0
+                                || Volatile.Read(ref _transactionalAppendsClosed) != 0
+                                || IsStaleTransactionalGeneration(transactionalGeneration))
                             {
                                 PartitionBatch.CancelReservedAppend(reservedAppend);
                                 ClearAppendAndRotationInProgressUnderLock();
@@ -4370,15 +4479,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         if (disposedAfterReserve)
                         {
                             ReleaseOwnedAppendState();
+                            ThrowIfTransactionalAppendRejected();
                             return false;
                         }
 
                         NotifyRecordAppended(topic, partition, reservedActualBytesAdded, partitionCount);
                         if (batchToComplete is not null)
                         {
-                            var readyBatch = CompleteDetachedBatchAndEnqueue(pd, batchToComplete);
-                            if (readyBatch is not null)
-                                StartPreSerialization(readyBatch);
+                            CompleteDetachedBatchAndPublish(pd, batchToComplete);
                             ownsRotation = false;
                         }
 
@@ -4403,6 +4511,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (disposed)
                 {
                     ReleaseOwnedAppendState();
+                    ThrowIfTransactionalAppendRejected();
                     return false;
                 }
 
@@ -4432,6 +4541,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             AttributeUntrackedBudget(
                                 sealedBatchToEnqueue,
                                 ResolveAndCacheUnackedBudget(pd, topic, partition));
+                            AfterTwoPhaseRotationCompletedForTest?.Invoke();
                         }
                     }
                     catch
@@ -4503,7 +4613,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int headerCount,
         Action<RecordMetadata, Exception?>? callback,
         CancellationToken cancellationToken,
-        int partitionCount = 0)
+        int partitionCount = 0,
+        int transactionalGeneration = NoTransactionalGeneration)
     {
         if (Volatile.Read(ref _disposed) != 0)
             return new ValueTask<bool>(false);
@@ -4531,7 +4642,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // machine allocated. An over-budget broker applies the same backpressure as a full buffer.
         if (headers is null && headerCount == 0
             && TryAppendFromSpansSingleLock(pd, topic, partition, timestamp, keyData, keyIsNull,
-                valueData, valueIsNull, completionSource: null, callback, recordSize, partitionCount))
+                valueData, valueIsNull, completionSource: null, callback, recordSize, partitionCount,
+                transactionalGeneration))
         {
             return new ValueTask<bool>(true);
         }
@@ -4539,7 +4651,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (TryAdmitAndReserve(pd, topic, partition, recordSize, out var admissionReservation))
             return new ValueTask<bool>(AppendFromSpansAfterReservationCore(pd, topic, partition, timestamp,
                 keyData, keyIsNull, valueData, valueIsNull, headers, headerCount, completionSource: null,
-                callback, recordSize, partitionCount, returnHeadersOnFailure: true, admissionReservation));
+                callback, recordSize, partitionCount, returnHeadersOnFailure: true, admissionReservation,
+                transactionalGeneration));
 
         // Cold path: buffer full. Copy spans to PooledMemory BEFORE the await boundary
         // (ReadOnlySpan<byte> cannot survive across async suspension points).
@@ -4547,7 +4660,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var valuePooled = valueIsNull ? PooledMemory.Null : CopySpanToPooledMemory(valueData);
 
         return AppendFromSpansSlowPathPooled(topic, partition, timestamp, keyPooled, valuePooled,
-            headers, headerCount, callback, recordSize, partitionCount, cancellationToken);
+            headers, headerCount, callback, recordSize, partitionCount, transactionalGeneration,
+            cancellationToken);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -4667,7 +4781,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
-        int partitionCount)
+        int partitionCount,
+        int transactionalGeneration)
     {
         // Queued slow-path appends own the partition until they drain (FIFO). The reservation
         // path also records the admission block and requests a flush when the broker is over
@@ -4694,6 +4809,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // A two-phase appender holding the admission slot has made a lease decision it has
             // not committed yet; appending ahead of it would invalidate that decision.
             if (Volatile.Read(ref _disposed) != 0
+                || Volatile.Read(ref _transactionalAppendsClosed) != 0
+                || IsStaleTransactionalGeneration(transactionalGeneration)
                 || pd.RotationInProgress
                 || pd.AppendInProgress
                 || Volatile.Read(ref pd.AdmissionInProgress) != 0
@@ -4769,9 +4886,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         NotifyRecordAppended(topic, partition, actualBytesAdded, partitionCount);
         if (batchToComplete is not null)
         {
-            var readyBatch = CompleteDetachedBatchAndEnqueue(pd, batchToComplete);
-            if (readyBatch is not null)
-                StartPreSerialization(readyBatch);
+            CompleteDetachedBatchAndPublish(pd, batchToComplete);
         }
         else if (completionSource is not null)
         {
@@ -4796,6 +4911,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int recordSize,
         int partitionCount,
         AdmissionReservation admissionReservation,
+        int transactionalGeneration,
         out bool appendCommitted)
     {
         appendCommitted = false;
@@ -4807,6 +4923,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             using var guard = new SpinLockGuard(ref pd.Lock);
 
             if (Volatile.Read(ref _disposed) != 0
+                || Volatile.Read(ref _transactionalAppendsClosed) != 0
+                || IsStaleTransactionalGeneration(transactionalGeneration)
                 || pd.RotationInProgress
                 || pd.AppendInProgress
                 || pd.CurrentBatch is not { } currentBatch)
@@ -4848,9 +4966,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         NotifyRecordAppended(topic, partition, actualBytesAdded, partitionCount);
         if (batchToComplete is not null)
         {
-            var readyBatch = CompleteDetachedBatchAndEnqueue(pd, batchToComplete);
-            if (readyBatch is not null)
-                StartPreSerialization(readyBatch);
+            CompleteDetachedBatchAndPublish(pd, batchToComplete);
         }
         else if (completionSource is not null)
         {
@@ -4878,10 +4994,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
         int partitionCount,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
     {
         return AppendSlowPathPooled(topic, partition, timestamp, keyPooled, valuePooled,
-            headers, headerCount, null, callback, recordSize, cancellationToken, partitionCount);
+            headers, headerCount, null, callback, recordSize, cancellationToken, partitionCount,
+            transactionalGeneration);
     }
 
     /// <summary>
@@ -5184,7 +5302,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             && (serializeBatchesPerPartition
                 || currentBatchSize < maximumBatchSize));
 
-    private ReadyBatch? CompleteDetachedBatchAndEnqueue(PartitionDeque pd, PartitionBatch batchToComplete)
+    /// <summary>
+    /// Completes a detached batch, enqueues it and publishes it (<see cref="StartPreSerialization"/>).
+    /// The rotation gate (<see cref="PartitionDeque.RotationInProgress"/>) stays set until the
+    /// publication has finished touching the batch: a purge waits for the gate, so it cannot take
+    /// the enqueued batch, fail it and return it to the pool while this thread still dereferences
+    /// it. The gate is cleared by moving its existing write after the publication (a release
+    /// write outside the lock; no thread sets it while it is set), so the path gains no lock and
+    /// no extra write. Returns false when no batch was published.
+    /// </summary>
+    private bool CompleteDetachedBatchAndPublish(PartitionDeque pd, PartitionBatch batchToComplete)
     {
         ReadyBatch? readyBatch;
         ReadyBatch? rejectedBatch = null;
@@ -5230,26 +5357,79 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     EnqueueCompletedBatchUnderLock(pd, readyBatch);
                 }
             }
-            ClearRotationInProgressUnderLock(pd);
+
+            if (readyBatch is null)
+                ClearRotationInProgressUnderLock(pd);
+            else
+                ClearAdmissionFlushRequestUnderLock(pd);
         }
 
+        if (readyBatch is not null)
+            PublishEnqueuedBatch(pd, readyBatch, releaseRotation: true);
+
         if (rejectedBatch is not null)
-            FailCompletedBatchRejectedByDisposal(rejectedBatch);
+            FailUnpublishedCompletedBatch(rejectedBatch, new ObjectDisposedException(nameof(RecordAccumulator)));
 
         if (bytesToRelease > 0)
             ReleaseMemory(bytesToRelease);
 
-        return readyBatch;
+        return readyBatch is not null;
     }
 
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private void FailCompletedBatchRejectedByDisposal(ReadyBatch batch)
+    /// <summary>
+    /// Publishes a batch this thread enqueued while holding the rotation gate. With
+    /// <paramref name="releaseRotation"/>, clears the gate only after the publication's last
+    /// touch of the batch (see <see cref="CompleteDetachedBatchAndPublish"/>).
+    /// </summary>
+    private void PublishEnqueuedBatch(PartitionDeque pd, ReadyBatch batch, bool releaseRotation)
     {
+        try
+        {
+            BeforeCompletedBatchPublishForTest?.Invoke();
+            StartPreSerialization(batch);
+        }
+        finally
+        {
+            if (releaseRotation)
+                Volatile.Write(ref pd.RotationInProgress, false);
+        }
+    }
+
+    /// <summary>
+    /// A rotation owner is done with the gate. When it enqueued a sealed batch under this same
+    /// lock hold and publishes it after the lock, only the admission-flush request is cleared here
+    /// and the gate is released by <see cref="PublishEnqueuedBatch"/>, so a purge cannot fail and
+    /// pool that batch before the publication touches it. Returns true when the release is deferred.
+    /// MUST be called under pd.Lock.
+    /// </summary>
+    private static bool ClearRotationUnlessPublishPendingUnderLock(PartitionDeque pd, ReadyBatch? batchToPublish)
+    {
+        if (batchToPublish is null)
+        {
+            ClearRotationInProgressUnderLock(pd);
+            return false;
+        }
+
+        ClearAdmissionFlushRequestUnderLock(pd);
+        return true;
+    }
+
+    /// <summary>
+    /// Fails a batch that was completed (sealed) but never enqueued or published, because disposal
+    /// or a transaction abort rejected it first. With compression on, completion created its
+    /// pre-serialization task but only publication starts it; <c>Fail</c> waits for a task it
+    /// believes started, so the unstarted task is cleared first or the wait never ends. The batch
+    /// was never handed to anyone, so it goes back to the pool. Error paths only.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void FailUnpublishedCompletedBatch(ReadyBatch batch, Exception exception)
+    {
+        BeforeFailUnpublishedCompletedBatchForTest?.Invoke();
         batch.ClearUnstartedPreSerializationTask();
         ReleaseUntrackedBudget(batch);
         FailBatchAndCleanup(
             batch,
-            new ObjectDisposedException(nameof(RecordAccumulator)),
+            exception,
             beforeFailure: null,
             removeFromPipeline: false,
             returnToPool: true);
@@ -6032,7 +6212,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         ref long newOldestTicks,
         ref bool sawUnknownDeadline)
     {
-        ReadyBatch? sealedBatch = null;
         PartitionBatch? batchToComplete = null;
         var lingerDeferred = false;
         var spinner = new SpinWait();
@@ -6113,13 +6292,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (batchToComplete is null)
             return false;
 
-        sealedBatch = CompleteDetachedBatchAndEnqueue(pd, batchToComplete);
-
-        if (sealedBatch is null)
-            return false;
-
-        StartPreSerialization(sealedBatch);
-        return true;
+        return CompleteDetachedBatchAndPublish(pd, batchToComplete);
     }
 
     private static bool IsAdmissionFlushRequiredUnderLock(PartitionDeque pd)
@@ -7196,6 +7369,94 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return purgedCount;
     }
 
+    /// <summary>
+    /// Stops every append from committing a record until <see cref="ReopenTransactionalAppends"/>:
+    /// the record fails with <see cref="ProduceErrorKind.TransactionAborted"/> instead. A transaction
+    /// abort calls this before its <see cref="Purge"/>. Each append commits under its partition
+    /// lock and checks this flag there (a fast path yields to the two-phase path, which rejects),
+    /// while the purge takes the same lock and waits for appends and rotations in progress, so the
+    /// purge is a barrier: a record committed before it is purged, and none commits after it. That
+    /// covers produces that passed their state check before the abort began, appends waiting for
+    /// buffer memory and appends queued to the async serializer workers. The full fence orders the
+    /// write before the purge's scan of the partitions.
+    /// <para>
+    /// It also advances <see cref="TransactionalAppendGeneration"/>, which fences what the flag
+    /// cannot: a produce admitted before the abort that is still awaiting (serializer preparation,
+    /// topic metadata, an async serializer, a retry delay, a queued append worker item) when the
+    /// abort ends and the flag is cleared. Such a produce carries the generation it was admitted
+    /// in and is rejected with the same error once it resumes. Abort path only.
+    /// </para>
+    /// </summary>
+    internal void CloseTransactionalAppends()
+    {
+        Interlocked.Increment(ref _transactionalAppendGeneration);
+        Interlocked.Exchange(ref _transactionalAppendsClosed, 1);
+    }
+
+    /// <summary>
+    /// Gives a new transaction its own generation (called by BeginTransaction before the state
+    /// becomes InTransaction), so a generation read before the transaction began, including
+    /// one read during the previous transaction's abort, is stale for it. Once per transaction.
+    /// </summary>
+    internal void AdvanceTransactionalAppendGeneration() =>
+        Interlocked.Increment(ref _transactionalAppendGeneration);
+
+    /// <summary>True while a transaction abort has the accumulator closed to appends.</summary>
+    internal bool TransactionalAppendsClosed => Volatile.Read(ref _transactionalAppendsClosed) != 0;
+
+    /// <summary>Ends <see cref="CloseTransactionalAppends"/>.</summary>
+    internal void ReopenTransactionalAppends() => Volatile.Write(ref _transactionalAppendsClosed, 0);
+
+    /// <summary>
+    /// Advances once per transaction abort (<see cref="CloseTransactionalAppends"/>). A produce
+    /// that leaves the synchronous path captures it, and its append is rejected with
+    /// <see cref="ProduceErrorKind.TransactionAborted"/> when the value has changed by the time
+    /// the produce resumes. Never changes for a non-transactional producer.
+    /// </summary>
+    internal int TransactionalAppendGeneration => Volatile.Read(ref _transactionalAppendGeneration);
+
+    /// <summary>
+    /// True when an append admitted in <paramref name="transactionalGeneration"/> must be rejected
+    /// because a transaction abort has started since. Checked at every append commit point under
+    /// the partition lock, next to the append-closed flag. A non-transactional append passes
+    /// <see cref="NoTransactionalGeneration"/>: one constant comparison and no shared read.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool IsStaleTransactionalGeneration(int transactionalGeneration) =>
+        transactionalGeneration != NoTransactionalGeneration
+        && transactionalGeneration != Volatile.Read(ref _transactionalAppendGeneration);
+
+    internal static ProduceException CreateStaleTransactionalAppendException() =>
+        CreateTransactionAbortedException(
+            "The transaction was aborted while this record was waiting to be appended.");
+
+    internal static ProduceException CreateTransactionAbortedException(string message) =>
+        new(ProduceErrorKind.TransactionAborted, message);
+
+    /// <summary>
+    /// The failure of a sealed batch that an append commit point rejected: disposal wins over a
+    /// transaction abort.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private Exception CreateAppendRejectedException() =>
+        Volatile.Read(ref _disposed) != 0
+            ? new ObjectDisposedException(nameof(RecordAccumulator))
+            : CreateTransactionAbortedException("The transaction was aborted before this record's batch was sent.");
+
+    /// <summary>
+    /// An append commit point rejected the record: disposal reports it by returning false, a
+    /// transaction abort (<see cref="CloseTransactionalAppends"/>) by this exception.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void ThrowIfTransactionalAppendRejected()
+    {
+        if (Volatile.Read(ref _disposed) == 0)
+        {
+            throw CreateTransactionAbortedException(
+                "The transaction was aborted before this record was appended.");
+        }
+    }
+
     private int PurgeQueuedBatches(Exception exception, Action<ReadyBatch>? onPurgingBatch)
     {
         var purgedCount = FailPendingAppendsForPurge(exception);
@@ -7213,7 +7474,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 {
                     using var guard = new SpinLockGuard(ref pd.Lock);
 
+                    // A rotation has detached the current batch and enqueues it once sealed;
+                    // wait for it so the sealed batch is purged too.
                     if (pd.AppendInProgress
+                        || pd.RotationInProgress
                         || Volatile.Read(ref pd.AdmissionInProgress) != 0)
                     {
                         waitForAppend = true;
@@ -7300,6 +7564,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         while (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
             spinWait.SpinOnce();
 
+        // An append that queues while this purge holds the drain guard publishes a drain request
+        // and leaves (DrainPendingAppends lost the guard to us). Honor that request after the
+        // guard is released, as a drain owner does, or the append waits for an unrelated memory
+        // release or max.block.ms. The drain runs outside this scan, so it is never a
+        // self-request (#2207); it commits or rejects the append at its commit point.
+        var drainRequestVersion = Volatile.Read(ref _pendingAppendDrainRequestVersion);
         var failedCount = 0;
         try
         {
@@ -7308,10 +7578,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (op.TryFail(exception))
                     failedCount++;
             }
+
+            PurgePendingAppendsGuardHeldForTest?.Invoke();
         }
         finally
         {
             Volatile.Write(ref _draining, 0);
+        }
+
+        if (Volatile.Read(ref _pendingAppendDrainRequestVersion) != drainRequestVersion
+            && !_pendingAppends.IsEmpty)
+        {
+            DrainPendingAppends();
         }
 
         return failedCount;
@@ -7450,6 +7728,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         LogFlushCompleted();
+    }
+
+    /// <summary>
+    /// Waits until every sealed batch has left the pipeline. Unlike <see cref="FlushAsync"/> it
+    /// does not seal open batches: a transaction abort fails those first (<see cref="Purge"/>)
+    /// and then waits here for the batches already handed to the senders.
+    /// </summary>
+    internal ValueTask WaitForInFlightBatchesAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Volatile.Read(ref _inFlightBatchCount) == 0
+            ? default
+            : WaitForAllBatchesCompleteAsync(cancellationToken);
     }
 
     /// <summary>

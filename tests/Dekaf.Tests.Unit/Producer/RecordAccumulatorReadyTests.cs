@@ -1443,6 +1443,131 @@ public class RecordAccumulatorReadyTests
         await Assert.That(accumulator.HasPendingWork()).IsFalse();
     }
 
+    /// <summary>
+    /// A batch the accumulator fails itself never reaches a BrokerSender, so the accumulator must
+    /// report it to the transaction (with the batch's stamp, before the records complete), or the
+    /// transaction could commit without those records.
+    /// </summary>
+    [Test]
+    public async Task Drain_TransactionalHeadExceedsMaxRequestSize_ReportsFailureBeforeCompleting()
+    {
+        const string topic = "test-topic";
+        const int maxRequestSize = 256;
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            TransactionalId = "test-txn-id",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 100_000,
+            MaxRequestSize = maxRequestSize,
+            LingerMs = 0,
+            CompressionType = CompressionType.Gzip
+        };
+        var compressionCodecs = new CompressionCodecRegistry();
+        compressionCodecs.Register(new ExpandingCompressionCodec(
+            CompressionType.Gzip,
+            compressedSize: maxRequestSize));
+
+        await using var accumulator = new RecordAccumulator(options, compressionCodecs);
+        accumulator.ProducerId = 42;
+        accumulator.ProducerEpoch = 5;
+        await using var pool = new ValueTaskSourcePool<RecordMetadata>();
+        await using var metadataManager = CreateMetadataManager(topic, partitionCount: 1, nodeId: 1);
+        var completion = pool.Rent();
+        var completionTask = completion.Task;
+        var reports = new ConcurrentQueue<(long ProducerId, short Epoch, ErrorCode ErrorCode, bool Completed)>();
+        accumulator.OnTransactionalBatchFailed = (producerId, epoch, errorCode, _) =>
+        {
+            reports.Enqueue((producerId, epoch, errorCode, completionTask.IsCompleted));
+            return true;
+        };
+
+        var appended = await accumulator.AppendAsync(
+            topic,
+            partition: 0,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            PooledMemory.Null,
+            PooledMemory.Null,
+            headers: null,
+            headerCount: 0,
+            completion,
+            callback: null,
+            CancellationToken.None);
+        await Assert.That(appended).IsTrue();
+
+        var readyNodes = new HashSet<int>();
+        await TestWait.UntilAsync(
+            () =>
+            {
+                readyNodes.Clear();
+                accumulator.Ready(metadataManager, readyNodes);
+                return readyNodes.Contains(1);
+            },
+            TimeSpan.FromSeconds(5));
+
+        accumulator.Drain(
+            metadataManager,
+            readyNodes,
+            maxRequestSize,
+            new Dictionary<int, List<ReadyBatch>>(),
+            new Stack<List<ReadyBatch>>());
+
+        var exception = await Assert.ThrowsAsync<ProduceException>(async () => await completionTask);
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.MessageTooLarge);
+        await Assert.That(reports.ToArray()).IsEquivalentTo(
+            [(42L, (short)5, ErrorCode.MessageTooLarge, false)]);
+    }
+
+    [Test]
+    public async Task PreSerialization_TransactionalBatchCompressionFails_ReportsFailureBeforeCompleting()
+    {
+        const string topic = "test-topic";
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            TransactionalId = "test-txn-id",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 100_000,
+            LingerMs = 0,
+            CompressionType = CompressionType.Gzip
+        };
+        var compressionCodecs = new CompressionCodecRegistry();
+        compressionCodecs.Register(new ThrowingCompressionCodec(CompressionType.Gzip));
+
+        await using var accumulator = new RecordAccumulator(options, compressionCodecs);
+        accumulator.ProducerId = 42;
+        accumulator.ProducerEpoch = 5;
+        await using var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var completion = pool.Rent();
+        var completionTask = completion.Task;
+        var reports = new ConcurrentQueue<(long ProducerId, short Epoch, ErrorCode ErrorCode, bool Completed)>();
+        accumulator.OnTransactionalBatchFailed = (producerId, epoch, errorCode, _) =>
+        {
+            reports.Enqueue((producerId, epoch, errorCode, completionTask.IsCompleted));
+            return true;
+        };
+
+        var appended = await accumulator.AppendAsync(
+            topic,
+            partition: 0,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            PooledMemory.Null,
+            PooledMemory.Null,
+            headers: null,
+            headerCount: 0,
+            completion,
+            callback: null,
+            CancellationToken.None);
+        await Assert.That(appended).IsTrue();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await completionTask.AsTask().WaitAsync(TimeSpan.FromSeconds(10)));
+        await Assert.That(reports.ToArray()).IsEquivalentTo(
+            [(42L, (short)5, ErrorCode.UnknownServerError, false)]);
+    }
+
     [Test]
     public async Task Drain_MultipleBatchesSamePartition_ReenqueuesRemaining()
     {
@@ -1791,6 +1916,17 @@ public class RecordAccumulatorReadyTests
             foreach (var segment in source)
                 destination.Write(segment.Span);
         }
+    }
+
+    private sealed class ThrowingCompressionCodec(CompressionType type) : ICompressionCodec
+    {
+        public CompressionType Type { get; } = type;
+
+        public void Compress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
+            => throw new InvalidOperationException("Injected compression failure.");
+
+        public void Decompress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
+            => throw new NotSupportedException();
     }
 
     private sealed class ExpandingCompressionCodec(CompressionType type, int compressedSize)
