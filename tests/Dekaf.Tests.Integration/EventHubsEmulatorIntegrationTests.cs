@@ -216,8 +216,25 @@ public sealed class EventHubsEmulatorIntegrationTests(EventHubsEmulatorContainer
         await using var records = consumer.ConsumeAsync(cancellation.Token)
             .GetAsyncEnumerator(CancellationToken.None);
 
-        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
-            await records.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5), testCancellation));
+        // The lifecycle topic is empty, so the only way out of MoveNextAsync is the cancellation.
+        // ConsumeAsync reports it in one of two ways depending on where the loop observes it:
+        // an OperationCanceledException from a pending wait, or the end of the stream when the
+        // token is already cancelled at the top of the next poll iteration. The Event Hubs
+        // emulator wakes an idle fetch roughly every 200 ms, so both outcomes happen here.
+        // What this test guarantees is that the stream stops promptly without a record.
+        bool hasRecord;
+        try
+        {
+            hasRecord = await records.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5), testCancellation);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested
+                                                  && !testCancellation.IsCancellationRequested)
+        {
+            hasRecord = false;
+        }
+
+        await Assert.That(hasRecord).IsFalse();
+        await Assert.That(cancellation.IsCancellationRequested).IsTrue();
     }
 
     private async Task ProduceAsync(string topic, string key, string value, int? partition = null)
