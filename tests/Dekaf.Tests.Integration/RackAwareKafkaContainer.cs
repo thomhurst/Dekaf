@@ -172,6 +172,9 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
             }).ConfigureAwait(false);
 
         await WaitForTopicAssignmentAsync(admin, topic, [1, 2, 3]).ConfigureAwait(false);
+        // Producers bootstrap from any broker; one that has not applied the topic yet answers
+        // UnknownTopicOrPartition and eats into short delivery timeouts in the tests using this.
+        await WaitForTopicMetadataOnAllBrokersAsync(topic, expectedPartitionCount: 1).ConfigureAwait(false);
         return topic;
     }
 
