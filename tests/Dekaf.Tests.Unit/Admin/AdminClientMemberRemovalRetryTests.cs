@@ -96,6 +96,33 @@ public sealed partial class AdminClientRemoveMembersTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task LegacyStaticRemoval_AmbiguousOutcome_DoesNotReplay(bool lostResponse)
+    {
+        // The legacy static-member overload: a lost response, or REQUEST_TIMED_OUT, may have
+        // removed the member. A replay could evict a replacement with the same group.instance.id.
+        var (admin, connection) = CreateAdmin(3, 5);
+        SetupCoordinator(connection);
+        var attempts = 0;
+        connection.SendAsync<LeaveGroupRequest, LeaveGroupResponse>(Arg.Any<LeaveGroupRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref attempts);
+                return lostResponse
+                    ? ValueTask.FromException<LeaveGroupResponse>(new KafkaException(ErrorCode.NetworkException, "Response lost."))
+                    : ValueTask.FromResult(new LeaveGroupResponse { ErrorCode = ErrorCode.RequestTimedOut, Members = [] });
+            });
+        await using (admin)
+        {
+            var exception = await Assert.That(async () => await admin.RemoveMembersFromConsumerGroupAsync(
+                GroupId, [new ConsumerGroupMemberToRemove { GroupInstanceId = "instance" }])).Throws<KafkaException>();
+            await Assert.That(exception!.IsRetriable).IsFalse();
+            await Assert.That(attempts).IsEqualTo(1);
+        }
+    }
+
+    [Test]
     public async Task IdentityRemoval_RequestTimedOutAnswer_DoesNotRetryAmbiguousEviction()
     {
         // REQUEST_TIMED_OUT completes the send normally, but the coordinator only stopped waiting

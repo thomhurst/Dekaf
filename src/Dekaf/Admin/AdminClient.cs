@@ -1824,6 +1824,7 @@ public sealed partial class AdminClient :
         // a coordinator already answered is not looked up or sent again: a second bump could fence
         // a producer that restarted after the first fence.
         var result = new Dictionary<string, FenceProducersResultInfo>(StringComparer.Ordinal);
+        var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         return await WithRetryAsync<IReadOnlyDictionary<string, FenceProducersResultInfo>>(async attemptToken =>
         {
@@ -1867,10 +1868,35 @@ public sealed partial class AdminClient :
                         ProducerEpoch = -1
                     };
 
-                    var response = await connection.SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
-                        request,
-                        apiVersion,
-                        attemptToken).ConfigureAwait(false);
+                    InitProducerIdResponse response;
+                    try
+                    {
+                        response = await SendObservingWriteAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                            writeContext,
+                            connection,
+                            request,
+                            apiVersion,
+                            attemptToken).ConfigureAwait(false);
+                    }
+                    catch (Exception exception) when (writeContext.WriteStarted
+                        && !cancellationToken.IsCancellationRequested
+                        && (RetryHelper.IsRetriableRequestFailure(exception) || exception is OperationCanceledException))
+                    {
+                        // The fence may have applied, and every replay bumps the epoch again, which
+                        // could fence a producer that restarted after the first fence. This ID's
+                        // outcome is reported as unknown and it is not sent again; the other IDs
+                        // continue on the retry.
+                        result[transactionalId] = UnknownFenceOutcome(
+                            transactionalId,
+                            (exception as KafkaException)?.ErrorCode ?? Protocol.ErrorCode.NetworkException);
+                        throw;
+                    }
+
+                    if (MayHaveAppliedDespiteError(response.ErrorCode))
+                    {
+                        result[transactionalId] = UnknownFenceOutcome(transactionalId, response.ErrorCode);
+                        continue;
+                    }
 
                     if (response.ErrorCode == Protocol.ErrorCode.ConcurrentTransactions)
                     {
@@ -1898,6 +1924,17 @@ public sealed partial class AdminClient :
             return result;
         }, cancellationToken, OperationTimeoutBudget(transactionTimeoutMs)).ConfigureAwait(false);
     }
+
+    // A fence whose outcome is unknown: the error code says why, and no producer ID or epoch is
+    // known. The call does not send it again.
+    private static FenceProducersResultInfo UnknownFenceOutcome(string transactionalId, Protocol.ErrorCode errorCode) =>
+        new()
+        {
+            TransactionalId = transactionalId,
+            ErrorCode = errorCode,
+            ProducerId = -1,
+            ProducerEpoch = -1
+        };
 
     public async ValueTask<ForceTerminateTransactionResultInfo> ForceTerminateTransactionAsync(
         string transactionalId,
@@ -2139,6 +2176,10 @@ public sealed partial class AdminClient :
 
         options ??= new RemoveMembersFromConsumerGroupOptions();
 
+        // A LeaveGroup that may have reached the coordinator is never replayed: a lost response
+        // cannot prove which members left, and a replay could evict a replacement that joined
+        // with the same group.instance.id meanwhile. Failures before the write are retried.
+        var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
         return await WithRetryAsync(async attemptToken =>
         {
             await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
@@ -2166,10 +2207,31 @@ public sealed partial class AdminClient :
                 Members = requestMembers
             };
 
-            var response = await connection.SendAsync<LeaveGroupRequest, LeaveGroupResponse>(
-                request,
-                apiVersion,
-                attemptToken).ConfigureAwait(false);
+            LeaveGroupResponse response;
+            try
+            {
+                response = await SendObservingWriteAsync<LeaveGroupRequest, LeaveGroupResponse>(
+                    writeContext,
+                    connection,
+                    request,
+                    apiVersion,
+                    attemptToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (writeContext.WriteStarted
+                && !cancellationToken.IsCancellationRequested
+                && (RetryHelper.IsRetriableRequestFailure(exception) || exception is OperationCanceledException))
+            {
+                throw new KafkaException((exception as KafkaException)?.ErrorCode ?? Protocol.ErrorCode.NetworkException,
+                    "LeaveGroup outcome is unknown after a request failure. Inspect group membership before retrying removal.",
+                    isRetriable: false, exception);
+            }
+
+            if (MayHaveAppliedDespiteError(response.ErrorCode))
+            {
+                throw new KafkaException(response.ErrorCode,
+                    "LeaveGroup outcome is unknown after an ambiguous answer. Inspect group membership before retrying removal.",
+                    isRetriable: false);
+            }
 
             if (response.ErrorCode != Protocol.ErrorCode.None)
             {

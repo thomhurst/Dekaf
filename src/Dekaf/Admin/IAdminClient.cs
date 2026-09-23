@@ -125,6 +125,12 @@ public interface IAdminClient : IAsyncDisposable
     /// <summary>
     /// Fences active producers for transactional IDs by initializing new producer epochs.
     /// </summary>
+    /// <remarks>
+    /// Each fence bumps the producer epoch, so a fence that may have reached the coordinator is
+    /// never sent again. When its response is lost, or the coordinator answers
+    /// <c>REQUEST_TIMED_OUT</c>, that ID's result carries the error code with no producer ID or
+    /// epoch: the fence may or may not have applied.
+    /// </remarks>
     ValueTask<IReadOnlyDictionary<string, FenceProducersResultInfo>> FenceProducersAsync(
         IEnumerable<string> transactionalIds,
         FenceProducersOptions? options = null,
@@ -146,6 +152,12 @@ public interface IAdminClient : IAsyncDisposable
     /// <summary>
     /// Removes static members, identified by group.instance.id, from a consumer group.
     /// </summary>
+    /// <remarks>
+    /// A removal that may have reached the coordinator is never sent again, because a replay could
+    /// evict a replacement that joined with the same group.instance.id. If its response is lost or
+    /// ambiguous, the call throws a non-retriable <see cref="Errors.KafkaException"/>; inspect the
+    /// group's membership before retrying.
+    /// </remarks>
     ValueTask<RemoveMembersFromConsumerGroupResult> RemoveMembersFromConsumerGroupAsync(
         string groupId,
         IEnumerable<ConsumerGroupMemberToRemove> members,
