@@ -202,9 +202,14 @@ public sealed class ConsumerPartitionStopListenerTests
     public async Task CloseAsync_LostListenerIgnoringCancellation_IsBoundedByTheApiTimeout()
     {
         var neverCompletes = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lostStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var listener = new TrackingPartitionStopListener
         {
-            OnLost = (_, _) => new ValueTask(neverCompletes.Task)
+            OnLost = (_, _) =>
+            {
+                lostStarted.TrySetResult();
+                return new ValueTask(neverCompletes.Task);
+            }
         };
         var consumer = CreateGroupConsumer(defaultApiTimeoutMs: 200, listener);
         var coordinator = GetCoordinator(consumer);
@@ -218,7 +223,11 @@ public sealed class ConsumerPartitionStopListenerTests
             var close = consumer.CloseAsync(
                 new ConsumerCloseOptions { GroupMembershipOperation = ConsumerGroupMembershipOperation.RemainInGroup },
                 CancellationToken.None).AsTask();
-            var completed = await Task.WhenAny(close, Task.Delay(TimeSpan.FromSeconds(10)));
+
+            // The blocking listener is reached, and close still ends near its 200 ms API
+            // timeout; 3 s leaves room for a loaded runner without hiding a hang.
+            await lostStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            var completed = await Task.WhenAny(close, Task.Delay(TimeSpan.FromSeconds(3)));
             await Assert.That(completed).IsSameReferenceAs(close);
         }
         finally

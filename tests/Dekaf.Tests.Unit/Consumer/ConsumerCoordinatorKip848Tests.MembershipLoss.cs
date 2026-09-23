@@ -333,7 +333,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         var (listener, calls) = CreateRecordingListener();
         SetupFindCoordinator();
         await using var coordinator = new ConsumerCoordinator(
-            CreateConsumerProtocolOptions(rebalanceListener: listener, maxPollIntervalMs: 50),
+            // A long interval keeps the heartbeat loop the join starts from waking at the max.poll
+            // deadline; the test makes the member overdue itself once that loop is stopped.
+            CreateConsumerProtocolOptions(rebalanceListener: listener, maxPollIntervalMs: 300_000),
             _connectionPool,
             _metadataManager);
 
@@ -371,7 +373,10 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         listenerLock.Release();
 
         // The member then exceeds max.poll.interval.ms.
-        SetCoordinatorLongField(coordinator, "_lastPollTimestamp", Stopwatch.GetTimestamp() - Stopwatch.Frequency);
+        SetCoordinatorLongField(
+            coordinator,
+            "_lastPollTimestamp",
+            Stopwatch.GetTimestamp() - (Stopwatch.Frequency * 600L));
         await coordinator.RecordPollAsync(timeout.Token);
 
         await Assert.That(string.Join(" | ", calls)).IsEqualTo(
@@ -383,9 +388,14 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     {
         var script = new HeartbeatScript(this);
         var neverCompletes = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lostStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var listener = Substitute.For<IRebalanceListener>();
         listener.OnPartitionsLostAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
-            .Returns(_ => new ValueTask(neverCompletes.Task));
+            .Returns(_ =>
+            {
+                lostStarted.TrySetResult();
+                return new ValueTask(neverCompletes.Task);
+            });
         var coordinator = await JoinAsync(script, listener, defaultApiTimeoutMs: 200);
         typeof(ConsumerCoordinator)
             .GetMethod("FenceMembership", BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -394,7 +404,11 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         try
         {
             var dispose = coordinator.DisposeAsync().AsTask();
-            var completed = await Task.WhenAny(dispose, Task.Delay(TimeSpan.FromSeconds(10)));
+
+            // The blocking listener is reached, and disposal still ends near its 200 ms API
+            // timeout; 3 s leaves room for a loaded runner without hiding a hang.
+            await lostStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            var completed = await Task.WhenAny(dispose, Task.Delay(TimeSpan.FromSeconds(3)));
             await Assert.That(completed).IsSameReferenceAs(dispose);
         }
         finally
