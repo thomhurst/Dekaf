@@ -496,40 +496,60 @@ public sealed class SubjectNameStrategyTests
         buffer.ResetWrittenCount();
         serializer.Serialize(records[1], ref buffer, context);
 
-        var prepareBefore = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 2; i < records.Length; i++)
-            serializer.PrepareAsync(records[i], context).GetAwaiter().GetResult();
-        var prepareAllocated = GC.GetAllocatedBytesForCurrentThread() - prepareBefore;
-
-        // Preparation can publish a new cache state. Warm both lookup shapes after that
-        // publication so the allocation comparison excludes one-time runtime/cache setup.
+        // Warm both lookup shapes (same instance and equivalent instance) before measuring.
         buffer.ResetWrittenCount();
         serializer.Serialize(records[0], ref buffer, context);
         buffer.ResetWrittenCount();
         serializer.Serialize(records[2], ref buffer, context);
 
-        var stableBefore = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 2; i < records.Length; i++)
+        // GC.GetAllocatedBytesForCurrentThread also counts one-off runtime allocations that
+        // happen to land on this thread inside a window (CI saw a single 1,600 B charge in one
+        // 98-call window and 0 B in the next). A per-call allocation shows up in every round,
+        // so take the quietest of several rounds instead of trusting a single window.
+        var preparePerRound = long.MaxValue;
+        var stablePerRound = long.MaxValue;
+        var equivalentPerRound = long.MaxValue;
+        for (var round = 0; round < AllocationMeasurementRounds; round++)
         {
-            buffer.ResetWrittenCount();
-            serializer.Serialize(records[0], ref buffer, context);
-        }
-        var stableAllocated = GC.GetAllocatedBytesForCurrentThread() - stableBefore;
+            var prepareBefore = GC.GetAllocatedBytesForCurrentThread();
+            for (var i = 2; i < records.Length; i++)
+                serializer.PrepareAsync(records[i], context).GetAwaiter().GetResult();
+            preparePerRound = Math.Min(
+                preparePerRound,
+                GC.GetAllocatedBytesForCurrentThread() - prepareBefore);
 
-        var equivalentBefore = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 2; i < records.Length; i++)
-        {
-            buffer.ResetWrittenCount();
-            serializer.Serialize(records[i], ref buffer, context);
+            var stableBefore = GC.GetAllocatedBytesForCurrentThread();
+            for (var i = 2; i < records.Length; i++)
+            {
+                buffer.ResetWrittenCount();
+                serializer.Serialize(records[0], ref buffer, context);
+            }
+            stablePerRound = Math.Min(
+                stablePerRound,
+                GC.GetAllocatedBytesForCurrentThread() - stableBefore);
+
+            // Every call sees a different schema instance than the previous call, so each one
+            // takes the logical-equivalence lookup rather than the same-instance fast path.
+            var equivalentBefore = GC.GetAllocatedBytesForCurrentThread();
+            for (var i = 2; i < records.Length; i++)
+            {
+                buffer.ResetWrittenCount();
+                serializer.Serialize(records[i], ref buffer, context);
+            }
+            equivalentPerRound = Math.Min(
+                equivalentPerRound,
+                GC.GetAllocatedBytesForCurrentThread() - equivalentBefore);
         }
-        var equivalentAllocated = GC.GetAllocatedBytesForCurrentThread() - equivalentBefore;
 
         await Assert.That(serializer.CachedDynamicSubjectSchemaCount).IsEqualTo(1);
         await Assert.That(serializer.CachedGenericWriterCount).IsEqualTo(1);
         await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(1);
-        await Assert.That(prepareAllocated).IsEqualTo(0);
-        await Assert.That(equivalentAllocated).IsEqualTo(stableAllocated);
+        await Assert.That(preparePerRound).IsEqualTo(0);
+        await Assert.That(stablePerRound).IsEqualTo(0);
+        await Assert.That(equivalentPerRound).IsEqualTo(0);
     }
+
+    private const int AllocationMeasurementRounds = 5;
 
     [Test]
     public async Task AvroSerializer_EquivalentRecursiveSchemas_ReuseSubjectCache()
