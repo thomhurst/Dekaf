@@ -1076,9 +1076,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         public bool RevokedDelivered;
 
-        // 0: reserved, its publisher delivers it; 1: counted in _pendingRebalanceCallbackCount;
-        // 2: dequeued. Transitions are interlocked, so an entry is counted at most once and
-        // uncounted only if counted.
+        // 0: reserved, its publisher delivers it; 1: unowned, counted in
+        // _pendingRebalanceCallbackCount; 2: dequeued. Transitions are interlocked, so an entry is
+        // counted at most once and uncounted only if counted. The count always goes up before an
+        // entry becomes unowned and down only after it has left the queue, so the stable poll
+        // path never reads zero while an unowned entry is queued.
         public int PollVisibility;
 
         public int ListenersCompleted;
@@ -1091,8 +1093,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // the queue empty and simply returns; the entry is drained by the next check.
         if (!reserved)
         {
-            callback.PollVisibility = 1;
             Interlocked.Increment(ref _pendingRebalanceCallbackCount);
+            callback.PollVisibility = 1;
         }
 
         _pendingRebalanceCallbacks.Enqueue(callback);
@@ -1110,8 +1112,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         foreach (var pending in _pendingRebalanceCallbacks)
         {
-            if (Interlocked.CompareExchange(ref pending.PollVisibility, 1, 0) == 0)
-                Interlocked.Increment(ref _pendingRebalanceCallbackCount);
+            if (Volatile.Read(ref pending.PollVisibility) != 0)
+                continue;
+
+            // Count first, then make the entry unowned. If a drainer dequeued it (or another
+            // release counted it) in between, take the count back.
+            Interlocked.Increment(ref _pendingRebalanceCallbackCount);
+            if (Interlocked.CompareExchange(ref pending.PollVisibility, 1, 0) != 0)
+                Interlocked.Decrement(ref _pendingRebalanceCallbackCount);
         }
     }
 
@@ -2903,6 +2911,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 }
             }
 
+            // Count down only after the entry has left the queue.
             _pendingRebalanceCallbacks.TryDequeue(out _);
             if (Interlocked.Exchange(ref pending.PollVisibility, 2) == 1)
                 Interlocked.Decrement(ref _pendingRebalanceCallbackCount);
