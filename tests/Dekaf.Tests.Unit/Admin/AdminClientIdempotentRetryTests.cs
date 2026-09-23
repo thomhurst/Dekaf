@@ -882,18 +882,29 @@ public sealed class AdminClientIdempotentRetryTests
         var calls = SetupAddRaftVoterLostResponse(connection);
         SetupQuorumVoters(connection, (VoterId, directoryId));
         var quorum = await connection.SendAsync<DescribeQuorumRequest, DescribeQuorumResponse>(new DescribeQuorumRequest { Topics = [] }, 0);
-        var outage = System.Diagnostics.Stopwatch.StartNew();
+        // The outage clock starts at the first quorum read, so the reads fail for 800 ms however
+        // long the test takes to get there.
+        var outage = new System.Diagnostics.Stopwatch();
+        var failedQuorumReads = 0;
         connection.SendAsync<DescribeQuorumRequest, DescribeQuorumResponse>(
                 Arg.Any<DescribeQuorumRequest>(),
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>())
-            .Returns(_ => outage.Elapsed < TimeSpan.FromMilliseconds(800)
-                ? ValueTask.FromException<DescribeQuorumResponse>(new IOException("controller unreachable"))
-                : ValueTask.FromResult(quorum));
+            .Returns(_ =>
+            {
+                if (!outage.IsRunning)
+                    outage.Start();
+                if (outage.Elapsed >= TimeSpan.FromMilliseconds(800))
+                    return ValueTask.FromResult(quorum);
+
+                Interlocked.Increment(ref failedQuorumReads);
+                return ValueTask.FromException<DescribeQuorumResponse>(new IOException("controller unreachable"));
+            });
 
         await admin.AddRaftVoterAsync(VoterId, directoryId, [VoterEndpoint], new AddRaftVoterOptions { TimeoutMs = 10_000 });
 
         await Assert.That(calls()).IsEqualTo(2);
+        await Assert.That(failedQuorumReads).IsGreaterThanOrEqualTo(1);
         await Assert.That(outage.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(800));
     }
 

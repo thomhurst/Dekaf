@@ -2875,7 +2875,7 @@ public sealed partial class AdminClient :
             }
 
             return result;
-        }, cancellationToken, opts.TimeoutMs).ConfigureAwait(false);
+        }, cancellationToken, OperationTimeoutBudget(opts.TimeoutMs)).ConfigureAwait(false);
     }
 
     private static List<AlterPartitionReassignmentsRequestTopic> BuildAlterPartitionReassignmentTopics(
@@ -4364,7 +4364,7 @@ public sealed partial class AdminClient :
             }
 
             return (IReadOnlyDictionary<TopicPartition, ListOffsetsResultInfo>)result;
-        }, cancellationToken, opts.TimeoutMs).ConfigureAwait(false);
+        }, cancellationToken, OperationTimeoutBudget(opts.TimeoutMs)).ConfigureAwait(false);
     }
 
     private static ListOffsetsQuery GetListOffsetsQuery(TopicPartitionOffsetSpec spec)
