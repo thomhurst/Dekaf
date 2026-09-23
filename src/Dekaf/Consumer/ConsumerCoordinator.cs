@@ -1082,8 +1082,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         public bool RevokedDelivered;
 
-        // Set when the internal revocation commit starts, so it runs exactly once whichever
-        // drain delivers this entry.
+        // Set when the internal revocation commit starts, so it runs once whichever drain
+        // delivers this entry; cleared again if cancellation interrupts it, so it is retried.
         public bool RevocationCommitStarted;
 
         // 0: reserved, its publisher delivers it; 1: unowned, counted in
@@ -2938,10 +2938,23 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                                     if (_onPartitionsRevokedAsync is not null)
                                         await _onPartitionsRevokedAsync(revoked, cancellationToken).ConfigureAwait(false);
                                 }
-                                finally
+                                catch (OperationCanceledException)
                                 {
-                                    commitCompletion.TrySetResult(true);
+                                    // Cancellation interrupted the commit: the next delivery runs it
+                                    // again (the same offsets, so a commit that did reach the broker
+                                    // is simply repeated), and sync keeps waiting until then.
+                                    pending.RevocationCommitStarted = false;
+                                    throw;
                                 }
+                                catch
+                                {
+                                    // Any other failure ends the attempt; the consumer's commit hook
+                                    // logs its own failures, and retrying could repeat it forever.
+                                    commitCompletion.TrySetResult(true);
+                                    throw;
+                                }
+
+                                commitCompletion.TrySetResult(true);
                             }
 
                             await InvokePartitionsRevokedListenersAsync(revoked, pending, cancellationToken)

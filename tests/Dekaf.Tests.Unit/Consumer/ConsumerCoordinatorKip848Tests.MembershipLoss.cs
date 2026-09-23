@@ -698,6 +698,59 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     }
 
     [Test]
+    public async Task RevocationCommit_InterruptedByCancellation_IsRetriedByTheNextDelivery()
+    {
+        var script = new HeartbeatScript(this);
+        var (listener, calls) = CreateRecordingListener();
+        var commitStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var interruptNextCommit = 1;
+        var completedCommits = new List<string>();
+        SetupFindCoordinator();
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 5, CreateAssignment(TestTopicId, 0, 1));
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(rebalanceListener: listener),
+            _connectionPool,
+            _metadataManager,
+            logger: null,
+            getConnectionCount: null,
+            onPartitionsRevoked: null,
+            onPartitionsRevoking: null,
+            onPartitionsRevokedAsync: async (revoked, cancellationToken) =>
+            {
+                if (Interlocked.Exchange(ref interruptNextCommit, 0) == 1)
+                {
+                    commitStarted.TrySetResult();
+                    await Task.Delay(Timeout.Infinite, cancellationToken);
+                }
+
+                lock (completedCommits)
+                    completedCommits.Add(string.Join(',', revoked.Select(static tp => $"{tp.Topic}-{tp.Partition}")));
+            });
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        calls.Clear();
+
+        // A rejoin revokes p1, and the caller cancels while its revocation commit runs.
+        coordinator.RequestRejoin();
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 6, CreateAssignment(TestTopicId, 0));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+        var join = coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, caller.Token).AsTask();
+        await commitStarted.Task.WaitAsync(timeout.Token);
+        caller.Cancel();
+        await Assert.That(async () => await join).Throws<OperationCanceledException>();
+
+        // The assignment sync still waits for the commit, and the next delivery runs it.
+        var sync = coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(timeout.Token).AsTask();
+        await Assert.That(sync.IsCompleted).IsFalse();
+        await coordinator.InvokePendingRebalanceCallbacksUnlessCancelledAsync(timeout.Token);
+        await sync.WaitAsync(timeout.Token);
+
+        await Assert.That(string.Join(" | ", completedCommits)).IsEqualTo("test-topic-1");
+        await Assert.That(string.Join(" | ", calls)).IsEqualTo("revoked:test-topic-1");
+    }
+
+    [Test]
     public async Task MembershipLoss_OffsetFetchUnknownMemberReceivedAsTheCallerCancels_IsStillApplied()
     {
         _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);
