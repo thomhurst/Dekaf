@@ -82,6 +82,7 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
         if (members.Length == 0)
             return new RemoveMembersFromConsumerGroupResult { GroupId = groupId, Members = [] };
 
+        var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
         return await WithRetryAsync(async attemptToken =>
         {
             var coordinatorId = await FindGroupCoordinatorAsync(groupId, attemptToken).ConfigureAwait(false);
@@ -102,19 +103,30 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
             LeaveGroupResponse response;
             try
             {
-                response = await connection.SendAsync<LeaveGroupRequest, LeaveGroupResponse>(
+                response = await SendObservingWriteAsync<LeaveGroupRequest, LeaveGroupResponse>(
+                    writeContext, connection,
                     new LeaveGroupRequest { GroupId = groupId, Members = requestMembers }, version, attemptToken).ConfigureAwait(false);
             }
             catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception)
+                && writeContext.WriteStarted
                 && !attemptToken.IsCancellationRequested)
             {
                 // A lost response cannot prove which members were removed. Replaying a
                 // static selector could also evict a replacement that joined meanwhile.
+                // A failure before the frame write starts sent nothing and is retried.
                 throw new KafkaException((exception as KafkaException)?.ErrorCode ?? ErrorCode.NetworkException,
                     "LeaveGroup outcome is unknown after a request failure. Inspect group membership before retrying removal.",
                     isRetriable: false, exception);
             }
             attemptToken.ThrowIfCancellationRequested();
+            if (MayHaveAppliedDespiteError(response.ErrorCode))
+            {
+                // The coordinator stopped waiting for the removal to commit, not that it dropped
+                // it: the same unknown outcome as a response lost after the write.
+                throw new KafkaException(response.ErrorCode,
+                    "LeaveGroup outcome is unknown after an ambiguous answer. Inspect group membership before retrying removal.",
+                    isRetriable: false, MemberRemovalError(groupId, response.ErrorCode));
+            }
             if (response.ErrorCode != ErrorCode.None)
                 throw MemberRemovalError(groupId, response.ErrorCode);
 

@@ -3917,21 +3917,28 @@ public sealed partial class AdminClient :
 
             var deletedBindings = new List<AclBinding>();
 
-            // Check for errors and collect deleted ACLs
+            // Check for errors and collect deleted ACLs. Every filter is read before a failure is
+            // reported, because the answer decides whether the request may be sent again.
+            KafkaException? failure = null;
+            var outcomeUnknown = false;
             foreach (var filterResult in response.FilterResults)
             {
                 if (filterResult.ErrorCode != Protocol.ErrorCode.None)
                 {
-                    throw new KafkaException(filterResult.ErrorCode,
+                    outcomeUnknown |= MayHaveAppliedDespiteError(filterResult.ErrorCode);
+                    failure ??= new KafkaException(filterResult.ErrorCode,
                         $"Failed to delete ACLs: {filterResult.ErrorMessage ?? filterResult.ErrorCode.ToString()}");
+                    continue;
                 }
 
                 foreach (var matchingAcl in filterResult.MatchingAcls)
                 {
                     if (matchingAcl.ErrorCode != Protocol.ErrorCode.None)
                     {
-                        throw new KafkaException(matchingAcl.ErrorCode,
+                        outcomeUnknown |= MayHaveAppliedDespiteError(matchingAcl.ErrorCode);
+                        failure ??= new KafkaException(matchingAcl.ErrorCode,
                             $"Failed to delete ACL for {matchingAcl.ResourceName}: {matchingAcl.ErrorMessage ?? matchingAcl.ErrorCode.ToString()}");
+                        continue;
                     }
 
                     deletedBindings.Add(new AclBinding
@@ -3951,6 +3958,23 @@ public sealed partial class AdminClient :
                         }
                     });
                 }
+            }
+
+            if (failure is not null)
+            {
+                // REQUEST_TIMED_OUT means the controller stopped waiting, not that it dropped the
+                // deletion, which is the same unknown outcome as a response lost after the write.
+                // A retriable failure next to deletions this response confirmed is just as unsafe
+                // to replay: the replay would match nothing and hide them.
+                if (outcomeUnknown || (failure.IsRetriable && deletedBindings.Count > 0))
+                {
+                    throw new KafkaException(failure.ErrorCode ?? Protocol.ErrorCode.UnknownServerError,
+                        "DeleteAcls outcome is unknown after an ambiguous or partial answer; the matching ACLs may have been deleted. " +
+                        "Describe the ACLs before retrying.",
+                        isRetriable: false, failure);
+                }
+
+                throw failure;
             }
 
             return deletedBindings;

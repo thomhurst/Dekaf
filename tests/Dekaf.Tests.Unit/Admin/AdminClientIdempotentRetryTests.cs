@@ -466,6 +466,81 @@ public sealed class AdminClientIdempotentRetryTests
     }
 
     [Test]
+    public async Task DeleteAclsAsync_FilterRequestTimedOut_ThrowsAmbiguousFailureWithoutReplay()
+    {
+        // REQUEST_TIMED_OUT completes the send normally, but the controller only stopped waiting:
+        // the deletion may still apply, and a replay would then report an empty list.
+        var (admin, connection) = CreateAdminWithMockConnection(ApiKey.DeleteAcls);
+        var calls = 0;
+        connection.SendAsync<DeleteAclsRequest, DeleteAclsResponse>(
+                Arg.Any<DeleteAclsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref calls);
+                return ValueTask.FromResult(new DeleteAclsResponse
+                {
+                    FilterResults = [new DeleteAclsFilterResult { ErrorCode = ErrorCode.RequestTimedOut, MatchingAcls = [] }]
+                });
+            });
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await admin.DeleteAclsAsync([AclBindingFilter.MatchAll()]));
+
+        await Assert.That(exception!.IsRetriable).IsFalse();
+        await Assert.That(exception.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
+        await Assert.That(calls).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task DeleteAclsAsync_RetriableFilterErrorBesideDeletions_ThrowsAmbiguousFailureWithoutReplay()
+    {
+        // One filter deleted bindings, another answered a retriable error. A replay would match
+        // nothing for the first filter and hide what this response deleted.
+        var (admin, connection) = CreateAdminWithMockConnection(ApiKey.DeleteAcls);
+        var calls = 0;
+        connection.SendAsync<DeleteAclsRequest, DeleteAclsResponse>(
+                Arg.Any<DeleteAclsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref calls);
+                return ValueTask.FromResult(new DeleteAclsResponse
+                {
+                    FilterResults =
+                    [
+                        new DeleteAclsFilterResult
+                        {
+                            ErrorCode = ErrorCode.None,
+                            MatchingAcls =
+                            [
+                                new DeleteAclsMatchingAcl
+                                {
+                                    ErrorCode = ErrorCode.None,
+                                    ResourceType = (sbyte)ResourceType.Topic,
+                                    ResourceName = "orders",
+                                    Principal = "User:alice",
+                                    Host = "*",
+                                    Operation = (sbyte)AclOperation.Read,
+                                    PermissionType = (sbyte)AclPermissionType.Allow
+                                }
+                            ]
+                        },
+                        new DeleteAclsFilterResult { ErrorCode = ErrorCode.NotController, MatchingAcls = [] }
+                    ]
+                });
+            });
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await admin.DeleteAclsAsync([AclBindingFilter.MatchAll(), AclBindingFilter.MatchAll()]));
+
+        await Assert.That(exception!.IsRetriable).IsFalse();
+        await Assert.That(calls).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task DeleteAclsAsync_ConnectionRetiredBeforeWrite_RetriesAndReturnsDeletedBindings()
     {
         // A connection retired between lease and send fails before any byte of the frame is

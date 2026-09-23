@@ -35,6 +35,34 @@ public sealed partial class AdminClientRemoveMembersTests
     }
 
     [Test]
+    public async Task IdentityRemoval_RequestTimedOutAnswer_DoesNotRetryAmbiguousEviction()
+    {
+        // REQUEST_TIMED_OUT completes the send normally, but the coordinator only stopped waiting
+        // for the removal to commit. Replaying it could evict a replacement that joined meanwhile.
+        var (admin, connection) = CreateAdmin(3, 5);
+        SetupCoordinator(connection);
+        SetupMemberDiscovery(connection);
+        var attempts = 0;
+        connection.SendAsync<LeaveGroupRequest, LeaveGroupResponse>(Arg.Any<LeaveGroupRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref attempts);
+                return ValueTask.FromResult(new LeaveGroupResponse { ErrorCode = ErrorCode.RequestTimedOut, Members = [] });
+            });
+        await using (admin)
+        {
+            var exception = await Assert.That(async () => await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
+                new ConsumerGroupMemberRemovalOptions
+                {
+                    Members = [new ConsumerGroupMemberIdentity { GroupInstanceId = "instance" }]
+                })).Throws<KafkaException>();
+            await Assert.That(exception!.IsRetriable).IsFalse();
+            await Assert.That(exception.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
+            await Assert.That(attempts).IsEqualTo(1);
+        }
+    }
+
+    [Test]
     [Arguments(false, false)]
     [Arguments(false, true)]
     [Arguments(true, false)]
