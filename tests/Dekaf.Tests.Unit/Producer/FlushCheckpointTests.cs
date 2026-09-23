@@ -525,6 +525,67 @@ public sealed class FlushCheckpointTests
     }
 
     [Test]
+    public async Task FlushAsync_FastPath_CoversHandoffAppendedDuringItsChecks()
+    {
+        // The worker appends a handed-off record into a new open batch while the flush fast
+        // path is between its reads. Reading the worker backlog first still sees the record:
+        // either as backlog or, afterwards, as an open batch. Reading the batch state first
+        // saw neither and returned while the record stayed unsealed.
+        const string topic = "flush-checkpoint-fast-path";
+        var accumulator = new RecordAccumulator(CreateOptions());
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
+        using var workerCts = new CancellationTokenSource();
+        accumulator.StartAppendWorkers(workerCts.Token);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        using var releaseWorker = new ManualResetEventSlim(false);
+        var workerEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        accumulator.BeforeAppendWorkerAppendForTest = () =>
+        {
+            workerEntered.TrySetResult();
+            releaseWorker.Wait(Bound);
+        };
+        var appendedBetweenChecks = false;
+        accumulator.AfterFlushAppendWorkerBacklogCheckedForTest = () =>
+        {
+            accumulator.AfterFlushAppendWorkerBacklogCheckedForTest = null;
+            releaseWorker.Set();
+            appendedBetweenChecks = SpinWait.SpinUntil(() => accumulator.UnsealedBatchCount > 0, Bound);
+        };
+        ReadyBatch? batch = null;
+
+        try
+        {
+            var completion = pool.Rent();
+            var handedOff = completion.Task;
+            EnqueueNullRecord(accumulator, topic, partition: 0, completion);
+            await workerEntered.Task.WaitAsync(Bound);
+
+            var flushTask = accumulator.FlushAsync(CancellationToken.None).AsTask();
+            await Assert.That(appendedBetweenChecks).IsTrue();
+            await Assert.That(flushTask.IsCompleted).IsFalse()
+                .Because("the record was handed off before the flush started");
+
+            batch = await DrainAsync(accumulator, new TopicPartition(topic, 0));
+            CompleteAndReturn(accumulator, batch, baseOffset: 0);
+            batch = null;
+
+            await flushTask.WaitAsync(Bound);
+            await Assert.That((await handedOff).Offset).IsEqualTo(0);
+        }
+        finally
+        {
+            releaseWorker.Set();
+            accumulator.BeforeAppendWorkerAppendForTest = null;
+            accumulator.AfterFlushAppendWorkerBacklogCheckedForTest = null;
+            if (batch is not null)
+                CompleteAndReturn(accumulator, batch, baseOffset: 0);
+
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task FlushAsync_WaitingOnBlockedAppendWorker_CompletesWhenDisposed()
     {
         // A flush waiting for an append worker stops waiting when the accumulator is disposed,

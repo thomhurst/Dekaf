@@ -1317,6 +1317,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal Action? AfterLingerQueueSnapshotForTest;
     internal Action<TopicPartition>? AfterFlushPartitionVisitedForTest;
     internal Action<long>? AfterFlushCheckpointCapturedForTest;
+    internal Action? AfterFlushAppendWorkerBacklogCheckedForTest;
     internal Action? BeforeCompletedBatchEnqueueForTest;
     internal Action? BeforeCompletedBatchPublishForTest;
     internal Action? BeforeAppendWorkerAppendForTest;
@@ -7810,8 +7811,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Check cancellation upfront - must throw immediately if already cancelled
         cancellationToken.ThrowIfCancellationRequested();
 
-        // Fast path: no unsealed batches AND no in-flight batches - avoid async overhead entirely
-        if (!HasUnsealedBatches() && Volatile.Read(ref _inFlightBatchCount) == 0 && !HasAppendWorkerBacklog())
+        // Fast path: no append-worker backlog, no unsealed batches and no in-flight batches -
+        // avoid async overhead entirely. Read the worker backlog first: a worker can append a
+        // handed-off record into a new open batch between the two reads, and reading the
+        // batch state second still sees that batch.
+        var hasAppendWorkerBacklog = HasAppendWorkerBacklog();
+        AfterFlushAppendWorkerBacklogCheckedForTest?.Invoke();
+        if (!hasAppendWorkerBacklog && !HasUnsealedBatches() && Volatile.Read(ref _inFlightBatchCount) == 0)
         {
             return default;
         }
@@ -7916,7 +7922,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // Double-check after registering: an exit that moved the head before the
             // registration was visible did not signal.
             if (IsFlushCheckpointReached(checkpoint))
+            {
+                // Retire a registration that is still ours, or it would wake a later flush with
+                // a higher checkpoint on the next head move. Signalling (not resetting) keeps
+                // it safe for another waiter registered at the same checkpoint: it wakes and
+                // re-registers.
+                if (Volatile.Read(ref _flushCheckpointWakeSequence) == checkpoint)
+                    SignalFlushCheckpointWaiters();
                 return;
+            }
 
             await tcs.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
