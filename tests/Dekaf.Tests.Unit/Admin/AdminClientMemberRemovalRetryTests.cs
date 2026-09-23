@@ -35,6 +35,67 @@ public sealed partial class AdminClientRemoveMembersTests
     }
 
     [Test]
+    public async Task IdentityRemoval_DeadlineEndsSendAfterWrite_ReportsUnknownOutcome()
+    {
+        // The call's deadline ends a LeaveGroup already being written (the mocked connection
+        // reports every send as started). The removal may apply, so the caller must get the
+        // non-retriable unknown outcome rather than a retriable timeout.
+        var (admin, connection) = CreateAdmin(3, 5);
+        SetupCoordinator(connection);
+        SetupMemberDiscovery(connection);
+        var attempts = 0;
+        connection.SendAsync<LeaveGroupRequest, LeaveGroupResponse>(Arg.Any<LeaveGroupRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                Interlocked.Increment(ref attempts);
+                return new ValueTask<LeaveGroupResponse>(WaitForCancellationAsync(call.ArgAt<CancellationToken>(2)));
+            });
+        await using (admin)
+        {
+            var exception = await Assert.That(async () => await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
+                new ConsumerGroupMemberRemovalOptions
+                {
+                    TimeoutMs = 200,
+                    Members = [new ConsumerGroupMemberIdentity { GroupInstanceId = "instance" }]
+                })).Throws<KafkaException>();
+            await Assert.That(exception).IsNotTypeOf<KafkaTimeoutException>();
+            await Assert.That(exception!.IsRetriable).IsFalse();
+            await Assert.That(exception.InnerException).IsAssignableTo<OperationCanceledException>();
+            await Assert.That(attempts).IsEqualTo(1);
+        }
+    }
+
+    [Test]
+    public async Task IdentityRemoval_CallerCancelsSendAfterWrite_ThrowsCancellation()
+    {
+        var (admin, connection) = CreateAdmin(3, 5);
+        SetupCoordinator(connection);
+        SetupMemberDiscovery(connection);
+        using var cancellation = new CancellationTokenSource();
+        connection.SendAsync<LeaveGroupRequest, LeaveGroupResponse>(Arg.Any<LeaveGroupRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                cancellation.Cancel();
+                return new ValueTask<LeaveGroupResponse>(WaitForCancellationAsync(call.ArgAt<CancellationToken>(2)));
+            });
+        await using (admin)
+        {
+            await Assert.That(async () => await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
+                new ConsumerGroupMemberRemovalOptions
+                {
+                    TimeoutMs = 30_000,
+                    Members = [new ConsumerGroupMemberIdentity { GroupInstanceId = "instance" }]
+                }, cancellation.Token)).Throws<OperationCanceledException>();
+        }
+    }
+
+    private static async Task<LeaveGroupResponse> WaitForCancellationAsync(CancellationToken token)
+    {
+        await Task.Delay(Timeout.InfiniteTimeSpan, token);
+        throw new InvalidOperationException("Cancellation did not end the blocked send.");
+    }
+
+    [Test]
     public async Task IdentityRemoval_RequestTimedOutAnswer_DoesNotRetryAmbiguousEviction()
     {
         // REQUEST_TIMED_OUT completes the send normally, but the coordinator only stopped waiting

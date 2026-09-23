@@ -16,7 +16,7 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfMemberRemovalDeadlineExpired(options);
         return ExecuteWithTimeoutAsync(
-            token => RemoveGroupMembersCoreAsync(groupId, members, options, token),
+            token => RemoveGroupMembersCoreAsync(groupId, members, options, token, cancellationToken),
             options.TimeoutMs, nameof(RemoveMembersFromConsumerGroupAsync), cancellationToken);
     }
 
@@ -54,7 +54,7 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
 
     private async ValueTask<RemoveMembersFromConsumerGroupResult> RemoveGroupMembersCoreAsync(
         string groupId, ConsumerGroupMemberIdentity[] members, ConsumerGroupMemberRemovalOptions options,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, CancellationToken callerToken)
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
         if (options.RemoveAll)
@@ -107,13 +107,15 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
                     writeContext, connection,
                     new LeaveGroupRequest { GroupId = groupId, Members = requestMembers }, version, attemptToken).ConfigureAwait(false);
             }
-            catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception)
-                && writeContext.WriteStarted
-                && !attemptToken.IsCancellationRequested)
+            catch (Exception exception) when (writeContext.WriteStarted
+                && !callerToken.IsCancellationRequested
+                && (RetryHelper.IsRetriableRequestFailure(exception) || exception is OperationCanceledException))
             {
                 // A lost response cannot prove which members were removed. Replaying a
                 // static selector could also evict a replacement that joined meanwhile.
-                // A failure before the frame write starts sent nothing and is retried.
+                // The call's deadline ending a send already being written is the same unknown
+                // outcome; only the caller's own cancellation surfaces as cancellation. A failure
+                // before the frame write starts sent nothing and is retried.
                 throw new KafkaException((exception as KafkaException)?.ErrorCode ?? ErrorCode.NetworkException,
                     "LeaveGroup outcome is unknown after a request failure. Inspect group membership before retrying removal.",
                     isRetriable: false, exception);
