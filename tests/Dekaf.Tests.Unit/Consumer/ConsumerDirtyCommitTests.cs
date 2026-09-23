@@ -166,6 +166,35 @@ public sealed class ConsumerDirtyCommitTests
     }
 
     [Test]
+    public async Task CommitAsync_ExplicitOffsetsEnumeratedAcrossAMembershipChange_AreNotSent()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(requests, ErrorCode.None);
+        var coordinator = (ConsumerCoordinator)typeof(KafkaConsumer<string, string>)
+            .GetField("_coordinator", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(consumer)!;
+
+        // The membership changes (a fence, rejoin and assignment sync) while the application's
+        // offsets are being enumerated, after the commit started.
+        var exception = await Assert.That(async () => await consumer.CommitAsync(
+                OffsetsTakenAcrossAMembershipChange(coordinator),
+                CancellationToken.None))
+            .Throws<GroupException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
+        await Assert.That(requests).IsEmpty();
+
+        static IEnumerable<TopicPartitionOffset> OffsetsTakenAcrossAMembershipChange(ConsumerCoordinator coordinator)
+        {
+            yield return new TopicPartitionOffset("topic-a", 0, 42);
+            var version = typeof(ConsumerCoordinator)
+                .GetField("_membershipVersion", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            version.SetValue(coordinator, (int)version.GetValue(coordinator)! + 1);
+            yield return new TopicPartitionOffset("topic-a", 1, 43);
+        }
+    }
+
+    [Test]
     public async Task CommitAsync_ExplicitLeaderEpoch_SendsCommittedLeaderEpoch()
     {
         var requests = new List<OffsetCommitRequest>();

@@ -7297,13 +7297,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
     {
-        _ = GetCommitCoordinator();
+        // Read before staging: offsets staged under a membership that a fence and rejoin replace
+        // before the send are rejected rather than sent under the new member's identity.
+        var membershipVersion = GetCommitCoordinator().MembershipVersion;
         StageExplicitCommitOffsets();
 
         using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
         try
         {
-            await CommitStoredOffsetsAsync(partitions: null, apiTimeout.Token, retryUntilApiTimeout: true)
+            await CommitStoredOffsetsAsync(
+                    partitions: null,
+                    apiTimeout.Token,
+                    retryUntilApiTimeout: true,
+                    membershipVersion)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException ex) when (apiTimeout.DefaultTimeoutExpired)
@@ -7337,7 +7343,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private async ValueTask<bool> CommitStoredOffsetsAsync(
         TopicPartitionSet? partitions,
         CancellationToken cancellationToken,
-        bool retryUntilApiTimeout = false)
+        bool retryUntilApiTimeout = false,
+        int? membershipVersion = null)
     {
         if (_coordinator is null)
             return false;
@@ -7347,7 +7354,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         // Read before the snapshot: offsets taken under a membership that a fence and rejoin
         // replace before the send are rejected rather than sent under the new member's identity.
-        var membershipVersion = _coordinator.MembershipVersion;
+        var commitMembershipVersion = membershipVersion ?? _coordinator.MembershipVersion;
 
         {
             // Commit only offsets that changed since the last successful commit.
@@ -7378,7 +7385,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 // Create array segment to pass only the used portion
                 var offsets = new ArraySegment<TopicPartitionOffset>(offsetsArray, 0, offsetCount);
 
-                await _coordinator.CommitOffsetsAsync(offsets, retryUntilApiTimeout, membershipVersion, cancellationToken)
+                await _coordinator.CommitOffsetsAsync(offsets, retryUntilApiTimeout, commitMembershipVersion, cancellationToken)
                     .ConfigureAwait(false);
 
                 // Update committed offsets tracking
@@ -7443,13 +7450,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         var coordinator = GetCommitCoordinator();
 
+        // Read before the offsets are enumerated: offsets produced under a membership that a
+        // fence and rejoin replace before the send are rejected rather than sent under the new
+        // member's identity.
+        var membershipVersion = coordinator.MembershipVersion;
+
         using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
         try
         {
             // Materialize to list to allow iteration for both commit tracking and interceptors
             var offsetsList = offsets as IReadOnlyList<TopicPartitionOffset> ?? offsets.ToArray();
 
-            await coordinator.CommitOffsetsAsync(offsetsList, retryUntilApiTimeout: true, apiTimeout.Token)
+            await coordinator.CommitOffsetsAsync(offsetsList, retryUntilApiTimeout: true, membershipVersion, apiTimeout.Token)
                 .ConfigureAwait(false);
 
             foreach (var offset in offsetsList)

@@ -127,6 +127,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests
                 await coordinator.CommitOffsetsAsync(
                     [new TopicPartitionOffset("test-topic", 0, 10)],
                     retryUntilApiTimeout: true,
+                    coordinator.MembershipVersion,
                     timeout.Token))
             .Throws<GroupException>();
 
@@ -142,6 +143,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         await coordinator.CommitOffsetsAsync(
             [new TopicPartitionOffset("test-topic", 0, 10)],
             retryUntilApiTimeout: true,
+            coordinator.MembershipVersion,
             timeout.Token);
 
         await Assert.That(committedEpochs).IsEquivalentTo([6]);
@@ -189,6 +191,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         var commit = coordinator.CommitOffsetsAsync(
             [new TopicPartitionOffset("test-topic", 0, 10)],
             retryUntilApiTimeout: true,
+            coordinator.MembershipVersion,
             timeout.Token).AsTask();
         await firstCommitAnswered.Task.WaitAsync(timeout.Token);
 
@@ -1018,6 +1021,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         var fenced = await Assert.That(async () => await coordinator.CommitOffsetsAsync(
                 [new TopicPartitionOffset("test-topic", 0, 10)],
                 retryUntilApiTimeout: true,
+                coordinator.MembershipVersion,
                 timeout.Token))
             .Throws<GroupException>();
         await Assert.That(fenced!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
@@ -1058,6 +1062,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests
             commit = coordinator.CommitOffsetsAsync(
                 [new TopicPartitionOffset("test-topic", 0, 10)],
                 retryUntilApiTimeout: true,
+                coordinator.MembershipVersion,
                 timeout.Token).AsTask();
 
             script.Respond = (_, _) => Error(ErrorCode.FencedMemberEpoch);
@@ -1496,6 +1501,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         var fenced = await Assert.That(async () => await coordinator.CommitOffsetsAsync(
                 [new TopicPartitionOffset("test-topic", 0, 10)],
                 retryUntilApiTimeout: true,
+                coordinator.MembershipVersion,
                 CancellationToken.None))
             .Throws<GroupException>();
         await Assert.That(fenced!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
@@ -1509,6 +1515,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         var stillFenced = await Assert.That(async () => await coordinator.CommitOffsetsAsync(
                 [new TopicPartitionOffset("test-topic", 0, 10)],
                 retryUntilApiTimeout: true,
+                coordinator.MembershipVersion,
                 CancellationToken.None))
             .Throws<GroupException>();
         await Assert.That(stillFenced!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
@@ -1520,6 +1527,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         await coordinator.CommitOffsetsAsync(
             [new TopicPartitionOffset("test-topic", 1, 10)],
             retryUntilApiTimeout: true,
+            coordinator.MembershipVersion,
             CancellationToken.None);
         await Assert.That(committedEpochs).IsEquivalentTo([6]);
     }
@@ -1568,6 +1576,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         var exception = await Assert.That(async () => await coordinator.CommitOffsetsAsync(
                 [new TopicPartitionOffset("test-topic", 0, 10)],
                 retryUntilApiTimeout: true,
+                coordinator.MembershipVersion,
                 CancellationToken.None))
             .Throws<GroupException>();
 

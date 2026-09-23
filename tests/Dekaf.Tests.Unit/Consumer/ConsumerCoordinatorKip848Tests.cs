@@ -4338,6 +4338,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await coordinator.CommitOffsetsAsync(
             [new TopicPartitionOffset("test-topic", 0, 1)],
             retryUntilApiTimeout: true,
+            coordinator.MembershipVersion,
             CancellationToken.None);
 
         await Assert.That(commitRequests).IsEqualTo(1);
@@ -4364,6 +4365,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 await coordinator.CommitOffsetsAsync(
                     [new TopicPartitionOffset("test-topic", 0, 1)],
                     retryUntilApiTimeout: true,
+                    coordinator.MembershipVersion,
                     CancellationToken.None))
             .Throws<KafkaTimeoutException>();
 

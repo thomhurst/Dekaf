@@ -1144,10 +1144,22 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// <summary>
     /// Commits offsets for the group.
     /// </summary>
+    /// <remarks>
+    /// The membership is captured when this is called, so the caller must take its offsets
+    /// under the current membership. Internal callers that snapshot offsets read
+    /// <see cref="MembershipVersion"/> before the snapshot and pass it to the versioned overload.
+    /// </remarks>
     public ValueTask CommitOffsetsAsync(
         IEnumerable<TopicPartitionOffset> offsets,
         CancellationToken cancellationToken)
-        => CommitOffsetsAsync(offsets, retryUntilApiTimeout: false, cancellationToken);
+        => CommitOffsetsAsync(offsets, retryUntilApiTimeout: false, MembershipVersion, cancellationToken);
+
+    /// <summary>
+    /// The current membership version. A caller that snapshots offsets reads it first and passes
+    /// it to <see cref="CommitOffsetsAsync(IEnumerable{TopicPartitionOffset}, bool, int, CancellationToken)"/>,
+    /// so offsets taken under a membership that has since been replaced are never sent.
+    /// </summary>
+    internal int MembershipVersion => Volatile.Read(ref _membershipVersion);
 
     /// <param name="retryUntilApiTimeout">
     /// True for an application-facing commit that runs under the consumer's aggregate API
@@ -1157,19 +1169,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// short count-bounded retry: they swallow the failure, and must not hold the commit lock or
     /// delay a shutdown for the length of an outage.
     /// </param>
-    internal ValueTask CommitOffsetsAsync(
-        IEnumerable<TopicPartitionOffset> offsets,
-        bool retryUntilApiTimeout,
-        CancellationToken cancellationToken)
-        => CommitOffsetsAsync(offsets, retryUntilApiTimeout, MembershipVersion, cancellationToken);
-
-    /// <summary>
-    /// The current membership version. A caller that snapshots offsets reads it first and passes
-    /// it to <see cref="CommitOffsetsAsync(IEnumerable{TopicPartitionOffset}, bool, int, CancellationToken)"/>,
-    /// so offsets taken under a membership that has since been replaced are never sent.
-    /// </summary>
-    internal int MembershipVersion => Volatile.Read(ref _membershipVersion);
-
     /// <param name="membershipVersion">
     /// The membership version read before the offsets were taken. The commit is rejected if the
     /// membership changes after that, up to the send.
