@@ -13,8 +13,8 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// <remarks>
 /// <para>
 /// <see cref="BatchLifecycle"/> appends small records so almost every append seals a batch, and
-/// retires the batches in FIFO order while keeping a few in flight, so both head and non-head
-/// exits run. Single-threaded and broker-free: the benchmark thread drains and completes each
+/// retires them while keeping a few in flight. Every other retirement completes the second-oldest
+/// batch before the oldest, as out-of-order acks do, so both head and non-head exits run. Single-threaded and broker-free: the benchmark thread drains and completes each
 /// batch (CompleteSend before the pool return), so the cost is deterministic. Expected: 0 B per
 /// append.
 /// </para>
@@ -45,6 +45,7 @@ public class FlushCheckpointBenchmarks
     private byte[] _valueBytes = null!;
     private readonly Queue<ReadyBatch> _inFlight = new(InFlightWindow + 1);
     private long _nextOffset;
+    private int _retirements;
     private readonly CancellationTokenSource _workerCts = new();
     private readonly ValueTaskSourcePool<RecordMetadata> _completionPool = new();
     private readonly ValueTask<RecordMetadata>[] _handoffs = new ValueTask<RecordMetadata>[HandoffsPerInvoke];
@@ -95,7 +96,13 @@ public class FlushCheckpointBenchmarks
             {
                 _inFlight.Enqueue(batch);
                 if (_inFlight.Count > InFlightWindow)
-                    Retire(_inFlight.Dequeue());
+                {
+                    var oldest = _inFlight.Dequeue();
+                    // A non-head exit first, then the head exit.
+                    if ((++_retirements & 1) == 0)
+                        Retire(_inFlight.Dequeue());
+                    Retire(oldest);
+                }
             }
         }
     }

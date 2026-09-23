@@ -7918,6 +7918,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// batch while it is still in the pipeline. Those rotations finish entering the pipeline
     /// before the checkpoint is captured.
     /// </para>
+    /// <para>
+    /// The ordering covers batches in the pipeline, or mid-rotation, when this runs. A rotation
+    /// that starts after it is concurrent production: the flush does not hold appends back, so
+    /// that batch can enter the pipeline before the seal reaches its partition, as it could when
+    /// this wait was for quiescence. Closing that window would mean blocking appends on every
+    /// partition from here to the seal.
+    /// </para>
     /// </remarks>
     private ValueTask WaitForPipelineBeforeSealAsync(CancellationToken cancellationToken)
     {
