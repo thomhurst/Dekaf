@@ -287,6 +287,123 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     }
 
     [Test]
+    public async Task FetchOffsetsAsync_TwoConsecutiveRetriableRecoveries_KeepTheFetchLockBalanced()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);
+        var script = new HeartbeatScript(this);
+        var (listener, _) = CreateRecordingListener();
+        await using var coordinator = await JoinAsync(script, listener);
+
+        // The fetch fails with a retriable coordinator error, and the first recovery (a
+        // coordinator lookup) fails on every broker attempt, so recovery runs a second time.
+        SetupOffsetFetch(firstErrorCode: ErrorCode.CoordinatorNotAvailable);
+        var lookupFailures = 0;
+        _connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => Interlocked.Increment(ref lookupFailures) <= 5
+                ? ValueTask.FromException<FindCoordinatorResponse>(new IOException("connection reset"))
+                : ValueTask.FromResult(new FindCoordinatorResponse
+                {
+                    Coordinators =
+                    [
+                        new Coordinator
+                        {
+                            Key = "test-group",
+                            NodeId = 0,
+                            Host = "localhost",
+                            Port = 9092,
+                            ErrorCode = ErrorCode.None
+                        }
+                    ]
+                }));
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await coordinator.FetchOffsetsAsync([new TopicPartition("test-topic", 0)], timeout.Token);
+
+        await Assert.That(Volatile.Read(ref lookupFailures)).IsGreaterThan(5);
+        await Assert.That(GetPrivateField<SemaphoreSlim>(coordinator, "_fetchLock").CurrentCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task MembershipLoss_MaxPollExpiry_ReportsTheLossAfterAQueuedAssignment()
+    {
+        var script = new HeartbeatScript(this);
+        var (listener, calls) = CreateRecordingListener();
+        SetupFindCoordinator();
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(rebalanceListener: listener, maxPollIntervalMs: 50),
+            _connectionPool,
+            _metadataManager);
+
+        // The join publishes [p0, p1] while another delivery holds the listener lock, and its
+        // caller cancels: the assignment's callbacks stay queued.
+        var listenerLock = GetPrivateField<SemaphoreSlim>(coordinator, "_rebalanceListenerLock");
+        await listenerLock.WaitAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+        var published = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        script.Respond = (_, request) =>
+        {
+            if (request.MemberEpoch == -1)
+            {
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = -1,
+                    HeartbeatIntervalMs = 60_000
+                });
+            }
+
+            published.TrySetResult();
+            return Joined("member-1", memberEpoch: 5, CreateAssignment(TestTopicId, 0, 1));
+        };
+        var join = coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, caller.Token).AsTask();
+        await published.Task.WaitAsync(timeout.Token);
+        var coordinatorLock = GetPrivateField<SemaphoreSlim>(coordinator, "_lock");
+        await coordinatorLock.WaitAsync(timeout.Token);
+        coordinatorLock.Release();
+        caller.Cancel();
+        await Assert.That(async () => await join).Throws<OperationCanceledException>();
+        await coordinator.StopHeartbeatAsync();
+        listenerLock.Release();
+
+        // The member then exceeds max.poll.interval.ms.
+        SetCoordinatorLongField(coordinator, "_lastPollTimestamp", Stopwatch.GetTimestamp() - Stopwatch.Frequency);
+        await coordinator.RecordPollAsync(timeout.Token);
+
+        await Assert.That(string.Join(" | ", calls)).IsEqualTo(
+            "assigned:test-topic-0,test-topic-1 | lost:test-topic-0,test-topic-1");
+    }
+
+    [Test]
+    public async Task MembershipLoss_DisposalWithAListenerThatIgnoresCancellation_IsBoundedByTheApiTimeout()
+    {
+        var script = new HeartbeatScript(this);
+        var neverCompletes = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsLostAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(_ => new ValueTask(neverCompletes.Task));
+        var coordinator = await JoinAsync(script, listener, defaultApiTimeoutMs: 200);
+        typeof(ConsumerCoordinator)
+            .GetMethod("FenceMembership", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(coordinator, [false]);
+
+        try
+        {
+            var dispose = coordinator.DisposeAsync().AsTask();
+            var completed = await Task.WhenAny(dispose, Task.Delay(TimeSpan.FromSeconds(10)));
+            await Assert.That(completed).IsSameReferenceAs(dispose);
+        }
+        finally
+        {
+            neverCompletes.TrySetResult();
+        }
+    }
+
+    [Test]
     public async Task MembershipLoss_OffsetFetchUnknownMemberReceivedAsTheCallerCancels_IsStillApplied()
     {
         _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);

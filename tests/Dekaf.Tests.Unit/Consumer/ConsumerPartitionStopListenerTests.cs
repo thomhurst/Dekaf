@@ -199,6 +199,36 @@ public sealed class ConsumerPartitionStopListenerTests
     }
 
     [Test]
+    public async Task CloseAsync_LostListenerIgnoringCancellation_IsBoundedByTheApiTimeout()
+    {
+        var neverCompletes = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var listener = new TrackingPartitionStopListener
+        {
+            OnLost = (_, _) => new ValueTask(neverCompletes.Task)
+        };
+        var consumer = CreateGroupConsumer(defaultApiTimeoutMs: 200, listener);
+        var coordinator = GetCoordinator(consumer);
+        SetField(coordinator, "_assignedPartitions", new HashSet<TopicPartition> { new("topic-a", 0) });
+        typeof(ConsumerCoordinator)
+            .GetMethod("FenceMembership", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(coordinator, [false]);
+
+        try
+        {
+            var close = consumer.CloseAsync(
+                new ConsumerCloseOptions { GroupMembershipOperation = ConsumerGroupMembershipOperation.RemainInGroup },
+                CancellationToken.None).AsTask();
+            var completed = await Task.WhenAny(close, Task.Delay(TimeSpan.FromSeconds(10)));
+            await Assert.That(completed).IsSameReferenceAs(close);
+        }
+        finally
+        {
+            neverCompletes.TrySetResult();
+            await consumer.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task DisposeAsync_BlockingPartitionStopListener_UsesShorterDefaultApiTimeout()
     {
         var listener = new TrackingPartitionStopListener
@@ -287,6 +317,7 @@ public sealed class ConsumerPartitionStopListenerTests
         public List<CancellationToken> CancellationTokens { get; } = [];
         public List<List<TopicPartition>> LostPartitions { get; } = [];
         public Func<IEnumerable<TopicPartition>, CancellationToken, ValueTask>? OnStopped { get; init; }
+        public Func<IEnumerable<TopicPartition>, CancellationToken, ValueTask>? OnLost { get; init; }
 
         public ValueTask OnPartitionsAssignedAsync(
             IEnumerable<TopicPartition> partitions,
@@ -301,7 +332,7 @@ public sealed class ConsumerPartitionStopListenerTests
             CancellationToken cancellationToken)
         {
             LostPartitions.Add(partitions.ToList());
-            return ValueTask.CompletedTask;
+            return OnLost is null ? ValueTask.CompletedTask : OnLost(partitions, cancellationToken);
         }
 
         public ValueTask OnPartitionsStoppedAsync(

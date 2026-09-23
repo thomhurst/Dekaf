@@ -1568,9 +1568,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 {
                     // Recovery can rejoin and deliver rebalance callbacks, and a listener may
                     // fetch committed offsets itself (GetCommittedOffsetAsync). The fetch lock
-                    // only guards building a request, so it is not held across recovery.
-                    _fetchLock.Release();
-                    fetchLockHeld = false;
+                    // only guards building a request, so it is not held across recovery. A
+                    // recovery that failed is retried without the lock re-acquired, so release
+                    // it only while this call holds it; the next request never runs without it.
+                    if (fetchLockHeld)
+                    {
+                        fetchLockHeld = false;
+                        _fetchLock.Release();
+                    }
+
                     await RecoverOffsetFetchAsync(retryToken).ConfigureAwait(false);
                     await _fetchLock.WaitAsync(retryToken).ConfigureAwait(false);
                     fetchLockHeld = true;
@@ -2350,7 +2356,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // Queued callbacks describe earlier assignments; deliver them while those are still
         // current, before the join publishes a newer one (a consumer-aware listener's scope is
         // built from the published assignment).
-        await InvokePendingRebalanceCallbacksAsync(cancellationToken).ConfigureAwait(false);
+        // A max-poll expiry delivering its loss keeps the join from publishing until it
+        // completes (the poll generation cannot advance), and its owner drains the queue.
+        if (Volatile.Read(ref _maxPollLossNotificationPending) == 0)
+            await InvokePendingRebalanceCallbacksAsync(cancellationToken).ConfigureAwait(false);
 
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -2769,6 +2778,17 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             Interlocked.Increment(ref _maxPollExpirationVersion);
             Volatile.Write(ref _maxPollExpiredAtPollVersion, pollVersion);
             var lost = ClearAssignment();
+            // Queued under the state lock like a fence's loss, so it follows any callbacks
+            // already queued and is delivered by the same ordered drain.
+            if (lost is not null)
+            {
+                EnqueuePendingRebalanceCallback(new PendingRebalanceCallback
+                {
+                    Lost = lost,
+                    Assignment = _assignedPartitions
+                });
+            }
+
             Volatile.Write(ref _maxPollLossNotificationPending, 1);
             _state = CoordinatorState.Unjoined;
 
@@ -2788,7 +2808,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     {
         try
         {
-            await InvokePartitionsLostAsync(lost).ConfigureAwait(false);
+            // The loss was queued behind earlier callbacks; the ordered drain delivers them all.
+            if (lost is { Count: > 0 })
+                await InvokePendingRebalanceCallbacksAsync(CancellationToken.None).ConfigureAwait(false);
         }
         finally
         {
@@ -2796,26 +2818,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
     }
 
-    private async ValueTask InvokePartitionsLostAsync(IReadOnlyList<TopicPartition>? lost)
-    {
-        if (lost is not { Count: > 0 })
-            return;
-
-        await _rebalanceListenerLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
-        try
-        {
-            await InvokePartitionsLostCoreAsync(lost).ConfigureAwait(false);
-        }
-        finally
-        {
-            _rebalanceListenerLock.Release();
-        }
-    }
-
     private ValueTask InvokePartitionsLostCoreAsync(
         IReadOnlyList<TopicPartition> lost,
-        PendingRebalanceCallback? progress = null,
-        CancellationToken cancellationToken = default) =>
+        PendingRebalanceCallback progress,
+        CancellationToken cancellationToken) =>
         InvokeRebalanceListenersAsync(
             "OnPartitionsLost",
             lost,
@@ -2910,9 +2916,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     internal async ValueTask InvokePendingRebalanceCallbacksUnlessCancelledAsync(CancellationToken cancellationToken)
     {
+        if (_pendingRebalanceCallbacks.IsEmpty)
+            return;
+
         try
         {
-            await InvokePendingRebalanceCallbacksAsync(cancellationToken).ConfigureAwait(false);
+            // The wait is bounded by the token even when a listener ignores it (close, disposal,
+            // a failed join or a leave must not hang on one). An abandoned callback keeps its
+            // entry queued and the listener lock until it returns.
+            await InvokePendingRebalanceCallbacksAsync(cancellationToken).AsTask()
+                .WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -3124,7 +3137,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (!_pendingRebalanceCallbacks.IsEmpty)
         {
             using var drainTimeout = new CancellationTokenSource(_options.DefaultApiTimeoutMs);
-            await InvokePendingRebalanceCallbacksUnlessCancelledAsync(drainTimeout.Token).ConfigureAwait(false);
+            try
+            {
+                await InvokePendingRebalanceCallbacksUnlessCancelledAsync(drainTimeout.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // A listener gave up its callback; disposal goes on.
+            }
         }
 
         _lock.Dispose();

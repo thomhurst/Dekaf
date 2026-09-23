@@ -252,17 +252,26 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await task;
     }
 
+    /// <summary>
+    /// Reports <paramref name="partitions"/> lost the way the coordinator does: a fence queues
+    /// them, and the ordered drain delivers them.
+    /// </summary>
     private static ValueTask InvokePartitionsLostAsync(
         ConsumerCoordinator coordinator,
         IReadOnlyList<TopicPartition> partitions)
     {
-        var method = typeof(ConsumerCoordinator).GetMethod(
-            "InvokePartitionsLostAsync",
-            BindingFlags.NonPublic | BindingFlags.Instance)
-            ?? throw new InvalidOperationException("InvokePartitionsLostAsync method not found.");
+        SetPrivateField(coordinator, "_assignedPartitions", new HashSet<TopicPartition>(partitions));
+        typeof(ConsumerCoordinator)
+            .GetMethod("FenceMembership", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .Invoke(coordinator, [false]);
 
-        return (ValueTask)(method.Invoke(coordinator, [partitions])
-            ?? throw new InvalidOperationException("InvokePartitionsLostAsync returned null."));
+        var drain = typeof(ConsumerCoordinator).GetMethod(
+            "InvokePendingRebalanceCallbacksAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("InvokePendingRebalanceCallbacksAsync method not found.");
+
+        return (ValueTask)(drain.Invoke(coordinator, [CancellationToken.None])
+            ?? throw new InvalidOperationException("InvokePendingRebalanceCallbacksAsync returned null."));
     }
 
     private static Task InvokeConsumerProtocolHeartbeatLoopAsync(
