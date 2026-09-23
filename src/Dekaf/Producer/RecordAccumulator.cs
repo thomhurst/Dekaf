@@ -1152,6 +1152,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private CancellationToken _appendWorkerCancellationToken;
     private int _appendWorkersReady;
     private int _appendWorkersStarted;
+    // Per-worker handoff sequences (#3386). A backpressured ProduceAsync returns once its record
+    // is queued here, before it is appended, so FlushAsync waits until each worker has
+    // processed the items queued before it looked (not until the queues drain). Strided so
+    // workers do not share cache lines. Touched only on the handoff slow path and by flushes.
+    private const int AppendWorkerSequenceStride = 16;
+    private readonly long[] _appendWorkerQueuedSequences;
+    private readonly long[] _appendWorkerProcessedSequences;
+    private int _appendWorkerFlushWaiters;
 
     private readonly PartitionBatchPool _batchPool;
     private readonly ReadyBatchPool _readyBatchPool; // Pool for ReadyBatch objects to eliminate per-batch allocations
@@ -3016,6 +3024,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             _appendWorkerChannels[i] = Channel.CreateUnbounded<AppendWorkItem>(
                 new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
         }
+        _appendWorkerQueuedSequences = new long[_appendWorkerCount * AppendWorkerSequenceStride];
+        _appendWorkerProcessedSequences = new long[_appendWorkerCount * AppendWorkerSequenceStride];
     }
 
     /// <summary>
@@ -3306,6 +3316,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             finally
             {
                 DecrementSlowPathAppendCount(workItem.Topic, workItem.Partition);
+                MarkAppendWorkItemProcessed(workerIndex);
             }
         }
     }
@@ -3371,9 +3382,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             transactionalGeneration ?? NoTransactionalGeneration, cancellationToken);
 
         IncrementSlowPathAppendCount(topic, partition);
+        // Counted before the write: a flush that reads this sequence after this call returned
+        // then waits for this item (see WaitForAppendWorkerCheckpointAsync).
+        Interlocked.Increment(ref _appendWorkerQueuedSequences[workerIndex * AppendWorkerSequenceStride]);
         if (!_appendWorkerChannels[workerIndex].Writer.TryWrite(workItem))
         {
             DecrementSlowPathAppendCount(topic, partition);
+            MarkAppendWorkItemProcessed(workerIndex);
             CleanupWorkItemResources(in workItem);
             PooledCompletionSource.TrySetException(
                 completion,
@@ -6454,8 +6469,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Debug.Assert(count >= 0, $"In-flight batch count went negative ({count}) — mismatched Enter/Exit calls");
         if (count <= 0)
         {
-            // All batches processed - complete any waiting flush and clear the TCS
-            Interlocked.Exchange(ref _flushTcs, null)?.TrySetResult(true);
+            // All batches processed - complete any waiting flush and clear the TCS. Also clears
+            // the checkpoint registration, so the next flush registers its own checkpoint.
+            SignalFlushCheckpointWaiters();
 
             // Wake the sender loop after the last in-flight batch exits, so it doesn't
             // re-enter WaitForWakeupAsync and sleep up to 100ms before discovering all
@@ -7782,7 +7798,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         cancellationToken.ThrowIfCancellationRequested();
 
         // Fast path: no unsealed batches AND no in-flight batches - avoid async overhead entirely
-        if (!HasUnsealedBatches() && Volatile.Read(ref _inFlightBatchCount) == 0)
+        if (!HasUnsealedBatches() && Volatile.Read(ref _inFlightBatchCount) == 0 && !HasAppendWorkerBacklog())
         {
             return default;
         }
@@ -7807,6 +7823,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // concurrent producers seal after the checkpoint do not hold this flush open.
         if (inFlightCount > 0)
             await WaitForFlushCheckpointAsync(CaptureFlushCheckpoint(), cancellationToken).ConfigureAwait(false);
+
+        // A backpressured ProduceAsync returns once its record is handed to an append worker,
+        // before the record is appended. Wait for those handoffs to reach a batch, so the seal
+        // below covers them.
+        if (HasAppendWorkerBacklog())
+            await WaitForAppendWorkerCheckpointAsync(cancellationToken).ConfigureAwait(false);
 
         await SealBatchesAsync(sealAll: true, cancellationToken).ConfigureAwait(false);
 
@@ -7888,9 +7910,83 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// True when an append worker has queued items it has not finished processing.
+    /// Reads two counters per worker (at most eight workers); false before any handoff.
+    /// </summary>
+    private bool HasAppendWorkerBacklog()
+    {
+        if (_appendWorkerTasks is null)
+            return false;
+
+        for (var i = 0; i < _appendWorkerCount; i++)
+        {
+            var slot = i * AppendWorkerSequenceStride;
+            if (Volatile.Read(ref _appendWorkerProcessedSequences[slot]) < Volatile.Read(ref _appendWorkerQueuedSequences[slot]))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Waits until each append worker has processed (appended, failed or cancelled) every item
+    /// that was queued when the wait reached that worker. Items queued afterwards do not hold
+    /// the flush open, so continuous backpressured production cannot stall it.
+    /// </summary>
+    private async ValueTask WaitForAppendWorkerCheckpointAsync(CancellationToken cancellationToken)
+    {
+        for (var i = 0; i < _appendWorkerCount; i++)
+        {
+            var slot = i * AppendWorkerSequenceStride;
+            var target = Volatile.Read(ref _appendWorkerQueuedSequences[slot]);
+            if (Volatile.Read(ref _appendWorkerProcessedSequences[slot]) >= target)
+                continue;
+
+            // Announce the waiter before re-checking: MarkAppendWorkItemProcessed increments
+            // its sequence before reading this count, so one side always sees the other.
+            Interlocked.Increment(ref _appendWorkerFlushWaiters);
+            try
+            {
+                while (Volatile.Read(ref _disposed) == 0)
+                {
+                    var tcs = Volatile.Read(ref _flushTcs);
+                    if (tcs == null)
+                    {
+                        var newTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                        tcs = Interlocked.CompareExchange(ref _flushTcs, newTcs, null) ?? newTcs;
+                    }
+
+                    if (Volatile.Read(ref _appendWorkerProcessedSequences[slot]) >= target)
+                        break;
+
+                    await tcs.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _appendWorkerFlushWaiters);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Records that an append worker item left its queue. Slow path only (backpressure
+    /// handoff); wakes flush waiters only while one is waiting on the workers.
+    /// </summary>
+    private void MarkAppendWorkItemProcessed(int workerIndex)
+    {
+        Interlocked.Increment(ref _appendWorkerProcessedSequences[workerIndex * AppendWorkerSequenceStride]);
+        if (Volatile.Read(ref _appendWorkerFlushWaiters) != 0)
+            Interlocked.Exchange(ref _flushTcs, null)?.TrySetResult(true);
+    }
+
     private void SignalFlushCheckpointWaiters()
     {
-        Interlocked.Exchange(ref _flushCheckpointWakeSequence, long.MaxValue);
+        // The pipeline-empty exit calls this per batch when batches go out one at a time;
+        // skip the interlocked write when no checkpoint is registered.
+        if (Volatile.Read(ref _flushCheckpointWakeSequence) != long.MaxValue)
+            Interlocked.Exchange(ref _flushCheckpointWakeSequence, long.MaxValue);
         Interlocked.Exchange(ref _flushTcs, null)?.TrySetResult(true);
     }
 
@@ -8068,9 +8164,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
 
         // Drain append worker channels and fail any unprocessed work items
-        foreach (var channel in _appendWorkerChannels)
+        for (var workerIndex = 0; workerIndex < _appendWorkerChannels.Length; workerIndex++)
         {
-            while (channel.Reader.TryRead(out var workItem))
+            while (_appendWorkerChannels[workerIndex].Reader.TryRead(out var workItem))
             {
                 try
                 {
@@ -8080,6 +8176,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 finally
                 {
                     DecrementSlowPathAppendCount(workItem.Topic, workItem.Partition);
+                    MarkAppendWorkItemProcessed(workerIndex);
                 }
             }
         }

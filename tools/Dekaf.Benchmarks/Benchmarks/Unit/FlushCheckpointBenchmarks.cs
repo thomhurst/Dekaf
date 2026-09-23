@@ -22,6 +22,12 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// then the batch exits and wakes the flush. Per flush it allocates the async state machine and
 /// the wait source, as before; nothing in it is per message.
 /// </para>
+/// <para>
+/// <see cref="AppendWorkerHandoff"/> is the backpressure handoff: records queued for the append
+/// workers (as a backpressured ProduceAsync does), then a flush that waits for the workers to
+/// append them. Each handoff counts itself in and out of its worker's sequence so the flush
+/// covers it. Expected: 0 B per handoff; the flush allocations are per flush.
+/// </para>
 /// </remarks>
 [MemoryDiagnoser]
 [SimpleJob(RunStrategy.Throughput, launchCount: 1, warmupCount: 3, iterationCount: 5)]
@@ -32,11 +38,15 @@ public class FlushCheckpointBenchmarks
     private const int FlushesPerInvoke = 64;
     private const int RecordsPerFlush = 8;
     private const int InFlightWindow = 4;
+    private const int HandoffsPerInvoke = 256;
 
     private RecordAccumulator _accumulator = null!;
     private byte[] _valueBytes = null!;
     private readonly Queue<ReadyBatch> _inFlight = new(InFlightWindow + 1);
     private long _nextOffset;
+    private readonly CancellationTokenSource _workerCts = new();
+    private readonly ValueTaskSourcePool<RecordMetadata> _completionPool = new();
+    private readonly ValueTask<RecordMetadata>[] _handoffs = new ValueTask<RecordMetadata>[HandoffsPerInvoke];
 
     [GlobalSetup]
     public void Setup()
@@ -53,11 +63,13 @@ public class FlushCheckpointBenchmarks
         };
 
         _accumulator = new RecordAccumulator(options);
+        _accumulator.StartAppendWorkers(_workerCts.Token);
         _valueBytes = new byte[48];
 
         // Warm the arena, batch and ReadyBatch pools.
         BatchLifecycle();
         FlushWithDelivery();
+        AppendWorkerHandoff();
     }
 
     [GlobalCleanup]
@@ -66,6 +78,9 @@ public class FlushCheckpointBenchmarks
         while (_inFlight.Count > 0)
             Retire(_inFlight.Dequeue());
         _accumulator.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        _workerCts.Cancel();
+        _workerCts.Dispose();
+        _completionPool.DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
 
     [Benchmark(OperationsPerInvoke = AppendsPerInvoke)]
@@ -108,6 +123,36 @@ public class FlushCheckpointBenchmarks
 
             pending.GetAwaiter().GetResult();
         }
+    }
+
+    [Benchmark(OperationsPerInvoke = HandoffsPerInvoke)]
+    public void AppendWorkerHandoff()
+    {
+        while (_inFlight.Count > 0)
+            Retire(_inFlight.Dequeue());
+
+        var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        for (var i = 0; i < HandoffsPerInvoke; i++)
+        {
+            var completion = _completionPool.Rent();
+            _handoffs[i] = completion.Task;
+            _accumulator.EnqueueAppend(
+                Topic, 0, ts, PooledMemory.Null, PooledMemory.Null,
+                null, 0, completion, CancellationToken.None);
+        }
+
+        var pending = _accumulator.FlushAsync(CancellationToken.None);
+        while (!pending.IsCompleted)
+        {
+            if (_accumulator.TryDrainPublishedBatch(out var batch))
+                Retire(batch);
+            else
+                Thread.SpinWait(1);
+        }
+
+        pending.GetAwaiter().GetResult();
+        for (var i = 0; i < HandoffsPerInvoke; i++)
+            _handoffs[i].GetAwaiter().GetResult();
     }
 
     private void Append(long ts)

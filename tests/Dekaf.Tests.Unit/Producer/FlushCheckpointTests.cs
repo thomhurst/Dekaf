@@ -178,6 +178,69 @@ public sealed class FlushCheckpointTests
         }
     }
 
+    [Test]
+    public async Task FlushAsync_WaitsForRecordHandedToAppendWorker()
+    {
+        // A backpressured ProduceAsync returns once its record is queued for an append worker,
+        // before the record is appended. The flush must still cover it.
+        const string topic = "flush-checkpoint-handoff";
+        var accumulator = new RecordAccumulator(CreateOptions());
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
+        using var workerCts = new CancellationTokenSource();
+        accumulator.StartAppendWorkers(workerCts.Token);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        using var releaseWorker = new ManualResetEventSlim(false);
+        var workerEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        accumulator.BeforeAppendWorkerAppendForTest = () =>
+        {
+            workerEntered.TrySetResult();
+            releaseWorker.Wait(Bound);
+        };
+        ReadyBatch? batch = null;
+
+        try
+        {
+            var completion = pool.Rent();
+            var handedOff = completion.Task;
+            accumulator.EnqueueAppend(
+                topic,
+                partition: 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null,
+                PooledMemory.Null,
+                headers: null,
+                headerCount: 0,
+                completion,
+                CancellationToken.None);
+            await workerEntered.Task.WaitAsync(Bound);
+
+            // Nothing is unsealed or in flight yet: before the handoff wait this took the
+            // flush fast path and returned while the record was still queued.
+            var flushTask = accumulator.FlushAsync(CancellationToken.None).AsTask();
+            await Assert.That(flushTask.IsCompleted).IsFalse();
+
+            releaseWorker.Set();
+            batch = await DrainAsync(accumulator, new TopicPartition(topic, 0));
+            await Assert.That(flushTask.IsCompleted).IsFalse();
+
+            CompleteAndReturn(accumulator, batch, baseOffset: 0);
+            batch = null;
+
+            await flushTask.WaitAsync(Bound);
+            await Assert.That((await handedOff).Offset).IsEqualTo(0);
+        }
+        finally
+        {
+            releaseWorker.Set();
+            accumulator.BeforeAppendWorkerAppendForTest = null;
+            if (batch is not null)
+                CompleteAndReturn(accumulator, batch, baseOffset: 0);
+
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
     private static ProducerOptions CreateOptions() => new()
     {
         BootstrapServers = ["localhost:9092"],
