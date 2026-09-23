@@ -231,11 +231,12 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
                 leavingStopped = true;
 
                 // The lease lasts far longer than this wait, so only the release can free
-                // the buckets, and only the deleted heartbeat can raise the survivor's share.
+                // the buckets, and only the stopped heartbeat can raise the survivor's share.
                 await WaitForConditionAsync(() => OwnedBy("b-survivor") == BucketCount, TimeSpan.FromSeconds(30));
                 await using (var context = await factory.CreateDbContextAsync())
                 {
-                    await Assert.That(await context.Set<OutboxRelayInstance>().AnyAsync(relay => relay.RelayId == "a-leaving"))
+                    await Assert.That(await context.Set<OutboxRelayInstance>()
+                            .AnyAsync(relay => relay.RelayId == "a-leaving" && relay.StoppedAtUtc == null))
                         .IsFalse();
                     for (var bucket = 0; bucket < BucketCount; bucket++)
                     {
