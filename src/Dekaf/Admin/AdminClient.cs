@@ -823,6 +823,19 @@ public sealed partial class AdminClient :
             return new Dictionary<string, TopicDescription>();
         }
 
+        // The default API budget covers every page of the call, not each page separately.
+        return await ExecuteWithTimeoutAsync(
+            token => DescribeAllTopicPartitionPagesAsync(topicList, opts.ResponsePartitionLimit, token),
+            DefaultApiTimeoutBudgetMs,
+            nameof(DescribeTopicPartitionsAsync),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<IReadOnlyDictionary<string, TopicDescription>> DescribeAllTopicPartitionPagesAsync(
+        List<string> topicList,
+        int responsePartitionLimit,
+        CancellationToken cancellationToken)
+    {
         var result = new Dictionary<string, TopicDescription>(StringComparer.Ordinal);
         var partitionAccumulator = new Dictionary<string, List<PartitionInfo>>(StringComparer.Ordinal);
         var seenCursors = new HashSet<(string TopicName, int PartitionIndex)>();
@@ -830,13 +843,14 @@ public sealed partial class AdminClient :
 
         do
         {
-            var page = await DescribeTopicPartitionsPageAsync(
+            var page = await DescribeTopicPartitionsPageCoreAsync(
                 topicList,
                 new DescribeTopicPartitionsPageOptions
                 {
-                    ResponsePartitionLimit = opts.ResponsePartitionLimit,
+                    ResponsePartitionLimit = responsePartitionLimit,
                     Cursor = cursor
                 },
+                Timeout.Infinite,
                 cancellationToken).ConfigureAwait(false);
 
             MergeTopicPartitionPage(result, partitionAccumulator, page.Topics.Values);
@@ -850,10 +864,18 @@ public sealed partial class AdminClient :
         return result;
     }
 
-    public async ValueTask<DescribeTopicPartitionsPage> DescribeTopicPartitionsPageAsync(
+    public ValueTask<DescribeTopicPartitionsPage> DescribeTopicPartitionsPageAsync(
         IEnumerable<string> topicNames,
         DescribeTopicPartitionsPageOptions? options = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        DescribeTopicPartitionsPageCoreAsync(topicNames, options, timeoutMs: null, cancellationToken);
+
+    // DescribeTopicPartitionsAsync passes Timeout.Infinite: its token is the deadline of all pages.
+    private async ValueTask<DescribeTopicPartitionsPage> DescribeTopicPartitionsPageCoreAsync(
+        IEnumerable<string> topicNames,
+        DescribeTopicPartitionsPageOptions? options,
+        int? timeoutMs,
+        CancellationToken cancellationToken)
     {
         var opts = options ?? new DescribeTopicPartitionsPageOptions();
         ArgumentOutOfRangeException.ThrowIfLessThan(opts.ResponsePartitionLimit, 1);
@@ -869,7 +891,7 @@ public sealed partial class AdminClient :
 
         return await WithRetryAsync(async attemptToken =>
         {
-            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
+            await EnsureInitializedAsync(attemptToken, nameof(DescribeTopicPartitionsPageAsync)).ConfigureAwait(false);
             var brokers = _metadataManager.Metadata.GetBrokers();
             if (brokers.Count == 0)
             {
@@ -925,7 +947,7 @@ public sealed partial class AdminClient :
                         PartitionIndex = response.NextCursor.PartitionIndex
                     }
             };
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, timeoutMs, nameof(DescribeTopicPartitionsPageAsync)).ConfigureAwait(false);
     }
 
     public async ValueTask<ClusterDescription> DescribeClusterAsync(CancellationToken cancellationToken = default)
@@ -4093,12 +4115,19 @@ public sealed partial class AdminClient :
         }, cancellationToken, OperationTimeoutBudget(opts.TimeoutMs)).ConfigureAwait(false);
     }
 
-    public async ValueTask<MetadataQuorumDescription> DescribeMetadataQuorumAsync(
-        CancellationToken cancellationToken = default)
+    public ValueTask<MetadataQuorumDescription> DescribeMetadataQuorumAsync(
+        CancellationToken cancellationToken = default) =>
+        DescribeMetadataQuorumCoreAsync(timeoutMs: null, cancellationToken);
+
+    // An explicitly timed caller (AddRaftVoter's replay check) passes Timeout.Infinite: its token
+    // is the deadline.
+    private async ValueTask<MetadataQuorumDescription> DescribeMetadataQuorumCoreAsync(
+        int? timeoutMs,
+        CancellationToken cancellationToken)
     {
         return await WithRetryAsync(async attemptToken =>
         {
-            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
+            await EnsureInitializedAsync(attemptToken, nameof(DescribeMetadataQuorumAsync)).ConfigureAwait(false);
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.DescribeQuorum, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
@@ -4160,7 +4189,7 @@ public sealed partial class AdminClient :
                 Observers = partition.Observers.Select(MapQuorumReplicaState).ToArray(),
                 Nodes = response.Nodes.Select(MapQuorumNode).ToArray()
             };
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, timeoutMs, nameof(DescribeMetadataQuorumAsync)).ConfigureAwait(false);
     }
 
     public async ValueTask AddRaftVoterAsync(
@@ -5755,7 +5784,8 @@ public sealed partial class AdminClient :
     // Only used while resolving an ambiguous AddRaftVoter, never on a message path.
     private async ValueTask<bool> QuorumHasVoterAsync(int voterId, Guid voterDirectoryId, CancellationToken cancellationToken)
     {
-        var quorum = await DescribeMetadataQuorumAsync(cancellationToken).ConfigureAwait(false);
+        // Runs inside AddRaftVoter's attempt, whose token already carries the call's deadline.
+        var quorum = await DescribeMetadataQuorumCoreAsync(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
         foreach (var voter in quorum.CurrentVoters)
         {
             // DescribeQuorum before v2 carries no directory IDs; the voter ID is all there is.

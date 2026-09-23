@@ -791,6 +791,36 @@ public sealed class AdminClientIdempotentRetryTests
     }
 
     [Test]
+    public async Task AddRaftVoterAsync_QuorumCheckOutlastsDefaultBudget_UsesTheCallTimeout()
+    {
+        // The DUPLICATE_VOTER check runs inside AddRaftVoter's attempt. With TimeoutMs longer than
+        // the default API budget, a quorum read that keeps failing must keep retrying under the
+        // call's deadline instead of stopping at a default budget of its own.
+        var (admin, connection) = CreateAdminWithMockConnection(ApiKey.AddRaftVoter, ApiKey.DescribeQuorum);
+        typeof(AdminClient)
+            .GetProperty(nameof(AdminClient.DefaultApiTimeoutBudgetMs),
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(admin, 200);
+        var directoryId = Guid.NewGuid();
+        var calls = SetupAddRaftVoterLostResponse(connection);
+        SetupQuorumVoters(connection, (VoterId, directoryId));
+        var quorum = await connection.SendAsync<DescribeQuorumRequest, DescribeQuorumResponse>(new DescribeQuorumRequest { Topics = [] }, 0);
+        var outage = System.Diagnostics.Stopwatch.StartNew();
+        connection.SendAsync<DescribeQuorumRequest, DescribeQuorumResponse>(
+                Arg.Any<DescribeQuorumRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => outage.Elapsed < TimeSpan.FromMilliseconds(800)
+                ? ValueTask.FromException<DescribeQuorumResponse>(new IOException("controller unreachable"))
+                : ValueTask.FromResult(quorum));
+
+        await admin.AddRaftVoterAsync(VoterId, directoryId, [VoterEndpoint], new AddRaftVoterOptions { TimeoutMs = 10_000 });
+
+        await Assert.That(calls()).IsEqualTo(2);
+        await Assert.That(outage.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(800));
+    }
+
+    [Test]
     public async Task AddRaftVoterAsync_DuplicateVoterOnRetry_WhenQuorumShowsOtherDirectory_Throws()
     {
         var (admin, connection) = CreateAdminWithMockConnection(ApiKey.AddRaftVoter, ApiKey.DescribeQuorum);
