@@ -2552,7 +2552,7 @@ public sealed partial class AdminClient :
         await CreatePartitionsCoreAsync(topics, 30000, false, cancellationToken).ConfigureAwait(false);
     }
 
-    private ValueTask CreatePartitionsCoreAsync(
+    private ValueTask<bool> CreatePartitionsCoreAsync(
         IReadOnlyList<CreatePartitionsTopic> topics,
         int timeoutMs,
         bool validateOnly,
@@ -6045,28 +6045,22 @@ public sealed partial class AdminClient :
     // the call, so no second timer is started that could end it early or first. Every caller initializes the
     // client inside its operation with the attempt token, so initialization counts against the
     // same budget, including the default one.
-    private ValueTask WithRetryAsync(
+    // Returns the retry loop's own ValueTask<bool> (callers discard the value) so that no wrapper
+    // frame is added above the loop, whether the call completes synchronously or after a retry.
+    private ValueTask<bool> WithRetryAsync(
         Func<CancellationToken, ValueTask> operation,
         CancellationToken cancellationToken,
         int? timeoutMs = null,
-        [CallerMemberName] string operationName = "")
-    {
-        // A call that completes synchronously adds no async frame of its own.
-        var result = WithRetryCoreAsync(s_invokeVoidOperation, operation, timeoutMs, operationName, cancellationToken);
-        if (!result.IsCompletedSuccessfully)
-            return AwaitVoidAsync(result);
-
-        result.GetAwaiter().GetResult();
-        return default;
-
-        static async ValueTask AwaitVoidAsync(ValueTask<bool> pending) => await pending.ConfigureAwait(false);
-    }
+        [CallerMemberName] string operationName = "") =>
+        WithRetryCoreAsync(s_invokeVoidOperation, operation, timeoutMs, operationName, cancellationToken);
 
     private static readonly Func<Func<CancellationToken, ValueTask>, CancellationToken, ValueTask<bool>> s_invokeVoidOperation =
         static (voidOperation, attemptToken) =>
         {
+            // A completed operation, successful or faulted, is observed here: a fault throws
+            // straight into the retry loop without another async frame or exception rethrow.
             var pending = voidOperation(attemptToken);
-            if (!pending.IsCompletedSuccessfully)
+            if (!pending.IsCompleted)
                 return AwaitOperationAsync(pending);
 
             pending.GetAwaiter().GetResult();
