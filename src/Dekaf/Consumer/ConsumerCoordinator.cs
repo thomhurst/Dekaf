@@ -117,10 +117,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // one volatile read; it leaves an assignment change its publisher is still delivering alone,
     // so steady-heartbeat callbacks do not suppress buffered polls.
     private int _pendingRebalanceCallbackCount;
-    // The coordinator whose pending callbacks the current async flow is delivering. A listener
-    // that re-enters the coordinator (a poll or join from inside its callback) must not wait for
-    // the drain it is running in: its own entry stays queued until it returns.
-    private static readonly AsyncLocal<ConsumerCoordinator?> s_drainingCoordinator = new();
+    // The drain the current async flow is running in. A listener that re-enters the coordinator
+    // (a poll or join from inside its callback) must not wait for the drain it is running in: its
+    // own entry stays queued until it returns. The scope is deactivated when the drain ends, so a
+    // task the listener started, which inherits the value, drains normally afterwards.
+    private static readonly AsyncLocal<DrainScope?> s_drainScope = new();
     // Advanced under _lock each time a join receives its response, before the new member id and
     // epoch are written, and each time a fence ends a membership. A fence observed by a request sent under an earlier membership must not clear
     // the assignment of a newer one, and a commit must not send offsets taken under an earlier one.
@@ -2881,7 +2882,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private async ValueTask InvokePendingRebalanceCallbacksAsync(CancellationToken cancellationToken)
     {
         if (_pendingRebalanceCallbacks.IsEmpty ||
-            ReferenceEquals(s_drainingCoordinator.Value, this))
+            s_drainScope.Value is { IsActive: true } scope && ReferenceEquals(scope.Coordinator, this))
             return;
 
         await _rebalanceListenerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -2904,61 +2905,81 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (_pendingRebalanceCallbacks.IsEmpty)
             return;
 
-        // Scoped to this async method: the value reverts when it returns.
-        s_drainingCoordinator.Value = this;
-        while (_pendingRebalanceCallbacks.TryPeek(out var pending))
+        // The value reverts when this async method returns; tasks a listener starts inherit it,
+        // so the scope is also deactivated. Allocated once per drain of a non-empty queue.
+        var scope = new DrainScope(this);
+        s_drainScope.Value = scope;
+        try
         {
-            ThrowIfCallbackDeliveryStopped(cancellationToken);
-            if (pending.Lost is { } lost)
+            while (_pendingRebalanceCallbacks.TryPeek(out var pending))
             {
-                await InvokePartitionsLostCoreAsync(lost, pending, cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                var deferred = pending.Deferred;
-                if (!pending.RevokedDelivered)
+                ThrowIfCallbackDeliveryStopped(cancellationToken);
+                if (pending.Lost is { } lost)
                 {
-                    if (deferred.Revoked is { Count: > 0 } revoked)
+                    await InvokePartitionsLostCoreAsync(lost, pending, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    var deferred = pending.Deferred;
+                    if (!pending.RevokedDelivered)
                     {
-                        // The internal revocation commit runs once, on whichever delivery reaches
-                        // this entry first, before the public callback. Assignment sync waits for
-                        // its completion, so the revoked partitions' stored offsets are still
-                        // there to commit even when an earlier callback's cancellation delayed it.
-                        if (deferred.RevocationCommitCompletion is { } commitCompletion &&
-                            !pending.RevocationCommitStarted)
+                        if (deferred.Revoked is { Count: > 0 } revoked)
                         {
-                            pending.RevocationCommitStarted = true;
-                            try
+                            // The internal revocation commit runs once, on whichever delivery reaches
+                            // this entry first, before the public callback. Assignment sync waits for
+                            // its completion, so the revoked partitions' stored offsets are still
+                            // there to commit even when an earlier callback's cancellation delayed it.
+                            if (deferred.RevocationCommitCompletion is { } commitCompletion &&
+                                !pending.RevocationCommitStarted)
                             {
-                                if (_onPartitionsRevokedAsync is not null)
-                                    await _onPartitionsRevokedAsync(revoked, cancellationToken).ConfigureAwait(false);
+                                pending.RevocationCommitStarted = true;
+                                try
+                                {
+                                    if (_onPartitionsRevokedAsync is not null)
+                                        await _onPartitionsRevokedAsync(revoked, cancellationToken).ConfigureAwait(false);
+                                }
+                                finally
+                                {
+                                    commitCompletion.TrySetResult(true);
+                                }
                             }
-                            finally
-                            {
-                                commitCompletion.TrySetResult(true);
-                            }
+
+                            await InvokePartitionsRevokedListenersAsync(revoked, pending, cancellationToken)
+                                .ConfigureAwait(false);
                         }
 
-                        await InvokePartitionsRevokedListenersAsync(revoked, pending, cancellationToken)
-                            .ConfigureAwait(false);
+                        pending.RevokedDelivered = true;
+                        pending.ListenersCompleted = 0;
                     }
 
-                    pending.RevokedDelivered = true;
-                    pending.ListenersCompleted = 0;
+                    if (deferred.Assigned is { Count: > 0 } assigned)
+                    {
+                        await InvokePartitionsAssignedListenersAsync(assigned, pending, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
                 }
 
-                if (deferred.Assigned is { Count: > 0 } assigned)
-                {
-                    await InvokePartitionsAssignedListenersAsync(assigned, pending, cancellationToken)
-                        .ConfigureAwait(false);
-                }
+                // Count down only after the entry has left the queue.
+                _pendingRebalanceCallbacks.TryDequeue(out _);
+                if (Interlocked.Exchange(ref pending.PollVisibility, 2) == 1)
+                    Interlocked.Decrement(ref _pendingRebalanceCallbackCount);
             }
-
-            // Count down only after the entry has left the queue.
-            _pendingRebalanceCallbacks.TryDequeue(out _);
-            if (Interlocked.Exchange(ref pending.PollVisibility, 2) == 1)
-                Interlocked.Decrement(ref _pendingRebalanceCallbackCount);
         }
+        finally
+        {
+            scope.Deactivate();
+        }
+    }
+
+    private sealed class DrainScope(ConsumerCoordinator coordinator)
+    {
+        private int _active = 1;
+
+        public ConsumerCoordinator Coordinator { get; } = coordinator;
+
+        public bool IsActive => Volatile.Read(ref _active) != 0;
+
+        public void Deactivate() => Volatile.Write(ref _active, 0);
     }
 
     /// <summary>
@@ -3049,9 +3070,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         ConsumerGroupMembershipOperation operation,
         CancellationToken cancellationToken)
     {
-        await SendConsumerProtocolLeaveRequestAsync(operation, cancellationToken).ConfigureAwait(false);
-
+        // Callbacks queued for the membership that is leaving (an assignment whose
+        // OnPartitionsAssigned cancellation deferred, a loss) are delivered while it is still
+        // current, in order, as they would have been without the cancellation. The heartbeat is
+        // stopped first so it cannot publish a newer assignment behind them.
         await StopHeartbeatAsyncCore(cancellationToken).ConfigureAwait(false);
+        await InvokePendingRebalanceCallbacksUnlessCancelledAsync(cancellationToken).ConfigureAwait(false);
+
+        await SendConsumerProtocolLeaveRequestAsync(operation, cancellationToken).ConfigureAwait(false);
 
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -3063,8 +3089,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             _lock.Release();
         }
 
-        // A fence recorded before the leave (for example one whose callback the heartbeat stop
-        // interrupted) is still reported.
+        // A fence recorded while leaving is still reported.
         await InvokePendingRebalanceCallbacksUnlessCancelledAsync(cancellationToken).ConfigureAwait(false);
     }
 

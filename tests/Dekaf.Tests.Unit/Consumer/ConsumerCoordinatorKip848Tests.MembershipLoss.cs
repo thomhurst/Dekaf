@@ -583,19 +583,118 @@ public sealed partial class ConsumerCoordinatorKip848Tests
             lostEntered.TrySetResult();
             await Task.Delay(Timeout.Infinite, cancellationToken);
         }
+    }
 
-        static void QueueLoss(ConsumerCoordinator coordinator, TopicPartition partition)
+    [Test]
+    public async Task MembershipLoss_TaskStartedByAListener_DrainsLaterCallbacks()
+    {
+        var script = new HeartbeatScript(this);
+        var (recording, calls) = CreateRecordingListener();
+        ConsumerCoordinator? coordinator = null;
+        var pollAfterCallback = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task? childPoll = null;
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsLostAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                // The first loss's listener starts a background task that polls later, after
+                // this callback and its drain have finished.
+                childPoll ??= Task.Run(async () =>
+                {
+                    await pollAfterCallback.Task;
+                    await coordinator!.InvokePendingRebalanceCallbacksUnlessCancelledAsync(CancellationToken.None);
+                });
+                return recording.OnPartitionsLostAsync(
+                    callInfo.Arg<IEnumerable<TopicPartition>>()!,
+                    callInfo.Arg<CancellationToken>());
+            });
+        coordinator = await JoinAsync(script, listener);
+        await using var coordinatorLifetime = coordinator;
+        calls.Clear();
+
+        QueueLoss(coordinator, new TopicPartition("first-topic", 0));
+        await coordinator.InvokePendingRebalanceCallbacksUnlessCancelledAsync(CancellationToken.None);
+
+        // A second loss is queued after that drain; the background task's poll delivers it.
+        QueueLoss(coordinator, new TopicPartition("second-topic", 0));
+        pollAfterCallback.SetResult();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await childPoll!.WaitAsync(timeout.Token);
+
+        await Assert.That(string.Join(" | ", calls)).IsEqualTo("lost:first-topic-0 | lost:second-topic-0");
+    }
+
+    [Test]
+    public async Task LeaveGroupAsync_DeliversADeferredAssignmentBeforeLeaving()
+    {
+        var script = new HeartbeatScript(this);
+        var calls = new List<string>();
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsAssignedAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                bool leaveSent;
+                lock (script.Requests)
+                    leaveSent = script.Requests.Any(static request => request.MemberEpoch == -1);
+                lock (calls)
+                    calls.Add(leaveSent ? "assigned after leave" : "assigned before leave");
+                return ValueTask.CompletedTask;
+            });
+        SetupFindCoordinator();
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(rebalanceListener: listener),
+            _connectionPool,
+            _metadataManager);
+
+        // The join publishes [p0, p1] while another delivery holds the listener lock, and its
+        // caller cancels: OnPartitionsAssigned stays queued.
+        var listenerLock = GetPrivateField<SemaphoreSlim>(coordinator, "_rebalanceListenerLock");
+        await listenerLock.WaitAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+        var published = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        script.Respond = (_, request) =>
         {
-            var entryType = typeof(ConsumerCoordinator).GetNestedType(
-                "PendingRebalanceCallback",
-                BindingFlags.NonPublic)!;
-            var entry = Activator.CreateInstance(entryType, nonPublic: true)!;
-            entryType.GetProperty("Lost")!.SetValue(entry, new List<TopicPartition> { partition });
-            entryType.GetProperty("Assignment")!.SetValue(entry, new HashSet<TopicPartition>());
-            typeof(ConsumerCoordinator)
-                .GetMethod("EnqueuePendingRebalanceCallback", BindingFlags.Instance | BindingFlags.NonPublic)!
-                .Invoke(coordinator, [entry, false]);
-        }
+            if (request.MemberEpoch == -1)
+            {
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = -1,
+                    HeartbeatIntervalMs = 60_000
+                });
+            }
+
+            published.TrySetResult();
+            return Joined("member-1", memberEpoch: 5, CreateAssignment(TestTopicId, 0, 1));
+        };
+        var join = coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, caller.Token).AsTask();
+        await published.Task.WaitAsync(timeout.Token);
+        var coordinatorLock = GetPrivateField<SemaphoreSlim>(coordinator, "_lock");
+        await coordinatorLock.WaitAsync(timeout.Token);
+        coordinatorLock.Release();
+        caller.Cancel();
+        await Assert.That(async () => await join).Throws<OperationCanceledException>();
+        listenerLock.Release();
+
+        await coordinator.LeaveGroupAsync(timeout.Token);
+
+        // The assignment is reported while the membership it belongs to is still current.
+        await Assert.That(string.Join(" | ", calls)).IsEqualTo("assigned before leave");
+    }
+
+    private static void QueueLoss(ConsumerCoordinator coordinator, TopicPartition partition)
+    {
+        var entryType = typeof(ConsumerCoordinator).GetNestedType(
+            "PendingRebalanceCallback",
+            BindingFlags.NonPublic)!;
+        var entry = Activator.CreateInstance(entryType, nonPublic: true)!;
+        entryType.GetProperty("Lost")!.SetValue(entry, new List<TopicPartition> { partition });
+        entryType.GetProperty("Assignment")!.SetValue(entry, new HashSet<TopicPartition>());
+        typeof(ConsumerCoordinator)
+            .GetMethod("EnqueuePendingRebalanceCallback", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(coordinator, [entry, false]);
     }
 
     [Test]
