@@ -2035,6 +2035,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // (epoch bump check passed). Clear IsRetry and unmute partitions.
                         FinalizeCoalescedRetries(coalescedBatches, coalescedCount, carryOver);
 
+                        // The abort fence at the write commit point. A transaction abort that
+                        // closed the accumulator after this pass's carry-over check (for example
+                        // during the enrollment step above) must not get a new request it would
+                        // then wait for. None of these batches has a request outstanding, so
+                        // they fail here instead. One volatile read per coalesced send, for a
+                        // transactional producer only.
+                        if (_options.TransactionalId is not null && _accumulator.TransactionalAppendsClosed)
+                        {
+                            FailCoalescedForTransactionAbort(
+                                coalescedBatches, coalescedGenerations, ref coalescedCount);
+                            continue;
+                        }
+
                         LogSendingCoalesced(_brokerId, coalescedCount);
                         for (var si = 0; si < coalescedCount; si++)
                             coalescedBatches[si].AppendDiag('S');
@@ -5862,6 +5875,32 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         carryOver.SetEarliestCreatedTicks(long.MaxValue);
+    }
+
+    /// <summary>
+    /// Fails the coalesced batches of a send that a transaction abort fenced at the write commit
+    /// point (see <see cref="FailCarryOverForTransactionAbort"/>): none has a request outstanding.
+    /// Send loop only; abort path only.
+    /// </summary>
+    private void FailCoalescedForTransactionAbort(ReadyBatch[] batches, int[] generations, ref int count)
+    {
+        var aborted = RecordAccumulator.CreateTransactionAbortedException(
+            "The transaction was aborted before this record's batch was sent.");
+        for (var i = 0; i < count; i++)
+        {
+            var batch = batches[i];
+            if (!batch.IsCurrentIncarnation(generations[i]))
+            {
+                LogStaleBatchInSendSkipped(_instanceId, _brokerId);
+                continue;
+            }
+
+            FailAndCleanupBatch(batch, aborted);
+        }
+
+        Array.Clear(batches, 0, count);
+        Array.Clear(generations, 0, count);
+        count = 0;
     }
 
     /// <summary>

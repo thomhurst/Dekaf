@@ -1774,6 +1774,79 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     }
 
     /// <summary>
+    /// A transaction abort can close the accumulator after the send loop's carry-over check but
+    /// before the coalesced batches are written (here, from the enrollment step that runs between
+    /// coalescing and the write). The write commit point checks again, so the retried batch is
+    /// failed with TransactionAborted instead of going out as a new request the abort would then
+    /// have to wait for.
+    /// </summary>
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionAbortAfterCoalescingBeforeTheWrite_FailsTheBatchWithoutSending(
+        CancellationToken cancellationToken)
+    {
+        var response = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>([response]);
+        var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responses, () =>
+        {
+            Interlocked.Increment(ref sendCount);
+            sent.TrySetResult();
+        });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var closeOnNextEnrollment = 0;
+
+        TransactionPartitionEnrollmentResult TryEnsure(
+            ReadyBatch[] batches,
+            int count,
+            Action<Exception?> completed,
+            HashSet<TopicPartition> pendingPartitions,
+            HashSet<TopicPartition> failedPartitions)
+        {
+            // Runs after the carry-over check, between coalescing and the write.
+            if (Volatile.Read(ref closeOnNextEnrollment) == 1)
+                accumulator.CloseTransactionalAppends();
+            return TransactionPartitionEnrollmentResult.Enrolled;
+        }
+
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) => acknowledged.TrySetResult(exception),
+            isTransactional: true,
+            tryEnsurePartitionsInTransaction: TryEnsure);
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0));
+            await sent.Task.WaitAsync(cancellationToken);
+            Volatile.Write(ref closeOnNextEnrollment, 1);
+            response.SetResult(CreateErrorResponse("test-topic", partition: 0, ErrorCode.NotEnoughReplicas));
+
+            var exception = await acknowledged.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            await Assert.That(exception).IsTypeOf<ProduceException>();
+            await Assert.That(((ProduceException)exception!).Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(1);
+        }
+        finally
+        {
+            accumulator.ReopenTransactionalAppends();
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
     /// A transactional batch waiting in carry-over for a resend (here after a retriable error with
     /// a long backoff) has no request outstanding. When a transaction abort closes the accumulator
     /// and wakes the sender, the send loop fails it with TransactionAborted instead of resending
