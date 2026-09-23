@@ -198,7 +198,8 @@ internal static class RetryHelper
         RetryDeadline deadline,
         CancellationToken cancellationToken)
     {
-        var startedAt = Stopwatch.GetTimestamp();
+        // A budget-less loop (the caller's token is the deadline) never reads the clock.
+        var startedAt = deadline.Budget == Timeout.InfiniteTimeSpan ? 0 : Stopwatch.GetTimestamp();
         Exception? lastFailure = null;
         var recoveryOwed = false;
         var brokerAnsweredRetries = 0;
@@ -279,12 +280,12 @@ internal static class RetryHelper
 
         void ThrowIfBudgetSpent(Exception failure, int delayMs)
         {
-            var elapsed = Stopwatch.GetElapsedTime(startedAt);
-            if (deadline.Budget == Timeout.InfiniteTimeSpan
-                || elapsed + TimeSpan.FromMilliseconds(delayMs) < deadline.Budget)
-            {
+            if (deadline.Budget == Timeout.InfiniteTimeSpan)
                 return;
-            }
+
+            var elapsed = Stopwatch.GetElapsedTime(startedAt);
+            if (elapsed + TimeSpan.FromMilliseconds(delayMs) < deadline.Budget)
+                return;
 
             // A failure a broker answered with stays the final error. A transport failure, raw or
             // reported as a Kafka error (NETWORK_EXCEPTION, a lookup that exhausted its attempts

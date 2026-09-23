@@ -5868,6 +5868,42 @@ public sealed partial class AdminClient :
         }
     }
 
+    // For operations that run under their own deadline token and turn failures around their retry
+    // loop into per-group results. Their initialization runs before that loop, so a transport-level
+    // failure (for example a bootstrap broker refusing the connection) is retried here until the
+    // deadline token ends the call, like a coordinator-lookup failure inside the loop. Any other
+    // initialization failure surfaces as it is.
+    private async ValueTask InitializeUntilDeadlineAsync(string operation, CancellationToken deadlineToken)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                await EnsureInitializedAsync(deadlineToken, operation).ConfigureAwait(false);
+                return;
+            }
+            catch (Exception exception) when (!deadlineToken.IsCancellationRequested && HasSocketLevelCause(exception))
+            {
+                var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
+                    _options.RetryBackoffMs,
+                    _options.RetryBackoffMaxMs,
+                    attempt);
+                await Task.Delay(delayMs, deadlineToken).ConfigureAwait(false);
+            }
+        }
+
+        static bool HasSocketLevelCause(Exception exception)
+        {
+            for (var current = exception; current is not null; current = current.InnerException)
+            {
+                if (TransportFailureClassifier.IsSocketLevelFailure(current))
+                    return true;
+            }
+
+            return false;
+        }
+    }
+
     private async ValueTask StartTelemetryOnceAsync(CancellationToken cancellationToken)
     {
         if (Interlocked.CompareExchange(ref _telemetryStartAttempted, 1, 0) != 0)
@@ -5980,21 +6016,39 @@ public sealed partial class AdminClient :
     // the call, so no second timer is started that could end it early or first. Every caller initializes the
     // client inside its operation with the attempt token, so initialization counts against the
     // same budget, including the default one.
-    private async ValueTask WithRetryAsync(
+    private ValueTask WithRetryAsync(
         Func<CancellationToken, ValueTask> operation,
         CancellationToken cancellationToken,
         int? timeoutMs = null,
-        [CallerMemberName] string operationName = "") =>
-        await WithRetryCoreAsync<bool, Func<CancellationToken, ValueTask>>(
-            static async (voidOperation, attemptToken) =>
+        [CallerMemberName] string operationName = "")
+    {
+        // A call that completes synchronously adds no async frame of its own.
+        var result = WithRetryCoreAsync(s_invokeVoidOperation, operation, timeoutMs, operationName, cancellationToken);
+        if (!result.IsCompletedSuccessfully)
+            return AwaitVoidAsync(result);
+
+        result.GetAwaiter().GetResult();
+        return default;
+
+        static async ValueTask AwaitVoidAsync(ValueTask<bool> pending) => await pending.ConfigureAwait(false);
+    }
+
+    private static readonly Func<Func<CancellationToken, ValueTask>, CancellationToken, ValueTask<bool>> s_invokeVoidOperation =
+        static (voidOperation, attemptToken) =>
+        {
+            var pending = voidOperation(attemptToken);
+            if (!pending.IsCompletedSuccessfully)
+                return AwaitOperationAsync(pending);
+
+            pending.GetAwaiter().GetResult();
+            return new ValueTask<bool>(true);
+
+            static async ValueTask<bool> AwaitOperationAsync(ValueTask operation)
             {
-                await voidOperation(attemptToken).ConfigureAwait(false);
+                await operation.ConfigureAwait(false);
                 return true;
-            },
-            operation,
-            timeoutMs,
-            operationName,
-            cancellationToken).ConfigureAwait(false);
+            }
+        };
 
     private ValueTask<T> WithRetryAsync<T>(
         Func<CancellationToken, ValueTask<T>> operation,
@@ -6009,9 +6063,9 @@ public sealed partial class AdminClient :
             cancellationToken);
 
     // The operation reaches the retry loop through a struct and static callbacks, so a call adds
-    // no closure of its own. With Timeout.Infinite the caller's token is the deadline and no
-    // linked source or timer is created at all.
-    private async ValueTask<T> WithRetryCoreAsync<T, TOperation>(
+    // no closure of its own. With Timeout.Infinite the caller's token is the deadline: the retry
+    // loop runs directly on it, with no linked source, timer, clock read or extra async frame.
+    private ValueTask<T> WithRetryCoreAsync<T, TOperation>(
         Func<TOperation, CancellationToken, ValueTask<T>> invoke,
         TOperation operation,
         int? timeoutMs,
@@ -6020,25 +6074,47 @@ public sealed partial class AdminClient :
     {
         if (timeoutMs == 0)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            throw new Errors.KafkaTimeoutException(
-                Errors.TimeoutKind.Api,
-                TimeSpan.Zero,
-                TimeSpan.Zero,
-                $"{operationName} timed out after 0 ms.");
+            return cancellationToken.IsCancellationRequested
+                ? new ValueTask<T>(Task.FromCanceled<T>(cancellationToken))
+                : new ValueTask<T>(Task.FromException<T>(new Errors.KafkaTimeoutException(
+                    Errors.TimeoutKind.Api,
+                    TimeSpan.Zero,
+                    TimeSpan.Zero,
+                    $"{operationName} timed out after 0 ms.")));
         }
 
         var budgetMs = timeoutMs ?? DefaultApiTimeoutBudgetMs;
         var deadline = CreateRetryDeadline(operationName, budgetMs);
-        var startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
-        CancellationTokenSource? apiTimeout = null;
-        var attemptToken = cancellationToken;
-        if (budgetMs != Timeout.Infinite)
+        if (budgetMs == Timeout.Infinite)
         {
-            apiTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            apiTimeout.CancelAfter(budgetMs);
-            attemptToken = apiTimeout.Token;
+            return RetryHelper.WithRetryUntilDeadlineAsync(
+                static state => state.Invoke(state.Operation, state.AttemptToken),
+                static (_, state, token) => state.Admin.RecoverForRetryAsync(token),
+                new RetryAttemptState<T, TOperation>(this, invoke, operation, cancellationToken),
+                _options.RetryBackoffMs,
+                _options.RetryBackoffMaxMs,
+                RetryHelper.MaxRetries,
+                deadline,
+                cancellationToken);
         }
+
+        return WithOwnedBudgetAsync(invoke, operation, budgetMs, deadline, operationName, cancellationToken);
+    }
+
+    // A call that owns its deadline: the attempt token ends at the API timeout, so an attempt the
+    // broker accepted but never answers cannot overrun the budget.
+    private async ValueTask<T> WithOwnedBudgetAsync<T, TOperation>(
+        Func<TOperation, CancellationToken, ValueTask<T>> invoke,
+        TOperation operation,
+        int budgetMs,
+        RetryDeadline deadline,
+        string operationName,
+        CancellationToken cancellationToken)
+    {
+        var startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+        var apiTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        apiTimeout.CancelAfter(budgetMs);
+        var attemptToken = apiTimeout.Token;
 
         try
         {
@@ -6053,7 +6129,7 @@ public sealed partial class AdminClient :
                 attemptToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException ex) when (
-            apiTimeout is { IsCancellationRequested: true }
+            apiTimeout.IsCancellationRequested
             && !cancellationToken.IsCancellationRequested)
         {
             // The API timeout ended an attempt still in flight, a recovery or a backoff. The
@@ -6076,7 +6152,7 @@ public sealed partial class AdminClient :
         }
         finally
         {
-            apiTimeout?.Dispose();
+            apiTimeout.Dispose();
         }
     }
 
