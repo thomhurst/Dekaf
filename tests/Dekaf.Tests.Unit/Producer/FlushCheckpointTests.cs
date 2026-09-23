@@ -241,6 +241,87 @@ public sealed class FlushCheckpointTests
         }
     }
 
+    [Test]
+    public async Task FlushAsync_SealsOpenBatchWhileAppendWorkerWaitsForBufferMemory()
+    {
+        // An open batch holds all of BufferMemory and a handed-off record waits in its append
+        // worker for that memory. Only the open batch's delivery releases it, so the flush must
+        // seal that batch before waiting for the worker; otherwise both wait until linger expires.
+        const string topic = "flush-checkpoint-handoff-memory";
+        var recordSize = PartitionBatch.EstimateRecordSize(0, 0, null, 0);
+        var accumulator = new RecordAccumulator(new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "flush-checkpoint-tests",
+            BufferMemory = (ulong)recordSize,
+            MaxBlockMs = 60_000,
+            BatchSize = 100,
+            LingerMs = 60_000
+        });
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
+        using var workerCts = new CancellationTokenSource();
+        accumulator.StartAppendWorkers(workerCts.Token);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        ReadyBatch? batch = null;
+        long nextOffset = 0;
+
+        try
+        {
+            var first = pool.Rent();
+            var firstTask = first.Task;
+            await Assert.That(accumulator.TryAppendWithCompletion(
+                topic,
+                partition: 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null,
+                PooledMemory.Null,
+                headers: null,
+                headerCount: 0,
+                first)).IsTrue();
+
+            var handoff = pool.Rent();
+            var handoffTask = handoff.Task;
+            accumulator.EnqueueAppend(
+                topic,
+                partition: 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null,
+                PooledMemory.Null,
+                headers: null,
+                headerCount: 0,
+                handoff,
+                CancellationToken.None);
+            await TestWait.UntilAsync(() => accumulator.PendingAppendCountForTest > 0, Bound);
+
+            var flushTask = accumulator.FlushAsync(CancellationToken.None).AsTask();
+
+            // Before the fix the flush waited for the worker without sealing, so this batch
+            // stayed open (linger is 60 s) and never drained.
+            batch = await DrainAsync(accumulator, new TopicPartition(topic, 0));
+            await Assert.That(batch.RecordCount).IsEqualTo(1);
+            CompleteAndReturn(accumulator, batch, nextOffset++);
+            batch = null;
+
+            // The released memory lets the worker append; the flush then seals that batch too.
+            batch = await DrainAsync(accumulator, new TopicPartition(topic, 0));
+            await Assert.That(flushTask.IsCompleted).IsFalse();
+            CompleteAndReturn(accumulator, batch, nextOffset++);
+            batch = null;
+
+            await flushTask.WaitAsync(Bound);
+            await Assert.That((await firstTask).Offset).IsEqualTo(0);
+            await Assert.That((await handoffTask).Offset).IsEqualTo(1);
+        }
+        finally
+        {
+            if (batch is not null)
+                CompleteAndReturn(accumulator, batch, nextOffset);
+
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
     private static ProducerOptions CreateOptions() => new()
     {
         BootstrapServers = ["localhost:9092"],

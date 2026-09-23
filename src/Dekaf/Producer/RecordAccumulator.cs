@@ -7826,9 +7826,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // A backpressured ProduceAsync returns once its record is handed to an append worker,
         // before the record is appended. Wait for those handoffs to reach a batch, so the seal
-        // below covers them.
+        // below covers them. Seal the open batches first: a worker can be waiting for
+        // BufferMemory that only their delivery releases, and nothing else seals them before
+        // linger expires.
         if (HasAppendWorkerBacklog())
+        {
+            await SealBatchesAsync(sealAll: true, cancellationToken).ConfigureAwait(false);
             await WaitForAppendWorkerCheckpointAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         await SealBatchesAsync(sealAll: true, cancellationToken).ConfigureAwait(false);
 

@@ -112,16 +112,7 @@ public class FlushCheckpointBenchmarks
             for (var i = 0; i < RecordsPerFlush; i++)
                 Append(ts);
 
-            var pending = _accumulator.FlushAsync(CancellationToken.None);
-            while (!pending.IsCompleted)
-            {
-                if (_accumulator.TryDrainPublishedBatch(out var batch))
-                    Retire(batch);
-                else
-                    Thread.SpinWait(1);
-            }
-
-            pending.GetAwaiter().GetResult();
+            FlushAndDeliver();
         }
     }
 
@@ -141,6 +132,21 @@ public class FlushCheckpointBenchmarks
                 null, 0, completion, CancellationToken.None);
         }
 
+        FlushAndDeliver();
+
+        // One flush covers every handoff. Before #3386 a flush could return while the workers
+        // were still appending, leaving records in an open batch, so the baseline flushes again
+        // until they complete. The loop does not run when the first flush covered them.
+        for (var i = 0; i < HandoffsPerInvoke; i++)
+        {
+            while (!_handoffs[i].IsCompleted)
+                FlushAndDeliver();
+            _handoffs[i].GetAwaiter().GetResult();
+        }
+    }
+
+    private void FlushAndDeliver()
+    {
         var pending = _accumulator.FlushAsync(CancellationToken.None);
         while (!pending.IsCompleted)
         {
@@ -151,8 +157,6 @@ public class FlushCheckpointBenchmarks
         }
 
         pending.GetAwaiter().GetResult();
-        for (var i = 0; i < HandoffsPerInvoke; i++)
-            _handoffs[i].GetAwaiter().GetResult();
     }
 
     private void Append(long ts)
