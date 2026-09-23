@@ -84,6 +84,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private long _lastSuccessfulHeartbeatTimestamp;
     private string? _lastHeartbeatFailure;
     private int _disposed;
+    // Set by BeginClose; no join starts after it.
+    private int _closing;
     // Set when disposal has finished with rebalance callbacks. A drain that outlives it (a
     // listener that ignored the teardown token) invokes no further callbacks.
     private int _callbackDeliveryClosed;
@@ -584,6 +586,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     {
         _state = CoordinatorState.Unjoined;
     }
+
+    /// <summary>
+    /// Called when the owning consumer starts closing. From then on the coordinator never joins
+    /// the group again, whichever path asks (a straggling prefetch, an offset-fetch recovery),
+    /// so close cannot end with a new membership and a live heartbeat.
+    /// </summary>
+    internal void BeginClose() => Volatile.Write(ref _closing, 1);
 
     /// <summary>
     /// Ensures the consumer has joined the group.
@@ -2504,6 +2513,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             throw new InvalidOperationException(
                 "The consumer cannot rejoin its group from inside a rebalance listener callback. " +
                 "Return from the callback; the consumer rejoins on its next poll.");
+        }
+
+        if (Volatile.Read(ref _closing) != 0)
+        {
+            throw new ObjectDisposedException(
+                nameof(ConsumerCoordinator),
+                "The consumer is closing; it does not rejoin its group.");
         }
 
         UpdateSubscription(topics, subscribedTopicRegex);

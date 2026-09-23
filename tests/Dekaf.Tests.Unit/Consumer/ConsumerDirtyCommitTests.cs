@@ -195,6 +195,92 @@ public sealed class ConsumerDirtyCommitTests
     }
 
     [Test]
+    public async Task CloseAsync_FencedMember_IsNotRejoinedByAnAssignmentSyncDuringOrAfterClose()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        connectionPool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(connection));
+        connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new FindCoordinatorResponse
+            {
+                Coordinators =
+                [
+                    new Coordinator { Key = "group-a", NodeId = 0, Host = "localhost", Port = 9092, ErrorCode = ErrorCode.None }
+                ]
+            }));
+        var joins = 0;
+        connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref joins);
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = 1,
+                    HeartbeatIntervalMs = 60_000
+                });
+            });
+        var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
+        metadataManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers = [new BrokerMetadata { NodeId = 0, Host = "localhost", Port = 9092 }],
+            Topics = []
+        });
+        metadataManager.SetApiVersion(ApiKey.FindCoordinator, 4, 5);
+        metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 0);
+        await using var consumer = new KafkaConsumer<string, string>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                GroupId = "group-a",
+                OffsetCommitMode = OffsetCommitMode.Manual
+            },
+            Serializers.String,
+            Serializers.String,
+            connectionPool,
+            metadataManager);
+        consumer.Subscribe("topic-a");
+
+        // The heartbeat fenced the member; the consumer then closes without leaving.
+        var coordinator = (ConsumerCoordinator)typeof(KafkaConsumer<string, string>)
+            .GetField("_coordinator", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(consumer)!;
+        typeof(ConsumerCoordinator)
+            .GetMethod("FenceMembership", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(coordinator, [false]);
+        await consumer.CloseAsync(
+            new ConsumerCloseOptions { GroupMembershipOperation = ConsumerGroupMembershipOperation.RemainInGroup },
+            CancellationToken.None);
+
+        // An assignment sync that runs once close has begun, as a prefetch iteration still in
+        // flight would, cannot rejoin the group or start a heartbeat.
+        var ensureAssignment = typeof(KafkaConsumer<string, string>)
+            .GetMethod("EnsureAssignmentAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        try
+        {
+            await (ValueTask)ensureAssignment.Invoke(consumer, [CancellationToken.None])!;
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+
+        await Assert.That(Volatile.Read(ref joins)).IsEqualTo(0);
+        await Assert.That(coordinator.State).IsNotEqualTo(CoordinatorState.Stable);
+        var heartbeatTask = typeof(ConsumerCoordinator)
+            .GetField("_heartbeatTask", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(coordinator);
+        await Assert.That(heartbeatTask).IsNull();
+    }
+
+    [Test]
     public async Task CommitAsync_ExplicitLeaderEpoch_SendsCommittedLeaderEpoch()
     {
         var requests = new List<OffsetCommitRequest>();

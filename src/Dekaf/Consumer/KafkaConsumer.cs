@@ -13083,8 +13083,35 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         CancellationToken cancellationToken)
     {
         LogClosingConsumer();
+        _coordinator?.BeginClose();
 
-        // Step 1: Stop heartbeat background task
+        // Step 1: Stop the prefetch task first. It runs assignment synchronization, which could
+        // otherwise rejoin a fenced member and start a new heartbeat after the steps below
+        // stopped it. Its WaitAsync is bounded like step 4's: a mid-flight FetchAsync network
+        // operation could hang for up to RequestTimeoutMs. The coordinator also refuses any
+        // join once close has begun, whichever path asks.
+        Task? prefetchTask;
+        CancellationTokenSource? prefetchCts;
+        lock (_prefetchStartLock)
+        {
+            prefetchCts = _prefetchCts;
+            prefetchTask = _prefetchTask;
+        }
+
+        prefetchCts?.Cancel();
+        if (prefetchTask is not null)
+        {
+            try
+            {
+                await prefetchTask.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Ignore — task may not exit promptly after cancellation
+            }
+        }
+
+        // Step 2: Stop heartbeat background task
         if (_coordinator is not null)
         {
             await _coordinator.StopHeartbeatAsyncCore(cancellationToken).ConfigureAwait(false);
@@ -13095,11 +13122,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 .ConfigureAwait(false);
         }
 
-        // Step 2: Stop leader-refresh tasks before metadata dependencies are disposed
+        // Step 3: Stop leader-refresh tasks before metadata dependencies are disposed
         _leaderRefreshCts.Cancel();
         await WaitForLeaderRefreshTasksAsync(cancellationToken).ConfigureAwait(false);
 
-        // Step 3: Stop auto-commit task
+        // Step 4: Stop auto-commit task
         // Use WaitAsync with both a hard timeout and the caller's cancellation token so that
         // DisposeAsync's 30s CTS actually bounds this step. Without this, a mid-flight
         // CommitAsync (which waits up to RequestTimeoutMs=30s for network I/O) would cause
@@ -13126,32 +13153,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
         }
 
-        // Step 4: Stop prefetch task
-        // Same rationale as Step 3: a mid-flight FetchAsync network operation could hang for
-        // up to RequestTimeoutMs without the WaitAsync timeout bounding it.
-        Task? prefetchTask;
-        CancellationTokenSource? prefetchCts;
-        lock (_prefetchStartLock)
-        {
-            prefetchCts = _prefetchCts;
-            prefetchTask = _prefetchTask;
-        }
-
-        prefetchCts?.Cancel();
-        if (prefetchTask is not null)
-        {
-            try
-            {
-                await prefetchTask.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                // Ignore — task may not exit promptly after cancellation
-            }
-        }
-
         // Partitions the coordinator revoked or reported lost since the last assignment sync (a
-        // fence's loss the drain in step 1 delivered, say). Their stored offsets all predate that
+        // fence's loss the drain in step 2 delivered, say). Their stored offsets all predate that
         // loss: records of a partition assigned again are consumed only after a sync, which
         // resets its position. So they are dropped, as the sync would drop them, and the shutdown
         // commit cannot send them. Only the ones the coordinator does not own again are left out
