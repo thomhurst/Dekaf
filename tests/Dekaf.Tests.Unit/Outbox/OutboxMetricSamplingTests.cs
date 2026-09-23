@@ -61,8 +61,12 @@ public partial class OutboxMetricTests
         await relay.StartAsync(timeout.Token);
         try
         {
+            // The sampler can start before or after the relay's first lease, so it may also
+            // have armed and cancelled a wait for that lease. Each step waits for the wait the
+            // sampler arms after its query, which it arms only once the query's result is
+            // cached, rather than for any 30 second schedule.
             await store.Started.Reader.ReadAsync(timeout.Token);
-            await time.WaitForTimerAsync(TimeSpan.FromSeconds(30));
+            await time.WaitForArmedTimerAsync(TimeSpan.FromSeconds(30));
             capture.Observe();
             await Assert.That(capture.Gauge("dekaf.outbox.pending.messages")).IsEqualTo(7);
             await Assert.That(capture.Gauge("dekaf.outbox.pending.oldest_age")).IsEqualTo(120);
@@ -73,7 +77,7 @@ public partial class OutboxMetricTests
             await Assert.That(capture.Gauge("dekaf.outbox.pending.oldest_age")).IsEqualTo(149);
             time.Advance(TimeSpan.FromSeconds(1));
             await store.Started.Reader.ReadAsync(timeout.Token);
-            await time.WaitForTimerAsync(TimeSpan.FromSeconds(30));
+            await time.WaitForArmedTimerAsync(TimeSpan.FromSeconds(30));
             capture.Observe();
             await Assert.That(store.Calls).IsEqualTo(2);
             await Assert.That(capture.Gauge("dekaf.outbox.pending.available")).IsEqualTo(0);
@@ -82,7 +86,7 @@ public partial class OutboxMetricTests
             await Assert.That(relay.ExecuteTask!.IsCompleted).IsFalse();
             time.Advance(TimeSpan.FromSeconds(30));
             await store.Started.Reader.ReadAsync(timeout.Token);
-            await time.WaitForTimerAsync(TimeSpan.FromSeconds(30));
+            await time.WaitForArmedTimerAsync(TimeSpan.FromSeconds(30));
             capture.Observe();
             await Assert.That(capture.Gauge("dekaf.outbox.pending.available")).IsEqualTo(1);
             await Assert.That(capture.Gauge("dekaf.outbox.pending.messages")).IsEqualTo(0);
@@ -108,7 +112,9 @@ public partial class OutboxMetricTests
             await store.Started.Reader.ReadAsync(timeout.Token);
             await time.WaitForTimerAsync(TimeSpan.FromSeconds(5));
             time.Advance(TimeSpan.FromSeconds(5));
-            await time.WaitForTimerAsync(TimeSpan.FromSeconds(30));
+            // Only the wait armed after the cancelled query, not an earlier cancelled wait
+            // for the lease, shows that the query's failure has been recorded.
+            await time.WaitForArmedTimerAsync(TimeSpan.FromSeconds(30));
             await Assert.That(store.QueryCancelled).IsTrue();
             await Assert.That(store.Calls).IsEqualTo(1);
             capture.Observe();
