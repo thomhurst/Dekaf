@@ -120,7 +120,8 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
                     "LeaveGroup outcome is unknown after a request failure. Inspect group membership before retrying removal.",
                     isRetriable: false, exception);
             }
-            attemptToken.ThrowIfCancellationRequested();
+            // A response is authoritative: it is processed even when the deadline expired
+            // meanwhile, because the removal it reports has already happened.
             if (MayHaveAppliedDespiteError(response.ErrorCode))
             {
                 // The coordinator stopped waiting for the removal to commit, not that it dropped

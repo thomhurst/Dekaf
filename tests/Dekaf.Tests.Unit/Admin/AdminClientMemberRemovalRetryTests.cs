@@ -66,6 +66,38 @@ public sealed partial class AdminClientRemoveMembersTests
     }
 
     [Test]
+    public async Task IdentityRemoval_ResponseArrivesAfterDeadline_ReturnsTheResponse()
+    {
+        // The coordinator answered, but only after the call's deadline had expired. The answer
+        // says what happened, so it is returned rather than turned into a retriable timeout.
+        var (admin, connection) = CreateAdmin(3, 5);
+        SetupCoordinator(connection);
+        SetupMemberDiscovery(connection);
+        connection.SendAsync<LeaveGroupRequest, LeaveGroupResponse>(Arg.Any<LeaveGroupRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(_ => new ValueTask<LeaveGroupResponse>(RespondAfterAsync()));
+        await using (admin)
+        {
+            var result = await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
+                new ConsumerGroupMemberRemovalOptions
+                {
+                    TimeoutMs = 100,
+                    Members = [new ConsumerGroupMemberIdentity { GroupInstanceId = "instance" }]
+                });
+            await Assert.That(result.Members.Count).IsEqualTo(1);
+            await Assert.That(result.Members[0].ErrorCode).IsEqualTo(ErrorCode.None);
+        }
+
+        static async Task<LeaveGroupResponse> RespondAfterAsync()
+        {
+            await Task.Delay(400);
+            return new LeaveGroupResponse
+            {
+                Members = [new LeaveGroupResponseMember { MemberId = "member", GroupInstanceId = "instance", ErrorCode = ErrorCode.None }]
+            };
+        }
+    }
+
+    [Test]
     public async Task IdentityRemoval_CallerCancelsSendAfterWrite_ThrowsCancellation()
     {
         var (admin, connection) = CreateAdmin(3, 5);
