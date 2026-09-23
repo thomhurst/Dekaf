@@ -279,7 +279,9 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     private void OnTimeout()
     {
         // Timer.Change(Infinite) can leave an already-queued callback from a previous rental.
-        if (IsCompleted)
+        // Capture the rental first so a callback that outlives it can never fail a later one.
+        var generation = Volatile.Read(ref _state);
+        if ((generation & 1) != 0)
             return;
 
         var now = Dekaf.MonotonicClock.GetMilliseconds();
@@ -303,14 +305,20 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
             configured,
             accumulator.BuildBufferTimeoutMessage(_recordSize));
 
-        if (TryFail(exception))
+        if (TryFail(exception, generation))
             accumulator.DrainPendingAppendsIfHead(this);
     }
 
     private void OnCancellation()
     {
+        // Disposing the registration does not wait for a callback already running, so bind this
+        // callback to the rental it observed before reading any per-rental field.
+        var generation = Volatile.Read(ref _state);
+        if ((generation & 1) != 0)
+            return;
+
         var accumulator = _accumulator;
-        if (TryFail(new OperationCanceledException(_cancellationToken)))
+        if (TryFail(new OperationCanceledException(_cancellationToken), generation))
             accumulator?.DrainPendingAppendsIfHead(this);
     }
 
