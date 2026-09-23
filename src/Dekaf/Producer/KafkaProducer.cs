@@ -249,11 +249,21 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private readonly Func<long>? _transactionTimestampProvider;
     private readonly System.Threading.Lock _epochBumpLock = new();
     internal readonly System.Threading.Lock _partitionsInTransactionLock = new();
+
+    // The identity an abort is replacing (see SetAbortReplacingProducerIdentity); -1 when no abort
+    // is replacing one. Written and read under _partitionsInTransactionLock.
+    private long _abortReplacedProducerId = -1;
+    private short _abortReplacedProducerEpoch = -1;
     internal readonly HashSet<TopicPartition> _partitionsInTransaction = [];
     private readonly HashSet<TopicPartition> _pendingTransactionPartitions = [];
     private readonly HashSet<TopicPartition> _transactionPartitionsBeingEnrolled = [];
     private readonly HashSet<Action<Exception?>> _partitionEnrollmentWaiters = [];
     private readonly Dictionary<TopicPartition, Exception> _partitionEnrollmentErrors = [];
+    // The failure of the first batch that made the current transaction abortable, reported as the
+    // InnerException of the AbortableTransactionException that refuses produce, commit and
+    // SendOffsets. Written under _partitionsInTransactionLock; cleared when the state returns to
+    // Ready.
+    private Exception? _transactionBatchFailure;
     private bool _partitionEnrollmentActive;
     private long _partitionEnrollmentGeneration;
     private readonly Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask> _addPartitionsToTransaction;
@@ -739,6 +749,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             batchCompletionCallback,
             recordAppendedCallback,
             ResolveLeaderIdForUnackedBudget);
+        if (options.TransactionalId is not null)
+            _accumulator.OnTransactionalBatchFailed = OnTransactionalBatchFailed;
         _uniformStickyPartitioner?.SetPartitionQueueByteProvider(_accumulator.GetPartitionQueueBytes);
         _uniformStickyPartitioner?.SetRackLocalPartitionsProvider(
             _metadataManager.Metadata.GetPartitionsForRack);
@@ -830,16 +842,26 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     public ValueTask<RecordMetadata> ProduceAsync(
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken = default)
-        => ProduceAsync(message, ProduceContinuationMode.Async, cancellationToken);
+        => ProduceAsync(
+            message, ProduceContinuationMode.Async, ReadAdmissionTransactionalGeneration(), cancellationToken);
 
     /// <summary>Continuation policy shared by every transactional produce overload.</summary>
     private ProduceContinuationMode TransactionContinuationMode
         => _options.InlineTransactionCompletions ? ProduceContinuationMode.Inline : ProduceContinuationMode.Async;
 
+    /// <summary>
+    /// The transactional append generation a new <see cref="Transaction{TKey, TValue}"/> handle is
+    /// bound to. Only an abort advances it, and an abort ends the handle's transaction, so every
+    /// produce through the handle carries this value to the append commit point and is rejected
+    /// once that transaction has started aborting, however the produce raced the abort.
+    /// </summary>
+    internal int TransactionHandleGeneration => _accumulator.TransactionalAppendGeneration;
+
     internal ValueTask<RecordMetadata> ProduceTransactionAsync(
         ProducerMessage<TKey, TValue> message,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
-        => ProduceAsync(message, TransactionContinuationMode, cancellationToken);
+        => ProduceAsync(message, TransactionContinuationMode, transactionalGeneration, cancellationToken);
 
     /// <summary>
     /// Componentwise transactional produce: routes through the message-free fast path so the
@@ -851,6 +873,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         string topic,
         TKey? key,
         TValue value,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
         => ProduceAsync(
             topic,
@@ -860,11 +883,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             partition: null,
             timestamp: null,
             TransactionContinuationMode,
+            transactionalGeneration,
             cancellationToken);
+
 
     private ValueTask<RecordMetadata> ProduceAsync(
         ProducerMessage<TKey, TValue> message,
         ProduceContinuationMode continuationMode,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
     {
         // The retry wrapper's continuation runs retry-policy code (classification, delay
@@ -875,15 +901,22 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         {
             if (continuationMode == ProduceContinuationMode.InlineWhenDirect)
                 continuationMode = ProduceContinuationMode.Async;
-            return ProduceAsyncWithRetry(message, continuationMode, cancellationToken);
+            return ProduceAsyncWithRetry(message, continuationMode, transactionalGeneration, cancellationToken);
         }
 
-        return ProduceAsyncCore(message, continuationMode, cancellationToken);
+        return ProduceAsyncCore(message, continuationMode, transactionalGeneration, cancellationToken);
     }
 
+    /// <param name="transactionalGeneration">
+    /// The generation the produce was admitted in, read by the caller before this method's state
+    /// check. The retry wrapper passes the one it read for the first attempt, so a retry that runs
+    /// after an abort is rejected at the append commit point instead of joining the next
+    /// transaction.
+    /// </param>
     private ValueTask<RecordMetadata> ProduceAsyncCore(
         ProducerMessage<TKey, TValue> message,
         ProduceContinuationMode continuationMode,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
     {
         ThrowIfProduceCannotStart();
@@ -899,7 +932,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // Async serializers (per-message I/O, issue #2309) cannot run on the synchronous fast
         // path — divert to the dedicated async-serialization path before any sync serialize.
         if (_hasAsyncSerializers)
-            return ProduceWithAsyncSerializationAsync(message, headers, activity, continuationMode, cancellationToken);
+        {
+            return ProduceWithAsyncSerializationAsync(
+                message, headers, activity, continuationMode, transactionalGeneration, cancellationToken);
+        }
 
         // If a serializer needs async setup (e.g. a one-time Schema Registry fetch), do it here on the
         // async path so the synchronous serialize never blocks on it. After the first message for a
@@ -932,6 +968,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     headers,
                     activity,
                     continuationMode,
+                    transactionalGeneration,
                     cancellationToken);
             }
 
@@ -941,6 +978,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 activity,
                 continuationMode,
                 prepare.Result,
+                transactionalGeneration,
                 cancellationToken);
         }
 
@@ -950,6 +988,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             activity,
             continuationMode,
             default,
+            transactionalGeneration,
             cancellationToken);
     }
 
@@ -974,6 +1013,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         Activity? activity,
         ProduceContinuationMode continuationMode,
         in SerializerPreparationLease preparationLease,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
     {
         // AwaitWithActivity/AwaitWithMetrics interpose an async state machine whose continuation
@@ -993,6 +1033,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 headers,
                 runContinuationsAsynchronously,
                 preparationLease,
+                transactionalGeneration,
                 cancellationToken,
                 out var completion))
         {
@@ -1022,6 +1063,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             activity,
             continuationMode,
             preparationLease,
+            transactionalGeneration,
             cancellationToken);
     }
 
@@ -1031,12 +1073,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         Headers? headers,
         Activity? activity,
         ProduceContinuationMode continuationMode,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
     {
         SerializerPreparationLease preparationLease;
         try
         {
             preparationLease = await prepare.ConfigureAwait(false);
+            ThrowIfTransactionAbortedSince(transactionalGeneration);
         }
         catch (Exception ex)
         {
@@ -1052,6 +1096,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             activity,
             continuationMode,
             preparationLease,
+            transactionalGeneration,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -1129,6 +1174,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
     }
 
+
     private ValueTask<RecordMetadata> ProduceAsync(
         string topic,
         TKey? key,
@@ -1137,6 +1183,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         int? partition,
         DateTimeOffset? timestamp,
         ProduceContinuationMode continuationMode,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
     {
         if (_retryPolicy is not null
@@ -1152,10 +1199,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 Headers = headers,
                 Partition = partition,
                 Timestamp = timestamp
-            }, continuationMode, cancellationToken);
+            }, continuationMode, transactionalGeneration, cancellationToken);
         }
 
-        return ProduceAsyncCore(topic, key, value, headers, partition, timestamp, continuationMode, cancellationToken);
+        return ProduceAsyncCore(
+            topic, key, value, headers, partition, timestamp, continuationMode, transactionalGeneration, cancellationToken);
     }
 
     private ValueTask<RecordMetadata> ProduceAsyncCore(
@@ -1166,6 +1214,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         int? partition,
         DateTimeOffset? timestamp,
         ProduceContinuationMode continuationMode,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
     {
         ThrowIfProduceCannotStart();
@@ -1190,6 +1239,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 headers,
                 activity: null,
                 continuationMode,
+                transactionalGeneration,
                 cancellationToken);
         }
 
@@ -1215,6 +1265,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     partition,
                     timestamp,
                     continuationMode,
+                    transactionalGeneration,
                     cancellationToken);
             }
 
@@ -1227,6 +1278,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 timestamp,
                 continuationMode,
                 prepare.Result,
+                transactionalGeneration,
                 cancellationToken);
         }
 
@@ -1239,6 +1291,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             timestamp,
             continuationMode,
             default,
+            transactionalGeneration,
             cancellationToken);
     }
 
@@ -1251,6 +1304,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         DateTimeOffset? timestamp,
         ProduceContinuationMode continuationMode,
         in SerializerPreparationLease preparationLease,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
     {
         // See the message-based ProduceAfterPrepare: the metrics wrapper's continuation must not
@@ -1269,6 +1323,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             timestamp,
             runContinuationsAsynchronously,
             preparationLease,
+            transactionalGeneration,
             cancellationToken,
             out var completion))
         {
@@ -1301,6 +1356,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             activity: null,
             continuationMode,
             preparationLease,
+            transactionalGeneration,
             cancellationToken);
     }
 
@@ -1313,9 +1369,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         int? partition,
         DateTimeOffset? timestamp,
         ProduceContinuationMode continuationMode,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
     {
         var preparationLease = await prepare.ConfigureAwait(false);
+        ThrowIfTransactionAbortedSince(transactionalGeneration);
 
         return await ProduceAfterPrepare(
             topic,
@@ -1326,23 +1384,39 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             timestamp,
             continuationMode,
             preparationLease,
+            transactionalGeneration,
             cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>Test hook: runs before each retry attempt, after the retry's own generation check.</summary>
+    internal Action? BeforeProduceRetryAttemptForTest;
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private async ValueTask<RecordMetadata> ProduceAsyncWithRetry(
         ProducerMessage<TKey, TValue> message,
         ProduceContinuationMode continuationMode,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
     {
+        // transactionalGeneration was read once, before ProduceAsyncCore's state check admits the
+        // first attempt (or bound to the transaction handle), and is passed to every attempt: a
+        // retry after an abort started would otherwise be admitted again in the next
+        // transaction's state and read that transaction's generation.
         var attempt = 0;
         while (true)
         {
             try
             {
+                if (attempt > 0)
+                {
+                    ThrowIfTransactionAbortedSince(transactionalGeneration);
+                    BeforeProduceRetryAttemptForTest?.Invoke();
+                }
+
                 return await ProduceAsyncCore(
                     message,
                     continuationMode,
+                    transactionalGeneration,
                     cancellationToken).ConfigureAwait(false);
             }
             catch (KafkaException ex) when (ex.IsRetriable)
@@ -1478,6 +1552,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         ProducerMessage<TKey, TValue> message,
         Headers? headers,
         bool runContinuationsAsynchronously,
+        int transactionalGeneration,
         CancellationToken cancellationToken,
         out PooledValueTaskSource<RecordMetadata>? completion)
         => TryProduceSyncForAsync(
@@ -1485,6 +1560,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             headers,
             runContinuationsAsynchronously,
             default,
+            transactionalGeneration,
             cancellationToken,
             out completion);
 
@@ -1494,6 +1570,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         Headers? headers,
         bool runContinuationsAsynchronously,
         in SerializerPreparationLease preparationLease,
+        int transactionalGeneration,
         CancellationToken cancellationToken,
         out PooledValueTaskSource<RecordMetadata>? completion)
         => TryProduceSyncForAsync(
@@ -1505,6 +1582,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             message.Timestamp,
             runContinuationsAsynchronously,
             preparationLease,
+            transactionalGeneration,
             cancellationToken,
             out completion);
 
@@ -1518,6 +1596,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         DateTimeOffset? timestamp,
         bool runContinuationsAsynchronously,
         in SerializerPreparationLease preparationLease,
+        int transactionalGeneration,
         CancellationToken cancellationToken,
         out PooledValueTaskSource<RecordMetadata>? completion)
     {
@@ -1565,6 +1644,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 topicInfo,
                 completion,
                 preparationLease,
+                transactionalGeneration,
                 cancellationToken);
         }
         catch (Exception ex)
@@ -1589,6 +1669,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         Activity? activity,
         ProduceContinuationMode continuationMode,
         SerializerPreparationLease preparationLease,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
     {
         // See ProduceAfterPrepare: instrumented awaits interpose a state machine that must not
@@ -1605,6 +1686,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 headers,
                 runContinuationsAsynchronously,
                 preparationLease,
+                transactionalGeneration,
                 cancellationToken,
                 out var fastCompletion))
         {
@@ -1621,6 +1703,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 headers,
                 completion,
                 preparationLease,
+                transactionalGeneration,
                 cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -1654,7 +1737,17 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
         ThrowIfNotInitialized();
+        // Read before serialization: the append commit point rejects the record if a transaction
+        // abort starts while serializers or interceptors run (non-transactional: a constant).
+        return FireMessageAsync(message, CaptureTransactionalAppendGeneration());
+    }
 
+    /// <summary>
+    /// FireAsync for a message with the generation its public entry point read at admission;
+    /// the componentwise overload's interceptor fallback forwards its own instead of reading again.
+    /// </summary>
+    private ValueTask FireMessageAsync(ProducerMessage<TKey, TValue> message, int transactionalGeneration)
+    {
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
 
@@ -1693,7 +1786,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     headers,
                     activity,
                     deliveryHandler: null,
-                    preparation);
+                    preparation,
+                    transactionalGeneration);
 
             preparationLease = preparation.Result;
         }
@@ -1704,7 +1798,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 headers,
                 activity,
                 deliveryHandler: null,
-                default);
+                default,
+                transactionalGeneration);
         }
 
         // Fast path: try thread-local cached topic metadata first
@@ -1726,7 +1821,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         message.Partition,
                         message.Timestamp,
                         topicInfo!,
-                        null)
+                        null,
+                        transactionalGeneration)
                     : SerializePreparedAndAppendFromSpansAsync(
                         message.Topic,
                         message.Key,
@@ -1736,6 +1832,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         message.Timestamp,
                         topicInfo!,
                         null,
+                        transactionalGeneration,
                         in preparationLease);
 
                 if (appendResult.IsCompleted)
@@ -1770,7 +1867,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
 
         // Metadata miss — full async path
-        return FireAsyncSlow(message, headers, activity, preparationLease);
+        return FireAsyncSlow(message, headers, activity, preparationLease, transactionalGeneration);
     }
 
     /// <inheritdoc />
@@ -1780,11 +1877,16 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
         ThrowIfNotInitialized();
+        // Read before serialization: the append commit point rejects the record if a transaction
+        // abort starts while serializers or interceptors run (non-transactional: a constant).
+        var transactionalGeneration = CaptureTransactionalAppendGeneration();
 
         // When interceptors are configured, fall back to ProducerMessage overload
         // so interceptors can inspect/modify the message before serialization.
         if (_interceptors is not null)
-            return FireAsync(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
+            return FireMessageAsync(
+                new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value },
+                transactionalGeneration);
 
         var preparationLease = default(SerializerPreparationLease);
         if (_keyPreparer is not null || _valuePreparer is not null)
@@ -1815,7 +1917,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     headers: null,
                     activity: null,
                     deliveryHandler: null,
-                    preparation);
+                    preparation,
+                    transactionalGeneration);
 
             preparationLease = preparation.Result;
         }
@@ -1826,7 +1929,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 headers: null,
                 activity: null,
                 deliveryHandler: null,
-                default);
+                default,
+                transactionalGeneration);
         }
 
         // Fast path: no ProducerMessage allocation, no interceptors, no activity tracing
@@ -1848,7 +1952,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         partition: null,
                         timestamp: null,
                         topicInfo!,
-                        callback: null)
+                        callback: null,
+                        transactionalGeneration)
                     : SerializePreparedAndAppendFromSpansAsync(
                         topic,
                         key,
@@ -1858,6 +1963,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         timestamp: null,
                         topicInfo!,
                         callback: null,
+                        transactionalGeneration,
                         in preparationLease);
 
                 if (appendResult.IsCompleted)
@@ -1882,7 +1988,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value },
             headers: null,
             activity: null,
-            preparationLease);
+            preparationLease,
+            transactionalGeneration);
     }
 
     /// <summary>
@@ -1954,6 +2061,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         ProducerMessage<TKey, TValue> message,
         TopicInfo topicInfo,
         PooledValueTaskSource<RecordMetadata> completion,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
         => TryProduceSyncCore(
             message.Topic,
@@ -1965,6 +2073,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             topicInfo,
             completion,
             default,
+            transactionalGeneration,
             cancellationToken);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1994,6 +2103,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         TopicInfo topicInfo,
         PooledValueTaskSource<RecordMetadata> completion,
         in SerializerPreparationLease preparationLease,
+        int transactionalGeneration,
         CancellationToken cancellationToken,
         bool recordHeadersPrepared = false)
     {
@@ -2006,7 +2116,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             {
                 TryProduceSyncCore(
                     topic, key, value, serializationHeaders, partition, timestamp, topicInfo,
-                    completion, in preparationLease, cancellationToken, recordHeadersPrepared: true);
+                    completion, in preparationLease, transactionalGeneration, cancellationToken,
+                    recordHeadersPrepared: true);
             }
             finally
             {
@@ -2112,7 +2223,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 pooledHeaderArray,
                 headerCount,
                 completion,
-                batchCompletionPartitionCount))
+                batchCompletionPartitionCount,
+                transactionalGeneration))
             {
                 // BufferMemory or admission-window backpressure. Hand the already-serialized
                 // record to the slow-path append worker with the same rented completion instead
@@ -2136,7 +2248,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     headerCount,
                     completion,
                     cancellationToken,
-                    batchCompletionPartitionCount);
+                    batchCompletionPartitionCount,
+                    transactionalGeneration);
                 RestoreCustomPartitionerKeyBuffer(cache, ref customPartitionerKeyBuffer);
                 return;
             }
@@ -2280,6 +2393,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
         ThrowIfNotInitialized();
+        // Read before serialization: the append commit point rejects the record if a transaction
+        // abort starts while serializers or interceptors run (non-transactional: a constant).
+        var transactionalGeneration = CaptureTransactionalAppendGeneration();
 
         ArgumentNullException.ThrowIfNull(deliveryHandler);
 
@@ -2311,7 +2427,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     message.Headers,
                     activity: null,
                     deliveryHandler,
-                    preparation);
+                    preparation,
+                    transactionalGeneration);
 
             preparationLease = preparation.Result;
         }
@@ -2322,7 +2439,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 message.Headers,
                 activity: null,
                 deliveryHandler,
-                default);
+                default,
+                transactionalGeneration);
         }
 
         // Fast path: try thread-local cached topic metadata first
@@ -2344,7 +2462,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         message.Partition,
                         message.Timestamp,
                         topicInfo!,
-                        deliveryHandler)
+                        deliveryHandler,
+                        transactionalGeneration)
                     : SerializePreparedAndAppendFromSpansAsync(
                         message.Topic,
                         message.Key,
@@ -2354,6 +2473,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         message.Timestamp,
                         topicInfo!,
                         deliveryHandler,
+                        transactionalGeneration,
                         in preparationLease);
 
                 if (appendResult.IsCompleted)
@@ -2377,7 +2497,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
 
         // Metadata miss — full async path
-        return ProduceAsyncWithCallbackSlow(message, deliveryHandler, preparationLease);
+        return ProduceAsyncWithCallbackSlow(message, deliveryHandler, preparationLease, transactionalGeneration);
     }
 
     private async ValueTask ProduceInternalAsync(
@@ -2385,6 +2505,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         Headers? headers,
         PooledValueTaskSource<RecordMetadata> completion,
         SerializerPreparationLease preparationLease,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
     {
         // Fast path: thread-local topic cache (three reference compares), then the metadata
@@ -2491,7 +2612,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 headerCount,
                 completion,
                 cancellationToken,
-                batchCompletionPartitionCount);
+                batchCompletionPartitionCount,
+                transactionalGeneration);
         }
         catch
         {
@@ -2515,7 +2637,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         TValue value,
         CancellationToken cancellationToken = default)
     {
-        return ProduceAsync(topic, key, value, headers: null, partition: null, timestamp: null, ProduceContinuationMode.Async, cancellationToken);
+        return ProduceAsync(
+            topic, key, value, headers: null, partition: null, timestamp: null, ProduceContinuationMode.Async,
+            ReadAdmissionTransactionalGeneration(), cancellationToken);
     }
 
     ValueTask<RecordMetadata> IProducerFastPath<TKey, TValue>.ProduceAsync(
@@ -2526,7 +2650,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         int? partition,
         DateTimeOffset? timestamp,
         CancellationToken cancellationToken)
-        => ProduceAsync(topic, key, value, headers, partition, timestamp, ProduceContinuationMode.Async, cancellationToken);
+        => ProduceAsync(
+            topic, key, value, headers, partition, timestamp, ProduceContinuationMode.Async,
+            ReadAdmissionTransactionalGeneration(), cancellationToken);
 
     /// <inheritdoc />
     public async Task<RecordMetadata[]> ProduceAllAsync(
@@ -2534,6 +2660,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(messages);
+
+        // Read once for the whole call, before any record's state check: every record of this call
+        // carries it to the append commit point.
+        var transactionalGeneration = ReadAdmissionTransactionalGeneration();
 
         // Convert to list to get count and allow multiple enumeration
         var messageList = messages as IList<ProducerMessage<TKey, TValue>> ?? messages.ToList();
@@ -2554,7 +2684,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             {
                 // InlineWhenDirect: safe because the sole direct continuation is the bounded
                 // harvest; instrumented/retry paths upgrade to Async — see ProduceAllCompletion remarks.
-                completion.Register(i, ProduceAsync(messageList[i], ProduceContinuationMode.InlineWhenDirect, cancellationToken));
+                completion.Register(i, ProduceAsync(
+                    messageList[i], ProduceContinuationMode.InlineWhenDirect, transactionalGeneration, cancellationToken));
             }
             catch (Exception ex)
             {
@@ -2579,6 +2710,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         ArgumentNullException.ThrowIfNull(topic);
         ArgumentNullException.ThrowIfNull(messages);
 
+        // Read once for the whole call, before any record's state check: every record of this call
+        // carries it to the append commit point.
+        var transactionalGeneration = ReadAdmissionTransactionalGeneration();
+
         // Convert to list to get count and allow multiple enumeration
         var messageList = messages as IList<(TKey? Key, TValue Value)> ?? messages.ToList();
         if (messageList.Count == 0)
@@ -2596,7 +2731,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             {
                 // InlineWhenDirect: safe because the sole direct continuation is the bounded
                 // harvest; instrumented/retry paths upgrade to Async — see ProduceAllCompletion remarks.
-                completion.Register(i, ProduceAsync(topic, key, value, headers: null, partition: null, timestamp: null, ProduceContinuationMode.InlineWhenDirect, cancellationToken));
+                completion.Register(i, ProduceAsync(
+                    topic, key, value, headers: null, partition: null, timestamp: null,
+                    ProduceContinuationMode.InlineWhenDirect, transactionalGeneration, cancellationToken));
             }
             catch (Exception ex)
             {
@@ -2619,6 +2756,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         ArgumentNullException.ThrowIfNull(topic);
         ArgumentNullException.ThrowIfNull(messages);
 
+        // Read once for the whole call, before any record's state check: every record of this call
+        // carries it to the append commit point.
+        var transactionalGeneration = ReadAdmissionTransactionalGeneration();
+
         if (messages is IList<TopicProducerMessage<TKey, TValue>> messageList)
         {
             var messageCount = messageList.Count;
@@ -2640,6 +2781,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         message.Partition,
                         message.Timestamp,
                         ProduceContinuationMode.InlineWhenDirect,
+                        transactionalGeneration,
                         cancellationToken));
                 }
                 catch (Exception ex)
@@ -2692,6 +2834,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                             message.Partition,
                             message.Timestamp,
                             ProduceContinuationMode.InlineWhenDirect,
+                            transactionalGeneration,
                             cancellationToken));
                     }
                     catch (Exception ex)
@@ -2827,9 +2970,22 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         RefreshTransactionFeaturesAtBoundary();
 
-        _transactionState = TransactionState.InTransaction;
+        lock (_partitionsInTransactionLock)
+        {
+            // Every transaction gets a generation of its own, advanced before the state becomes
+            // InTransaction. A produce reads the generation before its state check, so a value
+            // it read before this point (while Ready, or during an abort, which advances it too)
+            // can never equal this transaction's: it is rejected at the append commit point
+            // even if its state check runs after this transaction began.
+            _accumulator.AdvanceTransactionalAppendGeneration();
+
+            // A send loop may have fenced the producer since the checks above.
+            EnterTransactionState(TransactionState.InTransaction, "Cannot begin transaction", refuseAbortable: false);
+            _lastTransactionError = ErrorCode.None;
+            Volatile.Write(ref _transactionBatchFailure, null);
+        }
+
         _preparedTransactionState = PreparedTransactionState.Empty;
-        _lastTransactionError = ErrorCode.None;
         NotifyPartitionEnrollmentResetWaiters(ResetPartitionEnrollmentState());
 
         return new Transaction<TKey, TValue>(this);
@@ -2880,9 +3036,16 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             await ReinitializeProducerIdAsync(keepPreparedTransaction, retryBudget, cancellationToken)
                 .ConfigureAwait(false);
 
-            _transactionState = _preparedTransactionState.HasTransaction
-                ? TransactionState.PreparedTransaction
-                : TransactionState.Ready;
+            // Under the transition lock like every other state change: a producer-wide failure
+            // reported by a batch while InitProducerId ran (for example ClusterAuthorizationFailed
+            // from an earlier transaction's batch) made the producer fatal and must not be
+            // overwritten by Ready.
+            EnterTransactionState(
+                _preparedTransactionState.HasTransaction
+                    ? TransactionState.PreparedTransaction
+                    : TransactionState.Ready,
+                "Cannot initialize transactions",
+                refuseAbortable: false);
         }
         finally
         {
@@ -2926,9 +3089,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             };
         }
 
-        _transactionState = committed
-            ? TransactionState.CommittingTransaction
-            : TransactionState.AbortingTransaction;
+        EnterTransactionState(
+            committed ? TransactionState.CommittingTransaction : TransactionState.AbortingTransaction,
+            "Cannot complete prepared transaction",
+            refuseAbortable: false);
 
         try
         {
@@ -3008,8 +3172,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             };
         }
 
+        // A batch failed during the prepare flush after ThrowIfTransactionFailedDuringFlush ran
+        // must still stop the prepare.
+        EnterTransactionState(TransactionState.PreparedTransaction, "Cannot prepare transaction", refuseAbortable: true);
         _preparedTransactionState = preparedState;
-        _transactionState = TransactionState.PreparedTransaction;
         return preparedState;
     }
 
@@ -3028,11 +3194,18 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         _preparedTransactionState = PreparedTransactionState.Empty;
 
-        var preserveError = _transactionState == TransactionState.FatalError
-            || preserveAbortableError && _transactionState == TransactionState.AbortableError;
-        if (!preserveError)
+        // Atomic with the batch-failure report and every other error transition: a fatal report
+        // either lands first and is preserved here, or lands after Ready is written.
+        lock (_partitionsInTransactionLock)
         {
-            _transactionState = TransactionState.Ready;
+            var state = _transactionState;
+            var preserveError = state == TransactionState.FatalError
+                || preserveAbortableError && state == TransactionState.AbortableError;
+            if (!preserveError)
+            {
+                Volatile.Write(ref _transactionBatchFailure, null);
+                _transactionState = TransactionState.Ready;
+            }
         }
     }
 
@@ -3041,13 +3214,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// Called after abort to get the bumped epoch (KIP-360), and during initial setup.
     /// </summary>
     /// <summary>
-    /// Builds the transaction exception whose type reflects the KIP-1050 classification, and
-    /// records the error code for the fail-fast produce guard. Does not change transaction state.
+    /// Builds the transaction exception whose type reflects the KIP-1050 classification. Changes
+    /// neither the transaction state nor the recorded error code: <see cref="MarkTransactionFatal"/>
+    /// and <see cref="MarkTransactionAbortable"/> record both under the transition lock.
     /// </summary>
-    private TransactionException CreateTransactionException(
+    private TransactionException NewTransactionException(
         ErrorCode errorCode, TransactionErrorClassification classification, string message)
     {
-        _lastTransactionError = errorCode;
         return classification switch
         {
             TransactionErrorClassification.Fatal =>
@@ -3073,11 +3246,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             return;
         }
 
-        _transactionState = classification == TransactionErrorClassification.Fatal
-            ? TransactionState.FatalError
-            : TransactionState.AbortableError;
+        if (classification == TransactionErrorClassification.Fatal)
+            MarkTransactionFatal(errorCode);
+        else if (!MarkTransactionAbortable(errorCode))
+            // A send loop fenced the producer concurrently: fatal wins and keeps its error code.
+            ThrowFatalTransactionError(operation);
 
-        throw CreateTransactionException(errorCode, classification, $"{operation} failed: {errorCode}");
+        throw NewTransactionException(errorCode, classification, $"{operation} failed: {errorCode}");
     }
 
     /// <summary>
@@ -3256,8 +3431,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         if (featureVersion != _currentTransactionFeatureVersion)
         {
-            _transactionState = TransactionState.FatalError;
-            throw CreateTransactionException(
+            MarkTransactionFatal(ErrorCode.UnsupportedVersion);
+            throw NewTransactionException(
                 ErrorCode.UnsupportedVersion,
                 TransactionErrorClassification.Fatal,
                 "The coordinator transaction.version changed after producer initialization. " +
@@ -3482,21 +3657,17 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     // transition to AbortableError; only fatal errors mark the producer unusable.
                     if (classification == TransactionErrorClassification.Fatal)
                     {
-                        _transactionState = TransactionState.FatalError;
+                        MarkTransactionFatal(response.ErrorCode);
                     }
 
                     // A final answer also settles an earlier unanswered attempt.
                     initProducerIdOutcomeUnknown = false;
-                    throw CreateTransactionException(response.ErrorCode, classification,
+                    throw NewTransactionException(response.ErrorCode, classification,
                         $"InitProducerId failed: {response.ErrorCode}");
                 }
 
                 initProducerIdOutcomeUnknown = false;
-                _producerId = response.ProducerId;
-                _producerEpoch = response.ProducerEpoch;
-
-                _accumulator.ProducerId = _producerId;
-                _accumulator.ProducerEpoch = _producerEpoch;
+                ApplyTransactionalProducerIdentity(response.ProducerId, response.ProducerEpoch);
                 _accumulator.IsTransactional = true;
 
                 _accumulator.ResetSequenceNumbers();
@@ -3527,8 +3698,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             // the loop ends (timeout, cancellation, or a failed re-discovery) with the outcome unknown.
             if (initProducerIdRequestInFlight || initProducerIdOutcomeUnknown)
             {
-                _lastTransactionError = ErrorCode.InvalidProducerEpoch;
-                _transactionState = TransactionState.FatalError;
+                MarkTransactionFatal(ErrorCode.InvalidProducerEpoch);
             }
         }
 
@@ -3851,8 +4021,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             }
             catch (OperationCanceledException)
             {
-                _lastTransactionError = ErrorCode.RequestTimedOut;
-                _transactionState = TransactionState.AbortableError;
+                MarkTransactionAbortable(ErrorCode.RequestTimedOut);
 
                 if (cancellationToken.IsCancellationRequested || !timeoutCts.IsCancellationRequested)
                     throw;
@@ -3880,26 +4049,130 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     internal async ValueTask AbortTransactionAsync(CancellationToken cancellationToken)
     {
         var retryBudget = CreateTransactionRetryBudget();
-        await EndTransactionAsync(
-                committed: false,
-                _producerId,
-                _producerEpoch,
-                applyResponseProducerState: true,
-                afterRequestWrittenAsync: null,
-                retryBudget,
-                cancellationToken)
-            .ConfigureAwait(false);
 
-        // TV1: broker doesn't return bumped epoch in EndTxn, so fetch it with the
-        // same max.block.ms budget. TV2 already returned the bumped identity.
-        if (!_currentTransactionUsesTV2)
+        // Until the abort ends, no record commits to the accumulator (produce also refuses in
+        // AbortingTransaction), so nothing appended by a produce that raced the abort is sent
+        // after EndTxn or joins the next transaction.
+        _accumulator.CloseTransactionalAppends();
+        try
         {
-            await ReinitializeProducerIdAfterAbortAsync(
-                    keepPreparedTransaction: false,
-                    retryBudget,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            await DrainBatchesBeforeAbortAsync(retryBudget, cancellationToken).ConfigureAwait(false);
+
+            // After the drain: until EndTxn is sent the broker cannot have bumped the epoch, so a
+            // fence answered while draining is real.
+            SetAbortReplacingProducerIdentity(true);
+            try
+            {
+                await EndTransactionAsync(
+                        committed: false,
+                        _producerId,
+                        _producerEpoch,
+                        applyResponseProducerState: true,
+                        afterRequestWrittenAsync: null,
+                        retryBudget,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                // TV1: broker doesn't return bumped epoch in EndTxn, so fetch it with the
+                // same max.block.ms budget. TV2 already returned the bumped identity.
+                if (!_currentTransactionUsesTV2)
+                {
+                    await ReinitializeProducerIdAfterAbortAsync(
+                            keepPreparedTransaction: false,
+                            retryBudget,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                SetAbortReplacingProducerIdentity(false);
+            }
         }
+        finally
+        {
+            _accumulator.ReopenTransactionalAppends();
+        }
+    }
+
+    /// <summary>
+    /// Marks the window in which an abort replaces the producer identity: the broker bumps the
+    /// epoch (TV2 at EndTxn, TV1 at the follow-up InitProducerId) before the producer installs the
+    /// new pair, so a produce of the aborted transaction can be fenced under the identity the
+    /// producer still holds. The identity being replaced is captured here, and
+    /// <see cref="OnTransactionalBatchFailed"/> treats an epoch-scoped rejection of a batch stamped
+    /// with exactly that identity as stale while it is set. A batch stamped with the identity the
+    /// abort installs is judged normally, so a real fence of it stays fatal; a real fence by
+    /// another instance during the abort fails the abort's own EndTxn or InitProducerId, which
+    /// makes the producer fatal. Abort path only.
+    /// </summary>
+    private void SetAbortReplacingProducerIdentity(bool replacing)
+    {
+        lock (_partitionsInTransactionLock)
+        {
+            _abortReplacedProducerId = replacing ? Volatile.Read(ref _producerId) : -1;
+            _abortReplacedProducerEpoch = replacing ? _producerEpoch : (short)-1;
+        }
+    }
+
+    /// <summary>
+    /// Settles every batch of the aborting transaction before EndTxn(abort), as Java's sender does
+    /// (<c>RecordAccumulator.abortUndrainedBatches</c>, then EndTxn only once no batch is
+    /// incomplete). Records still in the accumulator (open batches, sealed batches no sender has
+    /// drained, appends waiting for buffer memory) fail with
+    /// <see cref="ProduceErrorKind.TransactionAborted"/> and are never sent. Left behind, an open
+    /// batch keeps the aborted epoch's stamp and takes the next transaction's records with it, and
+    /// any leftover batch draws sequence numbers from the counters the new epoch restarts at 0.
+    /// Batches already handed to a sender belong to the aborted transaction too; the abort waits
+    /// for their answers within the same max.block.ms budget, so the abort marker and the TV2
+    /// sequence reset follow them. Nothing has been written to the coordinator if the budget runs
+    /// out here, so the transaction stays abortable and the caller aborts again.
+    /// The caller has closed the accumulator to appends
+    /// (<see cref="RecordAccumulator.CloseTransactionalAppends"/>), so the purge is a barrier: a
+    /// produce that passed its state check before the abort began either committed its record
+    /// before the purge, which fails it, or has it rejected with the same error.
+    /// Abort path only: no per-message cost.
+    /// </summary>
+    private async ValueTask DrainBatchesBeforeAbortAsync(
+        TransactionRetryBudget retryBudget,
+        CancellationToken cancellationToken)
+    {
+        var aborted = RecordAccumulator.CreateTransactionAbortedException(
+            "The transaction was aborted before this record's batch was sent.");
+        _accumulator.Purge(PurgeOptions.Queue, aborted, CompleteInflightEntry);
+
+        if (_accumulator.InFlightBatchCount > 0)
+        {
+            // Batches a sender holds for a resend (retries, carry-over) have no request
+            // outstanding; each sender fails them on its own loop once it sees the accumulator
+            // closed. Wake them so a sender waiting out a retry backoff does so now. The wait
+            // below then covers only requests genuinely in flight.
+            foreach (var (_, sender) in _brokerSenders)
+                sender.WakeForTransactionAbort();
+
+            using var timeoutCts = CreateTransactionRetryCancellationSource(retryBudget, cancellationToken);
+            try
+            {
+                await _accumulator.WaitForInFlightBatchesAsync(timeoutCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Keeps a fatal state that a batch answered while waiting reported.
+                PreserveEndTransactionTimeoutState(requestInFlight: false);
+                ThrowIfFatalTransactionError("Cannot abort transaction");
+
+                if (cancellationToken.IsCancellationRequested || !timeoutCts.IsCancellationRequested)
+                    throw;
+
+                throw CreateTransactionTimeoutException(
+                    "Wait for in-flight batches before EndTxn (abort)",
+                    retryBudget,
+                    attempts: 0);
+            }
+        }
+
+        // A batch answered while draining may have fenced the producer.
+        ThrowIfFatalTransactionError("Cannot abort transaction");
     }
 
     private async ValueTask ReinitializeProducerIdAfterAbortAsync(
@@ -3919,11 +4192,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         {
             // EndTxn has already succeeded before this required TV1 epoch refresh starts.
             // Caller cancellation cannot make the cached producer identity safe to reuse.
-            if (_transactionState != TransactionState.FatalError)
-            {
-                _lastTransactionError = ErrorCode.InvalidProducerEpoch;
-                _transactionState = TransactionState.FatalError;
-            }
+            MarkTransactionFatal(ErrorCode.InvalidProducerEpoch);
 
             throw;
         }
@@ -4069,14 +4338,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     // TV2 (v5+): broker returns bumped ProducerId/Epoch in EndTxn response.
                     // Apply them so the next transaction uses the new identity without
                     // a separate InitProducerId round-trip.
-                    // Safe without _epochBumpLock: EndTxn is called only after FlushAsync
-                    // drains all in-flight batches, so no BrokerSender is active.
+                    // Safe without _epochBumpLock, and restarting every partition at sequence 0
+                    // is correct: EndTxn(commit) runs after FlushAsync and EndTxn(abort) after
+                    // DrainBatchesBeforeAbortAsync, so no batch of the ended transaction is left
+                    // to draw a sequence or carry the old epoch. A prepared transaction was
+                    // flushed by PrepareAsync and refuses produce.
                     if (applyResponseProducerState && _currentTransactionUsesTV2 && response.ProducerId >= 0)
                     {
-                        _producerId = response.ProducerId;
-                        _producerEpoch = response.ProducerEpoch;
-                        _accumulator.ProducerId = _producerId;
-                        _accumulator.ProducerEpoch = _producerEpoch;
+                        ApplyTransactionalProducerIdentity(response.ProducerId, response.ProducerEpoch);
                         _accumulator.ResetSequenceNumbers();
                     }
 
@@ -4158,10 +4427,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
     private void PreserveEndTransactionTimeoutState(bool requestInFlight)
     {
-        _lastTransactionError = ErrorCode.RequestTimedOut;
-        _transactionState = requestInFlight
-            ? TransactionState.FatalError
-            : TransactionState.AbortableError;
+        if (!requestInFlight)
+        {
+            MarkTransactionAbortable(ErrorCode.RequestTimedOut);
+            return;
+        }
+
+        MarkTransactionFatal(ErrorCode.RequestTimedOut);
     }
 
     internal ValueTask SendOffsetsToTransactionInternalAsync(
@@ -5327,6 +5599,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         if (_transactionState != TransactionState.AbortableError)
             MarkTransactionAbortable(GetEnrollmentFailureErrorCode(enrollmentError));
 
+        // A send loop may have fenced the producer since the first check; fatal wins.
+        ThrowIfFatalTransactionError(operation);
+
         throw new AbortableTransactionException(
             $"{operation}: partition enrollment failed ({_lastTransactionError}), so the affected records are not " +
             "part of the transaction and it must be aborted.",
@@ -5336,10 +5611,155 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         };
     }
 
-    private void MarkTransactionAbortable(ErrorCode errorCode)
+    /// <summary>
+    /// A batch of this transactional producer failed, on any path (Java
+    /// <c>TransactionManager.handleFailedBatch</c>); the accumulator's batch-failure observer
+    /// reports it before the batch's records complete. A fence or an authorization failure makes
+    /// the producer fatal. Any other failure means records are missing from the open transaction,
+    /// so it becomes abortable and produce, prepare, commit and SendOffsets refuse until the caller
+    /// aborts; this also covers the flush that runs in
+    /// <see cref="TransactionState.CommittingTransaction"/> before EndTxn. Outside an open
+    /// transaction there is nothing to abort (an abort fails the batches it leaves behind itself).
+    /// A batch stamped with an earlier producer ID or epoch belongs to a transaction that already
+    /// ended with an abort (which bumps the epoch; a commit flushes every batch first), so it is
+    /// ignored and false is returned: that decision is taken under the lock an abort replaces the
+    /// identity under, so the batch's records use it to avoid telling the caller to close a usable
+    /// producer (<see cref="RecordAccumulator.ReportBatchFailure"/>). Error paths only.
+    /// </summary>
+    internal bool OnTransactionalBatchFailed(
+        long producerId,
+        short producerEpoch,
+        ErrorCode errorCode,
+        Exception? failure = null)
     {
-        _lastTransactionError = errorCode;
-        _transactionState = TransactionState.AbortableError;
+        // Serialized with the enrollment-failure transition (and other senders' reports) so a
+        // concurrent abortable report cannot overwrite a fatal one.
+        var fatal = TransactionErrorClassifier.ClassifyFailedBatch(errorCode) == TransactionErrorClassification.Fatal;
+        var epochScoped = TransactionErrorClassifier.IsScopedToProducerEpoch(errorCode);
+        lock (_partitionsInTransactionLock)
+        {
+            // An authorization or producer-ID-mapping failure is producer-wide: it makes the
+            // producer fatal even from a batch of an earlier identity. Anything else from such a
+            // batch (a fence of its old epoch, an abortable error) belongs to an ended transaction.
+            // While an abort replaces the identity, the broker may already have bumped the epoch
+            // the producer still holds, so an epoch-scoped rejection of a batch stamped with the
+            // identity being replaced is stale too.
+            var stampIsBeingReplaced = _abortReplacedProducerId >= 0
+                && producerId == _abortReplacedProducerId
+                && producerEpoch == _abortReplacedProducerEpoch;
+            var earlierIdentity = producerId != Volatile.Read(ref _producerId)
+                || producerEpoch != _producerEpoch
+                || (stampIsBeingReplaced && epochScoped);
+            if (earlierIdentity && (!fatal || epochScoped))
+            {
+                LogTransactionalBatchFailureFromEarlierEpochIgnored(
+                    errorCode, producerId, producerEpoch, _options.TransactionalId);
+                return false;
+            }
+
+            var state = _transactionState;
+            if (state == TransactionState.FatalError)
+                return true;
+
+            if (fatal)
+            {
+                _lastTransactionError = errorCode;
+                _transactionState = TransactionState.FatalError;
+                LogTransactionalBatchFailedFatal(errorCode, _options.TransactionalId);
+                return true;
+            }
+
+            if (state is not (TransactionState.InTransaction or TransactionState.CommittingTransaction))
+                return true;
+
+            _transactionBatchFailure ??= failure;
+            MarkTransactionAbortable(errorCode);
+            LogTransactionalBatchFailedAbortable(errorCode, _options.TransactionalId);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Installs the producer ID and epoch a transactional InitProducerId or a TV2 EndTxn returned,
+    /// on the producer and then on the accumulator, under <see cref="_partitionsInTransactionLock"/>.
+    /// <see cref="OnTransactionalBatchFailed"/> compares a failed batch's stamp with this identity
+    /// under the same lock, so it sees the old pair or the new one, never a mix, and the decision
+    /// it returns (current fence, fatal; earlier identity, ignored) is the one the batch's records
+    /// fail with. Transaction control path only.
+    /// </summary>
+    private void ApplyTransactionalProducerIdentity(long producerId, short producerEpoch)
+    {
+        lock (_partitionsInTransactionLock)
+        {
+            Volatile.Write(ref _producerId, producerId);
+            _producerEpoch = producerEpoch;
+            _accumulator.ProducerId = producerId;
+            _accumulator.ProducerEpoch = producerEpoch;
+        }
+    }
+
+    /// <summary>
+    /// Moves the transaction to AbortableError unless the producer is already fatal. A send loop
+    /// can report a fenced batch (<see cref="OnTransactionalBatchFailed"/>) while the caller's thread
+    /// makes the transaction abortable, so the check and the write share
+    /// <see cref="_partitionsInTransactionLock"/> with that report: an abortable transition never
+    /// downgrades FatalError, which would let the caller abort and reuse a fenced producer. Returns
+    /// false when the producer is fatal. Error paths only.
+    /// </summary>
+    internal bool MarkTransactionAbortable(ErrorCode errorCode)
+    {
+        lock (_partitionsInTransactionLock)
+        {
+            if (_transactionState == TransactionState.FatalError)
+                return false;
+
+            _lastTransactionError = errorCode;
+            _transactionState = TransactionState.AbortableError;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Moves the producer to FatalError. Written under <see cref="_partitionsInTransactionLock"/>
+    /// like every other transition out of an open transaction, so a concurrent abortable transition
+    /// (<see cref="MarkTransactionAbortable"/>) or a finalizing commit or abort
+    /// (<see cref="FinalizeCompletedTransactionState"/>) cannot read a nonfatal state and then
+    /// overwrite this one. The first fatal error code is kept: it is the cause the caller sees
+    /// from every later operation. Error paths only.
+    /// </summary>
+    private void MarkTransactionFatal(ErrorCode errorCode)
+    {
+        lock (_partitionsInTransactionLock)
+        {
+            if (_transactionState == TransactionState.FatalError)
+                return;
+
+            _lastTransactionError = errorCode;
+            _transactionState = TransactionState.FatalError;
+        }
+    }
+
+    /// <summary>
+    /// Moves the transaction to <paramref name="next"/> (begin, commit, prepare, abort) unless a
+    /// send loop made the producer fatal, or, with <paramref name="refuseAbortable"/>, the
+    /// transaction abortable, since the caller checked. The check and the write share
+    /// <see cref="_partitionsInTransactionLock"/> with the batch-failure report, so the report is
+    /// either seen here or lands after the write; it is never overwritten. Once per transaction
+    /// operation.
+    /// </summary>
+    internal void EnterTransactionState(TransactionState next, string operation, bool refuseAbortable)
+    {
+        lock (_partitionsInTransactionLock)
+        {
+            var state = _transactionState;
+            if (state == TransactionState.FatalError)
+                ThrowFatalTransactionError(operation);
+
+            if (refuseAbortable && state == TransactionState.AbortableError)
+                throw CreateAbortableTransactionError(operation);
+
+            _transactionState = next;
+        }
     }
 
     /// <summary>
@@ -5513,18 +5933,61 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
     }
 
+    /// <summary>
+    /// Captures the transactional append generation for a produce that is about to leave the
+    /// synchronous path (to await serializer preparation, topic metadata, an async serializer or a
+    /// retry delay, or to queue for an append worker). When the produce resumes,
+    /// <see cref="ThrowIfTransactionAbortedSince"/> (or the append worker) rejects it with
+    /// <see cref="ProduceErrorKind.TransactionAborted"/> if an abort started in between, so a record
+    /// of the aborted transaction never lands outside it or in the next one after the abort
+    /// reopens appends. The generation is read before the state: an abort writes
+    /// AbortingTransaction before it advances the generation, so a produce that sees any other
+    /// state holds the pre-abort value, and one that sees AbortingTransaction (admitted just before
+    /// the abort began) gets a value that no generation will ever match again. A non-transactional
+    /// producer gets <see cref="RecordAccumulator.NoTransactionalGeneration"/>, which every check
+    /// skips. Slow paths only.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int CaptureTransactionalAppendGeneration()
+    {
+        if (_options.TransactionalId is null)
+            return RecordAccumulator.NoTransactionalGeneration;
+
+        var generation = _accumulator.TransactionalAppendGeneration;
+        return _transactionState == TransactionState.AbortingTransaction ? generation - 1 : generation;
+    }
+
+    /// <summary>
+    /// The transactional append generation a produce is admitted in, read before its state check
+    /// (<see cref="ThrowIfProduceCannotStart"/>): an abort writes AbortingTransaction before it
+    /// advances the generation, so a produce the check admits holds the pre-abort value. It is
+    /// carried to the accumulator's append commit point, which rejects the record under the
+    /// partition lock if an abort has started since, however long serialization, interceptors
+    /// or a queue held it. A non-transactional producer gets
+    /// <see cref="RecordAccumulator.NoTransactionalGeneration"/>, which the commit point skips
+    /// with one constant comparison.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int ReadAdmissionTransactionalGeneration()
+        => _options.TransactionalId is null
+            ? RecordAccumulator.NoTransactionalGeneration
+            : _accumulator.TransactionalAppendGeneration;
+
+    private void ThrowIfTransactionAbortedSince(int generation)
+    {
+        if (generation != RecordAccumulator.NoTransactionalGeneration
+            && generation != _accumulator.TransactionalAppendGeneration)
+        {
+            throw RecordAccumulator.CreateStaleTransactionalAppendException();
+        }
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void ThrowIfTransactionCannotProduce()
     {
         var txnState = _transactionState;
         if (txnState == TransactionState.AbortableError)
-        {
-            throw new AbortableTransactionException(_lastTransactionError,
-                "Cannot produce: the current transaction has an abortable error and must be aborted.")
-            {
-                TransactionalId = _options.TransactionalId
-            };
-        }
+            throw CreateAbortableTransactionError("Cannot produce");
 
         if (txnState == TransactionState.FatalError)
         {
@@ -5535,6 +5998,17 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         {
             throw new TransactionException(ErrorCode.InvalidTxnState,
                 "Cannot produce: the current transaction is prepared. Only commit, abort, or complete are permitted.")
+            {
+                TransactionalId = _options.TransactionalId
+            };
+        }
+
+        // Java refuses send while aborting too. The accumulator also rejects an append that
+        // passed this check before the abort began (RecordAccumulator.CloseTransactionalAppends).
+        if (txnState == TransactionState.AbortingTransaction)
+        {
+            throw new TransactionException(ErrorCode.InvalidTxnState,
+                "Cannot produce: the current transaction is being aborted.")
             {
                 TransactionalId = _options.TransactionalId
             };
@@ -5568,11 +6042,29 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         if (_transactionState != TransactionState.AbortableError)
             return;
 
-        throw new AbortableTransactionException(_lastTransactionError,
-            $"{operation}: the current transaction has an abortable error and must be aborted.")
-        {
-            TransactionalId = _options.TransactionalId
-        };
+        throw CreateAbortableTransactionError(operation);
+    }
+
+    /// <summary>
+    /// The error that refuses an operation of an abortable transaction. When a failed batch made it
+    /// abortable, that batch's failure is the inner exception, so the caller sees which records
+    /// were lost and why, and the error code is that failure's (a later abortable transition may
+    /// have recorded another code in <see cref="_lastTransactionError"/>).
+    /// </summary>
+    private AbortableTransactionException CreateAbortableTransactionError(string operation)
+    {
+        var message = $"{operation}: the current transaction has an abortable error and must be aborted.";
+        var batchFailure = Volatile.Read(ref _transactionBatchFailure);
+        return batchFailure is null
+            ? new AbortableTransactionException(_lastTransactionError, message)
+            {
+                TransactionalId = _options.TransactionalId
+            }
+            : new AbortableTransactionException(
+                TransactionErrorClassifier.GetFailedBatchErrorCode(batchFailure), message, batchFailure)
+            {
+                TransactionalId = _options.TransactionalId
+            };
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -5591,8 +6083,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         ProducerMessage<TKey, TValue> message,
         Headers? headers,
         Activity? activity,
-        SerializerPreparationLease preparationLease)
+        SerializerPreparationLease preparationLease,
+        int transactionalGeneration)
     {
+        // transactionalGeneration was read at admission: an abort that starts while the metadata
+        // fetch is pending rejects this record at the append commit point.
         try
         {
             using var timeoutCts = new CancellationTokenSource(_options.MaxBlockMs);
@@ -5616,6 +6111,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             }
 
             UpdateCachedTopicInfo(message.Topic, topicInfo);
+            ThrowIfTransactionAbortedSince(transactionalGeneration);
 
             var appendResult = await (_keyPreparer is null && _valuePreparer is null
                 ? SerializeAndAppendFromSpansAsync(
@@ -5626,7 +6122,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     message.Partition,
                     message.Timestamp,
                     topicInfo,
-                    callback: null)
+                    callback: null,
+                    transactionalGeneration)
                 : SerializePreparedAndAppendFromSpansAsync(
                     message.Topic,
                     message.Key,
@@ -5636,6 +6133,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     message.Timestamp,
                     topicInfo,
                     callback: null,
+                    transactionalGeneration,
                     in preparationLease)).ConfigureAwait(false);
 
             if (!appendResult)
@@ -5684,8 +6182,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private async ValueTask ProduceAsyncWithCallbackSlow(
         ProducerMessage<TKey, TValue> message,
         Action<RecordMetadata, Exception?> deliveryHandler,
-        SerializerPreparationLease preparationLease)
+        SerializerPreparationLease preparationLease,
+        int transactionalGeneration)
     {
+        // transactionalGeneration was read at admission: an abort that starts while the metadata
+        // fetch is pending rejects this record at the append commit point.
         try
         {
             using var timeoutCts = new CancellationTokenSource(_options.MaxBlockMs);
@@ -5707,6 +6208,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             }
 
             UpdateCachedTopicInfo(message.Topic, topicInfo);
+            ThrowIfTransactionAbortedSince(transactionalGeneration);
 
             var appendResult = await (_keyPreparer is null && _valuePreparer is null
                 ? SerializeAndAppendFromSpansAsync(
@@ -5717,7 +6219,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     message.Partition,
                     message.Timestamp,
                     topicInfo,
-                    deliveryHandler)
+                    deliveryHandler,
+                    transactionalGeneration)
                 : SerializePreparedAndAppendFromSpansAsync(
                     message.Topic,
                     message.Key,
@@ -5727,6 +6230,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     message.Timestamp,
                     topicInfo,
                     deliveryHandler,
+                    transactionalGeneration,
                     in preparationLease)).ConfigureAwait(false);
 
             if (!appendResult)
@@ -5746,12 +6250,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private ValueTask<bool> SerializeAndAppendFromSpansAsync(
         string topic, TKey? key, TValue value, Headers? headers, int? partition, DateTimeOffset? timestamp,
         TopicInfo topicInfo,
-        Action<RecordMetadata, Exception?>? callback)
+        Action<RecordMetadata, Exception?>? callback,
+        int transactionalGeneration)
     {
         if (_producesRecordHeaders)
         {
             return SerializeAndAppendWithRecordHeadersAsync(
-                topic, key, value, headers, partition, timestamp, topicInfo, callback);
+                topic, key, value, headers, partition, timestamp, topicInfo, callback, transactionalGeneration);
         }
 
         var cache = GetOrCreateCache();
@@ -5806,14 +6311,15 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             keySpan, keyIsNull,
             valueIsNull ? ReadOnlySpan<byte>.Empty : cache.ValueSerializationBuffer.AsSpan(0, valueLength),
             valueIsNull,
-            pooledHeaderArray, headerCount, callback, CancellationToken.None, batchCompletionPartitionCount);
+            pooledHeaderArray, headerCount, callback, CancellationToken.None, batchCompletionPartitionCount, transactionalGeneration);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private ValueTask<bool> SerializeAndAppendWithRecordHeadersAsync(
         string topic, TKey? key, TValue value, Headers? headers, int? partition, DateTimeOffset? timestamp,
         TopicInfo topicInfo,
-        Action<RecordMetadata, Exception?>? callback)
+        Action<RecordMetadata, Exception?>? callback,
+        int transactionalGeneration)
     {
         var cache = GetOrCreateCache();
         var serializationHeaders = PrepareSerializationHeaders(
@@ -5823,7 +6329,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             if (partition is null && _usesCustomPartitioner)
             {
                 return SerializeAndAppendWithCustomPartitionerAsync(
-                    topic, key, value, serializationHeaders, timestamp, topicInfo, callback);
+                    topic, key, value, serializationHeaders, timestamp, topicInfo, callback, transactionalGeneration);
             }
 
             var keyIsNull = key is null;
@@ -5882,7 +6388,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 keySpan, keyIsNull,
                 valueSpan,
                 valueIsNull,
-                pooledHeaderArray, headerCount, callback, CancellationToken.None, batchCompletionPartitionCount);
+                pooledHeaderArray, headerCount, callback, CancellationToken.None, batchCompletionPartitionCount, transactionalGeneration);
         }
         finally
         {
@@ -5895,11 +6401,12 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private ValueTask<bool> SerializeAndAppendWithCustomPartitionerAsync(
         string topic, TKey? key, TValue value, Headers? headers, DateTimeOffset? timestamp,
         TopicInfo topicInfo,
-        Action<RecordMetadata, Exception?>? callback)
+        Action<RecordMetadata, Exception?>? callback,
+        int transactionalGeneration)
     {
         var preparationLease = default(SerializerPreparationLease);
         return SerializeAndAppendWithCustomPartitionerCoreAsync(
-            topic, key, value, headers, timestamp, topicInfo, callback, in preparationLease);
+            topic, key, value, headers, timestamp, topicInfo, callback, transactionalGeneration, in preparationLease);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -5907,6 +6414,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         string topic, TKey? key, TValue value, Headers? headers, DateTimeOffset? timestamp,
         TopicInfo topicInfo,
         Action<RecordMetadata, Exception?>? callback,
+        int transactionalGeneration,
         in SerializerPreparationLease preparationLease)
     {
         var cache = GetOrCreateCache();
@@ -5973,7 +6481,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 keySpan, keyIsNull,
                 valueSpan, valueIsNull,
                 pooledHeaderArray, headerCount, callback, CancellationToken.None,
-                batchCompletionPartitionCount);
+                batchCompletionPartitionCount, transactionalGeneration);
         }
         finally
         {
@@ -5985,6 +6493,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         string topic, TKey? key, TValue value, Headers? headers, int? partition, DateTimeOffset? timestamp,
         TopicInfo topicInfo,
         Action<RecordMetadata, Exception?>? callback,
+        int transactionalGeneration,
         in SerializerPreparationLease preparationLease,
         bool recordHeadersPrepared = false)
     {
@@ -6004,6 +6513,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     timestamp,
                     topicInfo,
                     callback,
+                    transactionalGeneration,
                     in preparationLease,
                     recordHeadersPrepared: true);
             }
@@ -6024,6 +6534,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 timestamp,
                 topicInfo,
                 callback,
+                transactionalGeneration,
                 in preparationLease);
         }
 
@@ -6102,7 +6613,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             keySpan, keyIsNull,
             valueIsNull ? ReadOnlySpan<byte>.Empty : cache.ValueSerializationBuffer.AsSpan(0, valueLength),
             valueIsNull,
-            pooledHeaderArray, headerCount, callback, CancellationToken.None, batchCompletionPartitionCount);
+            pooledHeaderArray, headerCount, callback, CancellationToken.None, batchCompletionPartitionCount, transactionalGeneration);
     }
 
     /// <summary>
@@ -6518,6 +7029,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         Headers? headers,
         Activity? activity,
         ProduceContinuationMode continuationMode,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
     {
         // See ProduceAfterPrepare: instrumented awaits interpose a state machine that must not
@@ -6543,6 +7055,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 headers,
                 completion,
                 preparationLease,
+                transactionalGeneration,
                 cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -6631,8 +7144,12 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         Headers? headers,
         Activity? activity,
         Action<RecordMetadata, Exception?>? deliveryHandler,
-        ValueTask<SerializerPreparationLease> preparation)
+        ValueTask<SerializerPreparationLease> preparation,
+        int transactionalGeneration)
     {
+        // transactionalGeneration was read at admission: an abort that starts while serializer
+        // preparation, the metadata fetch or an async serializer is pending rejects this record
+        // at the append commit point.
         using var activityScope = activity;
         var cache = GetOrCreateCache();
         var serializationHeaders = PrepareAsyncSerializationHeaders(
@@ -6710,10 +7227,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                             in valuePreparationAdmission);
                 }
 
+                ThrowIfTransactionAbortedSince(transactionalGeneration);
                 var appendResult = await AppendSerializedToAccumulatorAsync(
                     message.Topic, key, keyIsNull, value, valueIsNull,
                     serializationHeaders, message.Partition, message.Timestamp,
-                    topicInfo, deliveryHandler, cache).ConfigureAwait(false);
+                    topicInfo, deliveryHandler, transactionalGeneration, cache).ConfigureAwait(false);
 
                 if (!appendResult)
                     throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -6772,6 +7290,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         DateTimeOffset? timestamp,
         TopicInfo topicInfo,
         Action<RecordMetadata, Exception?>? callback,
+        int transactionalGeneration,
         ProducerThreadCache cache)
     {
         var keySpan = key.Span;
@@ -6794,7 +7313,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             topic, partition, timestampMs,
             keySpan, keyIsNull,
             value.Span, valueIsNull,
-            pooledHeaderArray, headerCount, callback, CancellationToken.None, batchCompletionPartitionCount);
+            pooledHeaderArray, headerCount, callback, CancellationToken.None, batchCompletionPartitionCount, transactionalGeneration);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -7265,6 +7784,16 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     [LoggerMessage(Level = LogLevel.Debug, Message = "Best-effort metadata refresh between TxnOffsetCommit retries failed for transactional id {TransactionalId}; retrying the commit with the cached metadata")]
     private partial void LogTransactionMetadataRefreshFailed(Exception exception, string? transactionalId);
 
+    [LoggerMessage(Level = LogLevel.Error, Message = "Transactional producer {TransactionalId} moved to FatalError: a produce batch failed with {ErrorCode}")]
+    private partial void LogTransactionalBatchFailedFatal(ErrorCode errorCode, string? transactionalId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Transaction {TransactionalId} moved to AbortableError: a produce batch failed with {ErrorCode}, so its records are not part of the transaction")]
+    private partial void LogTransactionalBatchFailedAbortable(ErrorCode errorCode, string? transactionalId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Ignoring failed batch ({ErrorCode}) of transactional producer {TransactionalId} stamped with producer ID {ProducerId} epoch {ProducerEpoch}: it belongs to an earlier, aborted transaction")]
+    private partial void LogTransactionalBatchFailureFromEarlierEpochIgnored(
+        ErrorCode errorCode, long producerId, short producerEpoch, string? transactionalId);
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "Transaction {TransactionalId} moved to AbortableError: partition enrollment failed permanently and the affected records were not added to the transaction")]
     private partial void LogTransactionPartitionEnrollmentAbandoned(Exception exception, string? transactionalId);
 
@@ -7348,12 +7877,19 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
 {
     private readonly KafkaProducer<TKey, TValue> _producer;
+
+    // The transactional append generation this handle's transaction runs in, read when the
+    // handle is created (BeginTransaction). Every produce through the handle carries it to the
+    // append commit point, so a produce that passes this handle's checks while an abort starts is
+    // rejected there instead of reading the post-abort generation at the producer's admission.
+    private readonly int _transactionalGeneration;
     private bool _committed;
     private bool _aborted;
 
     public Transaction(KafkaProducer<TKey, TValue> producer)
     {
         _producer = producer;
+        _transactionalGeneration = producer.TransactionHandleGeneration;
     }
 
     private void ThrowIfProducerDisposed()
@@ -7372,7 +7908,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
 
             // Partition registration with AddPartitionsToTxn is handled automatically
             // by BrokerSender before the ProduceRequest is sent to the broker.
-            return _producer.ProduceTransactionAsync(message, cancellationToken);
+            return _producer.ProduceTransactionAsync(message, _transactionalGeneration, cancellationToken);
         }
         catch (OperationCanceledException exception)
         {
@@ -7397,7 +7933,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
             // Componentwise fast path: no ProducerMessage allocation per message (issue #2471).
             // Partition registration with AddPartitionsToTxn is handled automatically
             // by BrokerSender before the ProduceRequest is sent to the broker.
-            return _producer.ProduceTransactionAsync(topic, key, value, cancellationToken);
+            return _producer.ProduceTransactionAsync(topic, key, value, _transactionalGeneration, cancellationToken);
         }
         catch (OperationCanceledException exception)
         {
@@ -7410,6 +7946,14 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
     }
 
     private void ThrowIfCannotProduce() => ThrowIfTransactionUnusable("Cannot produce");
+
+    private void ThrowIfCannotSendOffsets()
+    {
+        const string operation = "Cannot send offsets to transaction";
+        ThrowIfTransactionUnusable(operation);
+        // Offsets sent into an abortable transaction would be lost with it; Java refuses too.
+        _producer.ThrowIfAbortableTransactionError(operation);
+    }
 
     private void ThrowIfTransactionUnusable(string operation)
     {
@@ -7462,10 +8006,12 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         if (_committed || _aborted)
             throw new InvalidOperationException("Transaction is already completed");
 
-        // Before the state is overwritten below: CommittingTransaction would erase the error.
-        _producer.ThrowIfAbortableTransactionError("Cannot commit transaction");
-
-        _producer._transactionState = TransactionState.CommittingTransaction;
+        // Refuses an abortable transaction in the same step as the write: CommittingTransaction
+        // would erase the error, including one a send loop reports while the commit starts.
+        _producer.EnterTransactionState(
+            TransactionState.CommittingTransaction,
+            "Cannot commit transaction",
+            refuseAbortable: true);
 
         try
         {
@@ -7514,7 +8060,10 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         if (_committed || _aborted)
             throw new InvalidOperationException("Transaction is already completed");
 
-        _producer._transactionState = TransactionState.AbortingTransaction;
+        _producer.EnterTransactionState(
+            TransactionState.AbortingTransaction,
+            "Cannot abort transaction",
+            refuseAbortable: false);
 
         try
         {
@@ -7524,7 +8073,10 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         }
         finally
         {
-            FinalizeTransactionState();
+            // A completed abort resolves every abortable error of this transaction, including a
+            // failed batch reported by a send loop while the abort was starting. A failed abort
+            // keeps the error so the caller must abort again.
+            _producer.FinalizeCompletedTransactionState(preserveAbortableError: !_aborted);
         }
     }
 
@@ -7533,7 +8085,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         string consumerGroupId,
         CancellationToken cancellationToken = default)
     {
-        ThrowIfTransactionUnusable("Cannot send offsets to transaction");
+        ThrowIfCannotSendOffsets();
 
         await _producer.SendOffsetsToTransactionInternalAsync(offsets, consumerGroupId, cancellationToken)
             .ConfigureAwait(false);
@@ -7544,7 +8096,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         ConsumerGroupMetadata consumerGroupMetadata,
         CancellationToken cancellationToken = default)
     {
-        ThrowIfTransactionUnusable("Cannot send offsets to transaction");
+        ThrowIfCannotSendOffsets();
         ArgumentNullException.ThrowIfNull(consumerGroupMetadata);
 
         await _producer.SendOffsetsToTransactionInternalAsync(

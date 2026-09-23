@@ -84,6 +84,12 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     internal Action<RecordMetadata, Exception?>? Callback => _callback;
     internal int RecordSize => _recordSize;
 
+    /// <summary>
+    /// The transactional append generation the produce was admitted in, validated at the append
+    /// commit point; <see cref="RecordAccumulator.NoTransactionalGeneration"/> skips the check.
+    /// </summary>
+    internal int TransactionalGeneration { get; set; } = RecordAccumulator.NoTransactionalGeneration;
+
     /// <summary>Monotonic milliseconds when the originating append started blocking; the
     /// drain uses this to report the admission wait actually paid.</summary>
     internal long StartTicks => _startTicks;
@@ -280,6 +286,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         // Clear references to avoid rooting objects across pool rentals
         _topic = null!;
         _partitionCount = 0;
+        TransactionalGeneration = RecordAccumulator.NoTransactionalGeneration;
         _key = default;
         _value = default;
         _headers = null;

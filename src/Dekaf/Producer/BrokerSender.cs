@@ -93,6 +93,10 @@ internal readonly record struct TransactionPartitionEnrollmentResult(
 /// the flag is cleared via <c>Interlocked.CompareExchange</c> (CAS from stale epoch back to -1):
 /// a flag that stayed set would park every coalesced wave and livelock the sender. If a new
 /// epoch error arrives concurrently, the CAS fails and the flag remains set for the next iteration.
+/// Transactional producers have no epoch bump here: the sender fails such a batch at once. Like
+/// every failed batch of a transactional producer, it reaches the producer's transaction state
+/// through the accumulator's batch-failure observer (fatal for a fence, abortable otherwise),
+/// which the caller's abort resolves.
 /// </para>
 /// <para>
 /// Memory ordering for <see cref="_epochBumpRequestedForEpoch"/>: All accesses use
@@ -1679,6 +1683,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 coalescedCount = 0;
                 coalescedRequestBudgetUsed = 0;
 
+                // While a transaction abort settles its batches (the accumulator is closed to
+                // appends), a batch this sender holds for a resend (a retry, or one carried over)
+                // belongs to the aborting transaction. It is failed here, on the loop thread,
+                // instead of being resent until the delivery timeout while the abort waits for it.
+                // Only when carry-over exists: one field read and one volatile read per pass.
+                if (carryOver.Count > 0
+                    && _options.TransactionalId is not null
+                    && _accumulator.TransactionalAppendsClosed)
+                {
+                    FailCarryOverForTransactionAbort(carryOver);
+                }
+
                 // Drain carry-over into temp list for iteration. Per-partition FIFO order
                 // ensures oldest batch per partition is seen first (Java's Deque.pollFirst).
                 drainList.Clear();
@@ -1965,7 +1981,21 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                             var delayMs = Math.Min(throttleDelayMs, nextDeadlineMs);
                             if (delayMs > 0)
-                                await _delayForThrottle(delayMs, cancellationToken).ConfigureAwait(false);
+                            {
+                                // A transactional sender waits out the throttle on the response
+                                // signal, so a transaction abort (WakeForTransactionAbort) can cut
+                                // it short and fail the carry-over; a spurious early wake only
+                                // recomputes the remaining throttle on the next pass.
+                                if (_options.TransactionalId is not null)
+                                {
+                                    await WaitForAnyResponseAsync(delayMs, cancellationToken)
+                                        .ConfigureAwait(false);
+                                }
+                                else
+                                {
+                                    await _delayForThrottle(delayMs, cancellationToken).ConfigureAwait(false);
+                                }
+                            }
                             continue;
                         }
                     }
@@ -2018,6 +2048,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // Finalize retry batches now that we know they will actually be sent
                         // (epoch bump check passed). Clear IsRetry and unmute partitions.
                         FinalizeCoalescedRetries(coalescedBatches, coalescedCount, carryOver);
+
+                        // The abort fence at the write commit point. A transaction abort that
+                        // closed the accumulator after this pass's carry-over check (for example
+                        // during the enrollment step above) must not get a new request it would
+                        // then wait for. None of these batches has a request outstanding, so
+                        // they fail here instead. One volatile read per coalesced send, for a
+                        // transactional producer only.
+                        if (_options.TransactionalId is not null && _accumulator.TransactionalAppendsClosed)
+                        {
+                            FailCoalescedForTransactionAbort(
+                                coalescedBatches, coalescedGenerations, ref coalescedCount);
+                            continue;
+                        }
 
                         LogSendingCoalesced(_brokerId, coalescedCount);
                         for (var si = 0; si < coalescedCount; si++)
@@ -3770,13 +3813,23 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         UnmutePartition(splitTopicPartition);
                     }
 
-                    if (partitionResponse.ErrorCode.IsRetriable()
+                    // A transactional producer has no epoch-bump recovery, so resending the same
+                    // stamp after a fence or a sequence error can only be rejected again until the
+                    // delivery timeout. Fail the batch now with the transaction's own error.
+                    var transactionalStampRejected = partitionResponse.ErrorCode is ErrorCode.ProducerFenced
+                            or ErrorCode.InvalidProducerEpoch
+                            or ErrorCode.OutOfOrderSequenceNumber
+                            or ErrorCode.UnknownProducerId
+                        && _options.TransactionalId is not null;
+
+                    if (!transactionalStampRejected
+                        && (partitionResponse.ErrorCode.IsRetriable()
                         || (partitionResponse.ErrorCode == ErrorCode.ConcurrentTransactions
                             && _isTransactional()
                             && _usesTransactionV2())
                         || partitionResponse.ErrorCode == ErrorCode.OutOfOrderSequenceNumber
                         || partitionResponse.ErrorCode == ErrorCode.InvalidProducerEpoch
-                        || partitionResponse.ErrorCode == ErrorCode.UnknownProducerId)
+                        || partitionResponse.ErrorCode == ErrorCode.UnknownProducerId))
                     {
                         LogRetriableError(partitionResponse.ErrorCode, expectedTopic, expectedPartition,
                             batch.RecordBatch.BaseSequence, batch.RecordBatch.Records.Count,
@@ -3789,7 +3842,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         continue;
                     }
 
-                    KafkaException failureException = partitionResponse.ErrorCode == ErrorCode.MessageTooLarge
+                    // Every error the producer's transaction state treats as fatal (a fence, or a
+                    // transactional-ID, cluster or producer-ID-mapping authorization failure) fails
+                    // the batch with the fatal transaction exception, so the caller sees the same
+                    // category as every later operation. Error path only.
+                    KafkaException failureException = transactionalStampRejected
+                        || (_options.TransactionalId is not null
+                            && TransactionErrorClassifier.ClassifyFailedBatch(partitionResponse.ErrorCode)
+                                == TransactionErrorClassification.Fatal)
+                        ? CreateTransactionalBatchFailureException(
+                            partitionResponse.ErrorCode, expectedTopic, expectedPartition, batch)
+                        : partitionResponse.ErrorCode == ErrorCode.MessageTooLarge
                         ? new ProduceException(partitionResponse.ErrorCode,
                             $"Produce failed: {partitionResponse.ErrorCode}")
                         {
@@ -3802,15 +3865,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         UnmutePartition(batch.TopicPartition);
                     try { CompleteInflightEntry(batch); }
                     catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+                    // The acknowledgement sees the exception the records were failed with: the
+                    // failure report can replace a fatal fence of an identity an abort has since
+                    // replaced with the non-fatal one.
+                    Exception deliveredException = failureException;
                     try
                     {
-                        batch.Fail(failureException);
+                        deliveredException = batch.FailAndGetDeliveredException(failureException);
                     }
                     catch (Exception failEx) { LogBatchCleanupStepFailed(failEx, _brokerId); }
                     try
                     {
                         _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow,
-                            batch.CompletionSourcesCount, failureException);
+                            batch.CompletionSourcesCount, deliveredException);
                     }
                     catch (Exception ackEx) { LogBatchCleanupStepFailed(ackEx, _brokerId); }
                     CleanupBatch(batch);
@@ -4139,19 +4206,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             // Apply backoff to prevent tight retry loops if the epoch bump doesn't
             // resolve the error (e.g., broker keeps rejecting with OOSN).
-            ApplyRetryBackoff(batch);
-        }
-        else if (isEpochBumpError && _bumpEpoch is null
-            && batch.InflightEntry is not null
-            && _inflightTracker is not null)
-        {
-            // Transactional producer — no epoch bump
-            LogOosnTransactionalReenqueue(batch.TopicPartition.Topic, batch.TopicPartition.Partition,
-                batch.RecordBatch.BaseSequence);
-
-            try { CompleteInflightEntry(batch); }
-            catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
-            batch.InflightEntry = null;
             ApplyRetryBackoff(batch);
         }
         else if (!networkRetryPrepared)
@@ -5798,6 +5852,86 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
+    /// Fails every batch in carry-over with <see cref="ProduceErrorKind.TransactionAborted"/>: a
+    /// transaction abort is settling its batches (<see cref="RecordAccumulator.CloseTransactionalAppends"/>),
+    /// and these were drained to this sender before the abort's purge but have no request
+    /// outstanding, so waiting for them would mean resending them. Batches with a request in
+    /// flight stay in the pending responses and are answered normally. Send loop only (the
+    /// carry-over is loop-owned); abort path only.
+    /// </summary>
+    private void FailCarryOverForTransactionAbort(PartitionCarryOver carryOver)
+    {
+        var aborted = RecordAccumulator.CreateTransactionAbortedException(
+            "The transaction was aborted before this record's batch could be sent again.");
+        foreach (var kvp in carryOver.Partitions)
+        {
+            var queue = kvp.Value;
+            for (var i = queue.Count - 1; i >= 0; i--)
+            {
+                var batchRef = queue[i];
+                if (!batchRef.IsCurrentIncarnation())
+                {
+                    carryOver.RemoveAt(queue, i);
+                    continue;
+                }
+
+                var batch = batchRef.Batch;
+                if (batch.IsRetry)
+                {
+                    batch.IsRetry = false;
+                    batch.RetryNotBefore = 0;
+                    UnmuteUnlessRetryQueued(batch.TopicPartition, carryOver);
+                }
+
+                FailAndCleanupBatch(batch, aborted);
+                carryOver.RemoveAt(queue, i);
+            }
+        }
+
+        carryOver.SetEarliestCreatedTicks(long.MaxValue);
+    }
+
+    /// <summary>
+    /// Fails the coalesced batches of a send that a transaction abort fenced at the write commit
+    /// point (see <see cref="FailCarryOverForTransactionAbort"/>): none has a request outstanding.
+    /// Send loop only; abort path only.
+    /// </summary>
+    private void FailCoalescedForTransactionAbort(ReadyBatch[] batches, int[] generations, ref int count)
+    {
+        var aborted = RecordAccumulator.CreateTransactionAbortedException(
+            "The transaction was aborted before this record's batch was sent.");
+        for (var i = 0; i < count; i++)
+        {
+            var batch = batches[i];
+            if (!batch.IsCurrentIncarnation(generations[i]))
+            {
+                LogStaleBatchInSendSkipped(_instanceId, _brokerId);
+                continue;
+            }
+
+            FailAndCleanupBatch(batch, aborted);
+        }
+
+        Array.Clear(batches, 0, count);
+        Array.Clear(generations, 0, count);
+        count = 0;
+    }
+
+    /// <summary>
+    /// Wakes the send loop so it observes a transaction abort that has closed the accumulator
+    /// (see <see cref="FailCarryOverForTransactionAbort"/>), whichever wait it is in: the event
+    /// channel (idle or pipelining), the response signal (waiting on outstanding requests or a
+    /// retry backoff), or a broker throttle delay, which a transactional sender waits out on the
+    /// same response signal. Thread-safe: it only writes a channel event and sets the signal;
+    /// the loop itself fails the batches. Abort path only.
+    /// </summary>
+    internal void WakeForTransactionAbort()
+    {
+        _eventChannel.Writer.TryWrite(SendLoopEvent.ResponseReady());
+        _anyResponseCompleted.Signal();
+    }
+
+    /// <summary>
     /// Sweeps carry-over for batches that have exceeded their delivery deadline.
     /// Prevents muted batches from sitting indefinitely while their partition's retry cycles.
     /// Called from the single-threaded send loop after coalescing.
@@ -6101,20 +6235,83 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // leaking their completion sources and causing producer hangs (deadlocks).
         try { CompleteInflightEntry(batch); }
         catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+        var deliveredException = ex;
         try
         {
-            if (sendCompletionClaimed)
-                batch.FailAfterSendCompletionClaimed(ex);
-            else
-                batch.Fail(ex);
+            // The acknowledgement sees the exception the records were failed with (the failure
+            // report may replace it).
+            deliveredException = sendCompletionClaimed
+                ? batch.FailAfterSendCompletionClaimedAndGetDeliveredException(ex)
+                : batch.FailAndGetDeliveredException(ex);
         }
         catch (Exception failEx) { LogBatchCleanupStepFailed(failEx, _brokerId); }
         try
         {
             _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow,
-            batch.CompletionSourcesCount, ex);
+            batch.CompletionSourcesCount, deliveredException);
         }
         catch (Exception ackEx) { LogBatchCleanupStepFailed(ackEx, _brokerId); }
+    }
+
+    private TransactionException CreateTransactionalBatchFailureException(
+        ErrorCode errorCode,
+        string topic,
+        int partition,
+        ReadyBatch batch)
+    {
+        if (TransactionErrorClassifier.ClassifyFailedBatch(errorCode) == TransactionErrorClassification.Fatal)
+        {
+            // An abort bumped the epoch while this batch was in flight: the fence answers the
+            // old stamp of a transaction that has already ended, and the producer's transaction
+            // state ignores the report (KafkaProducer.OnTransactionalBatchFailed). Telling the
+            // caller to close the healthy producer would be wrong. An abort that lands after this
+            // check is caught when the batch reports its failure (RecordAccumulator.ReportBatchFailure).
+            // Only a fence is scoped to the stamp: an authorization or producer-ID-mapping failure
+            // is producer-wide and stays fatal whatever epoch the batch carries.
+            if (TransactionErrorClassifier.IsScopedToProducerEpoch(errorCode)
+                && IsStampedWithEarlierProducerIdentity(batch))
+            {
+                return TransactionErrorClassifier.CreateFailureForEarlierProducerEpoch(
+                    errorCode, topic, partition, _options.TransactionalId);
+            }
+
+            if (errorCode == ErrorCode.ProducerFenced)
+            {
+                return new FatalTransactionException(errorCode,
+                    $"Produce to {topic}-{partition} failed: {errorCode}. The producer has been fenced and must be closed.")
+                {
+                    TransactionalId = _options.TransactionalId
+                };
+            }
+
+            // An authorization or producer-ID-mapping failure: keep the typed broker error
+            // (for example AuthorizationException) as the cause.
+            var message = $"Produce to {topic}-{partition} failed: {errorCode}. The producer must be closed.";
+            return new FatalTransactionException(errorCode, message,
+                KafkaException.FromErrorCode(errorCode, message))
+            {
+                TransactionalId = _options.TransactionalId
+            };
+        }
+
+        return new AbortableTransactionException(errorCode,
+            $"Produce to {topic}-{partition} failed: {errorCode}. The transaction must be aborted.")
+        {
+            TransactionalId = _options.TransactionalId
+        };
+    }
+
+    /// <summary>
+    /// The batch carries a producer ID or epoch the producer has since replaced (the accumulator
+    /// holds the current identity; an epoch below zero means none has been assigned). Error path only.
+    /// </summary>
+    private bool IsStampedWithEarlierProducerIdentity(ReadyBatch batch)
+    {
+        var currentEpoch = _accumulator.ProducerEpoch;
+        var recordBatch = batch.RecordBatch;
+        return currentEpoch >= 0
+            && recordBatch.ProducerEpoch >= 0
+            && (recordBatch.ProducerEpoch != currentEpoch || recordBatch.ProducerId != _accumulator.ProducerId);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -7012,9 +7209,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "[BrokerSender] {ErrorCode} for {Topic}-{Partition} seq={Seq}, signaling epoch bump to send loop")]
     private partial void LogEpochBumpSignaled(ErrorCode errorCode, string topic, int partition, int seq);
-
-    [LoggerMessage(Level = LogLevel.Debug, Message = "[BrokerSender] OOSN for {Topic}-{Partition} seq={Seq}, re-enqueueing (transactional)")]
-    private partial void LogOosnTransactionalReenqueue(string topic, int partition, int seq);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "[BrokerSender] Retriable error {ErrorCode} for {Topic}-{Partition}, retrying after {BackoffMs}ms")]
     private partial void LogRetriableErrorWithBackoff(ErrorCode errorCode, string topic, int partition, int backoffMs);

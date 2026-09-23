@@ -379,7 +379,13 @@ public enum ProduceErrorKind
     /// <summary>
     /// The produce was failed because the application purged it.
     /// </summary>
-    Purged
+    Purged,
+
+    /// <summary>
+    /// The produce belonged to a transaction that was aborted before its batch was sent, so its
+    /// records were never written. Java's <c>TransactionAbortedException</c>.
+    /// </summary>
+    TransactionAborted
 }
 
 /// <summary>
@@ -479,6 +485,11 @@ public class TransactionException : KafkaException
     {
     }
 
+    internal TransactionException(ErrorCode errorCode, string message, Exception innerException)
+        : base(errorCode, message, innerException)
+    {
+    }
+
     /// <summary>
     /// The transactional ID.
     /// </summary>
@@ -507,6 +518,11 @@ public sealed class AbortableTransactionException : TransactionException
     public AbortableTransactionException(ErrorCode errorCode, string message) : base(errorCode, message)
     {
     }
+
+    internal AbortableTransactionException(ErrorCode errorCode, string message, Exception innerException)
+        : base(errorCode, message, innerException)
+    {
+    }
 }
 
 /// <summary>
@@ -529,6 +545,11 @@ public sealed class FatalTransactionException : TransactionException
     }
 
     public FatalTransactionException(ErrorCode errorCode, string message) : base(errorCode, message)
+    {
+    }
+
+    internal FatalTransactionException(ErrorCode errorCode, string message, Exception innerException)
+        : base(errorCode, message, innerException)
     {
     }
 }

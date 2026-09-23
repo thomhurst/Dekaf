@@ -1303,12 +1303,17 @@ public class KafkaProducerFastPathTests
             "TryProduceSyncCore",
             BindingFlags.NonPublic | BindingFlags.Instance,
             binder: null,
-            [typeof(ProducerMessage<string, string>), typeof(TopicInfo), typeof(PooledValueTaskSource<RecordMetadata>), typeof(CancellationToken)],
+            [
+                typeof(ProducerMessage<string, string>), typeof(TopicInfo), typeof(PooledValueTaskSource<RecordMetadata>),
+                typeof(int), typeof(CancellationToken)
+            ],
             modifiers: null);
 
         try
         {
-            method!.Invoke(producer, [message, topicInfo, completion, CancellationToken.None]);
+            method!.Invoke(
+                producer,
+                [message, topicInfo, completion, RecordAccumulator.NoTransactionalGeneration, CancellationToken.None]);
         }
         catch (TargetInvocationException ex) when (ex.InnerException is not null)
         {
@@ -1331,16 +1336,21 @@ public class KafkaProducerFastPathTests
                 typeof(ProducerMessage<string, string>),
                 typeof(Headers),
                 typeof(bool),
+                typeof(int),
                 typeof(CancellationToken),
                 typeof(PooledValueTaskSource<RecordMetadata>).MakeByRefType()
             ],
             modifiers: null);
-        object?[] arguments = [message, message.Headers, runContinuationsAsynchronously, CancellationToken.None, null];
+        object?[] arguments =
+        [
+            message, message.Headers, runContinuationsAsynchronously,
+            RecordAccumulator.NoTransactionalGeneration, CancellationToken.None, null
+        ];
 
         try
         {
             var result = (bool)method!.Invoke(producer, arguments)!;
-            completion = (PooledValueTaskSource<RecordMetadata>?)arguments[4];
+            completion = (PooledValueTaskSource<RecordMetadata>?)arguments[5];
             return result;
         }
         catch (TargetInvocationException ex) when (ex.InnerException is not null)

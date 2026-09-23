@@ -192,9 +192,11 @@ public abstract class ScriptedProduceResponseFixture
         ValueTaskSourcePool<RecordMetadata> pool,
         string topic, int partition, int messageCount = 1,
         bool markMemoryReleased = true, int dataSize = 100,
-        bool markPreSerialized = true)
+        bool markPreSerialized = true,
+        RecordAccumulator? failureObserver = null)
     {
-        var batch = new ReadyBatch();
+        // A batch rented from an accumulator's pool reports its failures to that accumulator.
+        var batch = failureObserver is null ? new ReadyBatch() : new ReadyBatch(failureObserver);
         var sources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(messageCount);
         for (var i = 0; i < messageCount; i++)
             sources[i] = pool.Rent();

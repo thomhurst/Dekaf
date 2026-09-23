@@ -1456,6 +1456,656 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         }
     }
 
+    /// <summary>
+    /// A transactional producer has no epoch-bump recovery: a fence or a sequence error on a
+    /// produce response cannot be cured by resending the same stamp. The batch fails at once with
+    /// the typed transaction exception (Java: ProducerFenced is fatal, the others abort the
+    /// transaction), and the producer's transaction state is told before the caller resumes.
+    /// Previously these were re-queued with the same epoch until the delivery timeout.
+    /// </summary>
+    [Test]
+    [Arguments(ErrorCode.ProducerFenced, true)]
+    [Arguments(ErrorCode.InvalidProducerEpoch, false)]
+    [Arguments(ErrorCode.OutOfOrderSequenceNumber, false)]
+    [Arguments(ErrorCode.UnknownProducerId, false)]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionalFenceOrSequenceError_FailsBatchWithoutRetry(
+        ErrorCode errorCode,
+        bool fatal,
+        CancellationToken cancellationToken)
+    {
+        var response = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>([response]);
+        var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responses, () =>
+        {
+            Interlocked.Increment(ref sendCount);
+            sent.TrySetResult();
+        });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var reported = new TaskCompletionSource<(long ProducerId, short Epoch, ErrorCode ErrorCode)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var acknowledged = new TaskCompletionSource<(Exception? Exception, bool ReportedFirst)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) => acknowledged.TrySetResult((exception, reported.Task.IsCompleted)),
+            produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
+            isTransactional: true,
+            usesTransactionV2: true);
+        accumulator.OnTransactionalBatchFailed = (producerId, epoch, code, _) =>
+        {
+            reported.TrySetResult((producerId, epoch, code));
+            return true;
+        };
+
+        try
+        {
+            var batch = CreateTestBatch(
+                valueTaskSourcePool, "test-topic", partition: 0, failureObserver: accumulator);
+            batch.RecordBatch.ProducerId = 4242;
+            batch.RecordBatch.ProducerEpoch = 7;
+            sender.Enqueue(batch);
+            await sent.Task.WaitAsync(cancellationToken);
+            response.SetResult(CreateErrorResponse("test-topic", partition: 0, errorCode));
+
+            var (exception, reportedFirst) = await acknowledged.Task.WaitAsync(cancellationToken);
+
+            if (fatal)
+                await Assert.That(exception).IsTypeOf<FatalTransactionException>();
+            else
+                await Assert.That(exception).IsTypeOf<AbortableTransactionException>();
+            var transactionException = (TransactionException)exception!;
+            await Assert.That(transactionException.ErrorCode).IsEqualTo(errorCode);
+            await Assert.That(transactionException.TransactionalId).IsEqualTo("test-transaction");
+            await Assert.That(reportedFirst).IsTrue();
+            await Assert.That(await reported.Task.WaitAsync(cancellationToken))
+                .IsEqualTo((4242L, (short)7, errorCode));
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(1);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// A produce error that the producer's transaction state treats as fatal, other than a fence,
+    /// must reach the caller as the fatal transaction exception too, with the typed broker error
+    /// kept as its cause. Before, these fell through to <c>KafkaException.FromErrorCode</c>, so
+    /// the caller saw an authorization error for a producer that had already become fatal.
+    /// </summary>
+    [Test]
+    [Arguments(ErrorCode.TransactionalIdAuthorizationFailed, true)]
+    [Arguments(ErrorCode.ClusterAuthorizationFailed, true)]
+    [Arguments(ErrorCode.InvalidProducerIdMapping, false)]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionalFatalProduceError_FailsBatchWithFatalTransactionException(
+        ErrorCode errorCode,
+        bool authorizationCause,
+        CancellationToken cancellationToken)
+    {
+        var response = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>([response]);
+        var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responses, () =>
+        {
+            Interlocked.Increment(ref sendCount);
+            sent.TrySetResult();
+        });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) => acknowledged.TrySetResult(exception),
+            produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
+            isTransactional: true,
+            usesTransactionV2: true);
+        accumulator.OnTransactionalBatchFailed = static (_, _, _, _) => true;
+
+        try
+        {
+            var batch = CreateTestBatch(
+                valueTaskSourcePool, "test-topic", partition: 0, failureObserver: accumulator);
+            batch.RecordBatch.ProducerId = 4242;
+            batch.RecordBatch.ProducerEpoch = 7;
+            sender.Enqueue(batch);
+            await sent.Task.WaitAsync(cancellationToken);
+            response.SetResult(CreateErrorResponse("test-topic", partition: 0, errorCode));
+
+            var exception = await acknowledged.Task.WaitAsync(cancellationToken);
+            await Assert.That(exception).IsTypeOf<FatalTransactionException>();
+            var fatal = (FatalTransactionException)exception!;
+            await Assert.That(fatal.ErrorCode).IsEqualTo(errorCode);
+            await Assert.That(fatal.TransactionalId).IsEqualTo("test-transaction");
+            if (authorizationCause)
+                await Assert.That(fatal.InnerException).IsTypeOf<AuthorizationException>();
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(1);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// An abort bumped the producer epoch while the batch was in flight, so the broker's
+    /// ProducerFenced answers the old stamp of a transaction that has already ended. The producer
+    /// ignores that report and stays usable, so the caller must not be told to close it: the batch
+    /// fails with the non-fatal transaction exception.
+    /// </summary>
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionalFenceForAnEarlierEpoch_FailsBatchWithoutAFatalError(
+        CancellationToken cancellationToken)
+    {
+        var response = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>([response]);
+        var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (pool, _) = CreateMockConnection(responses, () => sent.TrySetResult());
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        accumulator.ProducerId = 4242;
+        accumulator.ProducerEpoch = 7;
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) => acknowledged.TrySetResult(exception),
+            produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
+            isTransactional: true,
+            usesTransactionV2: true);
+        accumulator.OnTransactionalBatchFailed = static (_, _, _, _) => false;
+
+        try
+        {
+            var batch = CreateTestBatch(
+                valueTaskSourcePool, "test-topic", partition: 0, failureObserver: accumulator);
+            batch.RecordBatch.ProducerId = 4242;
+            batch.RecordBatch.ProducerEpoch = 7;
+            sender.Enqueue(batch);
+            await sent.Task.WaitAsync(cancellationToken);
+
+            // The abort completes and installs the bumped epoch before the answer arrives.
+            accumulator.ProducerEpoch = 8;
+            response.SetResult(CreateErrorResponse("test-topic", partition: 0, ErrorCode.ProducerFenced));
+
+            var exception = await acknowledged.Task.WaitAsync(cancellationToken);
+            await Assert.That(exception).IsTypeOf<AbortableTransactionException>();
+            await Assert.That(((TransactionException)exception!).ErrorCode).IsEqualTo(ErrorCode.ProducerFenced);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// Authorization and producer-ID-mapping failures are producer-wide: even for a batch stamped
+    /// with an identity an abort has since replaced, the caller must be told the producer is fatal
+    /// (only a fence is scoped to the batch's epoch).
+    /// </summary>
+    [Test]
+    [Arguments(ErrorCode.TransactionalIdAuthorizationFailed)]
+    [Arguments(ErrorCode.ClusterAuthorizationFailed)]
+    [Arguments(ErrorCode.InvalidProducerIdMapping)]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionalProducerWideFatalErrorForAnEarlierEpoch_StaysFatal(
+        ErrorCode errorCode,
+        CancellationToken cancellationToken)
+    {
+        var exception = await FailTransactionalBatchAsync(
+            errorCode,
+            epochWhenAnswered: 8,
+            reportAccepted: true,
+            cancellationToken);
+
+        await Assert.That(exception).IsTypeOf<FatalTransactionException>();
+        await Assert.That(((TransactionException)exception!).ErrorCode).IsEqualTo(errorCode);
+    }
+
+    /// <summary>
+    /// The sender picked the fatal exception (the stamp was current when the answer arrived), but
+    /// an abort replaced the identity before the failure report, which ignores the batch and
+    /// fails its records with the non-fatal exception. The acknowledgement callback must see that
+    /// same exception, not the fatal one: an interceptor would otherwise close a usable producer.
+    /// </summary>
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_FailureReportReplacesTheException_AcknowledgementSeesTheDeliveredOne(
+        CancellationToken cancellationToken)
+    {
+        var exception = await FailTransactionalBatchAsync(
+            ErrorCode.ProducerFenced,
+            epochWhenAnswered: 7,
+            reportAccepted: false,
+            cancellationToken);
+
+        await Assert.That(exception).IsTypeOf<AbortableTransactionException>();
+        await Assert.That(((TransactionException)exception!).ErrorCode).IsEqualTo(ErrorCode.ProducerFenced);
+    }
+
+    /// <summary>
+    /// Sends one transactional batch stamped 4242/7, moves the accumulator's identity to
+    /// <paramref name="epochWhenAnswered"/>, answers with <paramref name="errorCode"/> and returns
+    /// the exception the acknowledgement callback saw. The failure observer returns
+    /// <paramref name="reportAccepted"/>.
+    /// </summary>
+    private async Task<Exception?> FailTransactionalBatchAsync(
+        ErrorCode errorCode,
+        short epochWhenAnswered,
+        bool reportAccepted,
+        CancellationToken cancellationToken)
+    {
+        var response = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>([response]);
+        var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (pool, _) = CreateMockConnection(responses, () => sent.TrySetResult());
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        accumulator.ProducerId = 4242;
+        accumulator.ProducerEpoch = 7;
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) => acknowledged.TrySetResult(exception),
+            produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
+            isTransactional: true,
+            usesTransactionV2: true);
+        accumulator.OnTransactionalBatchFailed = (_, _, _, _) => reportAccepted;
+
+        try
+        {
+            var batch = CreateTestBatch(
+                valueTaskSourcePool, "test-topic", partition: 0, failureObserver: accumulator);
+            batch.RecordBatch.ProducerId = 4242;
+            batch.RecordBatch.ProducerEpoch = 7;
+            sender.Enqueue(batch);
+            await sent.Task.WaitAsync(cancellationToken);
+
+            accumulator.ProducerEpoch = epochWhenAnswered;
+            response.SetResult(CreateErrorResponse("test-topic", partition: 0, errorCode));
+
+            return await acknowledged.Task.WaitAsync(cancellationToken);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// A transaction abort can close the accumulator after the send loop's carry-over check but
+    /// before the coalesced batches are written (here, from the enrollment step that runs between
+    /// coalescing and the write). The write commit point checks again, so the retried batch is
+    /// failed with TransactionAborted instead of going out as a new request the abort would then
+    /// have to wait for.
+    /// </summary>
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionAbortAfterCoalescingBeforeTheWrite_FailsTheBatchWithoutSending(
+        CancellationToken cancellationToken)
+    {
+        var response = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>([response]);
+        var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responses, () =>
+        {
+            Interlocked.Increment(ref sendCount);
+            sent.TrySetResult();
+        });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var closeOnNextEnrollment = 0;
+
+        TransactionPartitionEnrollmentResult TryEnsure(
+            ReadyBatch[] batches,
+            int count,
+            Action<Exception?> completed,
+            HashSet<TopicPartition> pendingPartitions,
+            HashSet<TopicPartition> failedPartitions)
+        {
+            // Runs after the carry-over check, between coalescing and the write.
+            if (Volatile.Read(ref closeOnNextEnrollment) == 1)
+                accumulator.CloseTransactionalAppends();
+            return TransactionPartitionEnrollmentResult.Enrolled;
+        }
+
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) => acknowledged.TrySetResult(exception),
+            isTransactional: true,
+            tryEnsurePartitionsInTransaction: TryEnsure);
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0));
+            await sent.Task.WaitAsync(cancellationToken);
+            Volatile.Write(ref closeOnNextEnrollment, 1);
+            response.SetResult(CreateErrorResponse("test-topic", partition: 0, ErrorCode.NotEnoughReplicas));
+
+            var exception = await acknowledged.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            await Assert.That(exception).IsTypeOf<ProduceException>();
+            await Assert.That(((ProduceException)exception!).Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(1);
+        }
+        finally
+        {
+            accumulator.ReopenTransactionalAppends();
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// While another request is outstanding, the send loop waits on the response signal rather
+    /// than its event channel. The abort's wake must interrupt that wait too, so a batch waiting
+    /// in carry-over is failed promptly instead of when the unrelated response or its timeout
+    /// arrives.
+    /// </summary>
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionAbortWhileWaitingOnAnotherResponse_FailsCarryOverPromptly(
+        CancellationToken cancellationToken)
+    {
+        var firstResponse = new TaskCompletionSource<ProduceResponse>();
+        var secondResponse = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>([firstResponse, secondResponse]);
+        var sendCount = 0;
+        var firstSent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondSent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (pool, _) = CreateMockConnection(responses, () =>
+        {
+            if (Interlocked.Increment(ref sendCount) == 1)
+                firstSent.TrySetResult();
+            else
+                secondSent.TrySetResult();
+        });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(
+            retryBackoffMs: 60_000,
+            retryBackoffMaxMs: 60_000,
+            transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var partitionZeroAcknowledged = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (topicPartition, _, _, _, exception) =>
+            {
+                if (topicPartition.Partition == 0)
+                    partitionZeroAcknowledged.TrySetResult(exception);
+            },
+            produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
+            isTransactional: true,
+            usesTransactionV2: true);
+
+        try
+        {
+            var retried = CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0);
+            sender.Enqueue(retried);
+            await firstSent.Task.WaitAsync(cancellationToken);
+            firstResponse.SetResult(CreateErrorResponse("test-topic", partition: 0, ErrorCode.NotEnoughReplicas));
+            await WaitUntilAsync(() => retried.IsRetry, cancellationToken);
+
+            // Another request goes out and stays unanswered: the loop now waits on responses.
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 1));
+            await secondSent.Task.WaitAsync(cancellationToken);
+            // Let the loop settle into its response wait (bounded by the 30 s request timeout).
+            // With the fix the outcome does not depend on this: a loop that has not started
+            // waiting yet sees the closed accumulator on its next pass anyway.
+            await Task.Delay(500, cancellationToken);
+
+            accumulator.CloseTransactionalAppends();
+            sender.WakeForTransactionAbort();
+
+            var exception = await partitionZeroAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            await Assert.That(exception).IsTypeOf<ProduceException>();
+            await Assert.That(((ProduceException)exception!).Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(2);
+        }
+        finally
+        {
+            secondResponse.TrySetResult(CreateSuccessResponse("test-topic", partition: 1, baseOffset: 1));
+            accumulator.ReopenTransactionalAppends();
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// A transactional batch waiting in carry-over for a resend (here after a retriable error with
+    /// a long backoff) has no request outstanding. When a transaction abort closes the accumulator
+    /// and wakes the sender, the send loop fails it with TransactionAborted instead of resending
+    /// it until the delivery timeout while the abort waits for it.
+    /// </summary>
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionAbortWhileABatchWaitsInCarryOver_FailsItWithoutResending(
+        CancellationToken cancellationToken)
+    {
+        var response = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>([response]);
+        var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responses, () =>
+        {
+            Interlocked.Increment(ref sendCount);
+            sent.TrySetResult();
+        });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(
+            retryBackoffMs: 60_000,
+            retryBackoffMaxMs: 60_000,
+            transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) => acknowledged.TrySetResult(exception),
+            produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
+            isTransactional: true,
+            usesTransactionV2: true);
+
+        try
+        {
+            var batch = CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0);
+            sender.Enqueue(batch);
+            await sent.Task.WaitAsync(cancellationToken);
+            response.SetResult(CreateErrorResponse("test-topic", partition: 0, ErrorCode.NotEnoughReplicas));
+            await WaitUntilAsync(() => batch.IsRetry, cancellationToken);
+
+            accumulator.CloseTransactionalAppends();
+            typeof(BrokerSender).GetMethod(
+                    "WakeForTransactionAbort",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                ?.Invoke(sender, null);
+
+            var exception = await acknowledged.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            await Assert.That(exception).IsTypeOf<ProduceException>();
+            await Assert.That(((ProduceException)exception!).Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(1);
+        }
+        finally
+        {
+            accumulator.ReopenTransactionalAppends();
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// Any other non-retriable produce error keeps its own exception for the caller, but the
+    /// failed records are not part of the transaction, so it must not commit: the producer's
+    /// transaction state is told about the failure too.
+    /// </summary>
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionalNonRetriableError_ReportsFailedBatchToTransaction(
+        CancellationToken cancellationToken)
+    {
+        var response = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>([response]);
+        var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (pool, _) = CreateMockConnection(responses, () => sent.TrySetResult());
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var reported = new TaskCompletionSource<ErrorCode>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var acknowledged = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) => acknowledged.TrySetResult(exception),
+            produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
+            isTransactional: true,
+            usesTransactionV2: true);
+        accumulator.OnTransactionalBatchFailed = (_, _, code, _) =>
+        {
+            reported.TrySetResult(code);
+            return true;
+        };
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(
+                valueTaskSourcePool, "test-topic", partition: 0, failureObserver: accumulator));
+            await sent.Task.WaitAsync(cancellationToken);
+            response.SetResult(CreateErrorResponse("test-topic", partition: 0, ErrorCode.MessageTooLarge));
+
+            var exception = await acknowledged.Task.WaitAsync(cancellationToken);
+
+            await Assert.That(exception).IsTypeOf<ProduceException>();
+            await Assert.That(await reported.Task.WaitAsync(cancellationToken))
+                .IsEqualTo(ErrorCode.MessageTooLarge);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// A batch the sender fails for its own reasons (here the delivery timeout expiring while the
+    /// batch waits to retry a retriable error) is reported to the transaction as well.
+    /// </summary>
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionalBatchDeliveryTimeout_ReportsFailedBatchToTransaction(
+        CancellationToken cancellationToken)
+    {
+        var response = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>([response]);
+        var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (pool, _) = CreateMockConnection(responses, () => sent.TrySetResult());
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(
+            deliveryTimeoutMs: 200,
+            requestTimeoutMs: 30_000,
+            transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var reported = new TaskCompletionSource<ErrorCode>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var acknowledged = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) => acknowledged.TrySetResult(exception),
+            produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
+            isTransactional: true,
+            usesTransactionV2: true);
+        accumulator.OnTransactionalBatchFailed = (_, _, code, _) =>
+        {
+            reported.TrySetResult(code);
+            return true;
+        };
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(
+                valueTaskSourcePool, "test-topic", partition: 0, failureObserver: accumulator));
+            await sent.Task.WaitAsync(cancellationToken);
+            // Answer only after the batch's delivery deadline has passed, with a retriable error:
+            // the retry path finds the deadline spent and fails the batch.
+            await Task.Delay(400, cancellationToken);
+            response.SetResult(CreateErrorResponse("test-topic", partition: 0, ErrorCode.NotEnoughReplicas));
+
+            var exception = await acknowledged.Task.WaitAsync(cancellationToken);
+
+            await Assert.That(exception).IsTypeOf<KafkaTimeoutException>();
+            await Assert.That(await reported.Task.WaitAsync(cancellationToken))
+                .IsEqualTo(ErrorCode.RequestTimedOut);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
     [Test]
     [Timeout(120_000)]
     public async Task DisposeAsync_PendingPipelinedResponse_IsAbandoned(

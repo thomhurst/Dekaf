@@ -185,6 +185,721 @@ public sealed class TransactionTests
         await Assert.That(() => harness.Producer.BeginTransaction()).Throws<InvalidOperationException>();
     }
 
+    private static KafkaProducer<string, string> BuildTransactionalProducer(
+        TransactionState state,
+        long producerId = 42,
+        short producerEpoch = 5)
+    {
+        var producer = (KafkaProducer<string, string>)Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithTransactionalId("test-txn-id")
+            .Build();
+        SetInstanceField(producer, "_initialized", true);
+        SetInstanceField(producer, "_producerId", producerId);
+        SetInstanceField(producer, "_producerEpoch", producerEpoch);
+        producer._transactionState = state;
+        return producer;
+    }
+
+    [Test]
+    [Arguments(ErrorCode.ProducerFenced, (int)TransactionState.InTransaction)]
+    [Arguments(ErrorCode.ProducerFenced, (int)TransactionState.Ready)]
+    [Arguments(ErrorCode.ProducerFenced, (int)TransactionState.AbortableError)]
+    [Arguments(ErrorCode.TransactionalIdAuthorizationFailed, (int)TransactionState.InTransaction)]
+    [Arguments(ErrorCode.ClusterAuthorizationFailed, (int)TransactionState.CommittingTransaction)]
+    public async Task TransactionalBatchFailure_FatalErrorForCurrentProducer_MovesToFatalError(
+        ErrorCode errorCode,
+        int initialStateValue)
+    {
+        var initialState = (TransactionState)initialStateValue;
+        await using var producer = BuildTransactionalProducer(initialState);
+        var transaction = new Transaction<string, string>(producer);
+
+        producer.OnTransactionalBatchFailed(42, 5, errorCode);
+
+        await Assert.That(producer._transactionState).IsEqualTo(TransactionState.FatalError);
+        await Assert.That(producer._lastTransactionError).IsEqualTo(errorCode);
+        var produceException = await Assert.That(
+                () => transaction.ProduceAsync("test-topic", "key", "value").AsTask())
+            .Throws<FatalTransactionException>();
+        await Assert.That(produceException!.ErrorCode).IsEqualTo(errorCode);
+        await Assert.That(() => transaction.CommitAsync().AsTask())
+            .Throws<FatalTransactionException>();
+    }
+
+    [Test]
+    [Arguments(ErrorCode.InvalidProducerEpoch, (int)TransactionState.InTransaction)]
+    [Arguments(ErrorCode.OutOfOrderSequenceNumber, (int)TransactionState.InTransaction)]
+    [Arguments(ErrorCode.UnknownProducerId, (int)TransactionState.InTransaction)]
+    [Arguments(ErrorCode.MessageTooLarge, (int)TransactionState.InTransaction)]
+    [Arguments(ErrorCode.RequestTimedOut, (int)TransactionState.InTransaction)]
+    [Arguments(ErrorCode.OutOfOrderSequenceNumber, (int)TransactionState.CommittingTransaction)]
+    public async Task TransactionalBatchFailure_OtherErrorInOpenTransaction_MovesToAbortableError(
+        ErrorCode errorCode,
+        int initialStateValue)
+    {
+        var initialState = (TransactionState)initialStateValue;
+        await using var producer = BuildTransactionalProducer(initialState);
+
+        producer.OnTransactionalBatchFailed(42, 5, errorCode);
+
+        await Assert.That(producer._transactionState).IsEqualTo(TransactionState.AbortableError);
+        await Assert.That(producer._lastTransactionError).IsEqualTo(errorCode);
+
+        // Produce and a later CommitAsync must refuse until the caller aborts.
+        var transaction = new Transaction<string, string>(producer);
+        var produceException = await Assert.That(
+                () => transaction.ProduceAsync("test-topic", "key", "value").AsTask())
+            .Throws<AbortableTransactionException>();
+        await Assert.That(produceException!.ErrorCode).IsEqualTo(errorCode);
+        var commitException = await Assert.That(() => transaction.CommitAsync().AsTask())
+            .Throws<AbortableTransactionException>();
+        await Assert.That(commitException!.ErrorCode).IsEqualTo(errorCode);
+    }
+
+    /// <summary>
+    /// A send loop can fence the producer while the caller's thread makes the transaction
+    /// abortable (a partition-enrollment error found by the pre-commit flush check, a flush
+    /// timeout, an abortable control-plane response). The abortable transition must not
+    /// downgrade FatalError: the caller could then abort and reuse a fenced producer.
+    /// </summary>
+    /// <summary>
+    /// Once an abort starts, a produce would add records to a transaction that is being thrown
+    /// away (Java refuses send in ABORTING_TRANSACTION too).
+    /// </summary>
+    [Test]
+    public async Task ProduceAsync_WhileAborting_ThrowsInvalidTxnState()
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.AbortingTransaction);
+        var transaction = new Transaction<string, string>(producer);
+
+        var exception = await Assert.That(
+                () => transaction.ProduceAsync("test-topic", "key", "value").AsTask())
+            .Throws<TransactionException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.InvalidTxnState);
+    }
+
+    [Test]
+    public async Task MarkTransactionAbortable_AfterConcurrentFatalBatch_KeepsFatalError()
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.InTransaction);
+        producer.OnTransactionalBatchFailed(42, 5, ErrorCode.ProducerFenced);
+
+        var marked = producer.MarkTransactionAbortable(ErrorCode.NetworkException);
+
+        await Assert.That(marked).IsFalse();
+        await Assert.That(producer._transactionState).IsEqualTo(TransactionState.FatalError);
+        await Assert.That(producer._lastTransactionError).IsEqualTo(ErrorCode.ProducerFenced);
+        await Assert.That(() => producer.ThrowIfTransactionFailedDuringFlush("Cannot commit transaction"))
+            .Throws<FatalTransactionException>();
+    }
+
+    /// <summary>
+    /// A send loop reports a producer-wide fatal failure while the abort's EndTxn is answered with
+    /// an abortable error. The abortable transition is refused, and the caller must see the fatal
+    /// failure with its own code, not an abortable exception that overwrites it. (A fence of the
+    /// pre-abort identity during the abort is stale instead; see the next tests.)
+    /// </summary>
+    [Test]
+    public async Task AbortAsync_AbortableEndTxnErrorAfterConcurrentFatalFailure_ThrowsFatalWithItsCode()
+    {
+        var preparedState = new PreparedTransactionState(42, 5);
+        await using var harness = BuildPreparedCompletionHarness(
+            preparedState,
+            currentProducerId: preparedState.ProducerId,
+            currentProducerEpoch: preparedState.ProducerEpoch,
+            endTxnError: ErrorCode.TransactionAbortable);
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        var transaction = new Transaction<string, string>(harness.Producer);
+        harness.BeforeEndTxnResponse = () =>
+            harness.Producer.OnTransactionalBatchFailed(42, 5, ErrorCode.ClusterAuthorizationFailed);
+
+        var exception = await Assert.That(() => transaction.AbortAsync().AsTask())
+            .Throws<FatalTransactionException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.ClusterAuthorizationFailed);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.FatalError);
+        await Assert.That(harness.Producer._lastTransactionError).IsEqualTo(ErrorCode.ClusterAuthorizationFailed);
+    }
+
+    /// <summary>
+    /// While an abort replaces the producer identity, the broker bumps the epoch before the producer
+    /// installs the new one (TV2 at EndTxn, TV1 at the follow-up InitProducerId). A produce of the
+    /// aborted transaction fenced under the identity the producer still holds is stale: the abort
+    /// completes and the producer stays usable.
+    /// </summary>
+    [Test]
+    [Arguments((short)3)]
+    [Arguments((short)1)]
+    public async Task AbortAsync_FenceOfThePreAbortIdentityWhileTheAbortReplacesIt_IsIgnored(
+        short transactionFeatureVersion)
+    {
+        var preparedState = new PreparedTransactionState(42, 5);
+        await using var harness = BuildPreparedCompletionHarness(
+            preparedState,
+            currentProducerId: preparedState.ProducerId,
+            currentProducerEpoch: preparedState.ProducerEpoch,
+            transactionFeatureVersion: transactionFeatureVersion,
+            enableTwoPhaseCommit: transactionFeatureVersion >= 3);
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        var transaction = new Transaction<string, string>(harness.Producer);
+        var reportTaken = true;
+        void ReportFence() => reportTaken = harness.Producer.OnTransactionalBatchFailed(42, 5, ErrorCode.ProducerFenced);
+        if (transactionFeatureVersion >= 2)
+            harness.BeforeEndTxnResponse = ReportFence;
+        else
+            harness.BeforeInitProducerIdResponse = ReportFence;
+
+        await transaction.AbortAsync();
+
+        await Assert.That(reportTaken).IsFalse();
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.Ready);
+    }
+
+    /// <summary>
+    /// The abort window suppresses only fences of the identity being replaced. Once the abort has
+    /// installed the new identity (the window is still open until the abort returns), a fence of a
+    /// batch stamped with the new identity is a real fence by another instance and is fatal.
+    /// </summary>
+    [Test]
+    public async Task AbortWindow_FenceOfTheNewlyInstalledIdentity_IsFatal()
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.AbortingTransaction);
+        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        typeof(KafkaProducer<string, string>).GetMethod("SetAbortReplacingProducerIdentity", Flags)!
+            .Invoke(producer, [true]);
+        typeof(KafkaProducer<string, string>).GetMethod("ApplyTransactionalProducerIdentity", Flags)!
+            .Invoke(producer, [42L, (short)6]);
+
+        var replacedIdentityReportTaken = producer.OnTransactionalBatchFailed(42, 5, ErrorCode.ProducerFenced);
+        await Assert.That(replacedIdentityReportTaken).IsFalse();
+        await Assert.That(producer._transactionState).IsEqualTo(TransactionState.AbortingTransaction);
+
+        var newIdentityReportTaken = producer.OnTransactionalBatchFailed(42, 6, ErrorCode.ProducerFenced);
+        await Assert.That(newIdentityReportTaken).IsTrue();
+        await Assert.That(producer._transactionState).IsEqualTo(TransactionState.FatalError);
+        await Assert.That(producer._lastTransactionError).IsEqualTo(ErrorCode.ProducerFenced);
+    }
+
+    /// <summary>
+    /// A producer-wide failure reported by a batch while InitTransactionsAsync waits for
+    /// InitProducerId makes the producer fatal; the successful initialization must not overwrite
+    /// that with Ready.
+    /// </summary>
+    [Test]
+    public async Task InitTransactionsAsync_ProducerWideBatchFailureDuringInitProducerId_KeepsFatalError()
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 42,
+            currentProducerEpoch: 5);
+        harness.Producer._transactionState = TransactionState.Ready;
+        harness.BeforeInitProducerIdResponse = () =>
+            harness.Producer.OnTransactionalBatchFailed(42, 5, ErrorCode.ClusterAuthorizationFailed);
+
+        var exception = await Assert.That(() => harness.Producer.InitTransactionsAsync().AsTask())
+            .Throws<FatalTransactionException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.ClusterAuthorizationFailed);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.FatalError);
+    }
+
+    /// <summary>
+    /// A fatal control-plane answer (here an EndTxn whose outcome is unknown) races a caller's
+    /// abortable transition. Whatever the interleaving, the producer must end fatal: the abortable
+    /// transition must never overwrite a fatal state written concurrently.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task FatalTransition_RacingAbortableTransition_AlwaysEndsFatal(CancellationToken cancellationToken)
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.InTransaction);
+        var preserveTimeoutState = typeof(KafkaProducer<string, string>).GetMethod(
+            "PreserveEndTransactionTimeoutState",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var markFatal = preserveTimeoutState.CreateDelegate<Action<bool>>(producer);
+
+        var lost = RaceTransactionTransitions(
+            reset: () =>
+            {
+                producer._lastTransactionError = ErrorCode.None;
+                producer._transactionState = TransactionState.InTransaction;
+            },
+            first: () => producer.MarkTransactionAbortable(ErrorCode.NetworkException),
+            second: () => markFatal(true),
+            isValid: () => producer._transactionState == TransactionState.FatalError
+                && producer._lastTransactionError == ErrorCode.RequestTimedOut,
+            cancellationToken);
+
+        await Assert.That(lost).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// A successful abort finalizes the state while a send loop reports a fenced batch stamped with
+    /// the transaction's identity. The finalizer must not read AbortingTransaction, lose the race to
+    /// the fatal report, and then overwrite FatalError with Ready.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task FinalizeAfterAbort_RacingFencedBatchReport_AlwaysEndsFatal(CancellationToken cancellationToken)
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.AbortingTransaction);
+
+        var lost = RaceTransactionTransitions(
+            reset: () =>
+            {
+                producer._lastTransactionError = ErrorCode.None;
+                producer._transactionState = TransactionState.AbortingTransaction;
+            },
+            first: () => producer.FinalizeCompletedTransactionState(preserveAbortableError: false),
+            second: () => producer.OnTransactionalBatchFailed(42, 5, ErrorCode.ProducerFenced),
+            isValid: () => producer._transactionState == TransactionState.FatalError,
+            cancellationToken);
+
+        await Assert.That(lost).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// Runs <paramref name="first"/> and <paramref name="second"/> on two threads released together,
+    /// many times, with a varying spin offset so the two sweep across each other's check-then-write
+    /// windows. Returns the number of rounds that ended in a state <paramref name="isValid"/> rejects.
+    /// </summary>
+    private static int RaceTransactionTransitions(
+        Action reset,
+        Action first,
+        Action second,
+        Func<bool> isValid,
+        CancellationToken cancellationToken)
+    {
+        const int rounds = 20_000;
+        var lost = 0;
+        var round = 0;
+        var secondDone = 0;
+
+        var secondThread = new Thread(() =>
+        {
+            for (var i = 1; i <= rounds; i++)
+            {
+                while (Volatile.Read(ref round) < i)
+                    Thread.SpinWait(1);
+                Thread.SpinWait((i / 16) % 16);
+                second();
+                Volatile.Write(ref secondDone, i);
+            }
+        }) { IsBackground = true };
+        secondThread.Start();
+
+        for (var i = 1; i <= rounds && !cancellationToken.IsCancellationRequested; i++)
+        {
+            reset();
+            Volatile.Write(ref round, i);
+            Thread.SpinWait(i % 16);
+            first();
+            while (Volatile.Read(ref secondDone) < i)
+                Thread.SpinWait(1);
+            if (!isValid())
+                lost++;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        secondThread.Join();
+        return lost;
+    }
+
+    /// <summary>
+    /// The flush that precedes EndTxn(commit) runs in CommittingTransaction: a batch failed during
+    /// it must stop the commit instead of committing the transaction without its records.
+    /// </summary>
+    [Test]
+    public async Task TransactionalBatchFailure_DuringCommitFlush_CommitThrowsAbortable()
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.CommittingTransaction);
+
+        producer.OnTransactionalBatchFailed(42, 5, ErrorCode.OutOfOrderSequenceNumber);
+
+        var exception = await Assert.That(
+                () => producer.ThrowIfTransactionFailedDuringFlush("Cannot commit transaction"))
+            .Throws<AbortableTransactionException>();
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.OutOfOrderSequenceNumber);
+    }
+
+    /// <summary>
+    /// A batch stamped with an earlier producer identity belongs to a transaction that was already
+    /// aborted (abort bumps the epoch under both TV1 and TV2): its rejection says nothing about the
+    /// current transaction or the current epoch.
+    /// </summary>
+    [Test]
+    [Arguments(ErrorCode.ProducerFenced, 42L, (short)4)]
+    [Arguments(ErrorCode.InvalidProducerEpoch, 42L, (short)4)]
+    [Arguments(ErrorCode.OutOfOrderSequenceNumber, 41L, (short)5)]
+    public async Task TransactionalBatchFailure_FromEarlierProducerIdentity_IsIgnored(
+        ErrorCode errorCode,
+        long batchProducerId,
+        short batchEpoch)
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.InTransaction);
+
+        var reportTaken = producer.OnTransactionalBatchFailed(batchProducerId, batchEpoch, errorCode);
+
+        await Assert.That(reportTaken).IsFalse();
+        await Assert.That(producer._transactionState).IsEqualTo(TransactionState.InTransaction);
+        await Assert.That(producer._lastTransactionError).IsEqualTo(ErrorCode.None);
+    }
+
+    /// <summary>
+    /// Authorization and producer-ID-mapping failures are producer-wide, not scoped to the batch's
+    /// epoch: a batch of an earlier identity that fails with one still makes the producer fatal.
+    /// </summary>
+    [Test]
+    [Arguments(ErrorCode.TransactionalIdAuthorizationFailed)]
+    [Arguments(ErrorCode.ClusterAuthorizationFailed)]
+    [Arguments(ErrorCode.InvalidProducerIdMapping)]
+    public async Task TransactionalBatchFailure_ProducerWideFatalErrorFromEarlierIdentity_MovesToFatalError(
+        ErrorCode errorCode)
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.InTransaction);
+
+        var reportTaken = producer.OnTransactionalBatchFailed(42, 4, errorCode);
+
+        await Assert.That(reportTaken).IsTrue();
+        await Assert.That(producer._transactionState).IsEqualTo(TransactionState.FatalError);
+        await Assert.That(producer._lastTransactionError).IsEqualTo(errorCode);
+    }
+
+    /// <summary>
+    /// The abortable error that refuses produce and commit carries the first failed batch as its
+    /// inner exception; its error code must describe that same failure, even after a later
+    /// abortable transition recorded another code.
+    /// </summary>
+    [Test]
+    public async Task AbortableTransactionError_AfterALaterAbortableTransition_KeepsTheRetainedFailuresCode()
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.InTransaction);
+        var transaction = new Transaction<string, string>(producer);
+        var tooLarge = new ProduceException(ErrorCode.MessageTooLarge, "Produce failed: MessageTooLarge");
+
+        producer.OnTransactionalBatchFailed(42, 5, ErrorCode.MessageTooLarge, tooLarge);
+        producer.MarkTransactionAbortable(ErrorCode.RequestTimedOut);
+
+        var exception = await Assert.That(() => transaction.CommitAsync().AsTask())
+            .Throws<AbortableTransactionException>();
+        await Assert.That(exception!.InnerException).IsSameReferenceAs(tooLarge);
+        await Assert.That(exception.ErrorCode).IsEqualTo(ErrorCode.MessageTooLarge);
+    }
+
+    /// <summary>
+    /// The sender picked the fatal exception while the batch's stamp was still current, then an
+    /// abort replaced the producer identity before the batch reported its failure. The producer
+    /// ignores the stale report, and that same decision picks what the records fail with: the
+    /// caller must not be told to close a producer that is still usable.
+    /// </summary>
+    [Test]
+    public async Task TransactionalBatchFailure_FatalPickedBeforeAnAbortReplacedTheIdentity_FailsRecordsAsAbortable()
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.InTransaction);
+        await using var sourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var sources = System.Buffers.ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(1);
+        sources[0] = sourcePool.Rent();
+        var completion = sources[0].Task;
+        var batch = new ReadyBatch(producer.RecordAccumulator);
+        batch.Initialize(
+            new TopicPartition("test-topic", 0),
+            new RecordBatch
+            {
+                Records = Array.Empty<Dekaf.Protocol.Records.Record>(),
+                ProducerId = 42,
+                ProducerEpoch = 5
+            },
+            sources,
+            completionSourcesCount: 1,
+            recordCount: 1,
+            dataSize: 100);
+        batch.MarkPreSerialized();
+        var fenced = new FatalTransactionException(ErrorCode.ProducerFenced, "fenced")
+        {
+            TransactionalId = "test-txn-id"
+        };
+
+        // The abort completes and installs the bumped epoch after the sender chose the exception.
+        SetInstanceField(producer, "_producerEpoch", (short)6);
+        producer._transactionState = TransactionState.Ready;
+        batch.Fail(fenced);
+
+        var exception = await Assert.That(async () => await completion)
+            .Throws<AbortableTransactionException>();
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.ProducerFenced);
+        await Assert.That(exception.TransactionalId).IsEqualTo("test-txn-id");
+        await Assert.That(producer._transactionState).IsEqualTo(TransactionState.Ready);
+    }
+
+    /// <summary>
+    /// Outside an open transaction there is nothing to abort; a late abortable failure must not
+    /// block the next BeginTransaction, and it must not replace a fatal error.
+    /// </summary>
+    [Test]
+    [Arguments((int)TransactionState.Ready)]
+    [Arguments((int)TransactionState.AbortingTransaction)]
+    [Arguments((int)TransactionState.FatalError)]
+    public async Task TransactionalBatchFailure_AbortableErrorOutsideOpenTransaction_LeavesStateAlone(
+        int initialStateValue)
+    {
+        var initialState = (TransactionState)initialStateValue;
+        await using var producer = BuildTransactionalProducer(initialState);
+
+        producer.OnTransactionalBatchFailed(42, 5, ErrorCode.OutOfOrderSequenceNumber);
+
+        await Assert.That(producer._transactionState).IsEqualTo(initialState);
+    }
+
+    /// <summary>
+    /// A send loop can report a failed batch just as the abort starts (it read InTransaction before
+    /// the abort moved the state on). The completed abort resolves that error too; keeping it would
+    /// refuse the next BeginTransaction with nothing left to abort.
+    /// </summary>
+    [Test]
+    public async Task AbortAsync_BatchFailureReportedWhileAborting_IsResolvedByTheAbort()
+    {
+        var preparedState = new PreparedTransactionState(42, 5);
+        await using var harness = BuildPreparedCompletionHarness(
+            preparedState,
+            currentProducerId: preparedState.ProducerId,
+            currentProducerEpoch: preparedState.ProducerEpoch);
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        var transaction = new Transaction<string, string>(harness.Producer);
+        harness.BeforeEndTxnResponse = () =>
+        {
+            harness.Producer._lastTransactionError = ErrorCode.OutOfOrderSequenceNumber;
+            harness.Producer._transactionState = TransactionState.AbortableError;
+        };
+
+        await transaction.AbortAsync();
+
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.Ready);
+        await using var next = harness.Producer.BeginTransaction();
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.InTransaction);
+        harness.Producer._transactionState = TransactionState.Ready;
+    }
+
+    private const string AbortDrainTopic = "orders";
+
+    /// <summary>
+    /// A record still in an open batch when the transaction aborts belongs to the aborted
+    /// transaction. It must fail with <see cref="ProduceErrorKind.TransactionAborted"/> and never be
+    /// sent: left in the accumulator, it kept the aborted epoch's stamp, took the next transaction's
+    /// records into the same batch, and used up the sequence numbers that the new epoch restarts at 0
+    /// (Java <c>abortUndrainedBatches</c>).
+    /// </summary>
+    [Test]
+    [Timeout(30_000)]
+    public async Task AbortAsync_OpenBatch_FailsItsRecordsAndTheNextTransactionStartsAtSequenceZero(
+        CancellationToken cancellationToken)
+    {
+        var sent = new List<CapturedProduceBatch>();
+        var leader = new TestKafkaConnection { BrokerId = 2, Port = 9093 };
+        leader.SendProducePipelinedAfterWriteForRequest = request =>
+        {
+            lock (sent)
+                sent.AddRange(request.Batches);
+            return ValueTask.FromResult(Task.FromResult(CreateProduceSuccessResponse(request)));
+        };
+        await using var harness = BuildAbortDrainHarness(leader);
+        var producer = harness.Producer;
+        var accumulator = producer.RecordAccumulator;
+
+        var transaction = producer.BeginTransaction();
+        // A fire-and-forget record keeps its batch open for the whole linger (an awaited produce
+        // lingers at most 2 ms), so the batch is still open when the transaction aborts.
+        var abortedDelivery = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await producer.FireAsync(
+            new ProducerMessage<string, string> { Topic = AbortDrainTopic, Key = "key", Value = "aborted" },
+            (_, error) => abortedDelivery.TrySetResult(error));
+        while (accumulator.UnsealedBatchCount == 0 && !abortedDelivery.Task.IsCompleted)
+            await Task.Delay(5, cancellationToken);
+        await Assert.That(accumulator.UnsealedBatchCount).IsEqualTo(1);
+
+        await transaction.AbortAsync(cancellationToken);
+
+        await using var next = producer.BeginTransaction();
+        var nextProduce = next.ProduceAsync(AbortDrainTopic, "key", "next", cancellationToken);
+        await producer.FlushAsync(cancellationToken);
+        await nextProduce.AsTask().WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+
+        CapturedProduceBatch[] sentBatches;
+        lock (sent)
+            sentBatches = [.. sent];
+        // Producer ID / epoch / base sequence / record count of every batch on the wire: only the
+        // next transaction's record, under the bumped epoch, starting the partition at sequence 0.
+        var wire = string.Join(
+            "; ",
+            sentBatches.Select(batch =>
+                $"{batch.ProducerId}/{batch.ProducerEpoch}/{batch.BaseSequence}/{batch.RecordCount}"));
+        await Assert.That(wire).IsEqualTo("42/6/0/1");
+
+        var error = await abortedDelivery.Task.WaitAsync(TimeSpan.FromSeconds(1), cancellationToken);
+        await Assert.That(error).IsTypeOf<ProduceException>();
+        await Assert.That(((ProduceException)error!).Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+    }
+
+    /// <summary>
+    /// A batch already sent when the transaction aborts is part of it. EndTxn(abort) must wait for
+    /// its answer: an abort marker written ahead of the batch would leave the batch's records
+    /// outside the aborted transaction, and under TV2 the sequence reset that follows EndTxn would
+    /// race the batch.
+    /// </summary>
+    [Test]
+    [Timeout(30_000)]
+    public async Task AbortAsync_InFlightBatch_IsAnsweredBeforeEndTxn(CancellationToken cancellationToken)
+    {
+        var heldResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var produceSent = new TaskCompletionSource<CapturedProduceRequest>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var leader = new TestKafkaConnection { BrokerId = 2, Port = 9093 };
+        leader.SendProducePipelinedAfterWriteForRequest = request =>
+        {
+            produceSent.TrySetResult(request);
+            return ValueTask.FromResult(heldResponse.Task);
+        };
+        await using var harness = BuildAbortDrainHarness(leader);
+        var producer = harness.Producer;
+        var inFlightBatchesAtEndTxn = -1L;
+        harness.BeforeEndTxnResponse = () =>
+            inFlightBatchesAtEndTxn = producer.RecordAccumulator.InFlightBatchCount;
+
+        var transaction = producer.BeginTransaction();
+        // A sole awaited produce is sealed and sent at once.
+        var inFlightProduce = transaction.ProduceAsync(AbortDrainTopic, "key", "in-flight", cancellationToken);
+        var request = await produceSent.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+
+        var abort = transaction.AbortAsync(cancellationToken).AsTask();
+        // Gives an abort that does not wait for the batch the time to send EndTxn.
+        await Task.Delay(300, cancellationToken);
+        var endTxnRequestsBeforeAnswer = harness.EndTxnRequests;
+        heldResponse.SetResult(CreateProduceSuccessResponse(request));
+        await abort.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+
+        await Assert.That(endTxnRequestsBeforeAnswer).IsEqualTo(0);
+        await Assert.That(harness.EndTxnRequests).IsEqualTo(1);
+        await Assert.That(inFlightBatchesAtEndTxn).IsEqualTo(0L);
+        await Assert.That(inFlightProduce.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(producer._transactionState).IsEqualTo(TransactionState.Ready);
+    }
+
+    /// <summary>
+    /// The wait for in-flight batches shares the abort's max.block.ms budget. When the budget runs
+    /// out first, EndTxn is never sent, so the transaction stays abortable and the caller aborts again.
+    /// </summary>
+    [Test]
+    [Timeout(30_000)]
+    public async Task AbortAsync_InFlightBatchOutlastsTheBudget_TimesOutWithoutSendingEndTxn(
+        CancellationToken cancellationToken)
+    {
+        var heldResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var produceSent = new TaskCompletionSource<CapturedProduceRequest>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var leader = new TestKafkaConnection { BrokerId = 2, Port = 9093 };
+        leader.SendProducePipelinedAfterWriteForRequest = request =>
+        {
+            produceSent.TrySetResult(request);
+            return ValueTask.FromResult(heldResponse.Task);
+        };
+        await using var harness = BuildAbortDrainHarness(leader, maxBlockMs: 300);
+        var producer = harness.Producer;
+
+        var transaction = producer.BeginTransaction();
+        var inFlightProduce = transaction.ProduceAsync(AbortDrainTopic, "key", "in-flight", cancellationToken);
+        var request = await produceSent.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+
+        try
+        {
+            await Assert.That(async () => await transaction.AbortAsync(cancellationToken))
+                .Throws<KafkaTimeoutException>();
+            await Assert.That(harness.EndTxnRequests).IsEqualTo(0);
+            await Assert.That(producer._transactionState).IsEqualTo(TransactionState.AbortableError);
+        }
+        finally
+        {
+            heldResponse.TrySetResult(CreateProduceSuccessResponse(request));
+            await inFlightProduce.AsTask().WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        }
+
+        // Once the batch is answered, aborting again completes the transaction.
+        await transaction.AbortAsync(cancellationToken);
+        await Assert.That(harness.EndTxnRequests).IsEqualTo(1);
+        await Assert.That(producer._transactionState).IsEqualTo(TransactionState.Ready);
+    }
+
+    /// <summary>
+    /// A TV2 producer (42, epoch 5) whose coordinator is broker 1 and whose partition
+    /// <c>orders-0</c> is led by <paramref name="leader"/> (broker 2). A long linger keeps a batch
+    /// open until the test seals it.
+    /// </summary>
+    private static PreparedCompletionHarness BuildAbortDrainHarness(
+        TestKafkaConnection leader,
+        int maxBlockMs = 5_000)
+    {
+        var harness = BuildPreparedCompletionHarness(
+            new PreparedTransactionState(42, 5),
+            currentProducerId: 42,
+            currentProducerEpoch: 5,
+            maxBlockMs: maxBlockMs,
+            brokerCount: 2,
+            brokerConnection: brokerId => brokerId == leader.BrokerId ? leader : null,
+            topics:
+            [
+                new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None,
+                    Name = AbortDrainTopic,
+                    Partitions =
+                    [
+                        new PartitionMetadata
+                        {
+                            ErrorCode = ErrorCode.None,
+                            PartitionIndex = 0,
+                            LeaderId = leader.BrokerId,
+                            ReplicaNodes = [leader.BrokerId],
+                            IsrNodes = [leader.BrokerId]
+                        }
+                    ]
+                }
+            ],
+            lingerMs: 60_000);
+        // The identity InitTransactionsAsync publishes to the accumulator, which stamps new batches.
+        harness.Producer.RecordAccumulator.ProducerId = 42;
+        harness.Producer.RecordAccumulator.ProducerEpoch = 5;
+        harness.Producer._transactionState = TransactionState.Ready;
+        return harness;
+    }
+
+    private static ProduceResponse CreateProduceSuccessResponse(CapturedProduceRequest request)
+    {
+        var offset = 0L;
+        return new ProduceResponse
+        {
+            TopicCount = 1,
+            Responses =
+            [
+                new ProduceResponseTopicData
+                {
+                    Name = AbortDrainTopic,
+                    PartitionCount = request.Batches.Count,
+                    PartitionResponses = request.Batches
+                        .Select(batch => new ProduceResponsePartitionData
+                        {
+                            Index = batch.Partition,
+                            ErrorCode = ErrorCode.None,
+                            BaseOffset = offset++
+                        })
+                        .ToArray()
+                }
+            ]
+        };
+    }
+
     [Test]
     public async Task InitTransactionsAsync_WithoutTransactionalId_Throws()
     {
@@ -2096,7 +2811,10 @@ public sealed class TransactionTests
         bool endTxnFailsAfterCancellation = false,
         bool findCoordinatorFailsAfterCancellation = false,
         int brokerCount = 1,
-        Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? addPartitionsToTransaction = null)
+        Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? addPartitionsToTransaction = null,
+        Func<int, IKafkaConnection?>? brokerConnection = null,
+        TopicMetadata[]? topics = null,
+        int lingerMs = 0)
     {
         var connection = new LeaseTrackingConnection(
             preparedState,
@@ -2157,6 +2875,11 @@ public sealed class TransactionTests
                     return ValueTask.FromException<IKafkaConnection>(connectionFailures.Dequeue());
                 }
 
+                // A broker that serves produce requests (a partition leader) instead of the
+                // transaction coordinator.
+                if (brokerConnection?.Invoke(brokerId) is { } brokerOverride)
+                    return new ValueTask<IKafkaConnection>(brokerOverride);
+
                 return new ValueTask<IKafkaConnection>(connection);
             });
         var brokers = new BrokerMetadata[brokerCount];
@@ -2170,8 +2893,14 @@ public sealed class TransactionTests
         metadataManager.Metadata.Update(new MetadataResponse
         {
             Brokers = brokers,
-            Topics = []
+            Topics = topics ?? []
         });
+        // v12: the last version that names topics rather than identifying them by topic ID, and
+        // the first with implicit (TV2) partition enrollment.
+        metadataManager.SetApiVersion(
+            ApiKey.Produce,
+            ProduceRequest.LowestSupportedVersion,
+            ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion);
         metadataManager.SetApiVersion(
             ApiKey.FindCoordinator,
             FindCoordinatorRequest.LowestSupportedVersion,
@@ -2203,7 +2932,8 @@ public sealed class TransactionTests
                 RetryBackoffMs = retryBackoffMs,
                 RetryBackoffMaxMs = retryBackoffMs,
                 MaxBlockMs = maxBlockMs,
-                CloseTimeoutMs = 100
+                CloseTimeoutMs = 100,
+                LingerMs = lingerMs
             },
             Serializers.String,
             Serializers.String,
@@ -2326,6 +3056,18 @@ public sealed class TransactionTests
         {
             get => connection.CoordinatorNodeId;
             set => connection.CoordinatorNodeId = value;
+        }
+
+        /// <summary>Runs while the coordinator answers each EndTxn, before the answer returns.</summary>
+        public Action? BeforeEndTxnResponse
+        {
+            set => connection.BeforeEndTxnResponse = value;
+        }
+
+        /// <summary>Runs while the coordinator answers each InitProducerId, before the answer returns.</summary>
+        public Action? BeforeInitProducerIdResponse
+        {
+            set => connection.BeforeInitProducerIdResponse = value;
         }
 
         public int ConnectionAttemptsTo(int brokerId)
@@ -2641,8 +3383,11 @@ public sealed class TransactionTests
             };
         }
 
+        public Action? BeforeInitProducerIdResponse { get; set; }
+
         private InitProducerIdResponse CreateInitProducerIdResponse()
         {
+            BeforeInitProducerIdResponse?.Invoke();
             InitProducerIdRequests++;
             transactionClock?.Advance(initProducerIdAdvanceMs);
             return new InitProducerIdResponse
@@ -2675,8 +3420,11 @@ public sealed class TransactionTests
             };
         }
 
+        public Action? BeforeEndTxnResponse { get; set; }
+
         private EndTxnResponse CreateEndTxnResponse(EndTxnRequest request)
         {
+            BeforeEndTxnResponse?.Invoke();
             EndTxnRequests++;
             CapturedEndTxnRequest = request;
             transactionClock?.Advance(endTxnAdvanceMs);
