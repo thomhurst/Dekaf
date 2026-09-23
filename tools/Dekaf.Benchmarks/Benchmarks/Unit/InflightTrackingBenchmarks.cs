@@ -146,7 +146,7 @@ public class InflightTrackingBenchmarks
         {
             var tp = _partitions[i % PartitionCount];
             var state = (ProducerIdAndEpoch?)_producerState;
-            var entry = _accumulator.RegisterWithNextSequence(_tracker, tp, 100, -1, ref state, out _);
+            var entry = _accumulator.RegisterWithNextSequence(_tracker, tp, 100, -1, ref state, out _)!;
             last = entry.BaseSequence;
             _tracker.Complete(entry);
         }

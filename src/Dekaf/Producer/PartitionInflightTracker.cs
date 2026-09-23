@@ -134,22 +134,27 @@ internal sealed class PartitionState
 
 /// <summary>
 /// Supplies the base sequence of a batch being registered, called under the partition's lock
-/// before the entry is linked (see <see cref="PartitionInflightTracker.Register{TClaim}"/>).
+/// before the entry is linked (see <see cref="PartitionInflightTracker.TryRegister{TClaim}"/>).
 /// </summary>
 internal interface IInflightSequenceClaim
 {
     /// <summary>
-    /// Returns the base sequence for the entry being registered. <paramref name="partition"/>'s
+    /// Supplies the base sequence for the entry being registered, or returns false to refuse the
+    /// registration (nothing is claimed and the entry is not linked). <paramref name="partition"/>'s
     /// lock is held; its list holds every other in-flight entry of the partition.
     /// </summary>
-    int Claim(PartitionState partition);
+    bool TryClaim(PartitionState partition, out int baseSequence);
 }
 
 /// <summary>A base sequence the caller assigned before registering.</summary>
 internal readonly struct FixedSequence(int baseSequence) : IInflightSequenceClaim
 {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public int Claim(PartitionState partition) => baseSequence;
+    public bool TryClaim(PartitionState partition, out int sequence)
+    {
+        sequence = baseSequence;
+        return true;
+    }
 }
 
 /// <summary>
@@ -254,7 +259,7 @@ internal sealed class PartitionInflightTracker : IDisposable
     public InflightEntry Register(TopicPartition topicPartition, int baseSequence, int recordCount)
     {
         var claim = new FixedSequence(baseSequence);
-        return Register(topicPartition, recordCount, ref claim);
+        return TryRegister(topicPartition, recordCount, ref claim)!;
     }
 
     /// <summary>
@@ -262,10 +267,11 @@ internal sealed class PartitionInflightTracker : IDisposable
     /// lock, so the sequence is claimed and the entry becomes visible to every other send loop in
     /// one step: a loop deciding under the same lock whether the partition may restart its
     /// sequences sees every sequence already handed out that the broker could still receive
-    /// (#3385). Same cost as <see cref="Register(TopicPartition, int, int)"/>; the claim is a
-    /// struct, so the call is specialized and nothing is boxed.
+    /// (#3385). Returns null, with nothing claimed or registered, when the claim refuses. Same
+    /// cost as <see cref="Register(TopicPartition, int, int)"/>; the claim is a struct, so the
+    /// call is specialized and nothing is boxed.
     /// </summary>
-    public InflightEntry Register<TClaim>(TopicPartition topicPartition, int recordCount, ref TClaim claim)
+    public InflightEntry? TryRegister<TClaim>(TopicPartition topicPartition, int recordCount, ref TClaim claim)
         where TClaim : struct, IInflightSequenceClaim
     {
         var entry = _pool.Rent();
@@ -274,11 +280,17 @@ internal sealed class PartitionInflightTracker : IDisposable
         // A state the pruner removed between GetOrAdd and the lock is refused before anything is
         // claimed; the retry resolves (or creates) the state now in the dictionary. Pruning only
         // removes states idle for the full TTL, so the loop body runs a second time only in that race.
-        while (!TryAppend(_partitions.GetOrAdd(topicPartition, static _ => new PartitionState()), entry, ref claim))
+        bool claimed;
+        while (!TryAppend(_partitions.GetOrAdd(topicPartition, static _ => new PartitionState()), entry, ref claim, out claimed))
         {
         }
 
-        return entry;
+        if (claimed)
+            return entry;
+
+        // Refused: a sequence restart that must wait. Recovery only, never steady state.
+        _pool.Return(entry);
+        return null;
     }
 
     /// <summary>
@@ -288,13 +300,19 @@ internal sealed class PartitionInflightTracker : IDisposable
     internal static bool TryAppend(PartitionState state, InflightEntry entry)
     {
         var claim = new FixedSequence(entry.BaseSequence);
-        return TryAppend(state, entry, ref claim);
+        return TryAppend(state, entry, ref claim, out _);
     }
 
+    /// <summary>
+    /// False when the pruner removed <paramref name="state"/> (the caller retries on the
+    /// dictionary's current state); otherwise true, with <paramref name="claimed"/> reporting
+    /// whether the claim supplied a sequence and the entry was linked.
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool TryAppend<TClaim>(PartitionState state, InflightEntry entry, ref TClaim claim)
+    private static bool TryAppend<TClaim>(PartitionState state, InflightEntry entry, ref TClaim claim, out bool claimed)
         where TClaim : struct, IInflightSequenceClaim
     {
+        claimed = false;
         var lockTaken = false;
         try
         {
@@ -305,7 +323,13 @@ internal sealed class PartitionInflightTracker : IDisposable
                 return false;
             }
 
-            entry.BaseSequence = claim.Claim(state);
+            if (!claim.TryClaim(state, out var baseSequence))
+            {
+                return true;
+            }
+
+            claimed = true;
+            entry.BaseSequence = baseSequence;
             entry.State = state;
             entry.InList = true;
 

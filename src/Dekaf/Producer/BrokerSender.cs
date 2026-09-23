@@ -2114,6 +2114,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                     countToSend,
                                     singleConnectionFireAndForgetScratches[slot],
                                     0,
+                                    carryOver,
                                     singleConnectionFireAndForgetTimeoutCts[slot].Token);
 
                                 if (hasPendingSingleConnectionFireAndForgetSend)
@@ -2143,7 +2144,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 sendTimeoutCts.CancelAfter(SendCoalescedTimeoutMs);
 
                                 await SendCoalescedAsync(batchesToSend, countToSend,
-                                        scratches[0], 0, sendTimeoutCts.Token)
+                                        scratches[0], 0, carryOver, sendTimeoutCts.Token)
                                     .ConfigureAwait(false);
                             }
                             sentThisIteration = true;
@@ -2194,7 +2195,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                                 ResetBucketTimeout(ref bucketTimeoutCts[c], cancellationToken);
                                 parallelSends[pendingSendCount++] = SendConnectionBucketAsync(c, connectionBuckets,
-                                    scratches[c], metadataRefreshTopics, bucketTimeoutCts[c].Token);
+                                    scratches[c], carryOver, metadataRefreshTopics, bucketTimeoutCts[c].Token);
                             }
 
                             var completedSends = await AwaitParallelSendsAsync(parallelSends, pendingSendCount)
@@ -2895,6 +2896,33 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         coalescedRequestBudgetUsed += batchRequestBodySize;
     }
 
+    /// <summary>
+    /// Closes the gaps <see cref="HoldUnsentForSequenceRestart"/> left in a request's batches,
+    /// keeping their order. Recovery race only.
+    /// </summary>
+    private static int RemoveHeldBatches(ReadyBatch[] batches, int[] generations, int count)
+    {
+        var writeIdx = 0;
+        for (var readIdx = 0; readIdx < count; readIdx++)
+        {
+            var batch = batches[readIdx];
+            if (batch is null)
+                continue;
+
+            batches[writeIdx] = batch;
+            generations[writeIdx] = generations[readIdx];
+            writeIdx++;
+        }
+
+        for (var i = writeIdx; i < count; i++)
+        {
+            batches[i] = null!;
+            generations[i] = 0;
+        }
+
+        return writeIdx;
+    }
+
     private int CompactCurrentBatches(ReadyBatch[] batches, int[] generations, int count)
     {
         var writeIdx = 0;
@@ -3030,13 +3058,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// batch of any send loop that the broker may still receive comes before this one. Step 5
     /// already holds such a partition; the check here is the authoritative one, made under the
     /// lock every loop registers under, so it also covers a batch another loop registered after
-    /// this loop's step 5 (#3385). Stamps the batch with the state its sequence belongs to: the
-    /// one passed, unless the counter still belongs to another state (the restart must wait, or
-    /// this loop's snapshot is out of date). Then the hold is armed again, so the partition is
-    /// held until that state's batches are answered and it can restart. Steady state: the
-    /// registration the batch needs anyway, with the sequence claimed inside its lock.
+    /// this loop's step 5 (#3385). When that check finds such a batch, nothing is claimed and this
+    /// returns false: the caller holds the batch (<see cref="HoldUnsentForSequenceRestart"/>)
+    /// instead of sending it under the previous state, where it would travel on another
+    /// connection than the unresolved batch and could reach the leader first.
+    /// <para/>
+    /// Otherwise stamps the batch with the state its sequence belongs to: the one passed (only
+    /// written when <paramref name="restamp"/>, for a batch sealed under another state), or the
+    /// state the partition's counter still belongs to when this loop's snapshot is out of date.
+    /// Then the hold is armed again, so the partition is held until that state's batches are
+    /// answered and it can restart. Steady state: the registration the batch needs anyway, with
+    /// the sequence claimed inside its lock.
     /// </summary>
-    private void RegisterWithNextSequence(ReadyBatch batch, ProducerIdAndEpoch? sequenceState)
+    private bool RegisterWithNextSequence(ReadyBatch batch, ProducerIdAndEpoch? sequenceState, bool restamp)
     {
         var topicPartition = batch.TopicPartition;
         var recordBatch = batch.RecordBatch;
@@ -3044,14 +3078,23 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var entry = _accumulator.RegisterWithNextSequence(
             _inflightTracker, topicPartition, recordBatch.Records.Count, recordBatch.BaseSequence,
             ref stampState, out var restarted);
+        if (entry is null)
+            return false;
+
         batch.InflightEntry = entry;
         recordBatch.BaseSequence = entry.BaseSequence;
 
         if (ReferenceEquals(stampState, sequenceState))
         {
+            if (restamp)
+            {
+                recordBatch.ProducerId = stampState!.ProducerId;
+                recordBatch.ProducerEpoch = stampState.Epoch;
+            }
+
             if (restarted)
                 LogSequenceRestarted(_brokerId, topicPartition.Topic, topicPartition.Partition, stampState!.ProducerId, stampState.Epoch);
-            return;
+            return true;
         }
 
         recordBatch.ProducerId = stampState!.ProducerId;
@@ -3059,6 +3102,29 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _sequenceRestartHoldArmed = true;
         LogStampFollowsSequenceState(_brokerId, topicPartition.Topic, topicPartition.Partition,
             sequenceState!.Epoch, stampState.ProducerId, stampState.Epoch);
+        return true;
+    }
+
+    /// <summary>
+    /// Puts back a batch whose sequence restart <see cref="RegisterWithNextSequence"/> refused at
+    /// send time: a batch of the previous state that another send loop registered after this
+    /// loop's step 5 must be answered first. The batch keeps its stamp and sequence (nothing was
+    /// claimed) and goes back to the front of its partition's queue, exactly as a batch
+    /// <see cref="CoalesceBatch"/> holds; step 5 now sees the other loop's batch in the tracker
+    /// and holds the partition until it is answered. A send-time fence already taken for the batch
+    /// is released, unless a retry of the partition still needs it. Recovery race only.
+    /// </summary>
+    private void HoldUnsentForSequenceRestart(ReadyBatch batch, int generation, PartitionCarryOver carryOver)
+    {
+        var topicPartition = batch.TopicPartition;
+        _sequenceRestartHoldArmed = true;
+        _previousStateBatchInflight = true;
+        if (_muteOnSend && !batch.IsLoopExitRedelivery)
+            UnmuteUnlessRetryQueued(topicPartition, carryOver);
+
+        LogSequenceRestartHeld(_brokerId, topicPartition.Topic, topicPartition.Partition, _iterationProducerState!.Epoch);
+        _onSequenceRestartHeld?.Invoke(topicPartition);
+        carryOver.AddFirst(new BatchReference(batch, generation));
     }
 
     /// <summary>
@@ -4389,11 +4455,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Sends coalesced batches (one per partition) as a single ProduceRequest.
     /// The in-flight count was already incremented by the send loop before calling this method.
     /// </summary>
+    /// <remarks>
+    /// <paramref name="carryOver"/> is the send loop's own: it is touched only before the first
+    /// await, which runs on the send loop, to put back a batch whose sequence restart must wait.
+    /// </remarks>
     private async ValueTask SendCoalescedAsync(
         ReadyBatch[] batches,
         int count,
         ProduceRequestScratch scratch,
         int connectionIndex,
+        PartitionCarryOver carryOver,
         CancellationToken cancellationToken,
         HashSet<string>? metadataRefreshTopics = null)
     {
@@ -4439,6 +4510,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var currentEpoch = producerState?.Epoch ?? (short)-1;
                 var currentPid = currentEpoch >= 0 ? producerState!.ProducerId : -1L;
                 var sequenceState = currentEpoch >= 0 ? producerState : null;
+                var heldForSequenceRestart = false;
 
                 for (var i = 0; i < count; i++)
                 {
@@ -4475,19 +4547,37 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         LogStaleEpochResequencing(_brokerId, tp.Topic, tp.Partition,
                             batch.RecordBatch.ProducerEpoch, currentEpoch);
                         CompleteInflightEntry(batch);
-                        batch.RecordBatch.ProducerId = currentPid;
-                        batch.RecordBatch.ProducerEpoch = currentEpoch;
-                        RegisterWithNextSequence(batch, sequenceState);
+                        if (!RegisterWithNextSequence(batch, sequenceState, restamp: true))
+                        {
+                            HoldUnsentForSequenceRestart(batch, generations[i], carryOver);
+                            batches[i] = null!;
+                            heldForSequenceRestart = true;
+                        }
                     }
                     else if (batch.RecordBatch.BaseSequence < 0)
                     {
                         // Fresh batch: assign sequence and register (epoch/PID are already
                         // correct, unless the partition's sequences belong to another state)
-                        RegisterWithNextSequence(batch, sequenceState);
+                        if (!RegisterWithNextSequence(batch, sequenceState, restamp: false))
+                        {
+                            HoldUnsentForSequenceRestart(batch, generations[i], carryOver);
+                            batches[i] = null!;
+                            heldForSequenceRestart = true;
+                        }
                     }
                     else
                     {
                         // Retry batch with correct epoch — keeps its original sequence
+                    }
+                }
+
+                if (heldForSequenceRestart)
+                {
+                    count = RemoveHeldBatches(batches, generations, count);
+                    if (count == 0)
+                    {
+                        ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+                        return;
                     }
                 }
 
@@ -5347,6 +5437,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private async ValueTask SendConnectionBucketAsync(
         int connIdx, ConnectionBucket[] connectionBuckets,
         ProduceRequestScratch scratch,
+        PartitionCarryOver carryOver,
         HashSet<string> metadataRefreshTopics,
         CancellationToken cancellationToken)
     {
@@ -5374,6 +5465,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 countToSend,
                 scratch,
                 connIdx,
+                carryOver,
                 cancellationToken,
                 metadataRefreshTopics)
             .ConfigureAwait(false);

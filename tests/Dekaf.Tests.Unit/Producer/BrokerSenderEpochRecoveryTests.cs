@@ -765,20 +765,23 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
     }
 
     [Test]
-    public async Task OldEpochBatchRegisteredByAnotherLoopAfterThisLoopsScan_KeepsPartitionOnOldEpochUntilAnswered(CancellationToken cancellationToken)
+    public async Task OldEpochBatchRegisteredByAnotherLoopAfterThisLoopsScan_HoldsTheRestartUntilItIsAnswered(CancellationToken cancellationToken)
     {
         // Regression for #3385. This loop already runs under epoch 6 and found nothing of an
         // older epoch in flight, so its hold is disarmed. Another loop, still under epoch 5, then
         // claims and registers partition 1's (epoch 5, sequence 4) and stalls before writing it.
         // This loop's next batch of partition 1 used to restart the partition as (epoch 6,
-        // sequence 0), which the broker would take ahead of the older batch. The restart decision
-        // is made under the lock registration takes, so it sees that batch: this loop continues
-        // epoch 5 behind it, and restarts only once it is answered.
+        // sequence 0), which the broker would take ahead of the older batch; continuing epoch 5
+        // as (epoch 5, sequence 6) instead is no better, since the other loop's batch travels on
+        // another connection and the leader can receive sequence 6 first and reject it as out of
+        // order. The restart decision, made under the lock registration takes, sees the other
+        // loop's batch and refuses: this loop holds its batch, writes nothing, and restarts the
+        // partition at 0 under epoch 6 once that batch is answered.
         var partition0Sent = NewResponseSource();
-        var partition1BehindOtherLoop = NewResponseSource();
         var partition1Restarted = NewResponseSource();
+        var partition1Next = NewResponseSource();
         var (pool, connection) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>(
-            [partition0Sent, partition1BehindOtherLoop, partition1Restarted]));
+            [partition0Sent, partition1Restarted, partition1Next]));
         connection.CaptureProduceRequests = true;
         cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions();
@@ -790,9 +793,11 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         accumulator.GetAndIncrementSequence(Partition1, 4, previous, out _);
         accumulator.PublishProducerState(current);
         using var inflightTracker = new PartitionInflightTracker(enablePruning: false);
+        var held = new TaskCompletionSource<TopicPartition>(TaskCreationOptions.RunContinuationsAsynchronously);
         var sender = CreateSender(
             pool, options, accumulator, (_, _, _, _, _) => { },
             getProducerState: () => current,
+            onSequenceRestartHeld: topicPartition => held.TrySetResult(topicPartition),
             inflightTracker: inflightTracker);
 
         try
@@ -811,18 +816,22 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
 
             var (batch1, delivery1) = CreateTrackedBatch(valueTaskSourcePool, Partition1, producerId: 1234, producerEpoch: 6, recordCount: 3);
             sender.Enqueue(batch1);
-            await WaitForSendsAsync(connection, 2, cancellationToken);
-            await Assert.That(StampsOf(connection, request: 1)).IsEquivalentTo([(1, 3, 1234L, (short)5, 6)]);
+            await Assert.That(await held.Task.WaitAsync(cancellationToken)).IsEqualTo(Partition1);
+            await Assert.That(connection.CapturedProduceRequestCount).IsEqualTo(1);
+            await Assert.That(inflightTracker.GetInflightCount(Partition1)).IsEqualTo(1);
 
-            // Both epoch 5 batches answered: the partition's next batch restarts it under epoch 6.
+            // The other loop's batch answered: the held batch restarts the partition under epoch 6.
             inflightTracker.Complete(otherLoopEntry);
-            partition1BehindOtherLoop.SetResult(CreateSuccessResponse(Topic, 1, baseOffset: 6));
+            await WaitForSendsAsync(connection, 2, cancellationToken);
+            await Assert.That(StampsOf(connection, request: 1)).IsEquivalentTo([(1, 3, 1234L, (short)6, 0)]);
+            partition1Restarted.SetResult(CreateSuccessResponse(Topic, 1, baseOffset: 6));
             await delivery1.WaitAsync(cancellationToken);
+
             var (batch2, delivery2) = CreateTrackedBatch(valueTaskSourcePool, Partition1, producerId: 1234, producerEpoch: 6, recordCount: 1);
             sender.Enqueue(batch2);
             await WaitForSendsAsync(connection, 3, cancellationToken);
-            await Assert.That(StampsOf(connection, request: 2)).IsEquivalentTo([(1, 1, 1234L, (short)6, 0)]);
-            partition1Restarted.SetResult(CreateSuccessResponse(Topic, 1, baseOffset: 9));
+            await Assert.That(StampsOf(connection, request: 2)).IsEquivalentTo([(1, 1, 1234L, (short)6, 3)]);
+            partition1Next.SetResult(CreateSuccessResponse(Topic, 1, baseOffset: 9));
             await delivery2.WaitAsync(cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -836,6 +845,7 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
             await valueTaskSourcePool.DisposeAsync();
         }
     }
+
     [Test]
     public async Task UnaffectedPartition_WithRequestPendingUnderOldProducerId_IsHeldUntilItIsAnswered(CancellationToken cancellationToken)
     {
