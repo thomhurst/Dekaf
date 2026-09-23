@@ -242,6 +242,93 @@ public sealed class FlushCheckpointTests
     }
 
     [Test]
+    public async Task FlushAsync_IgnoresHandoffToLaterWorkerAfterFlushStarted()
+    {
+        // The flush waits for append workers one at a time. A record handed to a later worker
+        // after the flush started must not join its checkpoint while it waits on an earlier one.
+        const string topic = "flush-checkpoint-handoff-later-worker";
+        var accumulator = new RecordAccumulator(CreateOptions());
+        Skip.When(accumulator.AppendWorkerCountForTest < 2, "needs at least two append workers");
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
+        using var workerCts = new CancellationTokenSource();
+        accumulator.StartAppendWorkers(workerCts.Token);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        using var releaseFirst = new ManualResetEventSlim(false);
+        using var releaseLater = new ManualResetEventSlim(false);
+        var firstEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var laterEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entries = 0;
+        accumulator.BeforeAppendWorkerAppendForTest = () =>
+        {
+            // Blocks longer than Bound so the flush below cannot finish by outwaiting it.
+            if (Interlocked.Increment(ref entries) == 1)
+            {
+                firstEntered.TrySetResult();
+                releaseFirst.Wait(Bound * 3);
+            }
+            else
+            {
+                laterEntered.TrySetResult();
+                releaseLater.Wait(Bound * 3);
+            }
+        };
+        ReadyBatch? firstBatch = null;
+        ReadyBatch? laterBatch = null;
+
+        try
+        {
+            // Partition p goes to worker p % count, so partitions 0 and 1 use workers 0 and 1.
+            var first = pool.Rent();
+            var firstTask = first.Task;
+            EnqueueNullRecord(accumulator, topic, partition: 0, first);
+            await firstEntered.Task.WaitAsync(Bound);
+
+            // FlushAsync runs synchronously up to its first wait, so it has taken its snapshot
+            // when it returns; it is now waiting for worker 0.
+            var flushTask = accumulator.FlushAsync(CancellationToken.None).AsTask();
+            await Assert.That(flushTask.IsCompleted).IsFalse();
+
+            var later = pool.Rent();
+            var laterTask = later.Task;
+            EnqueueNullRecord(accumulator, topic, partition: 1, later);
+            await laterEntered.Task.WaitAsync(Bound);
+
+            releaseFirst.Set();
+            firstBatch = await DrainAsync(accumulator, new TopicPartition(topic, 0));
+            CompleteAndReturn(accumulator, firstBatch, baseOffset: 0);
+            firstBatch = null;
+
+            // Before the fix the flush read worker 1's sequence only after worker 0 caught up,
+            // so it also waited for the record handed off after it started.
+            await flushTask.WaitAsync(Bound);
+            await Assert.That((await firstTask).Offset).IsEqualTo(0);
+            await Assert.That(laterTask.IsCompleted).IsFalse()
+                .Because("the record handed off after the flush started is still in its worker");
+
+            releaseLater.Set();
+            await TestWait.UntilAsync(() => accumulator.UnsealedBatchCount > 0, Bound);
+            await AccumulatorTestHelpers.SealAllAsync(accumulator);
+            laterBatch = await DrainAsync(accumulator, new TopicPartition(topic, 1));
+            CompleteAndReturn(accumulator, laterBatch, baseOffset: 0);
+            laterBatch = null;
+            await Assert.That((await laterTask).Offset).IsEqualTo(0);
+        }
+        finally
+        {
+            releaseFirst.Set();
+            releaseLater.Set();
+            accumulator.BeforeAppendWorkerAppendForTest = null;
+            if (firstBatch is not null)
+                CompleteAndReturn(accumulator, firstBatch, baseOffset: 0);
+            if (laterBatch is not null)
+                CompleteAndReturn(accumulator, laterBatch, baseOffset: 0);
+
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task FlushAsync_SealsOpenBatchWhileAppendWorkerWaitsForBufferMemory()
     {
         // An open batch holds all of BufferMemory and a handed-off record waits in its append
@@ -330,6 +417,20 @@ public sealed class FlushCheckpointTests
         BatchSize = 100,
         LingerMs = 60_000
     };
+
+    private static void EnqueueNullRecord(
+        RecordAccumulator accumulator, string topic, int partition, PooledValueTaskSource<RecordMetadata> completion) =>
+        accumulator.EnqueueAppend(
+            topic,
+            partition,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            PooledMemory.Null,
+            PooledMemory.Null,
+            headers: null,
+            headerCount: 0,
+            completion,
+            CancellationToken.None,
+            partitionCount: 2);
 
     private static async Task<ReadyBatch> DrainAsync(RecordAccumulator accumulator, TopicPartition topicPartition)
     {

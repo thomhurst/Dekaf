@@ -1157,6 +1157,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // processed the items queued before it looked (not until the queues drain). Strided so
     // workers do not share cache lines. Touched only on the handoff slow path and by flushes.
     private const int AppendWorkerSequenceStride = 16;
+    private const int MaxAppendWorkers = 8; // AppendWorkerTargets holds one sequence per worker
+    internal int AppendWorkerCountForTest => _appendWorkerCount;
     private readonly long[] _appendWorkerQueuedSequences;
     private readonly long[] _appendWorkerProcessedSequences;
     private int _appendWorkerFlushWaiters;
@@ -3017,7 +3019,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Create per-partition-affine append worker channels.
         // Each channel is SingleReader (one worker) but allows multiple writers (caller threads).
-        _appendWorkerCount = Math.Clamp(Environment.ProcessorCount, 1, 8);
+        _appendWorkerCount = Math.Clamp(Environment.ProcessorCount, 1, MaxAppendWorkers);
         _appendWorkerChannels = new Channel<AppendWorkItem>[_appendWorkerCount];
         for (var i = 0; i < _appendWorkerCount; i++)
         {
@@ -7811,6 +7813,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var inFlightCount = Volatile.Read(ref _inFlightBatchCount);
         LogFlushStarted(0, inFlightCount);
 
+        // Snapshot every append worker's handoff sequence before any wait: records handed off
+        // after the flush began must not extend it, whichever worker they land on.
+        var appendWorkerTargets = CaptureAppendWorkerTargets();
+
         ProducerDebugCounters.RecordFlushCall();
 
         // A final partial batch must not enter the sender behind older sealed batches that
@@ -7829,10 +7835,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // below covers them. Seal the open batches first: a worker can be waiting for
         // BufferMemory that only their delivery releases, and nothing else seals them before
         // linger expires.
-        if (HasAppendWorkerBacklog())
+        if (HasAppendWorkerBacklog(in appendWorkerTargets))
         {
             await SealBatchesAsync(sealAll: true, cancellationToken).ConfigureAwait(false);
-            await WaitForAppendWorkerCheckpointAsync(cancellationToken).ConfigureAwait(false);
+            await WaitForAppendWorkerCheckpointAsync(appendWorkerTargets, cancellationToken).ConfigureAwait(false);
         }
 
         await SealBatchesAsync(sealAll: true, cancellationToken).ConfigureAwait(false);
@@ -7935,16 +7941,45 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Waits until each append worker has processed (appended, failed or cancelled) every item
-    /// that was queued when the wait reached that worker. Items queued afterwards do not hold
-    /// the flush open, so continuous backpressured production cannot stall it.
+    /// Reads every append worker's queued sequence at once. All zero before any handoff.
     /// </summary>
-    private async ValueTask WaitForAppendWorkerCheckpointAsync(CancellationToken cancellationToken)
+    private AppendWorkerTargets CaptureAppendWorkerTargets()
+    {
+        var targets = default(AppendWorkerTargets);
+        if (_appendWorkerTasks is null)
+            return targets;
+
+        for (var i = 0; i < _appendWorkerCount; i++)
+            targets[i] = Volatile.Read(ref _appendWorkerQueuedSequences[i * AppendWorkerSequenceStride]);
+
+        return targets;
+    }
+
+    /// <summary>
+    /// True when an append worker has not yet processed every item in <paramref name="targets"/>.
+    /// </summary>
+    private bool HasAppendWorkerBacklog(in AppendWorkerTargets targets)
+    {
+        for (var i = 0; i < _appendWorkerCount; i++)
+        {
+            if (Volatile.Read(ref _appendWorkerProcessedSequences[i * AppendWorkerSequenceStride]) < targets[i])
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Waits until each append worker has processed (appended, failed or cancelled) every item
+    /// queued when the flush started (<paramref name="targets"/>). Items queued afterwards do
+    /// not hold the flush open, so continuous backpressured production cannot stall it.
+    /// </summary>
+    private async ValueTask WaitForAppendWorkerCheckpointAsync(AppendWorkerTargets targets, CancellationToken cancellationToken)
     {
         for (var i = 0; i < _appendWorkerCount; i++)
         {
             var slot = i * AppendWorkerSequenceStride;
-            var target = Volatile.Read(ref _appendWorkerQueuedSequences[slot]);
+            var target = targets[i];
             if (Volatile.Read(ref _appendWorkerProcessedSequences[slot]) >= target)
                 continue;
 
@@ -7971,6 +8006,46 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             finally
             {
                 Interlocked.Decrement(ref _appendWorkerFlushWaiters);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Per-worker queued sequences captured by a flush, held inline (at most eight workers) so
+    /// the snapshot does not allocate and survives the flush's awaits.
+    /// </summary>
+    private struct AppendWorkerTargets
+    {
+        private long _w0, _w1, _w2, _w3, _w4, _w5, _w6, _w7;
+
+        public long this[int index]
+        {
+            readonly get => index switch
+            {
+                0 => _w0,
+                1 => _w1,
+                2 => _w2,
+                3 => _w3,
+                4 => _w4,
+                5 => _w5,
+                6 => _w6,
+                7 => _w7,
+                _ => throw new ArgumentOutOfRangeException(nameof(index))
+            };
+            set
+            {
+                switch (index)
+                {
+                    case 0: _w0 = value; break;
+                    case 1: _w1 = value; break;
+                    case 2: _w2 = value; break;
+                    case 3: _w3 = value; break;
+                    case 4: _w4 = value; break;
+                    case 5: _w5 = value; break;
+                    case 6: _w6 = value; break;
+                    case 7: _w7 = value; break;
+                    default: throw new ArgumentOutOfRangeException(nameof(index));
+                }
             }
         }
     }
