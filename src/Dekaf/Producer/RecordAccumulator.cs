@@ -1323,6 +1323,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal Action? AfterLingerQueueSnapshotForTest;
     internal Action<TopicPartition>? AfterFlushPartitionVisitedForTest;
     internal Action<long>? AfterFlushCheckpointCapturedForTest;
+    internal Action? BeforeFlushWaitsForRotationsForTest;
     internal Action? AfterFlushAppendWorkerBacklogCheckedForTest;
     internal Action? BeforeCompletedBatchEnqueueForTest;
     internal Action? BeforeCompletedBatchPublishForTest;
@@ -7857,33 +7858,38 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return FlushAsyncCore(cancellationToken);
     }
 
-    private async ValueTask FlushAsyncCore(CancellationToken cancellationToken)
+    private ValueTask FlushAsyncCore(CancellationToken cancellationToken)
     {
         var inFlightCount = Volatile.Read(ref _inFlightBatchCount);
         LogFlushStarted(0, inFlightCount);
-
-        // Snapshot every append worker's handoff sequence before any wait: records handed off
-        // after the flush began must not extend it, whichever worker they land on.
-        var appendWorkerTargets = CaptureAppendWorkerTargets();
-
         ProducerDebugCounters.RecordFlushCall();
 
-        // A final partial batch must not enter the sender behind older sealed batches that
-        // are still queued or carried over. Under a deep admission budget, publishing the
-        // partial batch into that active pipeline can let it overtake one or more full
-        // same-partition batches during the flush boundary. Drain the batches already in
-        // the pipeline first, then seal the current batches into a fresh ordered wave.
-        //
-        // Both waits stop at a checkpoint, not at global quiescence (#3386): batches that
-        // concurrent producers seal after the checkpoint do not hold this flush open.
-        if (inFlightCount > 0)
-            await WaitForFlushCheckpointAsync(CaptureFlushCheckpoint(), cancellationToken).ConfigureAwait(false);
-
         // A backpressured ProduceAsync returns once its record is handed to an append worker,
-        // before the record is appended. Wait for those handoffs to reach a batch, so the seal
-        // below covers them. Seal the open batches first: a worker can be waiting for
-        // BufferMemory that only their delivery releases, and nothing else seals them before
-        // linger expires.
+        // before the record is appended. Snapshot every worker's handoff sequence before any
+        // wait: records handed off after the flush began must not extend it, whichever worker
+        // they land on. With no backlog now, every earlier handoff is already in a batch and the
+        // seal covers it. Only a flush that starts with a backlog carries the snapshot: it is
+        // 64 bytes, and holding it across the waits would enlarge every flush's state machine.
+        return HasAppendWorkerBacklog()
+            ? FlushWithAppendWorkerBacklogAsync(CaptureAppendWorkerTargets(), cancellationToken)
+            : FlushAtCheckpointAsync(cancellationToken);
+    }
+
+    private async ValueTask FlushAtCheckpointAsync(CancellationToken cancellationToken)
+    {
+        await WaitForPipelineBeforeSealAsync(cancellationToken).ConfigureAwait(false);
+        await SealBatchesAsync(sealAll: true, cancellationToken).ConfigureAwait(false);
+        await WaitForFlushCheckpointAsync(CaptureFinalFlushCheckpoint(), cancellationToken).ConfigureAwait(false);
+        LogFlushCompleted();
+    }
+
+    private async ValueTask FlushWithAppendWorkerBacklogAsync(AppendWorkerTargets appendWorkerTargets, CancellationToken cancellationToken)
+    {
+        await WaitForPipelineBeforeSealAsync(cancellationToken).ConfigureAwait(false);
+
+        // Wait for the handoffs in the snapshot to reach a batch, so the final seal covers them.
+        // Seal the open batches first: a worker can be waiting for BufferMemory that only their
+        // delivery releases, and nothing else seals them before linger expires.
         if (HasAppendWorkerBacklog(in appendWorkerTargets))
         {
             await SealBatchesAsync(sealAll: true, cancellationToken).ConfigureAwait(false);
@@ -7891,16 +7897,72 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         await SealBatchesAsync(sealAll: true, cancellationToken).ConfigureAwait(false);
+        await WaitForFlushCheckpointAsync(CaptureFinalFlushCheckpoint(), cancellationToken).ConfigureAwait(false);
+        LogFlushCompleted();
+    }
 
-        // Every record appended before this flush started is now in a batch that has entered
-        // the in-flight list (the seal waited out rotations and appends in progress), so the
-        // newest entry sequence covers them. Lock is released before waiting — the linger
-        // timer can resume for new batches.
+    /// <summary>
+    /// Waits, before a flush seals its partial batches, for the batches already in the pipeline.
+    /// </summary>
+    /// <remarks>
+    /// A final partial batch must not enter the sender behind older sealed batches that are
+    /// still queued or carried over. Under a deep admission budget, publishing the partial batch
+    /// into that active pipeline can let it overtake one or more full same-partition batches
+    /// during the flush boundary. Drain the batches already in the pipeline first, then seal the
+    /// current batches into a fresh ordered wave. The wait stops at a checkpoint, not at global
+    /// quiescence (#3386): batches that concurrent producers seal after it do not hold the flush
+    /// open.
+    /// <para>
+    /// A batch mid-rotation at flush entry is detached but not yet in flight, so a checkpoint
+    /// captured then would not cover it, and the seal could publish the partition's newer partial
+    /// batch while it is still in the pipeline. Those rotations finish entering the pipeline
+    /// before the checkpoint is captured.
+    /// </para>
+    /// </remarks>
+    private ValueTask WaitForPipelineBeforeSealAsync(CancellationToken cancellationToken)
+    {
+        WaitForRotationsInProgress(cancellationToken);
+        return Volatile.Read(ref _inFlightBatchCount) > 0
+            ? WaitForFlushCheckpointAsync(CaptureFlushCheckpoint(), cancellationToken)
+            : default;
+    }
+
+    /// <summary>
+    /// Captures the checkpoint a flush waits for after its final seal. Every record appended
+    /// before the flush started is then in a batch that has entered the in-flight list (the
+    /// seal waited out rotations and appends in progress), so the newest entry sequence covers
+    /// them. The seal has released its lock, so the linger timer can resume for new batches.
+    /// </summary>
+    private long CaptureFinalFlushCheckpoint()
+    {
         var checkpoint = CaptureFlushCheckpoint();
         AfterFlushCheckpointCapturedForTest?.Invoke(checkpoint);
-        await WaitForFlushCheckpointAsync(checkpoint, cancellationToken).ConfigureAwait(false);
+        return checkpoint;
+    }
 
-        LogFlushCompleted();
+    /// <summary>
+    /// Spins until every partition that holds its rotation gate has released it. A rotation
+    /// owner counts its batch in flight before it releases the gate, so once this returns every
+    /// batch that was mid-rotation when it was called is covered by <see cref="CaptureFlushCheckpoint"/>.
+    /// The gate covers only the short detach-complete-enqueue step, and the flush's own seal
+    /// already spins on it the same way. Per flush, and only while a rotation is counted.
+    /// </summary>
+    private void WaitForRotationsInProgress(CancellationToken cancellationToken)
+    {
+        if (Volatile.Read(ref _rotatingPartitionCount) == 0)
+            return;
+
+        BeforeFlushWaitsForRotationsForTest?.Invoke();
+        foreach (var kvp in _partitionDeques)
+        {
+            var pd = kvp.Value;
+            var spinner = new SpinWait();
+            while (Volatile.Read(ref pd.RotationInProgress))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                spinner.SpinOnce();
+            }
+        }
     }
 
     /// <summary>

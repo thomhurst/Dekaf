@@ -662,6 +662,138 @@ public sealed class FlushCheckpointTests
     }
 
     [Test]
+    public async Task FlushAsync_WaitsForBatchMidRotationBeforePublishingFinalPartialBatch()
+    {
+        // An append has detached a full batch and not yet counted it in flight when the flush
+        // starts. The flush must let that batch enter the pipeline and leave it before it seals
+        // the partition's newer partial batch; before the fix the pre-seal checkpoint missed the
+        // detached batch and the partial batch was published behind it.
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "flush-checkpoint-tests",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 30,
+            LingerMs = 60_000
+        };
+        var accumulator = new RecordAccumulator(options);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var topicPartition = new TopicPartition("flush-checkpoint-mid-rotation", 0);
+        var value = new byte[16];
+        using var releaseRotation = new ManualResetEventSlim(false);
+        var rotationReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finalCheckpointCaptured = new TaskCompletionSource<long>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task? rotatingAppend = null;
+        Task? flushTask = null;
+        ReadyBatch? olderBatch = null;
+        ReadyBatch? finalBatch = null;
+
+        bool Append(PooledValueTaskSource<RecordMetadata> completion) =>
+            accumulator.TryAppendFromSpansWithCompletion(
+                topicPartition.Topic,
+                topicPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                value,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                completion);
+
+        try
+        {
+            var firstCompletion = pool.Rent();
+            var secondCompletion = pool.Rent();
+            var firstTask = firstCompletion.Task;
+            var secondTask = secondCompletion.Task;
+            await Assert.That(Append(firstCompletion)).IsTrue();
+
+            // The second record does not fit: its append detaches and completes the first
+            // batch, then stops before enqueueing it.
+            accumulator.AfterTwoPhaseRotationCompletedForTest = () =>
+            {
+                accumulator.AfterTwoPhaseRotationCompletedForTest = null;
+                rotationReached.TrySetResult();
+                releaseRotation.Wait(Bound);
+            };
+            rotatingAppend = Task.Factory.StartNew(
+                () =>
+                {
+                    if (!Append(secondCompletion))
+                        throw new InvalidOperationException("The rotating append was rejected.");
+                },
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
+            await rotationReached.Task.WaitAsync(Bound);
+
+            await Assert.That(accumulator.UnsealedBatchCount).IsEqualTo(0);
+            await Assert.That(accumulator.InFlightBatchCount).IsEqualTo(0);
+            await Assert.That(accumulator.RotatingPartitionCountForTest).IsEqualTo(1);
+
+            accumulator.AfterFlushCheckpointCapturedForTest = checkpoint => finalCheckpointCaptured.TrySetResult(checkpoint);
+            // The flush sees the rotation still holding its gate, then lets it finish: the first
+            // batch enters the pipeline and the second record opens the partition's new partial
+            // batch.
+            accumulator.BeforeFlushWaitsForRotationsForTest = () =>
+            {
+                accumulator.BeforeFlushWaitsForRotationsForTest = null;
+                releaseRotation.Set();
+            };
+            flushTask = Task.Factory.StartNew(
+                () => accumulator.FlushAsync(CancellationToken.None).AsTask(),
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default).Unwrap();
+
+            await rotatingAppend.WaitAsync(Bound);
+            olderBatch = await DrainAsync(accumulator, topicPartition);
+
+            // The flush now waits for the older batch at its pre-seal checkpoint.
+            await TestWait.UntilAsync(() => accumulator.FlushCheckpointWakeSequenceForTest != long.MaxValue, Bound);
+            await Assert.That(finalCheckpointCaptured.Task.IsCompleted).IsFalse()
+                .Because("the final partial batch is sealed only after the older batch leaves the pipeline");
+            await Assert.That(accumulator.TryDrainBatch(topicPartition, out finalBatch)).IsFalse()
+                .Because("the final partial batch must not be published while an older batch is in flight");
+            await Assert.That(flushTask.IsCompleted).IsFalse();
+
+            CompleteAndReturn(accumulator, olderBatch, baseOffset: 10);
+            olderBatch = null;
+
+            await finalCheckpointCaptured.Task.WaitAsync(Bound);
+            finalBatch = await DrainAsync(accumulator, topicPartition);
+            await Assert.That(flushTask.IsCompleted).IsFalse();
+            CompleteAndReturn(accumulator, finalBatch, baseOffset: 11);
+            finalBatch = null;
+
+            await flushTask.WaitAsync(Bound);
+            await Assert.That((await firstTask).Offset).IsEqualTo(10);
+            await Assert.That((await secondTask).Offset).IsEqualTo(11);
+        }
+        finally
+        {
+            releaseRotation.Set();
+            accumulator.AfterTwoPhaseRotationCompletedForTest = null;
+            accumulator.BeforeFlushWaitsForRotationsForTest = null;
+            accumulator.AfterFlushCheckpointCapturedForTest = null;
+            if (rotatingAppend is not null)
+                await rotatingAppend.WaitAsync(Bound);
+            if (olderBatch is not null)
+                CompleteAndReturn(accumulator, olderBatch, baseOffset: 10);
+            if (finalBatch is not null)
+                CompleteAndReturn(accumulator, finalBatch, baseOffset: 11);
+
+            await accumulator.DisposeAsync();
+            // Disposal fails whatever the flush still waits for; observe it after a failure.
+            if (flushTask is not null)
+                await flushTask.ContinueWith(static _ => { }, TaskScheduler.Default).WaitAsync(Bound);
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task FlushAsync_Canceled_RetiresItsCheckpointRegistration()
     {
         // A flush canceled while waiting must not leave its checkpoint registered: a later
