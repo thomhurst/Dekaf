@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
 using Dekaf.Admin;
+using Dekaf.Consumer;
 using Dekaf.Consumer.DeadLetter;
 using Dekaf.Extensions.DependencyInjection;
 using Dekaf.Extensions.Hosting;
@@ -21,7 +22,6 @@ public class HostedShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrati
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var group = $"hosted-share-{Guid.NewGuid():N}";
-        await ConfigureEarliestAsync(group);
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync();
         await ShareConsumerTestHelper.ProduceAsync(producer, topic, count: 1);
@@ -31,9 +31,11 @@ public class HostedShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrati
         hostBuilder.Services.AddDekaf(builder => builder
             .AddShareConsumerService<Worker, string, string>("first", c => c
                 .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(group)
+                .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .WithAcknowledgementCommitCallback(state.ObserveAcknowledgements))
             .AddShareConsumerService<Worker, string, string>("second", c => c
                 .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(group)
+                .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .WithAcknowledgementCommitCallback(state.ObserveAcknowledgements)));
         using var host = hostBuilder.Build();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));

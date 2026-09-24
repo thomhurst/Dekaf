@@ -1,5 +1,6 @@
 using System.Net.Security;
 using Dekaf.Networking;
+using Dekaf.Consumer;
 using Dekaf.Retry;
 using Dekaf.Telemetry;
 using Dekaf.Security;
@@ -34,6 +35,17 @@ public sealed class ShareConsumerOptions
     /// Share group ID. Required for share consumers.
     /// </summary>
     public required string GroupId { get; init; }
+
+    /// <summary>
+    /// Optional group-level share.auto.offset.reset policy, applied during initialization before joining.
+    /// Null preserves the broker configuration, whose default is latest. Supports Earliest, Latest,
+    /// and ByDuration. This changes the policy for every member, requires group ALTER_CONFIGS,
+    /// and does not rewind an existing delivery window.
+    /// </summary>
+    public AutoOffsetReset? AutoOffsetReset { get; init; }
+
+    /// <summary>Non-negative lookback used with ByDuration. Otherwise must be null.</summary>
+    public TimeSpan? AutoOffsetResetDuration { get; init; }
 
     /// <summary>
     /// The rack ID of the consumer, used for rack-aware assignment.

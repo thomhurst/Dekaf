@@ -1,4 +1,5 @@
 using Dekaf.ShareConsumer;
+using Dekaf.Consumer;
 
 namespace Dekaf.Extensions.DependencyInjection;
 
@@ -8,6 +9,18 @@ internal static partial class DekafOptionsBinding
     {
         builder.WithBootstrapServers(options.BootstrapServers.ToArray());
         builder.WithGroupId(options.GroupId);
+        if (options.AutoOffsetReset == AutoOffsetReset.ByDuration)
+        {
+            if (options.AutoOffsetResetDuration is not { } duration)
+                throw new ArgumentException("AutoOffsetResetDuration must be set for AutoOffsetReset.ByDuration.", nameof(options));
+            builder.WithAutoOffsetResetByDuration(duration);
+        }
+        else
+        {
+            if (options.AutoOffsetResetDuration is not null)
+                throw new ArgumentException("AutoOffsetResetDuration requires AutoOffsetReset.ByDuration.", nameof(options));
+            if (options.AutoOffsetReset is { } reset) builder.WithAutoOffsetReset(reset);
+        }
         if (options.ClientId is not null) builder.WithClientId(options.ClientId);
         if (options.RackId is not null) builder.WithRackId(options.RackId);
         builder.WithFetchMinBytes(options.FetchMinBytes);
