@@ -1,8 +1,15 @@
 namespace Dekaf.Extensions.Hosting;
 
-/// <summary>Controls hosted share consumer shutdown and acquisition renewal.</summary>
+/// <summary>Controls hosted share consumer poll retries, shutdown, and acquisition renewal.</summary>
 public sealed class KafkaShareConsumerServiceOptions
 {
+    /// <summary>
+    /// Delay before restarting a poll after a retriable Kafka error or a share-group join timeout.
+    /// Must be at least 1 millisecond. Shutdown cancels this delay. Default: 1 second.
+    /// Processing and acknowledgement failures are not retried by this policy.
+    /// </summary>
+    public TimeSpan PollRetryBackoff { get; init; } = TimeSpan.FromSeconds(1);
+
     /// <summary>Maximum shutdown wait, including processing and final acknowledgement submission. Default: 30 seconds.</summary>
     public TimeSpan ShutdownTimeout { get; init; } = TimeSpan.FromSeconds(30);
 

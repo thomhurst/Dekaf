@@ -37,8 +37,14 @@ public class HostedShareConsumerProcessingBenchmarks
     }
 
     [Benchmark(OperationsPerInvoke = RecordsPerBatch)]
-    public async ValueTask<long> ProcessBatch()
+    public ValueTask<long> ProcessBatch() => ProcessRecords(RecordsPerBatch);
+
+    [Benchmark]
+    public ValueTask<long> ProcessSingleRecord() => ProcessRecords(1);
+
+    private async ValueTask<long> ProcessRecords(int count)
     {
+        _consumer.RecordsToSupply = count;
         var before = _consumer.Accepted;
         _consumer.Available.Signal();
         if (HandlerSuspends)
@@ -46,14 +52,14 @@ public class HostedShareConsumerProcessingBenchmarks
             // Each handler suspends on a reusable IValueTaskSource. The caller then completes
             // it, so the production service exercises asynchronous completion without adding
             // application Task allocations or artificial thread-pool work to the measurement.
-            for (var index = 0; index < RecordsPerBatch; index++)
+            for (var index = 0; index < count; index++)
             {
                 if (!await _handler.Entered.WaitAsync(30_000))
                     throw new TimeoutException("The hosted handler did not start.");
                 _handler.Complete();
             }
         }
-        if (!await _consumer.Completed.WaitAsync(30_000) || _consumer.Accepted - before != RecordsPerBatch)
+        if (!await _consumer.Completed.WaitAsync(30_000) || _consumer.Accepted - before != count)
             throw new InvalidOperationException("Every supplied record must be processed and accepted.");
         return _consumer.Accepted;
     }
@@ -105,6 +111,7 @@ public class HostedShareConsumerProcessingBenchmarks
         internal readonly AsyncAutoResetSignal Completed = new(inlineContinuations: true);
         internal readonly TaskCompletionSource Ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal long Accepted;
+        internal int RecordsToSupply;
         public ShareAcknowledgementMode AcknowledgementMode => ShareAcknowledgementMode.Explicit;
         public IReadOnlySet<string> Subscription { get; } = new HashSet<string> { "orders" };
         public IReadOnlySet<TopicPartition> Assignment { get; } = new HashSet<TopicPartition>();
@@ -120,7 +127,7 @@ public class HostedShareConsumerProcessingBenchmarks
             while (!cancellationToken.IsCancellationRequested)
             {
                 await Available.WaitAsync(Timeout.Infinite);
-                for (var index = 0; index < RecordsPerBatch; index++)
+                for (var index = 0; index < RecordsToSupply; index++)
                     yield return _record;
                 Completed.Signal();
             }

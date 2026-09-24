@@ -61,6 +61,8 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
         ArgumentOutOfRangeException.ThrowIfGreaterThan(_options.ShutdownTimeout.TotalMilliseconds, uint.MaxValue - 1);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_options.RenewalInterval, TimeSpan.Zero);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(_options.RenewalInterval.TotalMilliseconds, int.MaxValue - 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(_options.PollRetryBackoff, TimeSpan.FromMilliseconds(1));
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(_options.PollRetryBackoff.TotalMilliseconds, int.MaxValue - 1);
         _deadLetterPolicy = deadLetterPolicy ?? (deadLetterOptions is null
             ? null : new DefaultDeadLetterPolicy<TKey, TValue>(deadLetterOptions));
     }
@@ -140,85 +142,102 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
             await _consumer.InitializeAsync(_pollCancellation.Token).ConfigureAwait(false);
             initialized = true;
             _consumer.Subscribe(BuildTopics());
-            await foreach (var record in _consumer.PollAsync(_pollCancellation.Token).ConfigureAwait(false))
+            while (!_pollCancellation.IsCancellationRequested)
             {
-                current = record;
-                if (_acknowledgementFailure is { } pollFailure)
-                    ExceptionDispatchInfo.Capture(pollFailure).Throw();
-                if (Volatile.Read(ref _shutdownStarted) != 0)
-                    break;
-                _lastRenewal = _consumer is IHostedShareConsumer acquisition
-                    ? acquisition.AcquisitionStartedTimestamp : Stopwatch.GetTimestamp();
-                CheckAcquisitionDeadline();
-                var processingToken = _processingCancellation.Token;
-                _recordDisposition = AcknowledgeType.Accept;
-                Exception? processingFailure = null;
-                while (true)
+                try
                 {
-                    try
+                    await foreach (var record in _consumer.PollAsync(_pollCancellation.Token).ConfigureAwait(false))
                     {
-                        var operation = processingFailure is null
-                            ? BeginProcessingAsync(record, processingToken)
-                            : HandleFailureAsync(processingFailure, record, processingToken);
-                        Exception? renewalFailure = null;
-                        if (!operation.IsCompleted)
+                        current = record;
+                        if (_acknowledgementFailure is { } pollFailure)
+                            ExceptionDispatchInfo.Capture(pollFailure).Throw();
+                        if (Volatile.Read(ref _shutdownStarted) != 0)
+                            break;
+                        _lastRenewal = _consumer is IHostedShareConsumer acquisition
+                            ? acquisition.AcquisitionStartedTimestamp : Stopwatch.GetTimestamp();
+                        CheckAcquisitionDeadline();
+                        var processingToken = _processingCancellation.Token;
+                        _recordDisposition = AcknowledgeType.Accept;
+                        Exception? processingFailure = null;
+                        while (true)
                         {
-                            // Register one cached callback, without converting an application
-                            // ValueTask to Task or allocating a per-record async wrapper.
-                            operation.ConfigureAwait(false).GetAwaiter().UnsafeOnCompleted(_processingCompletedCallback);
-                            while (!operation.IsCompleted)
+                            try
                             {
+                                var operation = processingFailure is null
+                                    ? BeginProcessingAsync(record, processingToken)
+                                    : HandleFailureAsync(processingFailure, record, processingToken);
+                                Exception? renewalFailure = null;
+                                if (!operation.IsCompleted)
+                                {
+                                    // Register one cached callback, without converting an application
+                                    // ValueTask to Task or allocating a per-record async wrapper.
+                                    operation.ConfigureAwait(false).GetAwaiter().UnsafeOnCompleted(_processingCompletedCallback);
+                                    while (!operation.IsCompleted)
+                                    {
+                                        try
+                                        {
+                                            if (processingToken.IsCancellationRequested)
+                                            {
+                                                // A ValueTask backed by IValueTaskSource permits only one
+                                                // completion registration. Keep waiting on our reusable signal
+                                                // until the original operation completes; never await it twice.
+                                                await _operationCompleted.WaitAsync(Timeout.Infinite).ConfigureAwait(false);
+                                                continue;
+                                            }
+                                            if (await _operationCompleted.WaitAsync(GetRenewalDelayMs()).ConfigureAwait(false))
+                                                continue;
+                                            if (operation.IsCompleted)
+                                                break;
+                                            CheckAcquisitionDeadline();
+                                            _consumer.Acknowledge(record, AcknowledgeType.Renew);
+                                            _lastRenewal = Stopwatch.GetTimestamp();
+                                            await _consumer.CommitAsync(processingToken).ConfigureAwait(false);
+                                        }
+                                        catch (Exception exception)
+                                        {
+                                            renewalFailure ??= exception;
+                                            CancelProcessing();
+                                        }
+                                    }
+                                }
                                 try
                                 {
-                                    if (processingToken.IsCancellationRequested)
-                                    {
-                                        // A ValueTask backed by IValueTaskSource permits only one
-                                        // completion registration. Keep waiting on our reusable signal
-                                        // until the original operation completes; never await it twice.
-                                        await _operationCompleted.WaitAsync(Timeout.Infinite).ConfigureAwait(false);
-                                        continue;
-                                    }
-                                    if (await _operationCompleted.WaitAsync(GetRenewalDelayMs()).ConfigureAwait(false))
-                                        continue;
-                                    if (operation.IsCompleted)
-                                        break;
-                                    CheckAcquisitionDeadline();
-                                    _consumer.Acknowledge(record, AcknowledgeType.Renew);
-                                    _lastRenewal = Stopwatch.GetTimestamp();
-                                    await _consumer.CommitAsync(processingToken).ConfigureAwait(false);
+                                    // Already complete: this consumes the result once without registering
+                                    // another continuation on a single-use application ValueTask.
+                                    await operation.ConfigureAwait(false);
                                 }
-                                catch (Exception exception)
+                                catch (Exception exception) when (renewalFailure is not null)
                                 {
-                                    renewalFailure ??= exception;
-                                    CancelProcessing();
+                                    LogFailure(exception, record.Topic);
                                 }
+                                if (renewalFailure is not null)
+                                    ExceptionDispatchInfo.Capture(renewalFailure).Throw();
+                                break;
+                            }
+                            catch (Exception exception) when (processingFailure is null && !processingToken.IsCancellationRequested)
+                            {
+                                processingFailure = exception;
                             }
                         }
-                        try
-                        {
-                            // Already complete: this consumes the result once without registering
-                            // another continuation on a single-use application ValueTask.
-                            await operation.ConfigureAwait(false);
-                        }
-                        catch (Exception exception) when (renewalFailure is not null)
-                        {
-                            LogFailure(exception, record.Topic);
-                        }
-                        if (renewalFailure is not null)
-                            ExceptionDispatchInfo.Capture(renewalFailure).Throw();
-                        break;
+                        processingToken.ThrowIfCancellationRequested();
+                        CheckAcquisitionDeadline();
+                        _consumer.Acknowledge(record, _recordDisposition);
+                        current = null;
+                        if (Volatile.Read(ref _shutdownStarted) != 0)
+                            break;
                     }
-                    catch (Exception exception) when (processingFailure is null && !processingToken.IsCancellationRequested)
-                    {
-                        processingFailure = exception;
-                    }
-                }
-                processingToken.ThrowIfCancellationRequested();
-                CheckAcquisitionDeadline();
-                _consumer.Acknowledge(record, _recordDisposition);
-                current = null;
-                if (Volatile.Read(ref _shutdownStarted) != 0)
                     break;
+                }
+                catch (KafkaException exception) when (
+                    current is null && _acknowledgementFailure is null &&
+                    !_pollCancellation.IsCancellationRequested &&
+                    (exception.IsRetriable || exception is KafkaTimeoutException { TimeoutKind: TimeoutKind.Rebalance }))
+                {
+                    // The failed iterator has been disposed. Start a new poll after backoff;
+                    // never retry processing or acknowledgement failures as polling failures.
+                    await OnErrorAsync(exception, null, _pollCancellation.Token).ConfigureAwait(false);
+                    await Task.Delay(_options.PollRetryBackoff, _pollCancellation.Token).ConfigureAwait(false);
+                }
             }
             if (_acknowledgementFailure is { } acknowledgementFailure)
                 ExceptionDispatchInfo.Capture(acknowledgementFailure).Throw();
