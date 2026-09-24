@@ -3445,6 +3445,8 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private string? _clientId;
     private string? _groupId;
     private string? _rackId;
+    private AutoOffsetReset? _autoOffsetReset;
+    private TimeSpan? _autoOffsetResetDuration;
     private int _fetchMinBytes = 1;
     private int _fetchMaxBytes = 52428800;
     private int _maxPartitionFetchBytes = 1048576;
@@ -3535,6 +3537,34 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     public ShareConsumerBuilder<TKey, TValue> WithGroupId(string groupId)
     {
         _groupId = groupId;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the group-level share.auto.offset.reset policy before joining. Supports Earliest and Latest.
+    /// Requires group ALTER_CONFIGS permission and affects all members. Does not rewind existing offsets.
+    /// Omit this call to preserve the broker setting (latest by default).
+    /// </summary>
+    public ShareConsumerBuilder<TKey, TValue> WithAutoOffsetReset(AutoOffsetReset autoOffsetReset)
+    {
+        if (autoOffsetReset == AutoOffsetReset.ByDuration)
+            throw new ArgumentException("Use WithAutoOffsetResetByDuration(TimeSpan) to configure duration-based offset reset.", nameof(autoOffsetReset));
+        if (autoOffsetReset is not (AutoOffsetReset.Earliest or AutoOffsetReset.Latest))
+            throw new ArgumentOutOfRangeException(nameof(autoOffsetReset), autoOffsetReset, "Share groups support Earliest, Latest, or ByDuration.");
+        _autoOffsetReset = autoOffsetReset;
+        _autoOffsetResetDuration = null;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the group-level share.auto.offset.reset lookback before joining. The duration must be non-negative.
+    /// Requires group ALTER_CONFIGS permission and affects all members. Does not rewind existing offsets.
+    /// </summary>
+    public ShareConsumerBuilder<TKey, TValue> WithAutoOffsetResetByDuration(TimeSpan duration)
+    {
+        AutoOffsetResetStrategy.ValidateDuration(duration);
+        _autoOffsetReset = AutoOffsetReset.ByDuration;
+        _autoOffsetResetDuration = duration;
         return this;
     }
 
@@ -4144,6 +4174,8 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             BootstrapServers = _bootstrapServers,
             ClientId = _clientId,
             GroupId = _groupId,
+            AutoOffsetReset = _autoOffsetReset,
+            AutoOffsetResetDuration = _autoOffsetResetDuration,
             RackId = _rackId,
             FetchMinBytes = _fetchMinBytes,
             FetchMaxBytes = _fetchMaxBytes,

@@ -62,6 +62,44 @@ await using var consumer = await kafka.CreateShareConsumer<string, string>("orde
 
 Share groups do not support manual partition assignment — `Subscribe` is the only way to receive records. The share group coordinator decides which partitions each member fetches from; the current set is exposed via `consumer.Assignment`.
 
+## Starting offsets
+
+Kafka stores `share.auto.offset.reset` on the **group**, with `latest` as its default.
+A new share group can therefore skip records produced before its delivery window is initialized.
+For queue workloads that must include retained records, configure the policy before joining:
+
+```csharp
+using Dekaf.Consumer;
+
+await using var consumer = await Kafka.CreateShareConsumer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithGroupId("order-workers")
+    .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+    .SubscribeTo("orders")
+    .BuildAsync();
+```
+
+`WithAutoOffsetReset(AutoOffsetReset.Latest)` explicitly selects latest.
+`WithAutoOffsetResetByDuration(TimeSpan.FromHours(1))` selects a non-negative lookback.
+`AutoOffsetReset.None` is not supported for share groups. There is no separate client
+policy for new partitions.
+
+The consumer applies an explicit policy through `IncrementalAlterConfigs` during
+`InitializeAsync` (also called by `BuildAsync`), before it can join or fetch. This requires
+`ALTER_CONFIGS` permission on the group. Configuration failures fail initialization;
+the consumer never silently joins with a different policy. The authenticated connection
+pool is reused, including when the consumer belongs to a `KafkaClient`.
+
+Omitting both methods leaves the existing group configuration untouched. The equivalent
+`ShareConsumerOptions` properties are nullable `AutoOffsetReset` and
+`AutoOffsetResetDuration`, and work with dependency injection and configuration binding.
+Use the same policy for all members: these settings affect the entire group. They initialize
+new delivery windows; they do not rewind existing offsets or replay accepted records.
+For an existing group, use the [share-group offset admin APIs](../admin/detailed-share-group-offsets).
+
+See Kafka's [group configuration reference](https://kafka.apache.org/42/configuration/group-configs/#share.auto.offset.reset)
+for the broker semantics.
+
 ## Borrowed batch delivery
 
 `PollBatchesAsync` is an optional capability exposed by Dekaf's share consumer through
