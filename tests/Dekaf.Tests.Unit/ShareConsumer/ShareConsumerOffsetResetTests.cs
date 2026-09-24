@@ -10,6 +10,7 @@ using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
 using Dekaf.ShareConsumer;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
 using NSubstitute;
 
 namespace Dekaf.Tests.Unit.ShareConsumer;
@@ -155,6 +156,46 @@ public sealed class ShareConsumerOffsetResetTests
         var consumer = provider.GetRequiredService<IKafkaShareConsumer<string, string>>();
         await Assert.That(GetOptions(consumer).AutoOffsetReset).IsEqualTo(options.AutoOffsetReset);
         await Assert.That(GetOptions(consumer).AutoOffsetResetDuration).IsEqualTo(options.AutoOffsetResetDuration);
+    }
+
+    [Test]
+    [Arguments(false, null, null, null)]
+    [Arguments(true, null, null, null)]
+    [Arguments(false, "Earliest", null, "earliest")]
+    [Arguments(true, "Earliest", null, "earliest")]
+    [Arguments(false, "ByDuration", "00:00:01.500", "by_duration:PT1.5S")]
+    [Arguments(true, "ByDuration", "00:00:01.500", "by_duration:PT1.5S")]
+    public async Task ConfigurationBinding_PreservesPolicyAndDuration(
+        bool keyed, string? policy, string? duration, string? expectedConfigValue)
+    {
+        var values = new Dictionary<string, string?>
+        {
+            ["BootstrapServers:0"] = "localhost:9092",
+            ["GroupId"] = "offset-reset"
+        };
+        if (policy is not null) values["AutoOffsetReset"] = policy;
+        if (duration is not null) values["AutoOffsetResetDuration"] = duration;
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
+        var services = new ServiceCollection();
+        services.AddDekaf(builder =>
+        {
+            if (keyed) builder.AddShareConsumer<string, string>("configured", configuration);
+            else builder.AddShareConsumer<string, string>(configuration);
+        });
+        await using var provider = services.BuildServiceProvider();
+        var consumer = keyed
+            ? provider.GetRequiredKeyedService<IKafkaShareConsumer<string, string>>("configured")
+            : provider.GetRequiredService<IKafkaShareConsumer<string, string>>();
+        var options = GetOptions(consumer);
+        await Assert.That(options.AutoOffsetReset).IsEqualTo(policy switch
+        {
+            "Earliest" => AutoOffsetReset.Earliest,
+            "ByDuration" => AutoOffsetReset.ByDuration,
+            _ => (AutoOffsetReset?)null
+        });
+        await Assert.That(options.AutoOffsetResetDuration)
+            .IsEqualTo(duration is null ? (TimeSpan?)null : TimeSpan.FromMilliseconds(1500));
+        await Assert.That(ShareAutoOffsetResetStrategy.GetConfigValue(options)).IsEqualTo(expectedConfigValue);
     }
 
     private static ShareConsumerOptions GetOptions(IKafkaShareConsumer<string, string> consumer) =>
