@@ -57,3 +57,5 @@ virtual Dekaf.Extensions.Hosting.KafkaShareConsumerService<TKey, TValue>.GetFail
 virtual Dekaf.Extensions.Hosting.KafkaShareConsumerService<TKey, TValue>.OnDeadLetterRoutingFailedAsync(System.Exception! exception, Dekaf.ShareConsumer.ShareConsumeResult<TKey, TValue>! result, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask
 virtual Dekaf.Extensions.Hosting.KafkaShareConsumerService<TKey, TValue>.OnErrorAsync(System.Exception! exception, Dekaf.ShareConsumer.ShareConsumeResult<TKey, TValue>? result, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask
 virtual Dekaf.Extensions.Hosting.KafkaShareConsumerService<TKey, TValue>.OnRetryTopicRoutingFailedAsync(System.Exception! exception, Dekaf.ShareConsumer.ShareConsumeResult<TKey, TValue>! result, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask
+Dekaf.Extensions.Hosting.KafkaShareConsumerServiceOptions.PollRetryBackoff.get -> System.TimeSpan
+Dekaf.Extensions.Hosting.KafkaShareConsumerServiceOptions.PollRetryBackoff.init -> void

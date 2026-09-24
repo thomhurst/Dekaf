@@ -1,6 +1,8 @@
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks.Sources;
 using Dekaf.Consumer;
+using Dekaf.Errors;
+using Dekaf.Protocol;
 using Dekaf.Consumer.DeadLetter;
 using Dekaf.Extensions.Hosting;
 using Dekaf.Producer;
@@ -21,6 +23,96 @@ namespace Dekaf.Tests.Unit.Hosting;
 
 public sealed class KafkaShareConsumerServiceTests
 {
+    [Test]
+    [Arguments(true, false)]
+    [Arguments(false, false)]
+    [Arguments(true, true)]
+    [Arguments(false, true)]
+    public async Task RetriablePollFailure_RestartsDisposedIteratorAndProcessesRecords(bool joinTimeout, bool afterRecord)
+    {
+        var error = joinTimeout
+            ? (KafkaException)new KafkaTimeoutException("join timed out") { TimeoutKind = TimeoutKind.Rebalance }
+            : new KafkaException(ErrorCode.CoordinatorLoadInProgress, "coordinator loading");
+        var consumer = new TestConsumer(Record(0), Record(1))
+        { PollFailure = error, FailPollAfterRecords = afterRecord ? 1 : 0 };
+        await using var service = new TestService(consumer,
+            options: new KafkaShareConsumerServiceOptions { PollRetryBackoff = TimeSpan.FromMilliseconds(1) });
+
+        await RunAsync(service);
+
+        await Assert.That(consumer.PollAttempts).IsEqualTo(2);
+        await Assert.That(consumer.DisposedPolls).IsEqualTo(2);
+        await Assert.That(consumer.Delivered).IsEqualTo(2);
+        await Assert.That(service.Errors.Single()).IsSameReferenceAs(error);
+        await Assert.That(consumer.Acknowledgements.Select(x => x.Type))
+            .IsEquivalentTo([AcknowledgeType.Accept, AcknowledgeType.Accept]);
+    }
+
+    [Test]
+    public async Task ShutdownDuringPollBackoff_CancelsDelayWithoutAnotherPoll()
+    {
+        var consumer = new TestConsumer { PollFailure = new KafkaTimeoutException("join timed out")
+            { TimeoutKind = TimeoutKind.Rebalance } };
+        await using var service = new TestService(consumer,
+            options: new KafkaShareConsumerServiceOptions { PollRetryBackoff = TimeSpan.FromHours(1) });
+        await service.StartAsync(default);
+        await service.ErrorObserved.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await service.StopAsync(default).WaitAsync(TimeSpan.FromSeconds(10));
+        await service.ExecuteTask!.WaitAsync(TimeSpan.FromSeconds(10));
+        await Assert.That(consumer.PollAttempts).IsEqualTo(1);
+        await Assert.That(consumer.DisposedPolls).IsEqualTo(1);
+        await Assert.That(consumer.Events.Contains("close")).IsTrue();
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task NonRetriablePollFailure_RemainsTerminal(bool authorization)
+    {
+        var error = authorization
+            ? (KafkaException)new KafkaException(ErrorCode.GroupAuthorizationFailed, "denied")
+            : new KafkaTimeoutException("unclassified timeout");
+        var consumer = new TestConsumer { PollFailure = error };
+        await using var service = new TestService(consumer);
+        await Assert.That(async () => await RunAsync(service)).Throws<KafkaException>();
+        await Assert.That(consumer.PollAttempts).IsEqualTo(1);
+        await Assert.That(service.Errors.Single()).IsSameReferenceAs(error);
+    }
+
+    [Test]
+    public async Task RetriableProcessingFailure_IsReleasedAndNotRetriedAsPollFailure()
+    {
+        var consumer = new TestConsumer(Record(0), Record(1));
+        await using var service = new TestService(consumer,
+            (_, _) => throw new KafkaException(ErrorCode.CoordinatorLoadInProgress, "handler failed"));
+        await Assert.That(async () => await RunAsync(service)).Throws<KafkaException>();
+        await Assert.That(consumer.PollAttempts).IsEqualTo(1);
+        await Assert.That(consumer.Acknowledgements.Single().Type).IsEqualTo(AcknowledgeType.Release);
+    }
+
+    [Test]
+    public async Task RetriableAcknowledgementFailure_RemainsTerminal()
+    {
+        var error = new KafkaException(ErrorCode.CoordinatorLoadInProgress, "acknowledgement failed");
+        var consumer = new TestConsumer(Record(0)) { InlineFailure = error };
+        await using var service = new TestService(consumer);
+        await Assert.That(async () => await RunAsync(service)).Throws<KafkaException>();
+        await Assert.That(consumer.PollAttempts).IsEqualTo(1);
+        await Assert.That(service.Errors.Single()).IsSameReferenceAs(error);
+    }
+
+    [Test]
+    [Arguments(0d)]
+    [Arguments(-1d)]
+    [Arguments(0.5d)]
+    [Arguments(2147483647d)]
+    public async Task InvalidPollRetryBackoff_IsRejected(double milliseconds)
+    {
+        await Assert.That(() => new TestService(new TestConsumer(),
+            options: new KafkaShareConsumerServiceOptions { PollRetryBackoff = TimeSpan.FromMilliseconds(milliseconds) }))
+            .Throws<ArgumentOutOfRangeException>();
+    }
+
     [Test]
     public async Task Success_AcceptsCommitsClosesAndDisposes()
     {
@@ -581,6 +673,10 @@ public sealed class KafkaShareConsumerServiceTests
         public bool ReportCommitFailure { get; init; }
         public bool ThrowCommitFailure { get; init; }
         public byte[]? RawValue { get; init; } = [1, 2, 3];
+        public Exception? PollFailure { get; init; }
+        public int FailPollAfterRecords { get; init; }
+        public int PollAttempts { get; private set; }
+        public int DisposedPolls { get; private set; }
         public int Delivered { get; private set; }
         public StringSet Subscription { get; private set; } = new HashSet<string>();
         public PartitionSet Assignment => new HashSet<TopicPartition>();
@@ -606,16 +702,27 @@ public sealed class KafkaShareConsumerServiceTests
         public IKafkaShareConsumer<string, string> Unsubscribe() => this;
         public async IAsyncEnumerable<ShareConsumeResult<string, string>> PollAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            await Task.CompletedTask;
-            if (InlineFailure is not null)
-                _observer?.Invoke([new ShareAcknowledgementCommitResult(new TopicPartition("orders", 0), default, InlineFailure)]);
-            foreach (var record in records)
+            PollAttempts++;
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                Delivered++;
-                yield return record;
+                await Task.CompletedTask;
+                if (InlineFailure is not null)
+                    _observer?.Invoke([new ShareAcknowledgementCommitResult(new TopicPartition("orders", 0), default, InlineFailure)]);
+                while (true)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (PollAttempts == 1 && Delivered == FailPollAfterRecords && PollFailure is not null)
+                        throw PollFailure;
+                    if (Delivered == records.Length) yield break;
+                    yield return records[Delivered++];
+                }
+            }
+            finally
+            {
+                DisposedPolls++;
             }
         }
+
         public void Acknowledge(ShareConsumeResult<string, string> record, AcknowledgeType type = AcknowledgeType.Accept)
         {
             Acknowledgements.Add((record, type));
@@ -647,6 +754,10 @@ public sealed class KafkaShareConsumerServiceTests
         public MessageFailureDisposition Disposition { get; init; } = MessageFailureDisposition.Retry;
         public ShareMessageFailureContext<string, string>? FailureContext { get; private set; }
         public int RoutingFailures { get; private set; }
+        public List<Exception> Errors { get; } = [];
+        public TaskCompletionSource ErrorObserved { get; } = Signal();
+        protected override ValueTask OnErrorAsync(Exception exception, ShareConsumeResult<string, string>? result, CancellationToken token)
+        { Errors.Add(exception); ErrorObserved.TrySetResult(); return ValueTask.CompletedTask; }
         public IKafkaProducer<byte[]?, byte[]?>? Producer { get; init; }
         public string[] SourceTopics { get; init; } = ["orders"];
         protected override IEnumerable<string> Topics => SourceTopics;

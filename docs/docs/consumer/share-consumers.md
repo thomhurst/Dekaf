@@ -352,3 +352,17 @@ The in-memory share consumer follows the same provisional-delivery shutdown rule
 ## Testing
 
 `Dekaf.Testing` provides `InMemoryShareConsumer<TKey, TValue>` for broker-free unit tests, and `AddDekafInMemory()` swaps DI registrations for in-memory doubles. See [Testing](../testing).
+
+## Hosted polling retries
+
+`KafkaShareConsumerService` reports share-group join timeouts and retriable Kafka polling
+errors through `OnErrorAsync`, then starts a new poll after `PollRetryBackoff` (one second
+by default). Configure this delay (at least 1 millisecond) through `KafkaShareConsumerServiceOptions`.
+Shutdown cancels the delay. Processing, acknowledgement, authorization, and other terminal
+failures retain their existing failure behavior.
+
+Repeated join timeouts need investigation. On a single-broker development cluster, verify
+that `share.coordinator.state.topic.replication.factor` and
+`share.coordinator.state.topic.min.isr` are both `1`; otherwise Kafka cannot create the
+share coordinator's state topic. The timeout's inner exception, when present, records the
+last join failure.
