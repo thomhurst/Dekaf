@@ -61,9 +61,25 @@ public static class DekafBuilderShareConsumerExtensions
         ArgumentNullException.ThrowIfNull(configuration);
         return Register<TKey, TValue>(builder, null, (_, consumer) =>
         {
-            DekafOptionsBinding.ApplyShareConsumer(DekafConfigurationBinding.GetOptions<ShareConsumerOptions>(configuration), consumer);
+            DekafConfigurationBinding.ApplyShareConsumer(configuration, consumer);
             configure?.Invoke(consumer);
         }, configureDeadLetterQueue);
+    }
+
+    /// <summary>Adds an unkeyed singleton share consumer from configuration and the service provider.</summary>
+    /// <remarks>Configuration is applied first, so <paramref name="configure"/> can override bound values.</remarks>
+    [RequiresDynamicCode(DekafConfigurationBinding.RequiresDynamicCodeMessage)]
+    [RequiresUnreferencedCode(DekafConfigurationBinding.RequiresUnreferencedCodeMessage)]
+    public static DekafBuilder AddShareConsumer<TKey, TValue>(
+        this DekafBuilder builder,
+        IConfiguration configuration,
+        Action<IServiceProvider, ShareConsumerBuilder<TKey, TValue>> configure,
+        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(configure);
+        return Register(builder, null, ConfigureFrom(configuration, configure), configureDeadLetterQueue);
     }
 
     /// <summary>Adds a keyed singleton share consumer.</summary>
@@ -125,10 +141,39 @@ public static class DekafBuilderShareConsumerExtensions
         ArgumentNullException.ThrowIfNull(configuration);
         return Register<TKey, TValue>(builder, serviceKey, (_, consumer) =>
         {
-            DekafOptionsBinding.ApplyShareConsumer(DekafConfigurationBinding.GetOptions<ShareConsumerOptions>(configuration), consumer);
+            DekafConfigurationBinding.ApplyShareConsumer(configuration, consumer);
             configure?.Invoke(consumer);
         }, configureDeadLetterQueue);
     }
+
+    /// <summary>Adds a keyed singleton share consumer from configuration and the service provider.</summary>
+    /// <remarks>Configuration is applied first, so <paramref name="configure"/> can override bound values.</remarks>
+    [RequiresDynamicCode(DekafConfigurationBinding.RequiresDynamicCodeMessage)]
+    [RequiresUnreferencedCode(DekafConfigurationBinding.RequiresUnreferencedCodeMessage)]
+    public static DekafBuilder AddShareConsumer<TKey, TValue>(
+        this DekafBuilder builder,
+        object serviceKey,
+        IConfiguration configuration,
+        Action<IServiceProvider, ShareConsumerBuilder<TKey, TValue>> configure,
+        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(serviceKey);
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(configure);
+        return Register(builder, serviceKey, ConfigureFrom(configuration, configure), configureDeadLetterQueue);
+    }
+
+    [RequiresDynamicCode(DekafConfigurationBinding.RequiresDynamicCodeMessage)]
+    [RequiresUnreferencedCode(DekafConfigurationBinding.RequiresUnreferencedCodeMessage)]
+    internal static Action<IServiceProvider, ShareConsumerBuilder<TKey, TValue>> ConfigureFrom<TKey, TValue>(
+        IConfiguration configuration,
+        Action<IServiceProvider, ShareConsumerBuilder<TKey, TValue>> configure) =>
+        (provider, consumer) =>
+        {
+            DekafConfigurationBinding.ApplyShareConsumer(configuration, consumer);
+            configure(provider, consumer);
+        };
 
     internal static object DeadLetterOptionsKey<TKey, TValue>(object? serviceKey) =>
         new ShareConsumerOptionsKey(typeof(IKafkaShareConsumer<TKey, TValue>), serviceKey);

@@ -244,6 +244,21 @@ builder.Services.AddDekaf(dekaf =>
 });
 ```
 
+Admin clients accept the same service keys. Admin configuration sections also bind
+`BootstrapControllers` for direct KRaft controller administration (KIP-919); set either
+`BootstrapServers` or `BootstrapControllers`, not both:
+
+```csharp
+builder.Services.AddDekaf(dekaf =>
+{
+    dekaf.AddAdminClient("orders", admin => admin
+        .WithBootstrapServers(config["Kafka:Orders:BootstrapServers"]!));
+
+    dekaf.AddAdminClient("controllers", admin => admin
+        .WithBootstrapControllers("controller-1:9093,controller-2:9093"));
+});
+```
+
 ## Global Interceptors
 
 Register cross-cutting interceptors (tracing, metrics, audit logging) that apply to all producers or consumers automatically:
@@ -515,6 +530,20 @@ services.AddDekaf(dekaf => dekaf
 
 await using var provider = services.BuildServiceProvider();
 var consumer = provider.GetRequiredKeyedService<IKafkaShareConsumer<string, string>>("orders");
+```
+
+Configuration sections bind only the keys they contain, using `ShareConsumerOptions` property
+names. Combine a section with an `IServiceProvider` callback to resolve deserializers or other
+application services; the section is applied first, so the callback can override bound values:
+
+```csharp
+services.AddDekaf(dekaf => dekaf
+    .AddShareConsumer<string, Order>(
+        "orders",
+        configuration.GetSection("Kafka:ShareConsumers:Orders"),
+        (provider, consumer) => consumer
+            .WithValueDeserializer(provider.GetRequiredService<OrderSerializer>())
+            .SubscribeTo("orders")));
 ```
 
 Use `AddShareConsumerService<TService, TKey, TValue>` from `Dekaf.Extensions.Hosting` to start a

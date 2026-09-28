@@ -434,4 +434,63 @@ public static class DekafBuilderServiceProviderExtensions
             configure(serviceProvider, admin);
         });
     }
+
+    /// <summary>Adds a keyed admin client configured using the service provider.</summary>
+    /// <param name="builder">The Dekaf builder.</param>
+    /// <param name="serviceKey">Key used to resolve the admin client through keyed DI.</param>
+    /// <param name="configure">Configures the admin client using the service provider.</param>
+    public static DekafBuilder AddAdminClient(
+        this DekafBuilder builder,
+        object serviceKey,
+        Action<IServiceProvider, AdminClientServiceBuilder> configure)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(serviceKey);
+        ArgumentNullException.ThrowIfNull(configure);
+        return builder.AddProviderConfiguredAdminClient(configure, serviceKey);
+    }
+
+    /// <summary>Adds a keyed admin client configured from typed options and the service provider.</summary>
+    /// <param name="builder">The Dekaf builder.</param>
+    /// <param name="serviceKey">Key used to resolve the admin client through keyed DI.</param>
+    /// <param name="options">Admin client options to apply.</param>
+    /// <param name="configure">Additional admin client configuration using the service provider.</param>
+    public static DekafBuilder AddAdminClient(
+        this DekafBuilder builder,
+        object serviceKey,
+        AdminClientOptions options,
+        Action<IServiceProvider, AdminClientServiceBuilder> configure)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(configure);
+
+        return AddAdminClient(builder, serviceKey, (serviceProvider, admin) =>
+        {
+            admin.ApplyOptions(options);
+            configure(serviceProvider, admin);
+        });
+    }
+
+    /// <summary>Adds a keyed admin client configured from a configuration section and the service provider.</summary>
+    /// <param name="builder">The Dekaf builder.</param>
+    /// <param name="serviceKey">Key used to resolve the admin client through keyed DI.</param>
+    /// <param name="configuration">Configuration section using <see cref="AdminClientOptions"/> property names.</param>
+    /// <param name="configure">Additional admin client configuration using the service provider.</param>
+    [RequiresDynamicCode(DekafBuilder.ConfigurationBindingRequiresDynamicCode)]
+    [RequiresUnreferencedCode(DekafBuilder.ConfigurationBindingRequiresUnreferencedCode)]
+    public static DekafBuilder AddAdminClient(
+        this DekafBuilder builder,
+        object serviceKey,
+        IConfiguration configuration,
+        Action<IServiceProvider, AdminClientServiceBuilder> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(configure);
+
+        return AddAdminClient(builder, serviceKey, (serviceProvider, admin) =>
+        {
+            admin.ApplyConfiguration(configuration);
+            configure(serviceProvider, admin);
+        });
+    }
 }

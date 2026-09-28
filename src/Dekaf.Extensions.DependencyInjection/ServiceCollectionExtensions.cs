@@ -8,6 +8,7 @@ using Dekaf.Protocol.Records;
 using Dekaf.Producer;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
+using Dekaf.ShareConsumer;
 using Dekaf.Telemetry;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -770,18 +771,37 @@ public sealed class DekafBuilder
         return this;
     }
 
+    /// <summary>
+    /// Adds a keyed admin client to the service collection.
+    /// </summary>
+    /// <param name="serviceKey">Key used to resolve the admin client through keyed DI.</param>
+    /// <param name="configure">Configures the admin client.</param>
+    public DekafBuilder AddAdminClient(object serviceKey, Action<AdminClientServiceBuilder> configure)
+    {
+        ArgumentNullException.ThrowIfNull(serviceKey);
+        ArgumentNullException.ThrowIfNull(configure);
+
+        return AddProviderConfiguredAdminClient((_, admin) => configure(admin), serviceKey);
+    }
+
     internal DekafBuilder AddProviderConfiguredAdminClient(
-        Action<IServiceProvider, AdminClientServiceBuilder> configure)
+        Action<IServiceProvider, AdminClientServiceBuilder> configure,
+        object? serviceKey = null)
     {
         ArgumentNullException.ThrowIfNull(configure);
 
-        _services.AddSingleton<IAdminClient>(serviceProvider =>
+        IAdminClient Create(IServiceProvider serviceProvider)
         {
             var builder = new AdminClientServiceBuilder();
             configure(serviceProvider, builder);
             var loggerFactory = serviceProvider.GetService<ILoggerFactory>();
             return builder.Build(loggerFactory);
-        });
+        }
+
+        if (serviceKey is null)
+            _services.AddSingleton<IAdminClient>(Create);
+        else
+            _services.AddKeyedSingleton<IAdminClient>(serviceKey, (serviceProvider, _) => Create(serviceProvider));
 
         return this;
     }
@@ -805,6 +825,26 @@ public sealed class DekafBuilder
     }
 
     /// <summary>
+    /// Adds a keyed admin client configured from typed options.
+    /// </summary>
+    /// <param name="serviceKey">Key used to resolve the admin client through keyed DI.</param>
+    /// <param name="options">Admin client options to apply.</param>
+    /// <param name="configure">Optional additional admin client configuration.</param>
+    public DekafBuilder AddAdminClient(
+        object serviceKey,
+        AdminClientOptions options,
+        Action<AdminClientServiceBuilder>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        return AddAdminClient(serviceKey, admin =>
+        {
+            admin.ApplyOptions(options);
+            configure?.Invoke(admin);
+        });
+    }
+
+    /// <summary>
     /// Adds an admin client configured from an <see cref="IConfiguration"/> section.
     /// Fluent configuration runs after binding, so it can override config values.
     /// </summary>
@@ -819,6 +859,29 @@ public sealed class DekafBuilder
         ArgumentNullException.ThrowIfNull(configuration);
 
         return AddAdminClient(admin =>
+        {
+            admin.ApplyConfiguration(configuration);
+            configure?.Invoke(admin);
+        });
+    }
+
+    /// <summary>
+    /// Adds a keyed admin client configured from an <see cref="IConfiguration"/> section.
+    /// Fluent configuration runs after binding, so it can override config values.
+    /// </summary>
+    /// <param name="serviceKey">Key used to resolve the admin client through keyed DI.</param>
+    /// <param name="configuration">Configuration section using <see cref="AdminClientOptions"/> property names.</param>
+    /// <param name="configure">Optional additional admin client configuration.</param>
+    [RequiresDynamicCode(ConfigurationBindingRequiresDynamicCode)]
+    [RequiresUnreferencedCode(ConfigurationBindingRequiresUnreferencedCode)]
+    public DekafBuilder AddAdminClient(
+        object serviceKey,
+        IConfiguration configuration,
+        Action<AdminClientServiceBuilder>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        return AddAdminClient(serviceKey, admin =>
         {
             admin.ApplyConfiguration(configuration);
             configure?.Invoke(admin);
@@ -956,6 +1019,16 @@ public sealed class AdminClientServiceBuilder
     public AdminClientServiceBuilder WithBootstrapServers(string servers)
     {
         _builder.WithBootstrapServers(servers);
+        return this;
+    }
+
+    /// <summary>
+    /// Configures KRaft controller bootstrap endpoints for direct controller administration (KIP-919).
+    /// This setting is mutually exclusive with <see cref="WithBootstrapServers(string)"/>.
+    /// </summary>
+    public AdminClientServiceBuilder WithBootstrapControllers(string controllers)
+    {
+        _builder.WithBootstrapControllers(controllers);
         return this;
     }
 
@@ -1238,7 +1311,11 @@ internal static partial class DekafOptionsBinding
 
     public static void ApplyAdmin(AdminClientOptions options, AdminClientBuilder builder)
     {
-        builder.WithBootstrapServers(options.BootstrapServers.ToArray());
+        // Servers and controllers are mutually exclusive; only apply the lists that are set.
+        if (options.BootstrapServers.Count > 0 || options.BootstrapControllers.Count == 0)
+            builder.WithBootstrapServers(options.BootstrapServers.ToArray());
+        if (options.BootstrapControllers.Count > 0)
+            builder.WithBootstrapControllers(options.BootstrapControllers.ToArray());
         if (options.ClientId is not null)
             builder.WithClientId(options.ClientId);
         builder.WithRequestTimeout(TimeSpan.FromMilliseconds(options.RequestTimeoutMs));
@@ -1424,12 +1501,6 @@ internal static partial class DekafOptionsBinding
 [RequiresUnreferencedCode(DekafConfigurationBinding.RequiresUnreferencedCodeMessage)]
 internal static class DekafConfigurationBinding
 {
-    // Keep reflection-only option binding behind a generic boundary, like TryGetValue below.
-    // A concrete Get<ShareConsumerOptions> call would cause the configuration source generator
-    // to traverse runtime-only TLS certificates and callbacks when NativeAOT is enabled.
-    internal static T GetOptions<T>(IConfiguration configuration) where T : class
-        => configuration.Get<T>() ?? throw new InvalidOperationException("Kafka configuration is empty.");
-
     internal const string RequiresDynamicCodeMessage =
         "IConfiguration binding uses Microsoft.Extensions.Configuration.Binder. Use typed options overloads for NativeAOT.";
     internal const string RequiresUnreferencedCodeMessage =
@@ -1674,6 +1745,8 @@ internal static class DekafConfigurationBinding
     {
         if (TryGetBootstrapServers(configuration, out var bootstrapServers))
             builder.WithBootstrapServers(bootstrapServers);
+        if (TryGetServerList(configuration, nameof(AdminClientOptions.BootstrapControllers), out var bootstrapControllers))
+            builder.WithBootstrapControllers(bootstrapControllers);
         if (TryGetValue<string>(configuration, nameof(AdminClientOptions.ClientId), out var clientId))
             builder.WithClientId(clientId);
         if (TryGetValue<int>(configuration, nameof(AdminClientOptions.RequestTimeoutMs), out var requestTimeoutMs))
@@ -1707,6 +1780,86 @@ internal static class DekafConfigurationBinding
         if (TryGetValue<ClientDnsLookup>(configuration, nameof(AdminClientOptions.ClientDnsLookup), out var clientDnsLookup))
             builder.WithClientDnsLookup(clientDnsLookup);
         if (TryGetValue<int>(configuration, nameof(AdminClientOptions.BootstrapResolveTimeoutMs), out var bootstrapResolveTimeoutMs))
+            builder.WithBootstrapResolveTimeout(TimeSpan.FromMilliseconds(bootstrapResolveTimeoutMs));
+    }
+
+    public static void ApplyShareConsumer<TKey, TValue>(
+        IConfiguration configuration,
+        ShareConsumerBuilder<TKey, TValue> builder)
+    {
+        if (TryGetBootstrapServers(configuration, out var bootstrapServers))
+            builder.WithBootstrapServers(bootstrapServers);
+        if (TryGetValue<string>(configuration, nameof(ShareConsumerOptions.ClientId), out var clientId))
+            builder.WithClientId(clientId);
+        if (TryGetValue<string>(configuration, nameof(ShareConsumerOptions.GroupId), out var groupId))
+            builder.WithGroupId(groupId);
+        if (TryGetAutoOffsetReset(
+                configuration,
+                nameof(ShareConsumerOptions.AutoOffsetReset),
+                nameof(ShareConsumerOptions.AutoOffsetResetDuration),
+                out var autoOffsetReset,
+                out var autoOffsetResetDuration))
+        {
+            if (autoOffsetReset == AutoOffsetReset.ByDuration)
+                builder.WithAutoOffsetResetByDuration(autoOffsetResetDuration!.Value);
+            else
+                builder.WithAutoOffsetReset(autoOffsetReset);
+        }
+        if (TryGetValue<string>(configuration, nameof(ShareConsumerOptions.RackId), out var rackId))
+            builder.WithRackId(rackId);
+        if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.FetchMinBytes), out var fetchMinBytes))
+            builder.WithFetchMinBytes(fetchMinBytes);
+        if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.FetchMaxBytes), out var fetchMaxBytes))
+            builder.WithFetchMaxBytes(fetchMaxBytes);
+        if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.MaxPartitionFetchBytes), out var maxPartitionFetchBytes))
+            builder.WithMaxPartitionFetchBytes(maxPartitionFetchBytes);
+        if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.FetchMaxWaitMs), out var fetchMaxWaitMs))
+            builder.WithFetchMaxWaitMs(fetchMaxWaitMs);
+        if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.MaxPollRecords), out var maxPollRecords))
+            builder.WithMaxPollRecords(maxPollRecords);
+        if (TryGetValue<ShareAcknowledgementMode>(configuration, nameof(ShareConsumerOptions.AcknowledgementMode), out var acknowledgementMode))
+            builder.WithAcknowledgementMode(acknowledgementMode);
+        if (TryGetValue<ShareAcquireMode>(configuration, nameof(ShareConsumerOptions.ShareAcquireMode), out var shareAcquireMode))
+            builder.WithShareAcquireMode(shareAcquireMode);
+        if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.SessionTimeoutMs), out var sessionTimeoutMs))
+            builder.WithSessionTimeoutMs(sessionTimeoutMs);
+        if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.HeartbeatIntervalMs), out var heartbeatIntervalMs))
+            builder.WithHeartbeatIntervalMs(heartbeatIntervalMs);
+        if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.RequestTimeoutMs), out var requestTimeoutMs))
+            builder.WithRequestTimeoutMs(requestTimeoutMs);
+        if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.RetryBackoffMs), out var retryBackoffMs))
+            builder.WithRetryBackoff(TimeSpan.FromMilliseconds(retryBackoffMs));
+        if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.RetryBackoffMaxMs), out var retryBackoffMaxMs))
+            builder.WithRetryBackoffMax(TimeSpan.FromMilliseconds(retryBackoffMaxMs));
+        if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.ReconnectBackoffMs), out var reconnectBackoffMs))
+            builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(reconnectBackoffMs));
+        if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.ReconnectBackoffMaxMs), out var reconnectBackoffMaxMs))
+            builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(reconnectBackoffMaxMs));
+        if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.ConnectionsMaxIdleMs), out var connectionsMaxIdleMs))
+            builder.WithConnectionsMaxIdle(connectionsMaxIdleMs < 0 ? Timeout.InfiniteTimeSpan : TimeSpan.FromMilliseconds(connectionsMaxIdleMs));
+        ApplySocketConnectionOptions(
+            configuration,
+            builder.WithConnectionTimeout,
+            enabled => builder.WithTcpKeepAlive(enabled),
+            (time, interval, retryCount) => builder.WithTcpKeepAlive(time, interval, retryCount));
+        if (TryGetValue<TimeSpan>(configuration, nameof(ShareConsumerOptions.ConnectionTimeoutMax), out var connectionTimeoutMax))
+            builder.WithConnectionTimeoutMax(connectionTimeoutMax);
+        ApplyTls(configuration, () => builder.WithTls(), tlsConfig => builder.WithTlsConfig(tlsConfig));
+        if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth, out var awsMskIam, out var saslScramTokenAuth))
+            builder.WithSaslOptions(mechanism, username, password, gssapi, oauth, awsMskIam, saslScramTokenAuth: saslScramTokenAuth);
+        if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.SaslScramMaxIterations), out var maxScramIterations))
+            builder.WithSaslScramMaxIterations(maxScramIterations);
+        if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.SocketSendBufferBytes), out var sendBuffer))
+            builder.WithSocketSendBufferBytes(sendBuffer);
+        if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.SocketReceiveBufferBytes), out var receiveBuffer))
+            builder.WithSocketReceiveBufferBytes(receiveBuffer);
+        if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.ConnectionsPerBroker), out var connectionsPerBroker))
+            builder.WithConnectionsPerBroker(connectionsPerBroker);
+        if (TryGetValue<ClientDnsLookup>(configuration, nameof(ShareConsumerOptions.ClientDnsLookup), out var clientDnsLookup))
+            builder.WithClientDnsLookup(clientDnsLookup);
+        if (TryGetValue<bool>(configuration, nameof(ShareConsumerOptions.MetadataClusterCheckEnabled), out var metadataClusterCheckEnabled))
+            builder.WithMetadataClusterCheck(metadataClusterCheckEnabled);
+        if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.BootstrapResolveTimeoutMs), out var bootstrapResolveTimeoutMs))
             builder.WithBootstrapResolveTimeout(TimeSpan.FromMilliseconds(bootstrapResolveTimeoutMs));
     }
 
@@ -1851,8 +2004,11 @@ internal static class DekafConfigurationBinding
     }
 
     private static bool TryGetBootstrapServers(IConfiguration configuration, out string[] servers)
+        => TryGetServerList(configuration, nameof(ProducerOptions.BootstrapServers), out servers);
+
+    private static bool TryGetServerList(IConfiguration configuration, string key, out string[] servers)
     {
-        var section = configuration.GetSection(nameof(ProducerOptions.BootstrapServers));
+        var section = configuration.GetSection(key);
         if (!section.Exists())
         {
             servers = [];

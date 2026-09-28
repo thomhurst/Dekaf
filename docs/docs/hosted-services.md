@@ -360,6 +360,8 @@ Registering the same service class with the same service key twice throws before
 existing wiring. Consumer configuration, DLQ options, processing failure state, and shutdown are
 isolated from other share services and ordinary hosted consumers. Public keyed consumer aliases
 resolve the matching registration; use distinct keys when resolving multiple consumers directly.
+To reach a specific worker's own consumer, for example from a health check, resolve it with
+`KafkaShareConsumerServiceKey.For<TService>(serviceKey)`.
 
 ### Processing, Retries, and Durable Routing
 
