@@ -1,5 +1,7 @@
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Integration;
@@ -679,5 +681,70 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         var r = result!.Value;
         // >= 2 because TUnit's ActivityListener may inject a traceparent header
         await Assert.That(r.Headers.Count).IsGreaterThanOrEqualTo(2);
+    }
+
+    [Test]
+    public async Task NewProtocol_TopicCreatedAfterJoin_IsAssignedAndConsumed()
+    {
+        // The assignment names the new topic by ID before this consumer's metadata knows it.
+        var topic = $"late-topic-{Guid.NewGuid():N}";
+        var groupId = $"test-group-{Guid.NewGuid():N}";
+        await using var admin = KafkaContainer.CreateAdminClient();
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+        consumer.Subscribe(topic);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var received = new List<string>();
+        var consume = ConsumeAsync();
+
+        // Join before the topic exists so its assignment arrives on a later heartbeat.
+        while (!await HasMemberAsync())
+            await Task.Delay(100, cts.Token);
+
+        await KafkaContainer.CreateTopicAsync(topic);
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        for (var i = 0; i < 5; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"key-{i}",
+                Value = $"value-{i}"
+            }, cts.Token);
+        }
+
+        await consume;
+        await Assert.That(received.Count).IsEqualTo(5);
+        await Assert.That(consumer.Assignment.Contains(new TopicPartition(topic, 0))).IsTrue();
+
+        async Task<bool> HasMemberAsync()
+        {
+            try
+            {
+                var groups = await admin.DescribeConsumerGroupsAsync([groupId], cts.Token);
+                return groups.TryGetValue(groupId, out var description) && description.Members.Count > 0;
+            }
+            catch (GroupException ex) when (ex.ErrorCode == ErrorCode.GroupIdNotFound)
+            {
+                return false;
+            }
+        }
+
+        async Task ConsumeAsync()
+        {
+            await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+            {
+                received.Add(msg.Value);
+                if (received.Count == 5)
+                    return;
+            }
+        }
     }
 }

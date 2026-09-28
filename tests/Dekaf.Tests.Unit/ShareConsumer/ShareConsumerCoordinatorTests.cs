@@ -269,6 +269,118 @@ public sealed class ShareConsumerCoordinatorTests
         await Assert.That(findCoordinatorCount).IsEqualTo(1);
     }
 
+    // The broker sends an assignment only when it changes. One naming a topic created after the
+    // last metadata refresh used to drop that topic for good: the partition was never fetched.
+    [Test]
+    public async Task Assignment_TopicUnknownToMetadata_IsResolvedOnLaterHeartbeat(CancellationToken cancellationToken)
+    {
+        var knownTopicId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var lateTopicId = Guid.Parse("00000000-0000-0000-0000-000000000002");
+        var options = new ShareConsumerOptions { BootstrapServers = ["broker-0:9092"], GroupId = "share-late-topic" };
+        var pool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        var heartbeatCount = 0;
+        var metadataRefreshCount = 0;
+        connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new FindCoordinatorResponse
+            {
+                Coordinators = [new Coordinator
+                {
+                    Key = options.GroupId, NodeId = 0, Host = "broker-0", Port = 9092, ErrorCode = ErrorCode.None
+                }]
+            }));
+        connection.SendAsync<ShareGroupHeartbeatRequest, ShareGroupHeartbeatResponse>(
+                Arg.Any<ShareGroupHeartbeatRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromResult(new ShareGroupHeartbeatResponse
+            {
+                ErrorCode = ErrorCode.None,
+                MemberId = "member-1",
+                MemberEpoch = 1,
+                HeartbeatIntervalMs = 60_000,
+                // Only the join answer carries the assignment, as the broker does.
+                Assignment = Interlocked.Increment(ref heartbeatCount) == 1
+                    ? new ShareGroupHeartbeatAssignment
+                    {
+                        TopicPartitions =
+                        [
+                            new ShareGroupHeartbeatTopicPartitions { TopicId = knownTopicId, Partitions = [0] },
+                            new ShareGroupHeartbeatTopicPartitions { TopicId = lateTopicId, Partitions = [0] }
+                        ]
+                    }
+                    : null
+            }));
+        // The first refresh still misses the new topic; the second one has caught up.
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromResult(CreateMetadata(
+                Interlocked.Increment(ref metadataRefreshCount) == 1
+                    ? [("first", knownTopicId)]
+                    : [("first", knownTopicId), ("late", lateTopicId)])));
+        connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                Arg.Any<ApiVersionsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys =
+                [
+                    new ApiVersion(ApiKey.Metadata, 12, 12),
+                    new ApiVersion(ApiKey.FindCoordinator,
+                        FindCoordinatorRequest.LowestSupportedVersion, FindCoordinatorRequest.HighestSupportedVersion),
+                    new ApiVersion(ApiKey.ShareGroupHeartbeat, 0, 1)
+                ]
+            }));
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(connection));
+        pool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(connection));
+        await using var metadata = new MetadataManager(pool, options.BootstrapServers);
+        metadata.SetApiVersion(ApiKey.ShareGroupHeartbeat, 0, 1);
+        metadata.SetApiVersion(ApiKey.FindCoordinator,
+            FindCoordinatorRequest.LowestSupportedVersion, FindCoordinatorRequest.HighestSupportedVersion);
+        metadata.Metadata.Update(CreateMetadata([("first", knownTopicId)]));
+        await using var coordinator = new ShareConsumerCoordinator(options, pool, metadata);
+        coordinator.UpdateSubscription(["first", "late"]);
+
+        await coordinator.EnsureActiveGroupAsync(cancellationToken);
+
+        // The resolvable part is usable immediately; the rest stays pending.
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(coordinator.Assignment.SetEquals([new TopicPartition("first", 0)])).IsTrue();
+        await Assert.That(metadataRefreshCount).IsEqualTo(1);
+
+        await SendHeartbeatAsync(coordinator, cancellationToken);
+
+        await Assert.That(coordinator.Assignment.SetEquals(
+            [new TopicPartition("first", 0), new TopicPartition("late", 0)])).IsTrue();
+        await Assert.That(metadataRefreshCount).IsEqualTo(2);
+
+        // Resolved: steady heartbeats no longer refresh metadata.
+        await SendHeartbeatAsync(coordinator, cancellationToken);
+        await Assert.That(metadataRefreshCount).IsEqualTo(2);
+        await Assert.That(heartbeatCount).IsEqualTo(3);
+
+        static MetadataResponse CreateMetadata((string Name, Guid Id)[] topics) => new()
+        {
+            Brokers = [new BrokerMetadata { NodeId = 0, Host = "broker-0", Port = 9092 }],
+            Topics = topics.Select(topic => new TopicMetadata
+            {
+                ErrorCode = ErrorCode.None, Name = topic.Name, TopicId = topic.Id,
+                Partitions = [new PartitionMetadata
+                {
+                    ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 0, ReplicaNodes = [0], IsrNodes = [0]
+                }]
+            }).ToList()
+        };
+
+        static async Task SendHeartbeatAsync(ShareConsumerCoordinator coordinator, CancellationToken cancellationToken)
+        {
+            var method = typeof(ShareConsumerCoordinator).GetMethod(
+                "SendShareGroupHeartbeatAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            await (ValueTask<bool>)method.Invoke(coordinator, [0, cancellationToken])!;
+        }
+    }
+
     [Test]
     public async Task TelemetryMemberId_OmitsUnjoinedFencedAndDisposedIdentities()
     {
