@@ -53,3 +53,33 @@ Earlier descriptions claimed that a successful producer health check proved conn
 ## Consumer checks
 
 `AddDekafConsumerHealthCheck<TKey, TValue>()` evaluates consumer liveness and lag using its configured thresholds. A live group member with no assignment can be a healthy standby. See [Consumer Groups](./consumer/consumer-groups) and [Observability](./observability) for the related signals.
+
+## Share consumer checks
+
+`AddDekafShareConsumerHealthCheck<TKey, TValue>()` reports Healthy while a share consumer is a stable member of its share group and its heartbeat is no older than three broker-directed heartbeat intervals. It reads a local status snapshot; it never polls, acquires, or acknowledges records. A share group can have more members than partitions, so an idle member is healthy.
+
+To check the consumer owned by a hosted share consumer service, pass its `KafkaShareConsumerServiceKey` from `Dekaf.Extensions.Hosting`. The key identifies that worker's own consumer even when other services share its message types and public service key:
+
+```csharp
+using Dekaf.Extensions.HealthChecks;
+using Dekaf.Extensions.Hosting;
+
+builder.Services.AddHealthChecks()
+    .AddDekafShareConsumerHealthCheck<string, string>(
+        KafkaShareConsumerServiceKey.For<ShareOrderWorker>("worker-a"),
+        "order-workers");
+```
+
+## Keyed clients
+
+Each check has an overload that takes the service key of a keyed client, followed by a required check name:
+
+```csharp
+using Dekaf.Extensions.HealthChecks;
+
+builder.Services.AddHealthChecks()
+    .AddDekafProducerHealthCheck<string, string>("orders", "orders-producer")
+    .AddDekafConsumerHealthCheck<string, string>("orders", "orders-consumer")
+    .AddDekafBrokerHealthCheck("orders", "orders-broker")
+    .AddDekafShareConsumerHealthCheck<string, string>("orders", "orders-share-consumer");
+```

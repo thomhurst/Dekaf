@@ -79,6 +79,26 @@ public static class DekafBuilderShareConsumerHostingExtensions
             registrationKey => builder.AddShareConsumer<TKey, TValue>(registrationKey, configuration, configure, configureDeadLetterQueue));
     }
 
+    /// <summary>Starts an independent hosted share consumer from configuration and the service provider.</summary>
+    /// <remarks>Configuration is applied first, so <paramref name="configure"/> can override bound values.</remarks>
+    [RequiresDynamicCode(DekafConfigurationBinding.RequiresDynamicCodeMessage)]
+    [RequiresUnreferencedCode(DekafConfigurationBinding.RequiresUnreferencedCodeMessage)]
+    public static DekafBuilder AddShareConsumerServiceFromConfiguration<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TService, TKey, TValue>(
+        this DekafBuilder builder,
+        IConfiguration configuration,
+        Action<IServiceProvider, ShareConsumerBuilder<TKey, TValue>> configure,
+        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
+        where TService : KafkaShareConsumerService<TKey, TValue>
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(configure);
+        return Register<TService, TKey, TValue>(builder, null, configureDeadLetterQueue is not null,
+            registrationKey => builder.AddShareConsumer<TKey, TValue>(registrationKey,
+                ExplicitAcknowledgementFrom(configuration, configure), configureDeadLetterQueue));
+    }
+
     /// <summary>Starts an independent hosted share consumer with keyed configuration.</summary>
     public static DekafBuilder AddShareConsumerService<
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TService, TKey, TValue>(
@@ -155,20 +175,57 @@ public static class DekafBuilderShareConsumerHostingExtensions
             registrationKey => builder.AddShareConsumer<TKey, TValue>(registrationKey, configuration, configure, configureDeadLetterQueue));
     }
 
+    /// <summary>Starts an independent hosted share consumer with keyed configuration from configuration and the service provider.</summary>
+    /// <remarks>Configuration is applied first, so <paramref name="configure"/> can override bound values.</remarks>
+    [RequiresDynamicCode(DekafConfigurationBinding.RequiresDynamicCodeMessage)]
+    [RequiresUnreferencedCode(DekafConfigurationBinding.RequiresUnreferencedCodeMessage)]
+    public static DekafBuilder AddShareConsumerServiceFromConfiguration<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TService, TKey, TValue>(
+        this DekafBuilder builder,
+        object serviceKey,
+        IConfiguration configuration,
+        Action<IServiceProvider, ShareConsumerBuilder<TKey, TValue>> configure,
+        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
+        where TService : KafkaShareConsumerService<TKey, TValue>
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(serviceKey);
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(configure);
+        return Register<TService, TKey, TValue>(builder, serviceKey, configureDeadLetterQueue is not null,
+            registrationKey => builder.AddShareConsumer<TKey, TValue>(registrationKey,
+                ExplicitAcknowledgementFrom(configuration, configure), configureDeadLetterQueue));
+    }
+
+    // Explicit acknowledgement is the hosted default; configuration and the callback can still override it.
+    [RequiresDynamicCode(DekafConfigurationBinding.RequiresDynamicCodeMessage)]
+    [RequiresUnreferencedCode(DekafConfigurationBinding.RequiresUnreferencedCodeMessage)]
+    private static Action<IServiceProvider, ShareConsumerBuilder<TKey, TValue>> ExplicitAcknowledgementFrom<TKey, TValue>(
+        IConfiguration configuration,
+        Action<IServiceProvider, ShareConsumerBuilder<TKey, TValue>> configure)
+    {
+        var bound = DekafBuilderShareConsumerExtensions.ConfigureFrom(configuration, configure);
+        return (provider, consumer) =>
+        {
+            consumer.WithAcknowledgementMode(ShareAcknowledgementMode.Explicit);
+            bound(provider, consumer);
+        };
+    }
+
     private static DekafBuilder Register<
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TService, TKey, TValue>(
         DekafBuilder builder, object? serviceKey, bool deadLetterConfigured, Action<object> registerConsumer)
         where TService : KafkaShareConsumerService<TKey, TValue>
     {
-        var registrationKey = new RegistrationKey(typeof(TService), serviceKey);
+        var registrationKey = new KafkaShareConsumerServiceKey(typeof(TService), serviceKey);
         if (builder.Services.Any(descriptor => descriptor.IsKeyedService &&
                 descriptor.ServiceType == typeof(RegistrationMarker) && Equals(descriptor.ServiceKey, registrationKey)))
             throw new InvalidOperationException($"{typeof(TService).Name} is already registered for this service key. Use distinct service keys.");
 
         registerConsumer(registrationKey);
         builder.Services.AddKeyedSingleton(registrationKey, RegistrationMarker.Instance);
-        // Public aliases support application resolution. Hosted factories always use the private
-        // registration key so another service with the same message types cannot replace its wiring.
+        // Public aliases support application resolution. Hosted factories always use the per-service
+        // KafkaShareConsumerServiceKey so another service with the same message types cannot replace its wiring.
         if (serviceKey is null)
             builder.Services.AddSingleton<IKafkaShareConsumer<TKey, TValue>>(provider =>
                 provider.GetRequiredKeyedService<IKafkaShareConsumer<TKey, TValue>>(registrationKey));
@@ -195,7 +252,6 @@ public static class DekafBuilderShareConsumerHostingExtensions
         return builder;
     }
 
-    private sealed record RegistrationKey(Type ServiceType, object? ServiceKey);
     private sealed class RegistrationMarker
     {
         internal static readonly RegistrationMarker Instance = new();

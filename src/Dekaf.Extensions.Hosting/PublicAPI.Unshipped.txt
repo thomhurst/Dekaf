@@ -59,3 +59,20 @@ virtual Dekaf.Extensions.Hosting.KafkaShareConsumerService<TKey, TValue>.OnError
 virtual Dekaf.Extensions.Hosting.KafkaShareConsumerService<TKey, TValue>.OnRetryTopicRoutingFailedAsync(System.Exception! exception, Dekaf.ShareConsumer.ShareConsumeResult<TKey, TValue>! result, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask
 Dekaf.Extensions.Hosting.KafkaShareConsumerServiceOptions.PollRetryBackoff.get -> System.TimeSpan
 Dekaf.Extensions.Hosting.KafkaShareConsumerServiceOptions.PollRetryBackoff.init -> void
+Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey
+Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey.<Clone>$() -> Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey!
+Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey.Deconstruct(out System.Type! ServiceType, out object? ServiceKey) -> void
+Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey.Equals(Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey? other) -> bool
+Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey.KafkaShareConsumerServiceKey(System.Type! ServiceType, object? ServiceKey) -> void
+Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey.ServiceKey.get -> object?
+Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey.ServiceKey.init -> void
+Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey.ServiceType.get -> System.Type!
+Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey.ServiceType.init -> void
+override Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey.Equals(object? obj) -> bool
+override Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey.GetHashCode() -> int
+override Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey.ToString() -> string!
+static Dekaf.Extensions.Hosting.DekafBuilderShareConsumerHostingExtensions.AddShareConsumerServiceFromConfiguration<TService, TKey, TValue>(this Dekaf.Extensions.DependencyInjection.DekafBuilder! builder, Microsoft.Extensions.Configuration.IConfiguration! configuration, System.Action<System.IServiceProvider!, Dekaf.ShareConsumerBuilder<TKey, TValue>!>! configure, System.Action<Dekaf.Consumer.DeadLetter.DeadLetterQueueBuilder!>? configureDeadLetterQueue = null) -> Dekaf.Extensions.DependencyInjection.DekafBuilder!
+static Dekaf.Extensions.Hosting.DekafBuilderShareConsumerHostingExtensions.AddShareConsumerServiceFromConfiguration<TService, TKey, TValue>(this Dekaf.Extensions.DependencyInjection.DekafBuilder! builder, object! serviceKey, Microsoft.Extensions.Configuration.IConfiguration! configuration, System.Action<System.IServiceProvider!, Dekaf.ShareConsumerBuilder<TKey, TValue>!>! configure, System.Action<Dekaf.Consumer.DeadLetter.DeadLetterQueueBuilder!>? configureDeadLetterQueue = null) -> Dekaf.Extensions.DependencyInjection.DekafBuilder!
+static Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey.For<TService>(object? serviceKey = null) -> Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey!
+static Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey.operator !=(Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey? left, Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey? right) -> bool
+static Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey.operator ==(Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey? left, Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey? right) -> bool
