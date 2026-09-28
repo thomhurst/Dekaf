@@ -538,7 +538,7 @@ application services; the section is applied first, so the callback can override
 
 ```csharp
 services.AddDekaf(dekaf => dekaf
-    .AddShareConsumer<string, Order>(
+    .AddShareConsumerFromConfiguration<string, Order>(
         "orders",
         configuration.GetSection("Kafka:ShareConsumers:Orders"),
         (provider, consumer) => consumer

@@ -112,7 +112,7 @@ public class ShareConsumerHealthCheckTests
         services.AddKeyedSingleton("orders", keyed);
         services.AddHealthChecks()
             .AddDekafShareConsumerHealthCheck<string, string>()
-            .AddDekafShareConsumerHealthCheck<string, string>("orders-share", serviceKey: "orders");
+            .AddDekafShareConsumerHealthCheck<string, string>("orders", "orders-share");
         await using var provider = services.BuildServiceProvider();
 
         var results = await RunAll(provider);

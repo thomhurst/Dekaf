@@ -66,8 +66,8 @@ using Dekaf.Extensions.Hosting;
 
 builder.Services.AddHealthChecks()
     .AddDekafShareConsumerHealthCheck<string, string>(
-        name: "order-workers",
-        serviceKey: KafkaShareConsumerServiceKey.For<ShareOrderWorker>("worker-a"));
+        KafkaShareConsumerServiceKey.For<ShareOrderWorker>("worker-a"),
+        "order-workers");
 ```
 
 ## Keyed clients
@@ -80,5 +80,6 @@ using Dekaf.Extensions.HealthChecks;
 builder.Services.AddHealthChecks()
     .AddDekafProducerHealthCheck<string, string>("orders", "orders-producer")
     .AddDekafConsumerHealthCheck<string, string>("orders", "orders-consumer")
-    .AddDekafBrokerHealthCheck("orders", "orders-broker");
+    .AddDekafBrokerHealthCheck("orders", "orders-broker")
+    .AddDekafShareConsumerHealthCheck<string, string>("orders", "orders-share-consumer");
 ```

@@ -1783,14 +1783,19 @@ internal static class DekafConfigurationBinding
             builder.WithBootstrapResolveTimeout(TimeSpan.FromMilliseconds(bootstrapResolveTimeoutMs));
     }
 
+    private const string DefaultShareConsumerClientId = "dekaf-share-consumer";
+
     public static void ApplyShareConsumer<TKey, TValue>(
         IConfiguration configuration,
         ShareConsumerBuilder<TKey, TValue> builder)
     {
         if (TryGetBootstrapServers(configuration, out var bootstrapServers))
             builder.WithBootstrapServers(bootstrapServers);
-        if (TryGetValue<string>(configuration, nameof(ShareConsumerOptions.ClientId), out var clientId))
-            builder.WithClientId(clientId);
+        // Configuration-bound share consumers keep the ShareConsumerOptions client ID default.
+        builder.WithClientId(
+            TryGetValue<string>(configuration, nameof(ShareConsumerOptions.ClientId), out var clientId)
+                ? clientId
+                : DefaultShareConsumerClientId);
         if (TryGetValue<string>(configuration, nameof(ShareConsumerOptions.GroupId), out var groupId))
             builder.WithGroupId(groupId);
         if (TryGetAutoOffsetReset(
@@ -1804,6 +1809,13 @@ internal static class DekafConfigurationBinding
                 builder.WithAutoOffsetResetByDuration(autoOffsetResetDuration!.Value);
             else
                 builder.WithAutoOffsetReset(autoOffsetReset);
+        }
+        if (autoOffsetReset != AutoOffsetReset.ByDuration &&
+            configuration.GetSection(nameof(ShareConsumerOptions.AutoOffsetResetDuration)).Exists())
+        {
+            throw new InvalidOperationException(
+                $"{nameof(ShareConsumerOptions.AutoOffsetResetDuration)} requires " +
+                $"{nameof(ShareConsumerOptions.AutoOffsetReset)} {nameof(AutoOffsetReset.ByDuration)}.");
         }
         if (TryGetValue<string>(configuration, nameof(ShareConsumerOptions.RackId), out var rackId))
             builder.WithRackId(rackId);

@@ -67,10 +67,14 @@ public static class DekafBuilderShareConsumerExtensions
     }
 
     /// <summary>Adds an unkeyed singleton share consumer from configuration and the service provider.</summary>
-    /// <remarks>Configuration is applied first, so <paramref name="configure"/> can override bound values.</remarks>
+    /// <remarks>
+    /// Configuration is applied first, so <paramref name="configure"/> can override bound values.
+    /// This method has a distinct name so a <see langword="null"/> callback passed to
+    /// <c>AddShareConsumer(configuration, null, ...)</c> stays unambiguous.
+    /// </remarks>
     [RequiresDynamicCode(DekafConfigurationBinding.RequiresDynamicCodeMessage)]
     [RequiresUnreferencedCode(DekafConfigurationBinding.RequiresUnreferencedCodeMessage)]
-    public static DekafBuilder AddShareConsumer<TKey, TValue>(
+    public static DekafBuilder AddShareConsumerFromConfiguration<TKey, TValue>(
         this DekafBuilder builder,
         IConfiguration configuration,
         Action<IServiceProvider, ShareConsumerBuilder<TKey, TValue>> configure,
@@ -147,10 +151,14 @@ public static class DekafBuilderShareConsumerExtensions
     }
 
     /// <summary>Adds a keyed singleton share consumer from configuration and the service provider.</summary>
-    /// <remarks>Configuration is applied first, so <paramref name="configure"/> can override bound values.</remarks>
+    /// <remarks>
+    /// Configuration is applied first, so <paramref name="configure"/> can override bound values.
+    /// This method has a distinct name so a <see langword="null"/> callback passed to
+    /// <c>AddShareConsumer(configuration, null, ...)</c> stays unambiguous.
+    /// </remarks>
     [RequiresDynamicCode(DekafConfigurationBinding.RequiresDynamicCodeMessage)]
     [RequiresUnreferencedCode(DekafConfigurationBinding.RequiresUnreferencedCodeMessage)]
-    public static DekafBuilder AddShareConsumer<TKey, TValue>(
+    public static DekafBuilder AddShareConsumerFromConfiguration<TKey, TValue>(
         this DekafBuilder builder,
         object serviceKey,
         IConfiguration configuration,

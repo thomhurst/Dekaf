@@ -210,8 +210,7 @@ public static class HealthCheckExtensions
 
     /// <summary>
     /// Adds a health check that verifies a share consumer holds live share group membership.
-    /// The consumer must be registered as <see cref="IKafkaShareConsumer{TKey, TValue}"/>, keyed by
-    /// <paramref name="serviceKey"/> when one is supplied.
+    /// The consumer must be registered as <see cref="IKafkaShareConsumer{TKey, TValue}"/>.
     /// </summary>
     /// <typeparam name="TKey">The consumer key type.</typeparam>
     /// <typeparam name="TValue">The consumer value type.</typeparam>
@@ -219,23 +218,49 @@ public static class HealthCheckExtensions
     /// <param name="name">The health check name. Defaults to "dekaf-share-consumer".</param>
     /// <param name="failureStatus">The status reported on failure. Defaults to <see cref="HealthStatus.Unhealthy"/>.</param>
     /// <param name="tags">Optional tags for the health check.</param>
-    /// <param name="serviceKey">
-    /// The key the consumer is registered under, or <see langword="null"/> for an unkeyed consumer.
-    /// Use <c>KafkaShareConsumerServiceKey</c> from Dekaf.Extensions.Hosting to check a hosted service's own consumer.
-    /// </param>
     /// <returns>The <see cref="IHealthChecksBuilder"/> for chaining.</returns>
     public static IHealthChecksBuilder AddDekafShareConsumerHealthCheck<TKey, TValue>(
         this IHealthChecksBuilder builder,
         string name = "dekaf-share-consumer",
         HealthStatus? failureStatus = null,
-        IEnumerable<string>? tags = null,
-        object? serviceKey = null)
+        IEnumerable<string>? tags = null)
     {
         return builder.Add(new HealthCheckRegistration(
             name,
-            sp => new DekafShareConsumerHealthCheck<TKey, TValue>(serviceKey is null
-                ? sp.GetRequiredService<IKafkaShareConsumer<TKey, TValue>>()
-                : sp.GetRequiredKeyedService<IKafkaShareConsumer<TKey, TValue>>(serviceKey)),
+            sp => new DekafShareConsumerHealthCheck<TKey, TValue>(
+                sp.GetRequiredService<IKafkaShareConsumer<TKey, TValue>>()),
+            failureStatus,
+            tags));
+    }
+
+    /// <summary>
+    /// Adds a health check that verifies a keyed share consumer holds live share group membership.
+    /// The consumer must be registered as a keyed <see cref="IKafkaShareConsumer{TKey, TValue}"/>.
+    /// </summary>
+    /// <typeparam name="TKey">The consumer key type.</typeparam>
+    /// <typeparam name="TValue">The consumer value type.</typeparam>
+    /// <param name="builder">The health checks builder.</param>
+    /// <param name="serviceKey">
+    /// The key the consumer is registered under.
+    /// Use <c>KafkaShareConsumerServiceKey</c> from Dekaf.Extensions.Hosting to check a hosted service's own consumer.
+    /// </param>
+    /// <param name="name">The health check name.</param>
+    /// <param name="failureStatus">The status reported on failure. Defaults to <see cref="HealthStatus.Unhealthy"/>.</param>
+    /// <param name="tags">Optional tags for the health check.</param>
+    /// <returns>The <see cref="IHealthChecksBuilder"/> for chaining.</returns>
+    public static IHealthChecksBuilder AddDekafShareConsumerHealthCheck<TKey, TValue>(
+        this IHealthChecksBuilder builder,
+        object serviceKey,
+        string name,
+        HealthStatus? failureStatus = null,
+        IEnumerable<string>? tags = null)
+    {
+        ArgumentNullException.ThrowIfNull(serviceKey);
+
+        return builder.Add(new HealthCheckRegistration(
+            name,
+            sp => new DekafShareConsumerHealthCheck<TKey, TValue>(
+                sp.GetRequiredKeyedService<IKafkaShareConsumer<TKey, TValue>>(serviceKey)),
             failureStatus,
             tags));
     }

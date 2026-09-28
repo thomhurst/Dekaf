@@ -31,8 +31,8 @@ public class ShareConsumerConfigurationRegistrationTests
             void Configure(IServiceProvider provider, ShareConsumerBuilder<string, string> consumer) =>
                 consumer.WithClientId(provider.GetRequiredService<Settings>().ClientId).WithMaxPollRecords(3);
 
-            if (keyed) builder.AddShareConsumer<string, string>("orders", configuration, Configure);
-            else builder.AddShareConsumer<string, string>(configuration, Configure);
+            if (keyed) builder.AddShareConsumerFromConfiguration<string, string>("orders", configuration, Configure);
+            else builder.AddShareConsumerFromConfiguration<string, string>(configuration, Configure);
         });
         await using var provider = services.BuildServiceProvider();
 
@@ -74,6 +74,56 @@ public class ShareConsumerConfigurationRegistrationTests
     }
 
     [Test]
+    public async Task ConfigurationBinding_WithoutClientId_UsesShareConsumerDefault()
+    {
+        var configuration = Configuration(new() { ["BootstrapServers"] = "broker:9092", ["GroupId"] = "workers" });
+        var services = new ServiceCollection();
+        services.AddDekaf(builder => builder.AddShareConsumer<string, string>(configuration));
+        await using var provider = services.BuildServiceProvider();
+
+        var options = Options(provider.GetRequiredService<IKafkaShareConsumer<string, string>>());
+
+        await Assert.That(options.ClientId).IsEqualTo("dekaf-share-consumer");
+    }
+
+    [Test]
+    [Arguments(null)]
+    [Arguments("Earliest")]
+    public async Task ConfigurationBinding_RejectsDurationWithoutByDurationPolicy(string? policy)
+    {
+        var values = new Dictionary<string, string?>
+        {
+            ["BootstrapServers"] = "broker:9092",
+            ["GroupId"] = "workers",
+            ["AutoOffsetResetDuration"] = "00:05:00"
+        };
+        if (policy is not null) values["AutoOffsetReset"] = policy;
+        var configuration = Configuration(values);
+        var services = new ServiceCollection();
+        services.AddDekaf(builder => builder.AddShareConsumer<string, string>(configuration));
+        await using var provider = services.BuildServiceProvider();
+
+        await Assert.That(() => provider.GetRequiredService<IKafkaShareConsumer<string, string>>())
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("AutoOffsetResetDuration");
+    }
+
+    [Test]
+    public async Task ConfigurationOverload_AcceptsNullCallbackWithDeadLetterQueue()
+    {
+        // A null callback must bind to the nullable configuration overload, not a provider-aware one.
+        var configuration = Configuration(new() { ["BootstrapServers"] = "broker:9092", ["GroupId"] = "workers" });
+        var services = new ServiceCollection();
+        services.AddDekaf(builder => builder
+            .AddShareConsumer<string, string>(configuration, null, dlq => dlq.WithTopicSuffix(".dlq"))
+            .AddShareConsumer<string, string>("orders", configuration, null, dlq => dlq.WithTopicSuffix(".dlq")));
+        await using var provider = services.BuildServiceProvider();
+
+        await Assert.That(Options(provider.GetRequiredService<IKafkaShareConsumer<string, string>>()).GroupId)
+            .IsEqualTo("workers");
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task HostedConfigurationAndProviderOverload_DefaultsToExplicitAcknowledgement(bool keyed)
@@ -86,8 +136,8 @@ public class ShareConsumerConfigurationRegistrationTests
             void Configure(IServiceProvider provider, ShareConsumerBuilder<string, string> consumer) =>
                 consumer.WithClientId(provider.GetRequiredService<Settings>().ClientId);
 
-            if (keyed) builder.AddShareConsumerService<Worker, string, string>("orders", configuration, Configure);
-            else builder.AddShareConsumerService<Worker, string, string>(configuration, Configure);
+            if (keyed) builder.AddShareConsumerServiceFromConfiguration<Worker, string, string>("orders", configuration, Configure);
+            else builder.AddShareConsumerServiceFromConfiguration<Worker, string, string>(configuration, Configure);
         });
         await using var provider = services.BuildServiceProvider();
 

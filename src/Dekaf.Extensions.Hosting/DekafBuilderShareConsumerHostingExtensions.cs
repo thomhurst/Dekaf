@@ -83,7 +83,7 @@ public static class DekafBuilderShareConsumerHostingExtensions
     /// <remarks>Configuration is applied first, so <paramref name="configure"/> can override bound values.</remarks>
     [RequiresDynamicCode(DekafConfigurationBinding.RequiresDynamicCodeMessage)]
     [RequiresUnreferencedCode(DekafConfigurationBinding.RequiresUnreferencedCodeMessage)]
-    public static DekafBuilder AddShareConsumerService<
+    public static DekafBuilder AddShareConsumerServiceFromConfiguration<
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TService, TKey, TValue>(
         this DekafBuilder builder,
         IConfiguration configuration,
@@ -179,7 +179,7 @@ public static class DekafBuilderShareConsumerHostingExtensions
     /// <remarks>Configuration is applied first, so <paramref name="configure"/> can override bound values.</remarks>
     [RequiresDynamicCode(DekafConfigurationBinding.RequiresDynamicCodeMessage)]
     [RequiresUnreferencedCode(DekafConfigurationBinding.RequiresUnreferencedCodeMessage)]
-    public static DekafBuilder AddShareConsumerService<
+    public static DekafBuilder AddShareConsumerServiceFromConfiguration<
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TService, TKey, TValue>(
         this DekafBuilder builder,
         object serviceKey,
@@ -224,8 +224,8 @@ public static class DekafBuilderShareConsumerHostingExtensions
 
         registerConsumer(registrationKey);
         builder.Services.AddKeyedSingleton(registrationKey, RegistrationMarker.Instance);
-        // Public aliases support application resolution. Hosted factories always use the private
-        // registration key so another service with the same message types cannot replace its wiring.
+        // Public aliases support application resolution. Hosted factories always use the per-service
+        // KafkaShareConsumerServiceKey so another service with the same message types cannot replace its wiring.
         if (serviceKey is null)
             builder.Services.AddSingleton<IKafkaShareConsumer<TKey, TValue>>(provider =>
                 provider.GetRequiredKeyedService<IKafkaShareConsumer<TKey, TValue>>(registrationKey));
