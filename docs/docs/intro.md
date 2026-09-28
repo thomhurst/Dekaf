@@ -58,6 +58,7 @@ Most consumers live inside an ASP.NET Core or Worker Service app, so Dekaf ships
 - Failure handling built in: in-place retries, [tiered retry topics, and dead letter queues](./consumer/dead-letter-queues)
 - [Transactional outbox](./producer/outbox/index.md) — at-least-once database-to-Kafka publishing with ordered submission: write the message in the same transaction as your business data, and a background relay delivers it. Partial publish failures can change consumer-observed order; see the [ordering contract](./producer/outbox/index.md#partial-failures-and-consumer-order).
 - [Dependency injection](./dependency-injection) with `appsettings.json` binding, keyed clients, and global interceptors
+- [Aspire integrations](./aspire) — a Kafka broker with share groups and a Schema Registry for the AppHost, plus client registrations with health checks and telemetry
 - [OpenTelemetry observability](./observability) — traces with W3C context propagation and OTel semantic-convention metrics, one line to enable
 
 ## Is Dekaf Right for You?

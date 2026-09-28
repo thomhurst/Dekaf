@@ -1,0 +1,211 @@
+{
+  "definitions": {
+    "logLevel": {
+      "properties": {
+        "Dekaf": {
+          "$ref": "#/definitions/logLevelThreshold"
+        }
+      }
+    }
+  },
+  "type": "object",
+  "properties": {
+    "Aspire": {
+      "type": "object",
+      "properties": {
+        "Dekaf": {
+          "type": "object",
+          "properties": {
+            "Producer": {
+              "type": "object",
+              "description": "Settings for Dekaf producers.",
+              "properties": {
+                "ConnectionString": {
+                  "type": "string",
+                  "description": "The comma-separated bootstrap servers. ConnectionStrings:{name} takes precedence."
+                },
+                "DisableHealthChecks": {
+                  "type": "boolean",
+                  "description": "Whether the health check is disabled. The default is false."
+                },
+                "DisableMetrics": {
+                  "type": "boolean",
+                  "description": "Whether this registration skips subscribing OpenTelemetry to Dekaf metrics. The default is false."
+                },
+                "DisableTracing": {
+                  "type": "boolean",
+                  "description": "Whether this registration skips subscribing OpenTelemetry to Dekaf traces. The default is false."
+                },
+                "HealthCheck": {
+                  "type": "object",
+                  "description": "Health check options.",
+                  "properties": {
+                    "Timeout": {
+                      "type": "string",
+                      "pattern": "^-?(\\d{1,7}|((\\d{1,7}[\\.:])?(([01]?\\d|2[0-3]):[0-5]?\\d|([01]?\\d|2[0-3]):[0-5]?\\d:[0-5]?\\d)(\\.\\d{1,7})?))$",
+                      "description": "The timeout for the producer flush checkpoint. The default is 5 seconds."
+                    }
+                  }
+                },
+                "Config": {
+                  "type": "object",
+                  "description": "Native Dekaf client options, using the Dekaf options property names."
+                }
+              }
+            },
+            "Consumer": {
+              "type": "object",
+              "description": "Settings for Dekaf consumers.",
+              "properties": {
+                "ConnectionString": {
+                  "type": "string",
+                  "description": "The comma-separated bootstrap servers. ConnectionStrings:{name} takes precedence."
+                },
+                "DisableHealthChecks": {
+                  "type": "boolean",
+                  "description": "Whether the health check is disabled. The default is false."
+                },
+                "DisableMetrics": {
+                  "type": "boolean",
+                  "description": "Whether this registration skips subscribing OpenTelemetry to Dekaf metrics. The default is false."
+                },
+                "DisableTracing": {
+                  "type": "boolean",
+                  "description": "Whether this registration skips subscribing OpenTelemetry to Dekaf traces. The default is false."
+                },
+                "HealthCheck": {
+                  "type": "object",
+                  "description": "Health check options.",
+                  "properties": {
+                    "Timeout": {
+                      "type": "string",
+                      "pattern": "^-?(\\d{1,7}|((\\d{1,7}[\\.:])?(([01]?\\d|2[0-3]):[0-5]?\\d|([01]?\\d|2[0-3]):[0-5]?\\d:[0-5]?\\d)(\\.\\d{1,7})?))$",
+                      "description": "The timeout for watermark offset queries. The default is 5 seconds."
+                    },
+                    "DegradedThreshold": {
+                      "type": "integer",
+                      "description": "The partition lag at which the check reports Degraded. The default is 1000."
+                    },
+                    "UnhealthyThreshold": {
+                      "type": "integer",
+                      "description": "The partition lag at which the check reports Unhealthy. The default is 10000."
+                    },
+                    "NoAssignmentStatus": {
+                      "type": "string",
+                      "enum": [
+                        "Unhealthy",
+                        "Degraded",
+                        "Healthy"
+                      ],
+                      "description": "The status of a live group member with no assigned partitions. The default is Healthy."
+                    }
+                  }
+                },
+                "Config": {
+                  "type": "object",
+                  "description": "Native Dekaf client options, using the Dekaf options property names."
+                }
+              }
+            },
+            "ShareConsumer": {
+              "type": "object",
+              "description": "Settings for Dekaf share consumers (KIP-932).",
+              "properties": {
+                "ConnectionString": {
+                  "type": "string",
+                  "description": "The comma-separated bootstrap servers. ConnectionStrings:{name} takes precedence."
+                },
+                "DisableHealthChecks": {
+                  "type": "boolean",
+                  "description": "Whether the health check is disabled. The default is false."
+                },
+                "DisableMetrics": {
+                  "type": "boolean",
+                  "description": "Whether this registration skips subscribing OpenTelemetry to Dekaf metrics. The default is false."
+                },
+                "DisableTracing": {
+                  "type": "boolean",
+                  "description": "Whether this registration skips subscribing OpenTelemetry to Dekaf traces. The default is false."
+                },
+                "Config": {
+                  "type": "object",
+                  "description": "Native Dekaf client options, using the Dekaf options property names."
+                }
+              }
+            },
+            "AdminClient": {
+              "type": "object",
+              "description": "Settings for Dekaf admin clients.",
+              "properties": {
+                "ConnectionString": {
+                  "type": "string",
+                  "description": "The comma-separated bootstrap servers. ConnectionStrings:{name} takes precedence."
+                },
+                "DisableHealthChecks": {
+                  "type": "boolean",
+                  "description": "Whether the health check is disabled. The default is false."
+                },
+                "DisableMetrics": {
+                  "type": "boolean",
+                  "description": "Whether this registration skips subscribing OpenTelemetry to Dekaf metrics. The default is false."
+                },
+                "DisableTracing": {
+                  "type": "boolean",
+                  "description": "Whether this registration skips subscribing OpenTelemetry to Dekaf traces. The default is false."
+                },
+                "HealthCheck": {
+                  "type": "object",
+                  "description": "Health check options.",
+                  "properties": {
+                    "Timeout": {
+                      "type": "string",
+                      "pattern": "^-?(\\d{1,7}|((\\d{1,7}[\\.:])?(([01]?\\d|2[0-3]):[0-5]?\\d|([01]?\\d|2[0-3]):[0-5]?\\d:[0-5]?\\d)(\\.\\d{1,7})?))$",
+                      "description": "The timeout for the cluster description request. The default is 5 seconds."
+                    }
+                  }
+                },
+                "Config": {
+                  "type": "object",
+                  "description": "Native Dekaf client options, using the Dekaf options property names."
+                }
+              }
+            },
+            "Client": {
+              "type": "object",
+              "description": "Settings for shared Dekaf root clients.",
+              "properties": {
+                "ConnectionString": {
+                  "type": "string",
+                  "description": "The comma-separated bootstrap servers. ConnectionStrings:{name} takes precedence."
+                },
+                "DisableHealthChecks": {
+                  "type": "boolean",
+                  "description": "Whether the health check is disabled. The default is false."
+                },
+                "DisableMetrics": {
+                  "type": "boolean",
+                  "description": "Whether this registration skips subscribing OpenTelemetry to Dekaf metrics. The default is false."
+                },
+                "DisableTracing": {
+                  "type": "boolean",
+                  "description": "Whether this registration skips subscribing OpenTelemetry to Dekaf traces. The default is false."
+                },
+                "HealthCheck": {
+                  "type": "object",
+                  "description": "Health check options.",
+                  "properties": {
+                    "Timeout": {
+                      "type": "string",
+                      "pattern": "^-?(\\d{1,7}|((\\d{1,7}[\\.:])?(([01]?\\d|2[0-3]):[0-5]?\\d|([01]?\\d|2[0-3]):[0-5]?\\d:[0-5]?\\d)(\\.\\d{1,7})?))$",
+                      "description": "The timeout for the cluster description request. The default is 5 seconds."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

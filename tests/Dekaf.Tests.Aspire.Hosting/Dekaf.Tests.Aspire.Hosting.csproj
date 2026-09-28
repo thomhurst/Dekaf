@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Aspire AppHosts target a single modern runtime; the hosting package is exercised on net10.0. -->
+    <TargetFrameworks>net10.0</TargetFrameworks>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Dekaf.Aspire.Hosting\Dekaf.Aspire.Hosting.csproj" />
+    <ProjectReference Include="..\Dekaf.Tests.Aspire.Hosting.AppHost\Dekaf.Tests.Aspire.Hosting.AppHost.csproj" />
+    <PackageReference Include="Aspire.Hosting.Testing" />
+    <PackageReference Include="Microsoft.Testing.Extensions.HangDump" />
+    <PackageReference Include="TUnit" />
+  </ItemGroup>
+
+</Project>

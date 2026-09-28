@@ -1,0 +1,16 @@
+<Project Sdk="Aspire.AppHost.Sdk/13.5.4">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <UserSecretsId>dekaf-aspire-sample-apphost</UserSecretsId>
+    <!-- The sample runs with dotnet run; the Aspire CLI bundle is optional. -->
+    <NoWarn>$(NoWarn);ASPIRE010</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\Dekaf.Aspire.Hosting\Dekaf.Aspire.Hosting.csproj" IsAspireProjectResource="false" />
+    <ProjectReference Include="..\Dekaf.Aspire.Sample.ApiService\Dekaf.Aspire.Sample.ApiService.csproj" />
+  </ItemGroup>
+
+</Project>

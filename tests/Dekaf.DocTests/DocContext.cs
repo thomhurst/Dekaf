@@ -25,6 +25,7 @@ namespace Dekaf.DocTests;
 
 public static class DocContext
 {
+    public static readonly string[] args = [];
     public static readonly CancellationToken cancellationToken = default;
     public static readonly CancellationToken ct = default;
     public static readonly WebApplicationBuilder builder = WebApplication.CreateBuilder();
