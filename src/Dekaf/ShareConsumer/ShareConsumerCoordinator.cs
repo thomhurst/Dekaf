@@ -404,7 +404,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     /// <see cref="_coordinatorId"/> here: a heartbeat loop that fails concurrently invalidates
     /// that field, and leasing broker -1 would surface as an unknown-broker failure.
     /// </param>
-    private async ValueTask<bool> SendShareGroupHeartbeatAsync(
+    private async ValueTask SendShareGroupHeartbeatAsync(
         int coordinatorId,
         CancellationToken cancellationToken)
     {
@@ -420,7 +420,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         // Unsubscribe may race coordinator discovery or an in-flight join. Kafka rejects
         // an empty epoch-zero subscription, so let the polling loop observe unsubscribe.
         if (memberEpoch == 0 && subscription is not { Count: > 0 })
-            return false;
+            return;
 
         // Share groups always use client-generated UUID v4 member IDs.
         // Generate once when _memberId is null; subsequent heartbeats reuse the stored ID.
@@ -497,15 +497,14 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         if (assignment is null)
         {
             if (_unresolvedAssignment is null)
-                return false;
+                return;
 
             assignment = GetPendingAssignmentToRetry();
             if (assignment is null)
-                return false;
+                return;
         }
 
         ProcessShareGroupAssignment(assignment);
-        return true;
     }
 
     /// <summary>
@@ -718,7 +717,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             var startedAt = Stopwatch.GetTimestamp();
             // Reuse SessionTimeoutMs as the client-side join deadline. This is the broker's
             // inactivity timeout (default 45s), not a dedicated join timeout — but it provides
-            // a reasonable upper bound for how long we should wait for an assignment.
+            // a reasonable upper bound for how long a join may go without a successful heartbeat.
             var timeout = TimeSpan.FromMilliseconds(_options.SessionTimeoutMs);
             var retryFailureCount = 0;
             Exception? lastJoinFailure = null;
@@ -762,7 +761,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                     _state = CoordinatorState.Joining;
                     LogCoordinatorStateTransition(CoordinatorState.Joining);
 
-                    var gotAssignment = await SendShareGroupHeartbeatAsync(coordinatorId, cancellationToken)
+                    await SendShareGroupHeartbeatAsync(coordinatorId, cancellationToken)
                         .ConfigureAwait(false);
 
                     if (_subscribedTopics is not { Count: > 0 })
@@ -778,16 +777,21 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                         continue;
                     }
 
-                    if (gotAssignment && _assignedPartitions.Count > 0)
+                    // A member epoch from a successful heartbeat makes this a live member, as in
+                    // the KIP-848 consumer, even with no partitions: its subscribed topic may not
+                    // exist yet, or the group has more members than partitions. The heartbeat
+                    // loop keeps the membership alive and publishes the assignment once it
+                    // arrives; polls wait on the assignment signal meanwhile.
+                    if (_memberEpoch > 0)
                     {
                         _state = CoordinatorState.Stable;
-                        LogJoinedGroup(_options.GroupId, _memberId!, _memberEpoch);
+                        LogJoinedGroup(_options.GroupId, _memberId!, _memberEpoch, _assignedPartitions.Count);
                     }
                     else
                     {
-                        // Broker accepted us but hasn't assigned partitions yet.
-                        // This is a successful heartbeat, so preserve the broker cadence.
-                        LogWaitingForAssignment();
+                        // The broker answered without a member epoch. This is a successful
+                        // heartbeat, so preserve the broker cadence.
+                        LogWaitingForMemberEpoch();
                         retryFailureCount = 0;
                         await Task.Delay(
                             GetWaitForAssignmentDelayMs(_heartbeatIntervalMs),
@@ -1100,8 +1104,8 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
     #region Logging
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Joined share group {GroupId} as member {MemberId} (epoch {Epoch})")]
-    private partial void LogJoinedGroup(string groupId, string memberId, int epoch);
+    [LoggerMessage(Level = LogLevel.Information, Message = "Joined share group {GroupId} as member {MemberId} (epoch {Epoch}, {PartitionCount} partitions assigned)")]
+    private partial void LogJoinedGroup(string groupId, string memberId, int epoch, int partitionCount);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Retriable coordinator error {ErrorCode}, will re-discover coordinator")]
     private partial void LogRetriableCoordinatorError(ErrorCode? errorCode);
@@ -1159,8 +1163,8 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Debug, Message = "ShareGroupHeartbeat: member epoch updated to {MemberEpoch}")]
     private partial void LogMemberEpochUpdated(int memberEpoch);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "ShareGroupHeartbeat: waiting for partition assignment")]
-    private partial void LogWaitingForAssignment();
+    [LoggerMessage(Level = LogLevel.Debug, Message = "ShareGroupHeartbeat: accepted without a member epoch, retrying")]
+    private partial void LogWaitingForMemberEpoch();
 
     #endregion
 }

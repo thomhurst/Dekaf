@@ -269,6 +269,121 @@ public sealed partial class ShareConsumerCoordinatorTests
         await Assert.That(findCoordinatorCount).IsEqualTo(1);
     }
 
+    // A member without partitions (its subscribed topic does not exist yet, or the group has more
+    // members than partitions) is live. Its join used to wait for a non-empty assignment and
+    // failed with a join timeout, although the regular consumer counts itself joined after its
+    // first successful heartbeat.
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task EnsureActiveGroupAsync_NoPartitionsAssigned_JoinsAndPublishesLaterAssignment(
+        bool joinCarriesEmptyAssignment, CancellationToken cancellationToken)
+    {
+        var topicId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var heartbeatCount = 0;
+        await using var harness = CoordinatorHarness.Create(
+            // The join deadline passes long before the broker cadence would deliver anything.
+            new ShareConsumerOptions { BootstrapServers = ["broker-0:9092"], GroupId = "share-idle", SessionTimeoutMs = 1 },
+            topicId,
+            _ => Interlocked.Increment(ref heartbeatCount) == 1
+                ? Success(epoch: 1, joinCarriesEmptyAssignment ? new ShareGroupHeartbeatAssignment { TopicPartitions = [] } : null)
+                : Success(epoch: 1, new ShareGroupHeartbeatAssignment
+                {
+                    TopicPartitions = [new ShareGroupHeartbeatTopicPartitions { TopicId = topicId, Partitions = [0] }]
+                }));
+        var coordinator = harness.Coordinator;
+
+        await coordinator.EnsureActiveGroupAsync(cancellationToken);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(coordinator.MemberEpoch).IsEqualTo(1);
+        await Assert.That(coordinator.Assignment.Count).IsEqualTo(0);
+        await Assert.That(heartbeatCount).IsEqualTo(1);
+        var status = coordinator.CaptureGroupStatus();
+        await Assert.That(status.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(status.Assignment.Count).IsEqualTo(0);
+
+        // A later heartbeat publishes the assignment and wakes an idle poll.
+        var changed = coordinator.GetAssignmentChangeTask();
+        await SendHeartbeatAsync(coordinator, cancellationToken);
+
+        await Assert.That(changed.IsCompleted).IsTrue();
+        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("first", 0)]);
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+    }
+
+    // Joining without partitions must not swallow join failures: a join with no successful
+    // heartbeat still reports the timeout, and a non-retriable group error still propagates.
+    [Test]
+    public async Task EnsureActiveGroupAsync_NoSuccessfulHeartbeat_StillTimesOut(CancellationToken cancellationToken)
+    {
+        await using var harness = CoordinatorHarness.Create(
+            new ShareConsumerOptions
+            {
+                BootstrapServers = ["broker-0:9092"], GroupId = "share-timeout",
+                SessionTimeoutMs = 50, RetryBackoffMs = 1, RetryBackoffMaxMs = 1
+            },
+            Guid.Parse("00000000-0000-0000-0000-000000000001"),
+            _ => new ShareGroupHeartbeatResponse { ErrorCode = ErrorCode.CoordinatorNotAvailable });
+
+        await Assert.That(async () => await harness.Coordinator.EnsureActiveGroupAsync(cancellationToken))
+            .Throws<KafkaTimeoutException>();
+        await Assert.That(harness.Coordinator.State).IsNotEqualTo(CoordinatorState.Stable);
+    }
+
+    [Test]
+    public async Task EnsureActiveGroupAsync_NonRetriableHeartbeatError_Propagates(CancellationToken cancellationToken)
+    {
+        await using var harness = CoordinatorHarness.Create(
+            new ShareConsumerOptions { BootstrapServers = ["broker-0:9092"], GroupId = "share-denied" },
+            Guid.Parse("00000000-0000-0000-0000-000000000001"),
+            _ => new ShareGroupHeartbeatResponse { ErrorCode = ErrorCode.GroupAuthorizationFailed });
+
+        var exception = await Assert.That(async () => await harness.Coordinator.EnsureActiveGroupAsync(cancellationToken))
+            .Throws<GroupException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.GroupAuthorizationFailed);
+        await Assert.That(harness.Coordinator.State).IsNotEqualTo(CoordinatorState.Stable);
+    }
+
+    // An idle member is fenced like any other: the heartbeat loop leaves Stable, wakes the
+    // waiting poll, and the next join starts over from epoch 0.
+    [Test]
+    public async Task HeartbeatLoop_IdleMemberFenced_RejoinsFromEpochZero(CancellationToken cancellationToken)
+    {
+        var heartbeatCount = 0;
+        var sentEpochs = new System.Collections.Concurrent.ConcurrentQueue<int>();
+        await using var harness = CoordinatorHarness.Create(
+            new ShareConsumerOptions { BootstrapServers = ["broker-0:9092"], GroupId = "share-idle-fenced" },
+            Guid.Parse("00000000-0000-0000-0000-000000000001"),
+            request =>
+            {
+                sentEpochs.Enqueue(request.MemberEpoch);
+                return Interlocked.Increment(ref heartbeatCount) switch
+                {
+                    // The join answer starts a fast loop so the fence arrives without a poll.
+                    1 => Success(epoch: 1, new ShareGroupHeartbeatAssignment { TopicPartitions = [] }, heartbeatIntervalMs: 1),
+                    2 => new ShareGroupHeartbeatResponse { ErrorCode = ErrorCode.FencedMemberEpoch },
+                    _ => Success(epoch: 2, new ShareGroupHeartbeatAssignment { TopicPartitions = [] })
+                };
+            });
+        var coordinator = harness.Coordinator;
+
+        await coordinator.EnsureActiveGroupAsync(cancellationToken);
+        var changed = coordinator.GetAssignmentChangeTask();
+        if (coordinator.State == CoordinatorState.Stable)
+            await changed.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+        await Assert.That(coordinator.MemberEpoch).IsEqualTo(0);
+
+        await coordinator.EnsureActiveGroupAsync(cancellationToken);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(coordinator.MemberEpoch).IsEqualTo(2);
+        await Assert.That(sentEpochs.ToArray()).IsEquivalentTo([0, 1, 0]);
+    }
+
     [Test]
     public async Task TelemetryMemberId_OmitsUnjoinedFencedAndDisposedIdentities()
     {
@@ -339,5 +454,80 @@ public sealed partial class ShareConsumerCoordinatorTests
             joinTimeout: TimeSpan.FromSeconds(5));
 
         await Assert.That(delay).IsEqualTo(TimeSpan.Zero);
+    }
+
+    private static ShareGroupHeartbeatResponse Success(
+        int epoch, ShareGroupHeartbeatAssignment? assignment, int heartbeatIntervalMs = 60_000) => new()
+    {
+        ErrorCode = ErrorCode.None,
+        MemberId = "member-1",
+        MemberEpoch = epoch,
+        HeartbeatIntervalMs = heartbeatIntervalMs,
+        Assignment = assignment
+    };
+
+    /// <summary>
+    /// A coordinator subscribed to topic "first" on a single broker that answers every
+    /// ShareGroupHeartbeat with <c>respond</c>.
+    /// </summary>
+    private sealed class CoordinatorHarness : IAsyncDisposable
+    {
+        private readonly MetadataManager _metadata;
+
+        private CoordinatorHarness(MetadataManager metadata, ShareConsumerCoordinator coordinator)
+        {
+            _metadata = metadata;
+            Coordinator = coordinator;
+        }
+
+        public ShareConsumerCoordinator Coordinator { get; }
+
+        public static CoordinatorHarness Create(
+            ShareConsumerOptions options,
+            Guid topicId,
+            Func<ShareGroupHeartbeatRequest, ShareGroupHeartbeatResponse> respond)
+        {
+            var pool = Substitute.For<IConnectionPool>();
+            var connection = Substitute.For<IKafkaConnection>();
+            connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                    Arg.Any<FindCoordinatorRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+                .Returns(ValueTask.FromResult(new FindCoordinatorResponse
+                {
+                    Coordinators = [new Coordinator
+                    {
+                        Key = options.GroupId, NodeId = 0, Host = "broker-0", Port = 9092, ErrorCode = ErrorCode.None
+                    }]
+                }));
+            connection.SendAsync<ShareGroupHeartbeatRequest, ShareGroupHeartbeatResponse>(
+                    Arg.Any<ShareGroupHeartbeatRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+                .Returns(call => ValueTask.FromResult(respond(call.Arg<ShareGroupHeartbeatRequest>())));
+            pool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+                .Returns(ValueTask.FromResult(connection));
+            var metadata = new MetadataManager(pool, options.BootstrapServers);
+            metadata.SetApiVersion(ApiKey.ShareGroupHeartbeat, 0, 1);
+            metadata.SetApiVersion(ApiKey.FindCoordinator,
+                FindCoordinatorRequest.LowestSupportedVersion, FindCoordinatorRequest.HighestSupportedVersion);
+            metadata.Metadata.Update(new MetadataResponse
+            {
+                Brokers = [new BrokerMetadata { NodeId = 0, Host = "broker-0", Port = 9092 }],
+                Topics = [new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None, Name = "first", TopicId = topicId,
+                    Partitions = [new PartitionMetadata
+                    {
+                        ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 0, ReplicaNodes = [0], IsrNodes = [0]
+                    }]
+                }]
+            });
+            var coordinator = new ShareConsumerCoordinator(options, pool, metadata);
+            coordinator.UpdateSubscription(["first"]);
+            return new CoordinatorHarness(metadata, coordinator);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await Coordinator.DisposeAsync();
+            await _metadata.DisposeAsync();
+        }
     }
 }

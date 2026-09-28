@@ -301,7 +301,7 @@ public sealed partial class ShareConsumerCoordinatorTests
     {
         var method = typeof(ShareConsumerCoordinator).GetMethod(
             "SendShareGroupHeartbeatAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
-        await (ValueTask<bool>)method.Invoke(coordinator, [0, cancellationToken])!;
+        await (ValueTask)method.Invoke(coordinator, [0, cancellationToken])!;
     }
 
     /// <summary>

@@ -1,4 +1,6 @@
 using Dekaf.Admin;
+using Dekaf.Consumer;
+using Dekaf.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.Protocol;
@@ -168,6 +170,60 @@ public sealed class ShareConsumerSubscriptionTests(KafkaTestContainer kafka) : K
                 return false;
             }
         }
+
+        async Task ConsumeAsync()
+        {
+            await foreach (var record in consumer.PollAsync(timeout.Token))
+            {
+                received.Add(record.Value);
+                if (received.Count == 5)
+                    return;
+            }
+        }
+    }
+
+    [Test]
+    public async Task MissingTopic_MemberStaysJoinedPastJoinDeadline_AndConsumesOnceCreated()
+    {
+        // A member with no partitions is live: polls must idle, not fail with a join timeout,
+        // while the subscribed topic does not exist yet (e.g. a host starting before its topics).
+        var topic = $"share-missing-topic-{Guid.NewGuid():N}";
+        var group = $"share-missing-topic-{Guid.NewGuid():N}";
+        // Share groups take their session timeout from the broker; the client value is only
+        // the join deadline, so a short one keeps this test fast.
+        const int joinDeadlineMs = 3_000;
+        await using var admin = Kafka.CreateAdminClient()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).Build();
+        await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+        {
+            [new ConfigResource { Type = ConfigResourceType.Group, Name = group }] =
+                [ConfigAlter.Set("share.auto.offset.reset", "earliest")]
+        });
+        await using var consumer = await Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(group)
+            .WithSessionTimeoutMs(joinDeadlineMs).SubscribeTo(topic).BuildAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        var received = new List<string>();
+        var poll = ConsumeAsync();
+
+        // Idle through several join deadlines; a join timeout would complete the poll.
+        var idle = Task.Delay(TimeSpan.FromMilliseconds(joinDeadlineMs * 3), timeout.Token);
+        if (await Task.WhenAny(poll, idle) == poll)
+            await poll;
+
+        var status = ((IKafkaClientStatusProvider)consumer).GetStatus().ConsumerGroup!;
+        await Assert.That(status.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(status.GenerationOrMemberEpoch).IsGreaterThan(0);
+        await Assert.That(status.Assignment.Count).IsEqualTo(0);
+
+        await KafkaContainer.CreateTopicAsync(topic);
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync();
+        await ShareConsumerTestHelper.ProduceAsync(producer, topic, count: 5);
+
+        await poll;
+        await Assert.That(received.Count).IsEqualTo(5);
+        await Assert.That(consumer.Assignment.Contains(new TopicPartition(topic, 0))).IsTrue();
 
         async Task ConsumeAsync()
         {
