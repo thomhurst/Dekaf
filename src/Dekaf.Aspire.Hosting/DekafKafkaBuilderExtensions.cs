@@ -155,38 +155,36 @@ public static class DekafKafkaBuilderExtensions
     }
 
     /// <summary>Adds a named volume for the broker's data, so topics and schemas survive restarts.</summary>
+    /// <remarks>The mount is always writable: the broker stores its logs and KRaft metadata there.</remarks>
     /// <param name="builder">The Kafka resource builder.</param>
     /// <param name="name">The volume name. Defaults to a name generated from the application and resource names.</param>
-    /// <param name="isReadOnly">Whether the volume is read-only.</param>
     /// <returns>The Kafka resource builder.</returns>
     [AspireExport]
     public static IResourceBuilder<DekafKafkaServerResource> WithDataVolume(
         this IResourceBuilder<DekafKafkaServerResource> builder,
-        string? name = null,
-        bool isReadOnly = false)
+        string? name = null)
     {
         ArgumentNullException.ThrowIfNull(builder);
         return builder
             .WithEnvironment("KAFKA_LOG_DIRS", DataTarget)
-            .WithVolume(name ?? VolumeNameGenerator.Generate(builder, "data"), DataTarget, isReadOnly);
+            .WithVolume(name ?? VolumeNameGenerator.Generate(builder, "data"), DataTarget);
     }
 
     /// <summary>Adds a bind mount for the broker's data, so topics and schemas survive restarts.</summary>
+    /// <remarks>The mount is always writable: the broker stores its logs and KRaft metadata there.</remarks>
     /// <param name="builder">The Kafka resource builder.</param>
     /// <param name="source">The host directory to mount.</param>
-    /// <param name="isReadOnly">Whether the mount is read-only.</param>
     /// <returns>The Kafka resource builder.</returns>
     [AspireExport]
     public static IResourceBuilder<DekafKafkaServerResource> WithDataBindMount(
         this IResourceBuilder<DekafKafkaServerResource> builder,
-        string source,
-        bool isReadOnly = false)
+        string source)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrEmpty(source);
         return builder
             .WithEnvironment("KAFKA_LOG_DIRS", DataTarget)
-            .WithBindMount(source, DataTarget, isReadOnly);
+            .WithBindMount(source, DataTarget);
     }
 
     private static void ConfigureKafkaContainer(EnvironmentCallbackContext context, DekafKafkaServerResource resource)

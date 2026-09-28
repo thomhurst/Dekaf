@@ -21,11 +21,9 @@ public class AppHostFunctionalTests
 
         // Talk to the registry over HTTP, independently of the Dekaf client packages.
         var url = await app.GetConnectionStringAsync("schema-registry", cancellationToken);
-        using var http = new HttpClient(new HttpClientHandler
-        {
-            // Accept the development certificate when Aspire serves the registry over HTTPS.
-            ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
-        });
+        // Default certificate validation: when Aspire serves the registry over HTTPS with the trusted
+        // development certificate, clients must accept it without special handling.
+        using var http = new HttpClient();
         var subjects = await http.GetStringAsync(new Uri(new Uri(url!), "subjects"), cancellationToken);
 
         await Assert.That(subjects).IsEqualTo("[]");

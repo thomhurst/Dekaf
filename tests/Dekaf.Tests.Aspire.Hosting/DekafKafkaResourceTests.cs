@@ -78,7 +78,7 @@ public class DekafKafkaResourceTests
     {
         var builder = DistributedApplication.CreateBuilder();
         var volume = builder.AddDekafKafka("volume").WithDataVolume("kafka-data");
-        var bind = builder.AddDekafKafka("bind").WithDataBindMount("data", isReadOnly: true);
+        var bind = builder.AddDekafKafka("bind").WithDataBindMount("data");
 
         var volumeMount = volume.Resource.Annotations.OfType<ContainerMountAnnotation>().Single();
         var bindMount = bind.Resource.Annotations.OfType<ContainerMountAnnotation>().Single();
@@ -88,7 +88,8 @@ public class DekafKafkaResourceTests
         await Assert.That(volumeMount.Target).IsEqualTo("/var/lib/kafka/data");
         await Assert.That(volumeMount.Type).IsEqualTo(ContainerMountType.Volume);
         await Assert.That(bindMount.Type).IsEqualTo(ContainerMountType.BindMount);
-        await Assert.That(bindMount.IsReadOnly).IsTrue();
+        await Assert.That(bindMount.IsReadOnly).IsFalse();
+        await Assert.That(volumeMount.IsReadOnly).IsFalse();
         await Assert.That(environment["KAFKA_LOG_DIRS"]).IsEqualTo("/var/lib/kafka/data");
     }
 
