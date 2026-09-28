@@ -60,13 +60,12 @@ public sealed partial class ConsumerCoordinatorKip848Tests
             new HashSet<string> { "test-topic", "late-topic" }, CancellationToken.None);
 
         // The resolvable part is usable immediately; the rest stays pending.
-        await Assert.That(coordinator.Assignment.SetEquals([new TopicPartition("test-topic", 0)])).IsTrue();
+        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("test-topic", 0)]);
         await Assert.That(metadataRefreshCount).IsEqualTo(1);
 
         await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
 
-        await Assert.That(coordinator.Assignment.SetEquals(
-            [new TopicPartition("test-topic", 0), new TopicPartition("late-topic", 0)])).IsTrue();
+        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("test-topic", 0), new TopicPartition("late-topic", 0)]);
         await Assert.That(metadataRefreshCount).IsEqualTo(2);
 
         // Resolved: steady heartbeats no longer refresh metadata.

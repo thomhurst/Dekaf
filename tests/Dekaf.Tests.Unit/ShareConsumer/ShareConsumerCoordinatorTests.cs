@@ -346,13 +346,12 @@ public sealed class ShareConsumerCoordinatorTests
 
         // The resolvable part is usable immediately; the rest stays pending.
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
-        await Assert.That(coordinator.Assignment.SetEquals([new TopicPartition("first", 0)])).IsTrue();
+        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("first", 0)]);
         await Assert.That(metadataRefreshCount).IsEqualTo(1);
 
         await SendHeartbeatAsync(coordinator, cancellationToken);
 
-        await Assert.That(coordinator.Assignment.SetEquals(
-            [new TopicPartition("first", 0), new TopicPartition("late", 0)])).IsTrue();
+        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("first", 0), new TopicPartition("late", 0)]);
         await Assert.That(metadataRefreshCount).IsEqualTo(2);
 
         // Resolved: steady heartbeats no longer refresh metadata.
