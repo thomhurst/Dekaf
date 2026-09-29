@@ -9137,8 +9137,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 /// item per returning thread outside <see cref="ObjectPool{T}.MaxPoolSize"/>, so retention grows
 /// with the thread-pool size instead of staying within the memory-bounded pool size.
 /// </remarks>
-internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
+internal sealed class PartitionBatchPool
 {
+    // Composition, not inheritance: every way into the pooled storage goes through this class's
+    // retention accounting. Deriving from ObjectPool<T> let base members (PreWarm) pool batches
+    // straight into Reservoir, bypassing RetentionLimit.
+    private readonly BatchStorage _pool;
     private readonly ProducerOptions _options;
     private readonly CompressionRatioEstimator _compressionRatioEstimator;
     private ReadyBatchPool? _readyBatchPool;
@@ -9155,13 +9159,12 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
     /// Creates a new PartitionBatchPool.
     /// </summary>
     /// <param name="options">Producer options for configuring new batches.</param>
-    /// <param name="maxPoolSize">Maximum number of batches to keep pooled.
-    /// Defaults to <see cref="BatchArena.DefaultPoolSize"/> since each pooled batch retains a BatchArena.</param>
+    /// <param name="compressionRatioEstimator">Estimator shared with the owning accumulator.</param>
+    /// <param name="maxPoolSize">Maximum number of batches to keep pooled.</param>
     public PartitionBatchPool(
         ProducerOptions options,
         CompressionRatioEstimator? compressionRatioEstimator = null,
         int maxPoolSize = BatchArena.DefaultPoolSize)
-        : base(maxPoolSize, threadLocalFastPath: false)
     {
         _retentionLimit = maxPoolSize;
         _options = options;
@@ -9169,7 +9172,17 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
         // Capacity at the cap (512 references) so the queue can follow a growing retention limit.
         _arrayReuseQueue = new BatchArrayReuseQueue(maxSize: BatchArena.MaxPoolSizeCap);
         _arrayReuseQueue.SetRetentionLimit(maxPoolSize);
+        _pool = new BatchStorage(this, maxPoolSize);
     }
+
+    /// <summary>Capacity of the underlying storage; it only grows. See <see cref="RetentionLimit"/>.</summary>
+    public int MaxPoolSize => _pool.MaxPoolSize;
+
+    /// <summary>Best-effort count of pooled batches, for diagnostics.</summary>
+    public int ApproximateCount => _pool.ApproximateCount;
+
+    /// <summary>Number of rents that found the pool empty and created a batch.</summary>
+    public long Misses => _pool.Misses;
 
     /// <summary>
     /// Sets the ReadyBatchPool to use for PartitionBatch.Complete() calls.
@@ -9182,13 +9195,13 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
 
     /// <summary>
     /// Most batches the pool keeps. Starts at the constructor's pool size and follows
-    /// BufferMemory rebalances; <see cref="ObjectPool{T}.MaxPoolSize"/> can only grow.
+    /// BufferMemory rebalances; <see cref="MaxPoolSize"/> can only grow.
     /// </summary>
     public int RetentionLimit => Volatile.Read(ref _retentionLimit);
 
     /// <summary>
-    /// Changes <see cref="RetentionLimit"/>. Lowering it releases every pooled batch (and its
-    /// arena); later returns are kept only while fewer than the new limit are pooled.
+    /// Changes <see cref="RetentionLimit"/>. Lowering it releases every pooled batch;
+    /// later returns are kept only while fewer than the new limit are pooled.
     /// </summary>
     public void SetRetentionLimit(int limit)
     {
@@ -9197,13 +9210,13 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
         _arrayReuseQueue.SetRetentionLimit(limit);
         if (limit > MaxPoolSize)
         {
-            RatchetMaxPoolSize(limit);
+            _pool.RatchetMaxPoolSize(limit);
         }
         else if (limit < previous)
         {
             // Order matters for Return: limit, then epoch, then release.
             Interlocked.Increment(ref _releaseEpoch);
-            base.Clear();
+            _pool.Clear();
         }
     }
 
@@ -9215,13 +9228,35 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
     /// <summary>Number of limit reductions that released the pooled batches.</summary>
     internal int ReleaseEpoch => Volatile.Read(ref _releaseEpoch);
 
+    /// <summary>
+    /// Creates batches into the pool up to <paramref name="count"/> (within
+    /// <see cref="RetentionLimit"/>), admitting each through <see cref="Return"/> so pre-warmed
+    /// batches hold retention slots like any other pooled batch.
+    /// </summary>
+    public void PreWarm(int count)
+    {
+        var missing = Math.Min(count, RetentionLimit) - RetainedCount;
+        for (var i = 0; i < missing; i++)
+            Return(CreateBatch());
+    }
+
     /// <summary>Rents a batch, releasing its retention slot when it came from the pool.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public new PartitionBatch Rent()
+    public PartitionBatch Rent()
     {
-        var batch = base.Rent();
+        var batch = _pool.Rent();
         if (batch.ClearPoolRetention())
             Interlocked.Decrement(ref _retainedCount);
+        return batch;
+    }
+
+    /// <summary>
+    /// Gets a batch from the pool or creates a new one, configured for the given partition.
+    /// </summary>
+    public PartitionBatch Rent(TopicPartition topicPartition, int partitionCount)
+    {
+        var batch = Rent();
+        batch.Reset(topicPartition, partitionCount);
         return batch;
     }
 
@@ -9232,7 +9267,7 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
     /// capacity. A discarded batch releases its storage and admission lease instead of pooling.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public new void Return(PartitionBatch item)
+    public void Return(PartitionBatch item)
     {
         var epoch = Volatile.Read(ref _releaseEpoch);
         if (Interlocked.Increment(ref _retainedCount) > Volatile.Read(ref _retentionLimit))
@@ -9244,25 +9279,22 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
         }
 
         item.MarkPoolRetention();
-        base.Return(item);
+        _pool.Return(item);
 
         // A lowered limit may have been published while this return was between admission
         // and pooling; its release ran before the batch arrived, so release again.
         if (Volatile.Read(ref _releaseEpoch) != epoch)
-            base.Clear();
+            _pool.Clear();
     }
 
-    protected override void Destroy(PartitionBatch item)
+    /// <summary>Releases every pooled batch and queued completion array.</summary>
+    public void Clear()
     {
-        // Rejected returns and Clear destroy retained batches; pre-warmed ones hold no slot.
-        if (item.ClearPoolRetention())
-            Interlocked.Decrement(ref _retainedCount);
-
-        // Pooled batches already released their storage and lease; hand back the completion array.
-        item.ReleaseForDiscard();
+        _pool.Clear();
+        _arrayReuseQueue.Clear();
     }
 
-    protected override PartitionBatch Create()
+    private PartitionBatch CreateBatch()
     {
         var batch = new PartitionBatch(default, _options, _compressionRatioEstimator, allocateAppendBuffer: false);
         batch.SetReadyBatchPool(_readyBatchPool);
@@ -9270,25 +9302,31 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
         return batch;
     }
 
-    protected override void Reset(PartitionBatch item)
+    private void DestroyBatch(PartitionBatch item)
     {
-        item.PrepareForPooling(_options, _arrayReuseQueue);
-    }
+        // Rejected returns and Clear destroy retained batches.
+        if (item.ClearPoolRetention())
+            Interlocked.Decrement(ref _retainedCount);
 
-    public override void Clear()
-    {
-        base.Clear();
-        _arrayReuseQueue.Clear();
+        // Pooled batches already released their storage and lease; hand back the completion array.
+        item.ReleaseForDiscard();
     }
 
     /// <summary>
-    /// Gets a batch from the pool or creates a new one, configured for the given partition.
+    /// Storage for pooled batches. Private, so only <see cref="PartitionBatchPool"/>'s
+    /// accounted members can put batches into it. Reservoir's thread-local tier is disabled: it
+    /// keeps one extra item per returning thread outside MaxPoolSize, so retention would grow
+    /// with the thread-pool size instead of staying within the memory-bounded pool size.
     /// </summary>
-    public PartitionBatch Rent(TopicPartition topicPartition, int partitionCount)
+    private sealed class BatchStorage(PartitionBatchPool owner, int maxPoolSize)
+        : ObjectPool<PartitionBatch>(maxPoolSize, threadLocalFastPath: false)
     {
-        var batch = Rent();
-        batch.Reset(topicPartition, partitionCount);
-        return batch;
+        protected override PartitionBatch Create() => owner.CreateBatch();
+
+        protected override void Reset(PartitionBatch item)
+            => item.PrepareForPooling(owner._options, owner._arrayReuseQueue);
+
+        protected override void Destroy(PartitionBatch item) => owner.DestroyBatch(item);
     }
 }
 

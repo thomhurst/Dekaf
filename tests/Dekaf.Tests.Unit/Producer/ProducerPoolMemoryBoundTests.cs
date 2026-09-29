@@ -1378,6 +1378,50 @@ public class ProducerPoolMemoryBoundTests
     }
 
     [Test]
+    public async Task PartitionBatchPool_PreWarm_AdmitsBatchesThroughRetentionAccounting()
+    {
+        // Pre-warmed batches hold completion arrays like any pooled batch, so they must take
+        // retention slots; before, they went straight into storage and RetainedCount read 0.
+        var (pool, _) = CreatePools(maxPoolSize: 8);
+
+        pool.PreWarm(4);
+        var afterPreWarm = pool.RetainedCount;
+        pool.PreWarm(4);
+        var afterRepeat = pool.RetainedCount;
+        var rented = pool.Rent(new TopicPartition("pool-memory-bound", 0), partitionCount: 1);
+
+        await Assert.That(afterPreWarm).IsEqualTo(4);
+        await Assert.That(afterRepeat).IsEqualTo(4);
+        await Assert.That(pool.RetainedCount).IsEqualTo(3);
+        await Assert.That(pool.Misses).IsEqualTo(0);
+        await Assert.That(rented.HasAppendBufferForTest).IsTrue();
+    }
+
+    [Test]
+    public async Task PartitionBatchPool_PreWarm_StaysWithinTheRetentionLimit()
+    {
+        var (pool, _) = CreatePools(maxPoolSize: 8);
+        pool.SetRetentionLimit(2);
+
+        pool.PreWarm(16);
+
+        await Assert.That(pool.RetainedCount).IsEqualTo(2);
+        await Assert.That(pool.ApproximateCount).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task PartitionBatchPool_LoweredLimit_ReleasesPreWarmedBatches()
+    {
+        var (pool, _) = CreatePools(maxPoolSize: 8);
+        pool.PreWarm(8);
+
+        pool.SetRetentionLimit(1);
+
+        await Assert.That(pool.RetainedCount).IsEqualTo(0);
+        await Assert.That(pool.ApproximateCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task PartitionBatchPool_SetRetentionLimit_RejectsNonPositive()
     {
         var (pool, _) = CreatePools(maxPoolSize: 2);
