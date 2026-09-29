@@ -358,9 +358,11 @@ same parallelism limit as an ordinary consumer group.
 Different service classes with the same key/value types also receive independent consumers.
 Registering the same service class with the same service key twice throws before changing any
 existing wiring. Consumer configuration, DLQ options, processing failure state, and shutdown are
-isolated from other share services and ordinary hosted consumers. Public keyed consumer aliases
-resolve the matching registration; use distinct keys when resolving multiple consumers directly.
-To reach a specific worker's own consumer, for example from a health check, resolve it with
+isolated from other share services and ordinary hosted consumers. Each call also registers the public
+`IKafkaShareConsumer<TKey, TValue>` alias (keyed by the service key when one is given) with standard
+DI semantics: when several services share the message types and service key, resolving the alias
+returns the last registered service's consumer, and enumerating it returns all of them. Use distinct
+keys when resolving multiple consumers directly. To reach a specific worker's own consumer, for example from a health check, resolve it with
 `KafkaShareConsumerServiceKey.For<TService>(serviceKey)`.
 
 ### Processing, Retries, and Durable Routing

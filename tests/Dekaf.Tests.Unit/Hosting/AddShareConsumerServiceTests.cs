@@ -71,6 +71,45 @@ public class AddShareConsumerServiceTests
     [Test]
     [Arguments(false)]
     [Arguments(true)]
+    public async Task DifferentClasses_SharedAlias_ResolvesLastRegistrationAndEnumeratesAll(bool keyed)
+    {
+        var services = new ServiceCollection();
+        services.AddDekaf(builder =>
+        {
+            if (keyed)
+            {
+                builder.AddShareConsumerService<Worker, string, string>("shared", Configure);
+                builder.AddShareConsumerService<OtherWorker, string, string>("shared", Configure);
+            }
+            else
+            {
+                builder.AddShareConsumerService<Worker, string, string>(Configure);
+                builder.AddShareConsumerService<OtherWorker, string, string>(Configure);
+            }
+        });
+        await using var provider = services.BuildServiceProvider();
+        var first = provider.GetServices<IHostedService>().OfType<Worker>().Single().Consumer;
+        var last = provider.GetServices<IHostedService>().OfType<OtherWorker>().Single().Consumer;
+        object? serviceKey = keyed ? "shared" : null;
+
+        var alias = keyed
+            ? provider.GetRequiredKeyedService<IKafkaShareConsumer<string, string>>("shared")
+            : provider.GetRequiredService<IKafkaShareConsumer<string, string>>();
+        var all = (keyed
+            ? provider.GetKeyedServices<IKafkaShareConsumer<string, string>>("shared")
+            : provider.GetServices<IKafkaShareConsumer<string, string>>()).ToArray();
+
+        await Assert.That(alias).IsSameReferenceAs(last);
+        await Assert.That(all.Length).IsEqualTo(2);
+        await Assert.That(all[0]).IsSameReferenceAs(first);
+        await Assert.That(all[1]).IsSameReferenceAs(last);
+        await Assert.That(provider.GetRequiredKeyedService<IKafkaShareConsumer<string, string>>(
+            KafkaShareConsumerServiceKey.For<Worker>(serviceKey))).IsSameReferenceAs(first);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
     public async Task DuplicateRegistration_ThrowsBeforeAnyMutation(bool keyed)
     {
         var services = new ServiceCollection();

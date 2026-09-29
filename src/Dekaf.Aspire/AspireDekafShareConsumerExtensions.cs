@@ -92,7 +92,10 @@ public static class AspireDekafShareConsumerExtensions
     /// <param name="configureBuilder">Optional customization of the native share consumer builder, with access to application services.</param>
     /// <remarks>
     /// The service receives its own consumer, which defaults to explicit acknowledgement. Each service type and
-    /// key pair gets an independent consumer and health check.
+    /// key pair gets an independent consumer and health check. The public alias
+    /// <see cref="IKafkaShareConsumer{TKey, TValue}"/> is also registered; when several services share the message
+    /// types, resolving the alias returns the last registered service's consumer and enumerating it returns all of
+    /// them. Resolve a specific service's consumer with <c>KafkaShareConsumerServiceKey.For&lt;TService&gt;()</c>.
     /// </remarks>
     [RequiresDynamicCode(DekafAspireRegistration.RequiresDynamicCodeMessage)]
     [RequiresUnreferencedCode(DekafAspireRegistration.RequiresUnreferencedCodeMessage)]
@@ -115,7 +118,11 @@ public static class AspireDekafShareConsumerExtensions
     /// <param name="configureBuilder">Optional customization of the native share consumer builder, with access to application services.</param>
     /// <remarks>
     /// The service receives its own consumer, which defaults to explicit acknowledgement. Each service type and
-    /// key pair gets an independent consumer and health check.
+    /// key pair gets an independent consumer and health check. The public alias
+    /// <see cref="IKafkaShareConsumer{TKey, TValue}"/> keyed by <paramref name="name"/> is also registered; when
+    /// several services share the message types and name, resolving it returns the last registered service's
+    /// consumer and enumerating it returns all of them. Resolve a specific service's consumer with
+    /// <c>KafkaShareConsumerServiceKey.For&lt;TService&gt;(name)</c>.
     /// </remarks>
     [RequiresDynamicCode(DekafAspireRegistration.RequiresDynamicCodeMessage)]
     [RequiresUnreferencedCode(DekafAspireRegistration.RequiresUnreferencedCodeMessage)]

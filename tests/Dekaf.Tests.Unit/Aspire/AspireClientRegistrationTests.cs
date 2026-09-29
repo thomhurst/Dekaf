@@ -173,7 +173,7 @@ public class AspireClientRegistrationTests
     }
 
     [Test]
-    public async Task ShareConsumerServices_WithSameTypes_HaveIndependentConsumersAndHealthChecks()
+    public async Task ShareConsumerServices_WithSameTypes_HaveIndependentConsumersAndHealthChecks_AliasResolvesLast()
     {
         var builder = HostBuilder(("ConnectionStrings:messaging", "broker:9092"));
         builder.AddDekafShareConsumerService<Worker, string, string>("messaging",
@@ -193,6 +193,13 @@ public class AspireClientRegistrationTests
         await Assert.That(Options(worker.Consumer).GroupId).IsEqualTo("workers");
         await Assert.That(Options(other.Consumer).GroupId).IsEqualTo("audit");
         await Assert.That(Options(worker.Consumer).AcknowledgementMode).IsEqualTo(ShareAcknowledgementMode.Explicit);
+        await Assert.That(ReferenceEquals(worker.Consumer, other.Consumer)).IsFalse();
+        // The public alias follows standard DI semantics: last registration wins, enumeration returns both.
+        await Assert.That(provider.GetRequiredService<IKafkaShareConsumer<string, string>>()).IsSameReferenceAs(other.Consumer);
+        await Assert.That(provider.GetServices<IKafkaShareConsumer<string, string>>().ToArray())
+            .IsEquivalentTo([worker.Consumer, other.Consumer]);
+        await Assert.That(provider.GetRequiredKeyedService<IKafkaShareConsumer<string, string>>(
+            KafkaShareConsumerServiceKey.For<Worker>())).IsSameReferenceAs(worker.Consumer);
     }
 
     [Test]
