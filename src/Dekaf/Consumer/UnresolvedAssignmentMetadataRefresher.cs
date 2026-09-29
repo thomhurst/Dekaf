@@ -29,8 +29,13 @@ internal sealed partial class UnresolvedAssignmentMetadataRefresher
     private Task _task = Task.CompletedTask;
     private int _inFlight;
     private int _stopped;
-    // Refreshes completed for the current unresolved assignment, and the Stopwatch timestamp
-    // before which the next may not start.
+    // Bumped by Reset for each new assignment. A refresh started for an older generation neither
+    // applies its backoff to the current one nor stands in for the refresh it asked for.
+    private int _generation;
+    // The latest generation that requested a refresh.
+    private int _requestedGeneration = -1;
+    // Refreshes completed for the current generation, and the Stopwatch timestamp before which
+    // the next may not start.
     private int _attempts;
     private long _notBefore;
 
@@ -52,28 +57,36 @@ internal sealed partial class UnresolvedAssignmentMetadataRefresher
     public Task Current => Volatile.Read(ref _task);
 
     /// <summary>
-    /// Starts a refresh unless one is running, the backoff has not elapsed, or the owner stopped.
+    /// Starts a refresh unless the backoff has not elapsed or the owner stopped. While one is
+    /// running, a refresh for an earlier generation starts another for this one when it ends.
     /// Returns without waiting for it.
     /// </summary>
     public void Request()
     {
         if (Volatile.Read(ref _stopped) != 0 ||
-            Stopwatch.GetTimestamp() < Volatile.Read(ref _notBefore) ||
-            Interlocked.CompareExchange(ref _inFlight, 1, 0) != 0)
+            Stopwatch.GetTimestamp() < Volatile.Read(ref _notBefore))
+            return;
+
+        // Record the demand before claiming: either the claim succeeds, or the running refresh
+        // (whose release is a full fence before it reads this) sees it.
+        Interlocked.Exchange(ref _requestedGeneration, Volatile.Read(ref _generation));
+        if (Interlocked.CompareExchange(ref _inFlight, 1, 0) != 0)
             return;
 
         // Task.Run: the refresh may wait for the metadata refresh lock or a slow broker, and none
         // of that may run inline on the heartbeat.
-        Volatile.Write(ref _task, Task.Run(RefreshAsync));
+        var generation = Volatile.Read(ref _generation);
+        Volatile.Write(ref _task, Task.Run(() => RefreshAsync(generation)));
     }
 
     /// <summary>
-    /// A new assignment arrived: its refreshes start without the backoff the previous one built up.
+    /// A new assignment arrived: its refreshes start without the backoff the previous one built
+    /// up, and a refresh still running for the previous one does not count for it.
     /// </summary>
     public void Reset()
     {
-        Volatile.Write(ref _attempts, 0);
-        Volatile.Write(ref _notBefore, 0);
+        Interlocked.Increment(ref _generation);
+        ClearBackoff();
     }
 
     /// <summary>
@@ -83,13 +96,22 @@ internal sealed partial class UnresolvedAssignmentMetadataRefresher
     {
         Volatile.Write(ref _stopped, 1);
         await _cts.CancelAsync().ConfigureAwait(false);
-        await Current.ConfigureAwait(false);
+        // A refresh ending as this stops may already have started its follow-up.
+        Task task;
+        while (!(task = Current).IsCompleted)
+            await task.ConfigureAwait(false);
         // Not disposed: a heartbeat racing its owner's disposal may still start (and immediately
         // cancel) a refresh that reads the token, and a source without timers or linked
         // registrations holds nothing to release.
     }
 
-    private async Task RefreshAsync()
+    private void ClearBackoff()
+    {
+        Volatile.Write(ref _attempts, 0);
+        Volatile.Write(ref _notBefore, 0);
+    }
+
+    private async Task RefreshAsync(int generation)
     {
         var cancellationToken = _cts.Token;
         try
@@ -107,11 +129,32 @@ internal sealed partial class UnresolvedAssignmentMetadataRefresher
         }
         finally
         {
+            Complete(generation);
+        }
+    }
+
+    private void Complete(int generation)
+    {
+        var stale = Volatile.Read(ref _generation) != generation;
+        if (!stale)
+        {
             var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
                 _initialBackoffMs, _maxBackoffMs, Interlocked.Increment(ref _attempts));
             Volatile.Write(ref _notBefore, Stopwatch.GetTimestamp() + (delayMs * Stopwatch.Frequency / 1000));
-            Volatile.Write(ref _inFlight, 0);
+
+            // A Reset between the check above and these writes cleared the backoff first; undo
+            // what this stale refresh just wrote over it.
+            stale = Volatile.Read(ref _generation) != generation;
+            if (stale)
+                ClearBackoff();
         }
+
+        Interlocked.Exchange(ref _inFlight, 0);
+
+        // The current assignment asked for a refresh while this older one ran: that request found
+        // the refresher busy, so start it now rather than wait for a later heartbeat.
+        if (stale && Volatile.Read(ref _requestedGeneration) == Volatile.Read(ref _generation))
+            Request();
     }
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Metadata refresh for an assignment with unknown topic IDs failed; a later heartbeat retries")]

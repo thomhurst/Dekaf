@@ -130,6 +130,41 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         await Assert.That(metadataRequests()).IsEqualTo(2);
     }
 
+    // A new assignment that arrives while the previous one's refresh is still running must get a
+    // refresh of its own as soon as that one ends, not inherit the backoff the old one applies.
+    [Test]
+    public async Task ConsumerProtocol_NewAssignmentDuringRefresh_RefreshesWithoutInheritedBackoff()
+    {
+        var firstRefresh = new TaskCompletionSource<MetadataResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var refreshStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        SetupUnresolvedTopicCluster(
+            count => LateTopicBeat(count is 1 or 2 ? CreateLateAssignment() : null),
+            count =>
+            {
+                if (count != 1)
+                    return ValueTask.FromResult(CreateLateTopicMetadata(includeLateTopic: false));
+                refreshStarted.TrySetResult();
+                return new ValueTask<MetadataResponse>(firstRefresh.Task);
+            },
+            out var metadataRequests);
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(heartbeatIntervalMs: 60_000, retryBackoffMs: 60_000, retryBackoffMaxMs: 60_000),
+            _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(
+            new HashSet<string> { "test-topic", "late-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        // A new assignment arrives while the first refresh hangs.
+        await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+        await Assert.That(metadataRequests()).IsEqualTo(1);
+
+        firstRefresh.SetResult(CreateLateTopicMetadata(includeLateTopic: false));
+        await WaitForRefreshesAsync(coordinator);
+
+        await Assert.That(metadataRequests()).IsEqualTo(2);
+    }
+
     // A fence ends the membership the pending assignment belonged to. A rejoin answered without
     // an assignment must not publish partitions the new membership was never given.
     [Test]
@@ -166,6 +201,16 @@ public sealed partial class ConsumerCoordinatorKip848Tests
 
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
         await Assert.That(coordinator.Assignment.Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// Waits for the latest refresh and any follow-up it started as it ended.
+    /// </summary>
+    private static async Task WaitForRefreshesAsync(ConsumerCoordinator coordinator)
+    {
+        Task task;
+        while (!(task = coordinator.UnresolvedAssignmentRefreshTask).IsCompleted)
+            await task.WaitAsync(TimeSpan.FromSeconds(30));
     }
 
     /// <summary>
