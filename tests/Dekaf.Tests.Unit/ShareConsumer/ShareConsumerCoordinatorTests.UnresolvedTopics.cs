@@ -295,6 +295,11 @@ public sealed partial class ShareConsumerCoordinatorTests
 
         await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("late", 0)]);
         await Assert.That(RebalanceCount(metrics)).IsEqualTo(1d);
+        // Once resolved, nothing keeps the broker's assignment alive next to the published set.
+        await Assert.That(typeof(ShareConsumerCoordinator)
+            .GetFields(BindingFlags.Instance | BindingFlags.NonPublic)
+            .Where(field => field.FieldType == typeof(ShareGroupHeartbeatAssignment))
+            .All(field => field.GetValue(coordinator) is null)).IsTrue();
 
         await SendHeartbeatAsync(coordinator, cancellationToken);
 

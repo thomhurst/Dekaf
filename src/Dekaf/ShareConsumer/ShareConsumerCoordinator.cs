@@ -63,9 +63,10 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     // counts one whose heartbeat carried partitions; a join that ends without any counts at
     // Stable instead. Written only under _lock or by that join's own heartbeats.
     private bool _joinRebalanceRecorded;
-    // The broker assignment whose rebalance was counted last. Processing the same pending
-    // assignment again once metadata resolves more of its topics is not another rebalance.
-    private ShareGroupHeartbeatAssignment? _countedAssignment;
+    // Whether the rebalance of the pending _unresolvedAssignment was counted already. Processing
+    // it again once metadata resolves more of its topics is not another rebalance. A flag rather
+    // than a reference, so nothing keeps a resolved assignment alive.
+    private bool _unresolvedAssignmentCounted;
     private TaskCompletionSource<bool>? _assignmentChanged;
     private readonly Func<int> _getCoordinationConnectionIndex;
     // Where the next coordinator lookup starts. It rests on the last broker that answered, so a
@@ -657,6 +658,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     {
         var newAssignment = new HashSet<TopicPartition>();
         var retry = ReferenceEquals(assignment, _unresolvedAssignment);
+        var counted = retry && _unresolvedAssignmentCounted;
         // Resolve against one snapshot, recorded below: an update during processing makes the next
         // heartbeat process the assignment again.
         var snapshot = _metadataManager.Metadata.CaptureSnapshot();
@@ -687,6 +689,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             : null;
         Volatile.Write(ref _unresolvedSnapshot, unknownTopics > 0 ? snapshot : null);
         _unresolvedAssignment = unknownTopics > 0 ? assignment : null;
+        _unresolvedAssignmentCounted = counted && unknownTopics > 0;
         if (unknownTopics > 0)
         {
             // A new assignment refreshes without the backoff an earlier unresolved one built up.
@@ -702,11 +705,11 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             // A rejoin can complete with the existing assignment. Repeated assignment
             // payloads while stable are not new rebalances and do not notify waiters.
             if (_state == CoordinatorState.Joining && newAssignment.Count > 0)
-                RecordRebalance(assignment);
+                RecordRebalance(counted);
             return;
         }
 
-        RecordRebalance(assignment);
+        RecordRebalance(counted);
 
         LogAssignmentUpdate(newAssignment.Count);
         _assignedPartitions = newAssignment;
@@ -714,16 +717,15 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Counts the rebalance <paramref name="assignment"/> completed, once per broker assignment.
+    /// Counts the rebalance the assignment just processed completed, once per broker assignment:
+    /// <paramref name="counted"/> when it is the pending one, already counted.
     /// </summary>
-    private void RecordRebalance(ShareGroupHeartbeatAssignment assignment)
+    private void RecordRebalance(bool counted)
     {
         _joinRebalanceRecorded = true;
-        if (ReferenceEquals(assignment, _countedAssignment))
-            return;
-
-        _countedAssignment = assignment;
-        _telemetryMetrics?.Rebalanced();
+        _unresolvedAssignmentCounted = _unresolvedAssignment is not null;
+        if (!counted)
+            _telemetryMetrics?.Rebalanced();
     }
 
     /// <summary>
@@ -738,7 +740,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             return;
 
         _joinRebalanceRecorded = true;
-        _countedAssignment = _unresolvedAssignment;
+        _unresolvedAssignmentCounted = _unresolvedAssignment is not null;
         _telemetryMetrics?.Rebalanced();
     }
 
