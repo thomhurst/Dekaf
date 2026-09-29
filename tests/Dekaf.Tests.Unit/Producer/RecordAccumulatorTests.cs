@@ -4303,7 +4303,7 @@ public class RecordAccumulatorTests
     [Arguments(1073741824UL, 16384, 512)]      // 1GB buffer, 16KB batch → 65536/4=16384, capped at 512
     [Arguments(1073741824UL, 262144, 512)]     // 1GB buffer, 256KB batch → 4096/4=1024, capped at 512
     [Arguments(16777216UL, 16384, 256)]        // 16MB buffer, 16KB batch → 1024/4=256
-    [Arguments(1073741824UL, 1073741824, 4)]   // 1GB buffer, 1GB batch → memory bound (1GB / ~1.1GB arenas) floors at MinimumPoolSize
+    [Arguments(1073741824UL, 1073741824, 1)]   // 1GB buffer, 1GB batch → memory bound (1GB / ~1.1GB arenas) keeps one arena
     public async Task ComputePoolSize_ScalesWithBufferAndBatchSize(
         ulong bufferMemory, int batchSize, int expectedPoolSize)
     {

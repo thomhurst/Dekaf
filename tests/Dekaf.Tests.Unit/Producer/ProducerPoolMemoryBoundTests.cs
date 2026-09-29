@@ -75,16 +75,31 @@ public class ProducerPoolMemoryBoundTests
     }
 
     [Test]
-    [Arguments(40L * 1024 * 1024)]
-    [Arguments(20L * 1024 * 1024)]
-    [Arguments(1L)]
-    public async Task ComputePoolSize_TinyMemory_FloorsAtMinimumPoolSize(long availableMemoryBytes)
+    [Arguments(40L * 1024 * 1024, 3)]
+    [Arguments(20L * 1024 * 1024, 1)]
+    [Arguments(1L, 1)]
+    public async Task ComputePoolSize_TinyMemory_KeepsAtLeastOneArena(long availableMemoryBytes, int expectedPoolSize)
     {
         var options = CreateOptions(bufferMemory: 256 * MiB);
 
         var poolSize = RecordAccumulator.ComputePoolSize(options, availableMemoryBytes);
 
-        await Assert.That(poolSize).IsEqualTo(RecordAccumulator.MinimumPoolSize);
+        await Assert.That(poolSize).IsEqualTo(expectedPoolSize);
+    }
+
+    [Test]
+    public async Task ComputePoolSize_LargeArenaInSmallContainer_RetainsNoMoreThanTheBudget()
+    {
+        // A 16MB batch in a 384Mi pod: the ~29MB budget holds one 18MB arena, not a floor of four.
+        const long heapLimit = 288 * MiB;
+        var options = CreateOptions(bufferMemory: 256 * MiB, batchSize: 16 * 1024 * 1024);
+        var arena = ProducerOptions.GetEffectiveArenaCapacity(options.BatchSize, 0);
+
+        var poolSize = RecordAccumulator.ComputePoolSize(options, heapLimit);
+
+        await Assert.That(poolSize).IsEqualTo(1);
+        await Assert.That((long)poolSize * arena)
+            .IsLessThanOrEqualTo(heapLimit / RecordAccumulator.RetainedMemoryDivisor);
     }
 
     [Test]
@@ -104,21 +119,29 @@ public class ProducerPoolMemoryBoundTests
     }
 
     [Test]
-    [Arguments(BufferMemoryAllocationStrategy.Full)]
-    [Arguments(BufferMemoryAllocationStrategy.Incremental)]
-    public async Task ComputePoolSize_AppliesToBothAllocationStrategies(BufferMemoryAllocationStrategy strategy)
+    [Arguments(BufferMemoryAllocationStrategy.Full, 0, 25)]
+    [Arguments(BufferMemoryAllocationStrategy.Incremental, 0, BatchArena.DefaultPoolSize)]
+    // Incremental never allocates an arena, so an explicit ArenaCapacity must not shrink its pool.
+    [Arguments(BufferMemoryAllocationStrategy.Incremental, 64 * 1024 * 1024, BatchArena.DefaultPoolSize)]
+    public async Task ComputePoolSize_OnlyFullArenasCountAgainstTheMemoryBound(
+        BufferMemoryAllocationStrategy strategy,
+        int arenaCapacity,
+        int expectedPoolSize)
     {
+        // Incremental batches return their chunks before pooling, so a pooled batch keeps no
+        // batch storage for the arena bound to limit.
         var options = new ProducerOptions
         {
             BootstrapServers = ["localhost:9092"],
             BatchSize = DefaultBatchSize,
+            ArenaCapacity = arenaCapacity,
             BufferMemory = 32 * MiB,
             BufferMemoryAllocationStrategy = strategy,
         };
 
         var poolSize = RecordAccumulator.ComputePoolSize(options, availableMemoryBytes: 288 * MiB);
 
-        await Assert.That(poolSize).IsEqualTo(25);
+        await Assert.That(poolSize).IsEqualTo(expectedPoolSize);
     }
 
     [Test]
@@ -158,17 +181,19 @@ public class ProducerPoolMemoryBoundTests
             var arena = ProducerOptions.GetEffectiveArenaCapacity(batchSize, 0);
             var poolSize = RecordAccumulator.ComputePoolSize(options, available);
             var memoryBound = RecordAccumulator.ComputeMemoryBoundedPoolSize(options, available);
-            var retainedBudget = available > 0
-                ? Math.Min(buffer, available / RecordAccumulator.RetainedMemoryDivisor)
-                : buffer;
+            var retainedBudget = Math.Max(
+                available > 0 ? Math.Min(buffer, available / RecordAccumulator.RetainedMemoryDivisor) : buffer,
+                arena);
             var label = $"available={available} buffer={buffer} batch={batchSize} pool={poolSize}";
 
             if (poolSize < RecordAccumulator.MinimumPoolSize || poolSize > BatchArena.MaxPoolSizeCap)
                 violations.Add($"{label}: outside [{RecordAccumulator.MinimumPoolSize}, {BatchArena.MaxPoolSizeCap}]");
             if (poolSize > memoryBound)
                 violations.Add($"{label}: above memory bound {memoryBound}");
-            if (poolSize > RecordAccumulator.MinimumPoolSize && (long)poolSize * arena > retainedBudget)
+            if ((long)poolSize * arena > retainedBudget)
                 violations.Add($"{label}: retains {(long)poolSize * arena} bytes over budget {retainedBudget}");
+            if (RecordAccumulator.ComputeRetainedArenaBytes(options, available) != retainedBudget)
+                violations.Add($"{label}: byte budget {RecordAccumulator.ComputeRetainedArenaBytes(options, available)} != {retainedBudget}");
         }
 
         await Assert.That(violations).IsEmpty();
@@ -214,6 +239,167 @@ public class ProducerPoolMemoryBoundTests
             .IsEqualTo(RecordAccumulator.ComputePoolSize(options));
         await Assert.That(BatchArena.PoolCapacity).IsGreaterThanOrEqualTo(7);
         await Assert.That(BatchArena.MissRatchetLimit).IsGreaterThanOrEqualTo(7);
+        await Assert.That(BatchArena.RetainedByteLimit)
+            .IsGreaterThanOrEqualTo(RecordAccumulator.ComputeRetainedArenaBytes(options, availableMemoryBytes: 0));
+    }
+
+    [Test]
+    public async Task RecordAccumulator_Incremental_KeepsChurnSizedBatchPool()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            BatchSize = DefaultBatchSize,
+            BufferMemory = 8 * MiB,
+            BufferMemoryAllocationStrategy = BufferMemoryAllocationStrategy.Incremental,
+        };
+
+        await using var accumulator = new RecordAccumulator(options);
+
+        await Assert.That(accumulator.BatchPoolMaxSizeForTest).IsEqualTo(BatchArena.DefaultPoolSize);
+    }
+
+    #endregion
+
+    #region Retained byte budget
+
+    [Test]
+    public async Task RetainedByteBudget_MixedArenaSizes_StayWithinTheByteLimit()
+    {
+        // A 16KB-batch producer can raise the shared arena pool to 512 slots. A 1MB-batch
+        // producer returning its arenas into those slots must still stop at the byte budget.
+        const long budget = 29 * MiB;
+        var retained = new RetainedByteBudget();
+        retained.RatchetLimit(budget);
+        var accepted = 0;
+
+        for (var i = 0; i < 512; i++)
+        {
+            if (retained.TryReserve(DefaultArenaCapacity))
+                accepted++;
+        }
+
+        for (var i = 0; i < 512; i++)
+            retained.TryReserve(18_432);
+
+        await Assert.That(accepted).IsEqualTo((int)(budget / DefaultArenaCapacity));
+        await Assert.That(retained.RetainedBytes).IsLessThanOrEqualTo(budget);
+    }
+
+    [Test]
+    public async Task RetainedByteBudget_WithoutLimit_TracksBytesAndAcceptsEverything()
+    {
+        var retained = new RetainedByteBudget();
+
+        var accepted = retained.TryReserve(DefaultArenaCapacity) && retained.TryReserve(DefaultArenaCapacity);
+
+        await Assert.That(accepted).IsTrue();
+        await Assert.That(retained.Limit).IsEqualTo(0);
+        await Assert.That(retained.RetainedBytes).IsEqualTo(2L * DefaultArenaCapacity);
+    }
+
+    [Test]
+    public async Task RetainedByteBudget_Release_MakesRoomForTheNextItem()
+    {
+        var retained = new RetainedByteBudget();
+        retained.RatchetLimit(DefaultArenaCapacity);
+
+        var first = retained.TryReserve(DefaultArenaCapacity);
+        var whileFull = retained.TryReserve(DefaultArenaCapacity);
+        retained.Release(DefaultArenaCapacity);
+        var afterRelease = retained.TryReserve(DefaultArenaCapacity);
+
+        await Assert.That(first).IsTrue();
+        await Assert.That(whileFull).IsFalse();
+        await Assert.That(afterRelease).IsTrue();
+        await Assert.That(retained.RetainedBytes).IsEqualTo(DefaultArenaCapacity);
+    }
+
+    [Test]
+    public async Task RetainedByteBudget_Limit_OnlyRatchetsUp()
+    {
+        var retained = new RetainedByteBudget();
+
+        retained.RatchetLimit(64 * MiB);
+        retained.RatchetLimit(8 * MiB);
+
+        await Assert.That(retained.Limit).IsEqualTo(64 * MiB);
+    }
+
+    [Test]
+    public async Task RetainedByteBudget_ZeroByteItems_AreAlwaysAccepted()
+    {
+        var retained = new RetainedByteBudget();
+        retained.RatchetLimit(1);
+        retained.TryReserve(1);
+
+        var accepted = retained.TryReserve(0);
+        retained.Release(0);
+
+        await Assert.That(accepted).IsTrue();
+        await Assert.That(retained.RetainedBytes).IsEqualTo(1);
+    }
+
+    [Test]
+    [Timeout(60_000)]
+    public async Task RetainedByteBudget_ConcurrentReservations_KeepAccountsBalanced(CancellationToken cancellationToken)
+    {
+        const long budget = 32 * MiB;
+        const int threadCount = 16;
+        const int operationsPerThread = 20_000;
+        var retained = new RetainedByteBudget();
+        retained.RatchetLimit(budget);
+        long heldPeak = 0;
+        long held = 0;
+
+        var workers = Enumerable.Range(0, threadCount).Select(seed => Task.Run(() =>
+        {
+            var random = new Random(seed);
+            var mine = new Stack<int>();
+            for (var i = 0; i < operationsPerThread; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (mine.Count > 0 && random.Next(2) == 0)
+                {
+                    var bytes = mine.Pop();
+                    Interlocked.Add(ref held, -bytes);
+                    retained.Release(bytes);
+                    continue;
+                }
+
+                var size = random.Next(1, 4) * DefaultArenaCapacity / 3;
+                if (!retained.TryReserve(size))
+                    continue;
+
+                mine.Push(size);
+                RatchetUp(ref heldPeak, Interlocked.Add(ref held, size));
+            }
+
+            while (mine.Count > 0)
+            {
+                var bytes = mine.Pop();
+                Interlocked.Add(ref held, -bytes);
+                retained.Release(bytes);
+            }
+        }, cancellationToken)).ToArray();
+
+        await Task.WhenAll(workers);
+
+        // Accepted reservations never sum past the limit, and every release balances.
+        await Assert.That(heldPeak).IsLessThanOrEqualTo(budget);
+        await Assert.That(retained.RetainedBytes).IsEqualTo(0);
+    }
+
+    private static void RatchetUp(ref long location, long value)
+    {
+        long current;
+        do
+        {
+            current = Volatile.Read(ref location);
+            if (value <= current)
+                return;
+        }
+        while (Interlocked.CompareExchange(ref location, value, current) != current);
     }
 
     [Test]

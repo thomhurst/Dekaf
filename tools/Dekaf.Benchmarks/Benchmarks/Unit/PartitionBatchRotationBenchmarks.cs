@@ -25,6 +25,9 @@ public class PartitionBatchRotationBenchmarks
     [Params(16_384, 1_048_576)]
     public int BatchSize { get; set; }
 
+    [Params(BufferMemoryAllocationStrategy.Full, BufferMemoryAllocationStrategy.Incremental)]
+    public BufferMemoryAllocationStrategy AllocationStrategy { get; set; }
+
     [GlobalSetup]
     public void Setup()
     {
@@ -34,6 +37,7 @@ public class PartitionBatchRotationBenchmarks
             BatchSize = BatchSize,
             BufferMemory = 256L * 1024 * 1024,
             LingerMs = 0,
+            BufferMemoryAllocationStrategy = AllocationStrategy,
         };
         _estimatedSize = PartitionBatch.EstimateRecordSize(0, _value.Length, null, 0);
         _timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -42,7 +46,16 @@ public class PartitionBatchRotationBenchmarks
         _readyBatchPool = new ReadyBatchPool(poolSize * 2);
         _batchPool = new PartitionBatchPool(options, maxPoolSize: poolSize);
         _batchPool.SetReadyBatchPool(_readyBatchPool);
-        BatchArena.PreWarm(16, ProducerOptions.GetEffectiveArenaCapacity(BatchSize, 0));
+        if (AllocationStrategy == BufferMemoryAllocationStrategy.Incremental)
+        {
+            IncrementalBatchBuffer.RatchetPoolSize(poolSize * 2, BatchSize);
+            IncrementalBatchBuffer.PreWarm(16, BatchSize);
+        }
+        else
+        {
+            BatchArena.PreWarm(16, ProducerOptions.GetEffectiveArenaCapacity(BatchSize, 0));
+        }
+
         _readyBatchPool.PreWarm(16);
         _batchPool.PreWarm(16);
 

@@ -758,6 +758,9 @@ internal sealed class BatchArena
     // RecordAccumulator has requested. Misses never grow the pool past what the
     // producers' memory bounds allow.
     private static int s_missRatchetLimit = InitialPoolSize;
+    // Byte ceiling on pooled arenas. Producers with different batch sizes share this pool, so
+    // a count sized for small arenas could otherwise retain as many large ones.
+    private static readonly RetainedByteBudget s_retainedBytes = new();
     private static long s_drops;
     private static long s_lastRatchetMissCount;
 
@@ -777,8 +780,10 @@ internal sealed class BatchArena
     /// <param name="missRatchetLimit">
     /// The largest size sustained misses may grow the pool to for this producer's memory bound.
     /// </param>
-    internal static void RatchetPoolSize(int newSize, int missRatchetLimit)
+    /// <param name="retainedByteLimit">The producer's budget for idle arena bytes.</param>
+    internal static void RatchetPoolSize(int newSize, int missRatchetLimit, long retainedByteLimit)
     {
+        s_retainedBytes.RatchetLimit(retainedByteLimit);
         InterlockedHelper.RatchetUp(ref s_missRatchetLimit, Math.Max(newSize, missRatchetLimit));
         RaisePoolSize(newSize);
     }
@@ -810,6 +815,12 @@ internal sealed class BatchArena
     /// Largest size sustained misses may grow the process-wide arena pool to.
     /// </summary>
     internal static int MissRatchetLimit => Volatile.Read(ref s_missRatchetLimit);
+
+    /// <summary>Bytes held by arenas in the process-wide pool.</summary>
+    internal static long RetainedBytes => s_retainedBytes.RetainedBytes;
+
+    /// <summary>Largest idle-arena byte budget any producer requested, or 0 before the first producer.</summary>
+    internal static long RetainedByteLimit => s_retainedBytes.Limit;
 
     internal static int ComputeRatchetPoolSize(int currentSize, long missesSinceLastRatchet, int limit)
     {
@@ -852,7 +863,11 @@ internal sealed class BatchArena
         count = Math.Min(count, Volatile.Read(ref s_maxPoolSize));
         var missing = Math.Max(0, count - s_pool.ApproximateCount);
         for (var i = 0; i < missing; i++)
+        {
+            if (!s_retainedBytes.TryReserve(capacity))
+                return;
             s_pool.Return(new BatchArena(capacity));
+        }
     }
 
     private byte[] _buffer;
@@ -891,6 +906,8 @@ internal sealed class BatchArena
     public static BatchArena RentOrCreate(int capacity, int maxPooledCapacity)
     {
         var arena = s_pool.Rent();
+        // A pooled arena releases its reserved bytes; a newly created one has an empty buffer.
+        s_retainedBytes.Release(arena._buffer.Length);
         arena.Reset(capacity, maxPooledCapacity);
         return arena;
     }
@@ -903,13 +920,15 @@ internal sealed class BatchArena
     {
         arena._position = 0;
 
-        if (arena._buffer.Length > arena._maxPooledCapacity)
+        var length = arena._buffer.Length;
+        if (length > arena._maxPooledCapacity || !s_retainedBytes.TryReserve(length))
         {
             arena._buffer = null!;
             Interlocked.Increment(ref s_drops);
             return;
         }
 
+        // A full pool destroys the arena, which releases the reservation.
         s_pool.Return(arena);
     }
 
@@ -928,6 +947,7 @@ internal sealed class BatchArena
 
         protected override void Destroy(BatchArena item)
         {
+            s_retainedBytes.Release(item._buffer?.Length ?? 0);
             item._buffer = null!;
             Interlocked.Increment(ref s_drops);
         }
@@ -3160,7 +3180,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var availableMemoryBytes = GetAvailableMemoryBytes();
         var poolSize = ComputePoolSize(options, availableMemoryBytes);
         if (options.BufferMemoryAllocationStrategy == BufferMemoryAllocationStrategy.Full)
-            BatchArena.RatchetPoolSize(poolSize, ComputeMemoryBoundedPoolSize(options, availableMemoryBytes));
+            BatchArena.RatchetPoolSize(
+                poolSize,
+                ComputeMemoryBoundedPoolSize(options, availableMemoryBytes),
+                ComputeRetainedArenaBytes(options, availableMemoryBytes));
         else
             IncrementalBatchBuffer.RatchetPoolSize(
                 poolSize * ReadyBatchPoolSizeRatio,
@@ -3215,7 +3238,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Smallest pool size the memory bound can produce, so batch rotation still reuses storage.
     /// </summary>
-    internal const int MinimumPoolSize = 4;
+    internal const int MinimumPoolSize = 1;
 
     /// <summary>
     /// Idle pooled batch storage may use at most 1/<c>RetainedMemoryDivisor</c> of the memory
@@ -3254,24 +3277,40 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Largest pool size whose idle batch storage fits the producer's memory bound.
     /// </summary>
     /// <remarks>
-    /// Every pooled batch keeps a full arena (BatchSize + 12.5%) whether or not a batch ever
-    /// filled it. Arenas are pinned and allocated without zeroing, so untouched pages are
-    /// invisible to container RSS metrics while still counting against the GC heap limit.
-    /// The bound is the smaller of BufferMemory and 1/<see cref="RetainedMemoryDivisor"/> of
-    /// <paramref name="availableMemoryBytes"/>; 0 means unknown and applies only BufferMemory.
+    /// With <see cref="BufferMemoryAllocationStrategy.Full"/>, every pooled batch keeps a full
+    /// arena (BatchSize + 12.5%, or ArenaCapacity) whether or not a batch ever filled it. Arenas
+    /// are pinned and allocated without zeroing, so untouched pages are invisible to container
+    /// RSS metrics while still counting against the GC heap limit. The bound is
+    /// <see cref="ComputeRetainedArenaBytes"/> divided by the arena size, and never below
+    /// <see cref="MinimumPoolSize"/>. <see cref="BufferMemoryAllocationStrategy.Incremental"/>
+    /// batches return their chunks before pooling, so no arena bound applies to them.
     /// </remarks>
     internal static int ComputeMemoryBoundedPoolSize(ProducerOptions options, long availableMemoryBytes)
     {
-        var retainedBytes = options.BufferMemory;
-        if (availableMemoryBytes > 0)
-            retainedBytes = Math.Min(retainedBytes, (ulong)availableMemoryBytes / RetainedMemoryDivisor);
+        if (options.BufferMemoryAllocationStrategy != BufferMemoryAllocationStrategy.Full)
+            return BatchArena.MaxPoolSizeCap;
 
-        var batchStorageBytes = (ulong)ProducerOptions.GetEffectiveArenaCapacity(
-            Math.Max(options.BatchSize, 1),
-            options.ArenaCapacity);
-        var batchCount = retainedBytes / batchStorageBytes;
+        var batchCount = (ulong)ComputeRetainedArenaBytes(options, availableMemoryBytes)
+            / (ulong)GetPooledArenaCapacity(options);
         return (int)Math.Clamp(batchCount, (ulong)MinimumPoolSize, (ulong)BatchArena.MaxPoolSizeCap);
     }
+
+    /// <summary>
+    /// Idle arena bytes this producer lets the process-wide arena pool keep: the smaller of
+    /// BufferMemory and 1/<see cref="RetainedMemoryDivisor"/> of
+    /// <paramref name="availableMemoryBytes"/> (0 means unknown and applies only BufferMemory),
+    /// but at least one arena so batch rotation can reuse storage.
+    /// </summary>
+    internal static long ComputeRetainedArenaBytes(ProducerOptions options, long availableMemoryBytes)
+    {
+        var retainedBytes = (long)Math.Min(options.BufferMemory, long.MaxValue);
+        if (availableMemoryBytes > 0)
+            retainedBytes = Math.Min(retainedBytes, availableMemoryBytes / RetainedMemoryDivisor);
+        return Math.Max(retainedBytes, GetPooledArenaCapacity(options));
+    }
+
+    private static int GetPooledArenaCapacity(ProducerOptions options)
+        => ProducerOptions.GetEffectiveArenaCapacity(Math.Max(options.BatchSize, 1), options.ArenaCapacity);
 
     private static long GetAvailableMemoryBytes() => GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
 
