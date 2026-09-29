@@ -9487,16 +9487,35 @@ internal sealed class PartitionBatch
     }
 
     /// <summary>
+    /// Releases the batch's arena. Complete() hands an arena to a ReadyBatch only when the batch
+    /// holds records, so an arena of a batch with no records is unshared and goes back to the
+    /// byte-bounded arena pool: batches rented but never used (rotation races, a rejected first
+    /// append, disposal) no longer turn into fresh POH allocations. Otherwise the buffer is
+    /// dropped, as before, in case a failed Complete() left it referenced by a ReadyBatch.
+    /// </summary>
+    private void ReleaseArena()
+    {
+        var arena = _arena;
+        _arena = null;
+        if (arena is null)
+            return;
+
+        if (_recordCount == 0)
+            BatchArena.ReturnToPool(arena);
+        else
+            arena.Return();
+    }
+
+    /// <summary>
     /// Releases what <see cref="PrepareForPooling"/> would, for a batch the pool discards:
     /// append storage (with the same failure-safety semantics), its completion array, and any
     /// admission lease still held. Called once, with the pool's exclusive ownership.
     /// </summary>
     internal void ReleaseForDiscard()
     {
-        _arena?.Return();
+        ReleaseArena();
         if (_incrementalBuffer is not null)
             IncrementalBatchBuffer.ReturnToPool(_incrementalBuffer);
-        _arena = null;
         _incrementalBuffer = null;
 
         // Fire-only batches keep their array after Complete; awaited batches handed theirs to
@@ -9521,14 +9540,13 @@ internal sealed class PartitionBatch
 
         // Append storage was transferred to ReadyBatch by Complete(). These are no-ops
         // in the normal path but retained for failure safety.
-        _arena?.Return();
+        ReleaseArena();
         if (_incrementalBuffer is not null)
             IncrementalBatchBuffer.ReturnToPool(_incrementalBuffer);
 
         // A pooled batch keeps no append storage: Reset rents it when the batch is next used.
         // Idle arenas then live only in the byte-bounded process-wide arena pool, instead of
         // also sitting in every pooled batch.
-        _arena = null;
         _incrementalBuffer = null;
 
         // Awaited batches transfer completion storage to ReadyBatch. Fire-only batches
@@ -10577,14 +10595,13 @@ internal sealed class PartitionBatch
             ProducerContainerPools.DeliveryIndexes.Return(_completionSourceIndexes, clearArray: false);
 
         // Return arena buffer if present
-        _arena?.Return();
+        ReleaseArena();
         if (_incrementalBuffer is not null)
             IncrementalBatchBuffer.ReturnToPool(_incrementalBuffer);
 
         // Null out references to prevent accidental reuse
         _completionSources = null;
         _completionSourceIndexes = null;
-        _arena = null;
         _incrementalBuffer = null;
 
         if (_callbacks is not null)

@@ -1313,6 +1313,48 @@ public class ProducerPoolMemoryBoundTests
     }
 
     [Test]
+    [NotInParallel(nameof(BatchArena))]
+    public async Task PartitionBatchPool_UnusedBatch_ReturnsItsArenaToTheArenaPool()
+    {
+        // Rotation races and rejected first appends return a rented batch without completing it.
+        // Its arena was never written or shared, so it must go back to the arena pool (buffer
+        // kept) rather than be dropped and reallocated on the next rent.
+        using var room = BatchArena.Register(new ArenaPoolLimit(BatchArena.MaxPoolSizeCap, BatchArena.MaxPoolSizeCap, long.MaxValue / 2));
+        var (pool, _) = CreatePools(maxPoolSize: 2);
+        var arenaField = typeof(PartitionBatch).GetField(
+            "_arena",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        var unused = pool.Rent(new TopicPartition("pool-memory-bound", 0), partitionCount: 1);
+        var arena = (BatchArena)arenaField.GetValue(unused)!;
+
+        pool.Return(unused);
+
+        await Assert.That(arenaField.GetValue(unused)).IsNull();
+        await Assert.That(arena.Buffer).IsNotNull();
+        await Assert.That(arena.Position).IsEqualTo(0);
+    }
+
+    [Test]
+    [NotInParallel(nameof(BatchArena))]
+    public async Task PartitionBatchPool_DiscardedUnusedBatch_ReturnsItsArenaToTheArenaPool()
+    {
+        using var room = BatchArena.Register(new ArenaPoolLimit(BatchArena.MaxPoolSizeCap, BatchArena.MaxPoolSizeCap, long.MaxValue / 2));
+        var (pool, readyPool) = CreatePools(maxPoolSize: 1);
+        var arenaField = typeof(PartitionBatch).GetField(
+            "_arena",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        var pooled = pool.Rent(new TopicPartition("pool-memory-bound", 0), partitionCount: 1);
+        var discarded = pool.Rent(new TopicPartition("pool-memory-bound", 1), partitionCount: 1);
+        FillCompleteAndReturn(pool, readyPool, pooled);
+        var arena = (BatchArena)arenaField.GetValue(discarded)!;
+
+        pool.Return(discarded);
+
+        await Assert.That(pool.RetainedCount).IsEqualTo(1);
+        await Assert.That(arena.Buffer).IsNotNull();
+    }
+
+    [Test]
     public async Task PartitionBatchPool_SetRetentionLimit_RejectsNonPositive()
     {
         var (pool, _) = CreatePools(maxPoolSize: 2);
