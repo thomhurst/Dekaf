@@ -689,6 +689,8 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             : null;
         Volatile.Write(ref _unresolvedSnapshot, unknownTopics > 0 ? snapshot : null);
         _unresolvedAssignment = unknownTopics > 0 ? assignment : null;
+        // Provisional: holds when no rebalance is recorded below. RecordRebalance overwrites it on
+        // the paths that record one.
         _unresolvedAssignmentCounted = counted && unknownTopics > 0;
         if (unknownTopics > 0)
         {
