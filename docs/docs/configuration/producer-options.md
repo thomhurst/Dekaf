@@ -382,7 +382,7 @@ Maximum memory the producer uses for buffering unsent messages:
 .WithBufferMemory(256 * 1024 * 1024)  // 256MB
 ```
 
-Default: 2GB. When the buffer is full, `ProduceAsync` and `FireAsync` wait for space for up to the `WithMaxBlock` duration. Increase if profiling shows significant time in backpressure waits; decrease in memory-constrained environments.
+Default: auto-tuned from the process memory budget (see `DekafMemoryBudget`). When the buffer is full, `ProduceAsync` and `FireAsync` wait for space for up to the `WithMaxBlock` duration. Increase if profiling shows significant time in backpressure waits; decrease in memory-constrained environments.
 
 ### WithBufferMemoryAllocationStrategy
 
@@ -398,6 +398,14 @@ has many active partitions whose batches are only partly filled. Records remain 
 compression reads the chunk sequence directly, and unencrypted single-batch sends use TCP
 scatter/gather. `BufferMemory`, batch limits, oversized-record behavior, retries, idempotence,
 and transactions have identical semantics under both strategies.
+
+With `Full`, every batch arena is `BatchSize` plus 12.5% (about 1.1MB with the default 1MB
+`BatchSize`), even when the batch holds one small record. Arenas are pinned and allocated without
+zeroing, so container RSS metrics undercount them while the GC heap limit counts them in full.
+The producer keeps idle arenas for reuse, bounded by the smaller of `BufferMemory` and 10% of the
+memory available to the GC (75% of the container memory limit by default). In small containers
+with low-volume topics, a smaller `WithBatchSize` or the `Incremental` strategy keeps live batch
+memory proportional to the records buffered.
 
 ### WithDeliveryLatencyTarget
 

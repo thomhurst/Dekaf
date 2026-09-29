@@ -4292,7 +4292,8 @@ public class RecordAccumulatorTests
             // Uses default BufferMemory (256MB) and default BatchSize (1MB)
         };
 
-        var computed = RecordAccumulator.ComputePoolSize(defaultOptions);
+        // A host with plenty of memory: the memory bound must not shrink the default pool.
+        var computed = RecordAccumulator.ComputePoolSize(defaultOptions, availableMemoryBytes: 16L << 30);
 
         await Assert.That(computed).IsEqualTo(BatchArena.DefaultPoolSize);
     }
@@ -4302,7 +4303,7 @@ public class RecordAccumulatorTests
     [Arguments(1073741824UL, 16384, 512)]      // 1GB buffer, 16KB batch → 65536/4=16384, capped at 512
     [Arguments(1073741824UL, 262144, 512)]     // 1GB buffer, 256KB batch → 4096/4=1024, capped at 512
     [Arguments(16777216UL, 16384, 256)]        // 16MB buffer, 16KB batch → 1024/4=256
-    [Arguments(1073741824UL, 1073741824, 128)] // 1GB buffer, 1GB batch → 1/4=0, clamped to 128 (default floor)
+    [Arguments(1073741824UL, 1073741824, 4)]   // 1GB buffer, 1GB batch → memory bound (1GB / ~1.1GB arenas) floors at MinimumPoolSize
     public async Task ComputePoolSize_ScalesWithBufferAndBatchSize(
         ulong bufferMemory, int batchSize, int expectedPoolSize)
     {
@@ -4313,22 +4314,28 @@ public class RecordAccumulatorTests
             BatchSize = batchSize
         };
 
-        var poolSize = RecordAccumulator.ComputePoolSize(options);
+        var poolSize = RecordAccumulator.ComputePoolSize(options, availableMemoryBytes: 64L << 30);
 
         await Assert.That(poolSize).IsEqualTo(expectedPoolSize);
     }
 
     [Test]
-    [Arguments(128, 127L, 128)]
-    [Arguments(128, 128L, 256)]
-    [Arguments(300, 128L, 512)]
-    [Arguments(512, 128L, 512)]
+    [Arguments(128, 127L, 512, 128)]
+    [Arguments(128, 128L, 512, 256)]
+    [Arguments(300, 128L, 512, 512)]
+    [Arguments(512, 128L, 512, 512)]
+    [Arguments(128, 128L, 4096, 256)]  // limit above MaxPoolSizeCap still grows by doubling
+    [Arguments(300, 128L, 4096, 512)]  // ...and never past MaxPoolSizeCap
+    [Arguments(16, 128L, 24, 24)]      // memory-bounded limit caps the doubling
+    [Arguments(24, 1_000_000L, 24, 24)] // sustained misses never grow past the limit
+    [Arguments(128, 128L, 24, 128)]    // a limit below the current size never shrinks the pool
     public async Task ComputeBatchArenaRatchetSize_RequiresSustainedMissesAndHonorsCap(
         int currentSize,
         long missesSinceLastRatchet,
+        int limit,
         int expectedSize)
     {
-        var size = BatchArena.ComputeRatchetPoolSize(currentSize, missesSinceLastRatchet);
+        var size = BatchArena.ComputeRatchetPoolSize(currentSize, missesSinceLastRatchet, limit);
 
         await Assert.That(size).IsEqualTo(expectedSize);
     }

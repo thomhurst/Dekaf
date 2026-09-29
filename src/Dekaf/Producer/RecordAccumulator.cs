@@ -727,8 +727,9 @@ internal readonly struct AppendWorkItem
 internal sealed class BatchArena
 {
     // Reservoir-backed pool eliminates ConcurrentQueue node allocations. This pool disables
-    // Reservoir's thread-local tier so MaxPoolSizeCap remains a hard POH-retention bound.
-    private static readonly BatchArenaPool s_pool = new(DefaultPoolSize);
+    // Reservoir's thread-local tier so its capacity remains a hard POH-retention bound.
+    // It starts small; each RecordAccumulator raises it to its memory-bounded pool size.
+    private static readonly BatchArenaPool s_pool = new(InitialPoolSize);
     // Memory tradeoff: pooling arenas retains POH memory for the pool's lifetime.
     // This is a static/process-wide pool shared across all RecordAccumulator instances.
     // POH buffers are reclaimable by the GC when evicted from the pool (references dropped).
@@ -738,15 +739,25 @@ internal sealed class BatchArena
     // Pool size scales with BufferMemory/BatchSize to handle high batch churn rates
     // (e.g., 16KB batches create ~6,250 batches/sec at 100K msg/sec vs ~100 for 1MB batches).
     // The default (128) covers sustained load with default 256MB buffer and 1MB batches;
-    // smaller batches ratchet up automatically via ComputePoolSize.
+    // smaller batches ratchet up automatically via ComputePoolSize. ComputePoolSize also
+    // bounds the retained bytes by BufferMemory and available memory, so small containers
+    // get smaller pools.
     internal const int DefaultPoolSize = 128;
+    // Capacity before any RecordAccumulator sizes the pool. Kept small so a process
+    // whose producers compute a memory-bounded pool size below DefaultPoolSize never
+    // retains more arenas than that bound.
+    internal const int InitialPoolSize = 16;
     // Upper bound on pool size. Worst-case POH retention: MaxPoolSizeCap × arena capacity.
     // With 16KB batches (the smallest that triggers scaling): 512 × ~18KB ≈ 9MB.
     // With 256KB batches and 256MB buffer: 512 × ~280KB ≈ 140MB POH retention.
     // With 1MB batches: ComputePoolSize returns 128 (not 512), so 128 × ~1.1MB ≈ ~140MB.
     internal const int MaxPoolSizeCap = 512;
     internal const long MissRatchetThreshold = 128;
-    private static int s_maxPoolSize = DefaultPoolSize;
+    private static int s_maxPoolSize = InitialPoolSize;
+    // Ceiling for miss-driven growth: the largest memory-bounded pool size any
+    // RecordAccumulator has requested. Misses never grow the pool past what the
+    // producers' memory bounds allow.
+    private static int s_missRatchetLimit = InitialPoolSize;
     private static long s_drops;
     private static long s_lastRatchetMissCount;
 
@@ -762,7 +773,17 @@ internal sealed class BatchArena
     /// ratchets the cap to 512, then a 1MB-batch producer can retain up to
     /// 512 × ~1.1MB ≈ ~560MB of POH memory instead of the normal 128 × ~1.1MB ≈ ~140MB.
     /// </summary>
-    internal static void RatchetPoolSize(int newSize)
+    /// <param name="newSize">The pool size the producer starts with.</param>
+    /// <param name="missRatchetLimit">
+    /// The largest size sustained misses may grow the pool to for this producer's memory bound.
+    /// </param>
+    internal static void RatchetPoolSize(int newSize, int missRatchetLimit)
+    {
+        InterlockedHelper.RatchetUp(ref s_missRatchetLimit, Math.Max(newSize, missRatchetLimit));
+        RaisePoolSize(newSize);
+    }
+
+    private static void RaisePoolSize(int newSize)
     {
         InterlockedHelper.RatchetUp(ref s_maxPoolSize, newSize);
         s_pool.RatchetMaxPoolSize(newSize);
@@ -785,12 +806,18 @@ internal sealed class BatchArena
     /// </summary>
     internal static int PoolCapacity => s_pool.MaxPoolSize;
 
-    internal static int ComputeRatchetPoolSize(int currentSize, long missesSinceLastRatchet)
+    /// <summary>
+    /// Largest size sustained misses may grow the process-wide arena pool to.
+    /// </summary>
+    internal static int MissRatchetLimit => Volatile.Read(ref s_missRatchetLimit);
+
+    internal static int ComputeRatchetPoolSize(int currentSize, long missesSinceLastRatchet, int limit)
     {
-        if (missesSinceLastRatchet < MissRatchetThreshold || currentSize >= MaxPoolSizeCap)
+        limit = Math.Min(limit, MaxPoolSizeCap);
+        if (missesSinceLastRatchet < MissRatchetThreshold || currentSize >= limit)
             return currentSize;
 
-        return Math.Min(MaxPoolSizeCap, currentSize * 2);
+        return Math.Min(limit, currentSize * 2);
     }
 
     private static void MaybeRatchetPoolSize(long missCount)
@@ -809,9 +836,9 @@ internal sealed class BatchArena
         }
 
         var currentSize = PoolCapacity;
-        var newSize = ComputeRatchetPoolSize(currentSize, MissRatchetThreshold);
+        var newSize = ComputeRatchetPoolSize(currentSize, MissRatchetThreshold, MissRatchetLimit);
         if (newSize > currentSize)
-            RatchetPoolSize(newSize);
+            RaisePoolSize(newSize);
     }
 
     /// <summary>
@@ -1164,6 +1191,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private int _appendWorkerFlushWaiters;
 
     private readonly PartitionBatchPool _batchPool;
+    internal int BatchPoolMaxSizeForTest => _batchPool.MaxPoolSize;
     private readonly ReadyBatchPool _readyBatchPool; // Pool for ReadyBatch objects to eliminate per-batch allocations
     private readonly CompressionRatioEstimator _compressionRatioEstimator = new();
 
@@ -3128,9 +3156,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Scale pool sizes with BufferMemory/BatchSize to prevent pool exhaustion.
         // Small batches (e.g., 16KB) create high batch churn (~6,250/sec at 100K msg/sec)
         // and need larger pools than the default 256 designed for 1MB batches.
-        var poolSize = ComputePoolSize(options);
+        // Both sizes are bounded by the batch storage the process can afford to keep idle.
+        var availableMemoryBytes = GetAvailableMemoryBytes();
+        var poolSize = ComputePoolSize(options, availableMemoryBytes);
         if (options.BufferMemoryAllocationStrategy == BufferMemoryAllocationStrategy.Full)
-            BatchArena.RatchetPoolSize(poolSize);
+            BatchArena.RatchetPoolSize(poolSize, ComputeMemoryBoundedPoolSize(options, availableMemoryBytes));
         else
             IncrementalBatchBuffer.RatchetPoolSize(
                 poolSize * ReadyBatchPoolSizeRatio,
@@ -3183,12 +3213,32 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Smallest pool size the memory bound can produce, so batch rotation still reuses storage.
+    /// </summary>
+    internal const int MinimumPoolSize = 4;
+
+    /// <summary>
+    /// Idle pooled batch storage may use at most 1/<c>RetainedMemoryDivisor</c> of the memory
+    /// available to the GC. In a container this is the GC heap limit (75% of the memory limit
+    /// by default), so a 384Mi pod keeps at most ~29MB of idle arenas per pool.
+    /// </summary>
+    internal const int RetainedMemoryDivisor = 10;
+
+    /// <summary>
     /// Computes the recommended pool size based on producer options.
     /// Scales with BufferMemory/BatchSize to prevent pool exhaustion under high batch churn.
     /// At high throughput, batches cycle through: create → fill → seal → send → response → cleanup → pool.
     /// The pool must cover peak in-flight batch count to avoid heap allocations.
     /// </summary>
     internal static int ComputePoolSize(ProducerOptions options)
+        => ComputePoolSize(options, GetAvailableMemoryBytes());
+
+    /// <inheritdoc cref="ComputePoolSize(ProducerOptions)"/>
+    /// <param name="options">Producer options.</param>
+    /// <param name="availableMemoryBytes">
+    /// Memory available to the GC, or 0 when unknown. See <see cref="ComputeMemoryBoundedPoolSize"/>.
+    /// </param>
+    internal static int ComputePoolSize(ProducerOptions options, long availableMemoryBytes)
     {
         // BufferMemory / BatchSize gives the max batch count the buffer can hold.
         // Divide by 4: most batches are either filling or in-flight, not all in the pool
@@ -3196,8 +3246,34 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // allocations during ramp-up but avoids excessive steady-state POH retention.
         // With default 256MB/1MB = 256 batches, pool = max(64, 128) = 128 (DefaultPoolSize floor), ~140MB of arenas.
         var batchCapacity = (int)Math.Min(options.BufferMemory / (ulong)Math.Max(options.BatchSize, 1), int.MaxValue);
-        return Math.Clamp(batchCapacity / 4, BatchArena.DefaultPoolSize, BatchArena.MaxPoolSizeCap);
+        var churnPoolSize = Math.Clamp(batchCapacity / 4, BatchArena.DefaultPoolSize, BatchArena.MaxPoolSizeCap);
+        return Math.Min(churnPoolSize, ComputeMemoryBoundedPoolSize(options, availableMemoryBytes));
     }
+
+    /// <summary>
+    /// Largest pool size whose idle batch storage fits the producer's memory bound.
+    /// </summary>
+    /// <remarks>
+    /// Every pooled batch keeps a full arena (BatchSize + 12.5%) whether or not a batch ever
+    /// filled it. Arenas are pinned and allocated without zeroing, so untouched pages are
+    /// invisible to container RSS metrics while still counting against the GC heap limit.
+    /// The bound is the smaller of BufferMemory and 1/<see cref="RetainedMemoryDivisor"/> of
+    /// <paramref name="availableMemoryBytes"/>; 0 means unknown and applies only BufferMemory.
+    /// </remarks>
+    internal static int ComputeMemoryBoundedPoolSize(ProducerOptions options, long availableMemoryBytes)
+    {
+        var retainedBytes = options.BufferMemory;
+        if (availableMemoryBytes > 0)
+            retainedBytes = Math.Min(retainedBytes, (ulong)availableMemoryBytes / RetainedMemoryDivisor);
+
+        var batchStorageBytes = (ulong)ProducerOptions.GetEffectiveArenaCapacity(
+            Math.Max(options.BatchSize, 1),
+            options.ArenaCapacity);
+        var batchCount = retainedBytes / batchStorageBytes;
+        return (int)Math.Clamp(batchCount, (ulong)MinimumPoolSize, (ulong)BatchArena.MaxPoolSizeCap);
+    }
+
+    private static long GetAvailableMemoryBytes() => GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
 
     /// <summary>
     /// Drains one ReadyBatch from any non-empty partition deque.
@@ -8753,6 +8829,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 /// Pool for reusing PartitionBatch instances to avoid ~40KB allocation per batch rotation.
 /// Extends <see cref="ObjectPool{T}"/> for pre-warm support and miss tracking.
 /// </summary>
+/// <remarks>
+/// Each pooled batch keeps a full BatchArena (BatchSize + 12.5%, pinned) and its completion
+/// array, so the pool disables Reservoir's thread-local tier: that tier keeps one extra item
+/// per returning thread outside <see cref="ObjectPool{T}.MaxPoolSize"/>, so retention grows
+/// with the thread-pool size instead of staying within the memory-bounded pool size.
+/// </remarks>
 internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
 {
     private readonly ProducerOptions _options;
@@ -8770,7 +8852,7 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
         ProducerOptions options,
         CompressionRatioEstimator? compressionRatioEstimator = null,
         int maxPoolSize = BatchArena.DefaultPoolSize)
-        : base(maxPoolSize)
+        : base(maxPoolSize, threadLocalFastPath: false)
     {
         _options = options;
         _compressionRatioEstimator = compressionRatioEstimator ?? new CompressionRatioEstimator();
