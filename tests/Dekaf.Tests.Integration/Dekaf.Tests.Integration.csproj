@@ -13,6 +13,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Dekaf\Dekaf.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Aspire\Dekaf.Aspire.csproj" Condition="'$(PublishAot)' != 'true'" />
+    <ProjectReference Include="..\..\src\Dekaf.Aspire.SchemaRegistry\Dekaf.Aspire.SchemaRegistry.csproj" Condition="'$(PublishAot)' != 'true'" />
     <ProjectReference Include="..\..\src\Dekaf.Serialization.Json\Dekaf.Serialization.Json.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Serialization.Routing\Dekaf.Serialization.Routing.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry\Dekaf.SchemaRegistry.csproj" />
@@ -47,6 +49,8 @@
     <Compile Remove="SchemaRegistrySubjectCompatibilityTests.cs" />
     <Compile Remove="AvroPocoInteropIntegrationTests.cs" />
     <Compile Remove="RoutingSerdeIntegrationTests.cs" />
+    <!-- Aspire registrations bind configuration with reflection and are not NativeAOT-compatible. -->
+    <Compile Remove="Aspire\**" />
   </ItemGroup>
 
   <!-- Test-only provider, aligned with the centrally selected EF version for each TFM.

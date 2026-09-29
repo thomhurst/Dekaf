@@ -1,0 +1,16 @@
+#nullable enable
+Dekaf.Aspire.DekafSchemaRegistryHealthCheckOptions
+Dekaf.Aspire.DekafSchemaRegistryHealthCheckOptions.DekafSchemaRegistryHealthCheckOptions() -> void
+Dekaf.Aspire.DekafSchemaRegistryHealthCheckOptions.Timeout.get -> System.TimeSpan
+Dekaf.Aspire.DekafSchemaRegistryHealthCheckOptions.Timeout.set -> void
+Dekaf.Aspire.DekafSchemaRegistrySettings
+Dekaf.Aspire.DekafSchemaRegistrySettings.Config.get -> Dekaf.SchemaRegistry.SchemaRegistryConfig!
+Dekaf.Aspire.DekafSchemaRegistrySettings.Config.set -> void
+Dekaf.Aspire.DekafSchemaRegistrySettings.DekafSchemaRegistrySettings() -> void
+Dekaf.Aspire.DekafSchemaRegistrySettings.DisableHealthChecks.get -> bool
+Dekaf.Aspire.DekafSchemaRegistrySettings.DisableHealthChecks.set -> void
+Dekaf.Aspire.DekafSchemaRegistrySettings.HealthCheck.get -> Dekaf.Aspire.DekafSchemaRegistryHealthCheckOptions!
+Dekaf.Aspire.DekafSchemaRegistrySettings.HealthCheck.set -> void
+Microsoft.Extensions.Hosting.AspireDekafSchemaRegistryExtensions
+static Microsoft.Extensions.Hosting.AspireDekafSchemaRegistryExtensions.AddDekafSchemaRegistryClient(this Microsoft.Extensions.Hosting.IHostApplicationBuilder! builder, string! connectionName, System.Action<Dekaf.Aspire.DekafSchemaRegistrySettings!>? configureSettings = null, System.Func<System.IServiceProvider!, Dekaf.SchemaRegistry.SchemaRegistryConfig!, Dekaf.SchemaRegistry.ISchemaRegistryClient!>? clientFactory = null) -> void
+static Microsoft.Extensions.Hosting.AspireDekafSchemaRegistryExtensions.AddKeyedDekafSchemaRegistryClient(this Microsoft.Extensions.Hosting.IHostApplicationBuilder! builder, string! name, System.Action<Dekaf.Aspire.DekafSchemaRegistrySettings!>? configureSettings = null, System.Func<System.IServiceProvider!, Dekaf.SchemaRegistry.SchemaRegistryConfig!, Dekaf.SchemaRegistry.ISchemaRegistryClient!>? clientFactory = null) -> void

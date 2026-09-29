@@ -9,6 +9,14 @@ using Microsoft.Extensions.Hosting;
 namespace Dekaf.Extensions.Hosting;
 
 /// <summary>Registers independent hosted share consumers.</summary>
+/// <remarks>
+/// Each service type and service key pair gets its own consumer, which the hosted service receives directly.
+/// Each call also registers the public alias <see cref="IKafkaShareConsumer{TKey, TValue}"/> (keyed by the service
+/// key when one is given) with standard dependency injection semantics: when several services share the message
+/// types and service key, a single resolution returns the consumer of the last registered service, and
+/// enumerating the alias returns every consumer in registration order. To resolve a specific service's consumer,
+/// use <see cref="KafkaShareConsumerServiceKey.For{TService}(object?)"/> or give each service a distinct service key.
+/// </remarks>
 public static class DekafBuilderShareConsumerHostingExtensions
 {
     /// <summary>Starts an independent hosted share consumer with unkeyed configuration.</summary>
@@ -224,8 +232,10 @@ public static class DekafBuilderShareConsumerHostingExtensions
 
         registerConsumer(registrationKey);
         builder.Services.AddKeyedSingleton(registrationKey, RegistrationMarker.Instance);
-        // Public aliases support application resolution. Hosted factories always use the per-service
-        // KafkaShareConsumerServiceKey so another service with the same message types cannot replace its wiring.
+        // Public aliases support application resolution and follow standard DI semantics: with several services
+        // sharing message types and service key, the last registration wins single resolution and enumeration
+        // returns all of them. Hosted factories always use the per-service KafkaShareConsumerServiceKey, so another
+        // service with the same message types cannot replace their wiring.
         if (serviceKey is null)
             builder.Services.AddSingleton<IKafkaShareConsumer<TKey, TValue>>(provider =>
                 provider.GetRequiredKeyedService<IKafkaShareConsumer<TKey, TValue>>(registrationKey));

@@ -1,0 +1,40 @@
+{
+  "type": "object",
+  "properties": {
+    "Aspire": {
+      "type": "object",
+      "properties": {
+        "Dekaf": {
+          "type": "object",
+          "properties": {
+            "SchemaRegistry": {
+              "type": "object",
+              "description": "Settings for Dekaf Schema Registry clients.",
+              "properties": {
+                "DisableHealthChecks": {
+                  "type": "boolean",
+                  "description": "Whether the health check is disabled. The default is false."
+                },
+                "HealthCheck": {
+                  "type": "object",
+                  "description": "Health check options.",
+                  "properties": {
+                    "Timeout": {
+                      "type": "string",
+                      "pattern": "^-?(\\d{1,7}|((\\d{1,7}[\\.:])?(([01]?\\d|2[0-3]):[0-5]?\\d|([01]?\\d|2[0-3]):[0-5]?\\d:[0-5]?\\d)(\\.\\d{1,7})?))$",
+                      "description": "The timeout for listing registry subjects. The default is 30 seconds."
+                    }
+                  }
+                },
+                "Config": {
+                  "type": "object",
+                  "description": "Native Dekaf SchemaRegistryConfig options. ConnectionStrings:{name} replaces Url and Urls."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

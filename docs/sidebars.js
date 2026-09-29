@@ -62,6 +62,7 @@ const sidebars = {
         'configuration/client-dns-lookup',
         'dependency-injection',
         'hosted-services',
+        'aspire',
       ],
     },
     {

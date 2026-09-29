@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\Dekaf.Aspire\Dekaf.Aspire.csproj" />
+    <ProjectReference Include="..\..\..\src\Dekaf.Aspire.SchemaRegistry\Dekaf.Aspire.SchemaRegistry.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.Aspire.SchemaRegistry</PackageId>
+    <Description>Aspire client integration for Dekaf Schema Registry: registers ISchemaRegistryClient with configuration and a health check.</Description>
+    <PackageTags>kafka;aspire;integration;schema-registry;avro;json-schema;protobuf</PackageTags>
+    <!-- First release: there is no published baseline to validate against yet. -->
+    <PackageValidationBaselineVersion></PackageValidationBaselineVersion>
+    <!-- See Dekaf.Aspire: configuration binding is guarded by [RequiresDynamicCode]/[RequiresUnreferencedCode]. -->
+    <NoWarn>$(NoWarn);SYSLIB1104</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Dekaf.Tests.Unit" />
+    <ProjectReference Include="..\Dekaf.SchemaRegistry\Dekaf.SchemaRegistry.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" />
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="ConfigurationSchema.json" Pack="true" PackagePath="/" />
+    <None Include="buildTransitive\Dekaf.Aspire.SchemaRegistry.targets" Pack="true" PackagePath="buildTransitive\" />
+  </ItemGroup>
+
+</Project>

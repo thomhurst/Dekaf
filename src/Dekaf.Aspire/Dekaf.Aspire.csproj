@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.Aspire</PackageId>
+    <Description>Aspire client integration for Dekaf: registers producers, consumers, share consumers, admin clients and shared root clients with configuration, health checks, logging and OpenTelemetry.</Description>
+    <PackageTags>kafka;aspire;integration;client;messaging</PackageTags>
+    <!-- First release: there is no published baseline to validate against yet. -->
+    <PackageValidationBaselineVersion></PackageValidationBaselineVersion>
+    <!--
+      Registration methods bind configuration with the reflection-based ConfigurationBinder and carry
+      [RequiresDynamicCode]/[RequiresUnreferencedCode]. Under an AOT publish the binding source generator
+      reports SYSLIB1104 for the generic settings helper; that call is already guarded by the annotations.
+    -->
+    <NoWarn>$(NoWarn);SYSLIB1104</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Dekaf.Tests.Unit" />
+    <ProjectReference Include="..\Dekaf\Dekaf.csproj" />
+    <ProjectReference Include="..\Dekaf.Extensions.DependencyInjection\Dekaf.Extensions.DependencyInjection.csproj" />
+    <ProjectReference Include="..\Dekaf.Extensions.HealthChecks\Dekaf.Extensions.HealthChecks.csproj" />
+    <ProjectReference Include="..\Dekaf.Extensions.Hosting\Dekaf.Extensions.Hosting.csproj" />
+    <ProjectReference Include="..\Dekaf.OpenTelemetry\Dekaf.OpenTelemetry.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="ConfigurationSchema.json" Pack="true" PackagePath="/" />
+    <None Include="buildTransitive\Dekaf.Aspire.targets" Pack="true" PackagePath="buildTransitive\" />
+  </ItemGroup>
+
+</Project>

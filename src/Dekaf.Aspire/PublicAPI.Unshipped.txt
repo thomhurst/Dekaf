@@ -1,0 +1,84 @@
+#nullable enable
+Dekaf.Aspire.DekafAdminClientSettings
+Dekaf.Aspire.DekafAdminClientSettings.ConnectionString.get -> string?
+Dekaf.Aspire.DekafAdminClientSettings.ConnectionString.set -> void
+Dekaf.Aspire.DekafAdminClientSettings.DekafAdminClientSettings() -> void
+Dekaf.Aspire.DekafAdminClientSettings.DisableHealthChecks.get -> bool
+Dekaf.Aspire.DekafAdminClientSettings.DisableHealthChecks.set -> void
+Dekaf.Aspire.DekafAdminClientSettings.DisableMetrics.get -> bool
+Dekaf.Aspire.DekafAdminClientSettings.DisableMetrics.set -> void
+Dekaf.Aspire.DekafAdminClientSettings.DisableTracing.get -> bool
+Dekaf.Aspire.DekafAdminClientSettings.DisableTracing.set -> void
+Dekaf.Aspire.DekafAdminClientSettings.HealthCheck.get -> Dekaf.Extensions.HealthChecks.DekafBrokerHealthCheckOptions!
+Dekaf.Aspire.DekafAdminClientSettings.HealthCheck.set -> void
+Dekaf.Aspire.DekafClientSettings
+Dekaf.Aspire.DekafClientSettings.ConnectionString.get -> string?
+Dekaf.Aspire.DekafClientSettings.ConnectionString.set -> void
+Dekaf.Aspire.DekafClientSettings.DekafClientSettings() -> void
+Dekaf.Aspire.DekafClientSettings.DisableHealthChecks.get -> bool
+Dekaf.Aspire.DekafClientSettings.DisableHealthChecks.set -> void
+Dekaf.Aspire.DekafClientSettings.DisableMetrics.get -> bool
+Dekaf.Aspire.DekafClientSettings.DisableMetrics.set -> void
+Dekaf.Aspire.DekafClientSettings.DisableTracing.get -> bool
+Dekaf.Aspire.DekafClientSettings.DisableTracing.set -> void
+Dekaf.Aspire.DekafClientSettings.HealthCheck.get -> Dekaf.Extensions.HealthChecks.DekafBrokerHealthCheckOptions!
+Dekaf.Aspire.DekafClientSettings.HealthCheck.set -> void
+Dekaf.Aspire.DekafConsumerSettings
+Dekaf.Aspire.DekafConsumerSettings.ConnectionString.get -> string?
+Dekaf.Aspire.DekafConsumerSettings.ConnectionString.set -> void
+Dekaf.Aspire.DekafConsumerSettings.DekafConsumerSettings() -> void
+Dekaf.Aspire.DekafConsumerSettings.DisableHealthChecks.get -> bool
+Dekaf.Aspire.DekafConsumerSettings.DisableHealthChecks.set -> void
+Dekaf.Aspire.DekafConsumerSettings.DisableMetrics.get -> bool
+Dekaf.Aspire.DekafConsumerSettings.DisableMetrics.set -> void
+Dekaf.Aspire.DekafConsumerSettings.DisableTracing.get -> bool
+Dekaf.Aspire.DekafConsumerSettings.DisableTracing.set -> void
+Dekaf.Aspire.DekafConsumerSettings.HealthCheck.get -> Dekaf.Extensions.HealthChecks.DekafConsumerHealthCheckOptions!
+Dekaf.Aspire.DekafConsumerSettings.HealthCheck.set -> void
+Dekaf.Aspire.DekafProducerSettings
+Dekaf.Aspire.DekafProducerSettings.ConnectionString.get -> string?
+Dekaf.Aspire.DekafProducerSettings.ConnectionString.set -> void
+Dekaf.Aspire.DekafProducerSettings.DekafProducerSettings() -> void
+Dekaf.Aspire.DekafProducerSettings.DisableHealthChecks.get -> bool
+Dekaf.Aspire.DekafProducerSettings.DisableHealthChecks.set -> void
+Dekaf.Aspire.DekafProducerSettings.DisableMetrics.get -> bool
+Dekaf.Aspire.DekafProducerSettings.DisableMetrics.set -> void
+Dekaf.Aspire.DekafProducerSettings.DisableTracing.get -> bool
+Dekaf.Aspire.DekafProducerSettings.DisableTracing.set -> void
+Dekaf.Aspire.DekafProducerSettings.HealthCheck.get -> Dekaf.Extensions.HealthChecks.DekafProducerHealthCheckOptions!
+Dekaf.Aspire.DekafProducerSettings.HealthCheck.set -> void
+Dekaf.Aspire.DekafShareConsumerSettings
+Dekaf.Aspire.DekafShareConsumerSettings.ConfigureDeadLetterQueue.get -> System.Action<Dekaf.Consumer.DeadLetter.DeadLetterQueueBuilder!>?
+Dekaf.Aspire.DekafShareConsumerSettings.ConfigureDeadLetterQueue.set -> void
+Dekaf.Aspire.DekafShareConsumerSettings.ConnectionString.get -> string?
+Dekaf.Aspire.DekafShareConsumerSettings.ConnectionString.set -> void
+Dekaf.Aspire.DekafShareConsumerSettings.DekafShareConsumerSettings() -> void
+Dekaf.Aspire.DekafShareConsumerSettings.DisableHealthChecks.get -> bool
+Dekaf.Aspire.DekafShareConsumerSettings.DisableHealthChecks.set -> void
+Dekaf.Aspire.DekafShareConsumerSettings.DisableMetrics.get -> bool
+Dekaf.Aspire.DekafShareConsumerSettings.DisableMetrics.set -> void
+Dekaf.Aspire.DekafShareConsumerSettings.DisableTracing.get -> bool
+Dekaf.Aspire.DekafShareConsumerSettings.DisableTracing.set -> void
+Microsoft.Extensions.Hosting.AspireDekafAdminClientExtensions
+Microsoft.Extensions.Hosting.AspireDekafClientExtensions
+Microsoft.Extensions.Hosting.AspireDekafConsumerExtensions
+Microsoft.Extensions.Hosting.AspireDekafProducerExtensions
+Microsoft.Extensions.Hosting.AspireDekafShareConsumerExtensions
+static Microsoft.Extensions.Hosting.AspireDekafAdminClientExtensions.AddDekafAdminClient(this Microsoft.Extensions.Hosting.IHostApplicationBuilder! builder, string! connectionName, System.Action<Dekaf.Aspire.DekafAdminClientSettings!>? configureSettings = null, System.Action<System.IServiceProvider!, Dekaf.Extensions.DependencyInjection.AdminClientServiceBuilder!>? configureBuilder = null) -> void
+static Microsoft.Extensions.Hosting.AspireDekafAdminClientExtensions.AddKeyedDekafAdminClient(this Microsoft.Extensions.Hosting.IHostApplicationBuilder! builder, string! name, System.Action<Dekaf.Aspire.DekafAdminClientSettings!>? configureSettings = null, System.Action<System.IServiceProvider!, Dekaf.Extensions.DependencyInjection.AdminClientServiceBuilder!>? configureBuilder = null) -> void
+static Microsoft.Extensions.Hosting.AspireDekafClientExtensions.AddDekafClient(this Microsoft.Extensions.Hosting.IHostApplicationBuilder! builder, string! connectionName, System.Action<Dekaf.Aspire.DekafClientSettings!>? configureSettings = null, System.Action<System.IServiceProvider!, Dekaf.KafkaClientBuilder!>? configureBuilder = null) -> void
+static Microsoft.Extensions.Hosting.AspireDekafClientExtensions.AddKeyedDekafClient(this Microsoft.Extensions.Hosting.IHostApplicationBuilder! builder, string! name, System.Action<Dekaf.Aspire.DekafClientSettings!>? configureSettings = null, System.Action<System.IServiceProvider!, Dekaf.KafkaClientBuilder!>? configureBuilder = null) -> void
+static Microsoft.Extensions.Hosting.AspireDekafConsumerExtensions.AddDekafConsumer<TKey, TValue>(this Microsoft.Extensions.Hosting.IHostApplicationBuilder! builder, string! connectionName, System.Action<Dekaf.Aspire.DekafConsumerSettings!>? configureSettings = null, System.Action<System.IServiceProvider!, Dekaf.ConsumerBuilder<TKey, TValue>!>? configureBuilder = null) -> void
+static Microsoft.Extensions.Hosting.AspireDekafConsumerExtensions.AddDekafConsumer<TKey, TValue>(this Microsoft.Extensions.Hosting.IHostApplicationBuilder! builder, string! connectionName, System.Action<Dekaf.ConsumerBuilder<TKey, TValue>!>! configureBuilder) -> void
+static Microsoft.Extensions.Hosting.AspireDekafConsumerExtensions.AddKeyedDekafConsumer<TKey, TValue>(this Microsoft.Extensions.Hosting.IHostApplicationBuilder! builder, string! name, System.Action<Dekaf.Aspire.DekafConsumerSettings!>? configureSettings = null, System.Action<System.IServiceProvider!, Dekaf.ConsumerBuilder<TKey, TValue>!>? configureBuilder = null) -> void
+static Microsoft.Extensions.Hosting.AspireDekafConsumerExtensions.AddKeyedDekafConsumer<TKey, TValue>(this Microsoft.Extensions.Hosting.IHostApplicationBuilder! builder, string! name, System.Action<Dekaf.ConsumerBuilder<TKey, TValue>!>! configureBuilder) -> void
+static Microsoft.Extensions.Hosting.AspireDekafProducerExtensions.AddDekafProducer<TKey, TValue>(this Microsoft.Extensions.Hosting.IHostApplicationBuilder! builder, string! connectionName, System.Action<Dekaf.Aspire.DekafProducerSettings!>? configureSettings = null, System.Action<System.IServiceProvider!, Dekaf.ProducerBuilder<TKey, TValue>!>? configureBuilder = null) -> void
+static Microsoft.Extensions.Hosting.AspireDekafProducerExtensions.AddDekafProducer<TKey, TValue>(this Microsoft.Extensions.Hosting.IHostApplicationBuilder! builder, string! connectionName, System.Action<Dekaf.ProducerBuilder<TKey, TValue>!>! configureBuilder) -> void
+static Microsoft.Extensions.Hosting.AspireDekafProducerExtensions.AddKeyedDekafProducer<TKey, TValue>(this Microsoft.Extensions.Hosting.IHostApplicationBuilder! builder, string! name, System.Action<Dekaf.Aspire.DekafProducerSettings!>? configureSettings = null, System.Action<System.IServiceProvider!, Dekaf.ProducerBuilder<TKey, TValue>!>? configureBuilder = null) -> void
+static Microsoft.Extensions.Hosting.AspireDekafProducerExtensions.AddKeyedDekafProducer<TKey, TValue>(this Microsoft.Extensions.Hosting.IHostApplicationBuilder! builder, string! name, System.Action<Dekaf.ProducerBuilder<TKey, TValue>!>! configureBuilder) -> void
+static Microsoft.Extensions.Hosting.AspireDekafShareConsumerExtensions.AddDekafShareConsumer<TKey, TValue>(this Microsoft.Extensions.Hosting.IHostApplicationBuilder! builder, string! connectionName, System.Action<Dekaf.Aspire.DekafShareConsumerSettings!>? configureSettings = null, System.Action<System.IServiceProvider!, Dekaf.ShareConsumerBuilder<TKey, TValue>!>? configureBuilder = null) -> void
+static Microsoft.Extensions.Hosting.AspireDekafShareConsumerExtensions.AddDekafShareConsumer<TKey, TValue>(this Microsoft.Extensions.Hosting.IHostApplicationBuilder! builder, string! connectionName, System.Action<Dekaf.ShareConsumerBuilder<TKey, TValue>!>! configureBuilder) -> void
+static Microsoft.Extensions.Hosting.AspireDekafShareConsumerExtensions.AddDekafShareConsumerService<TService, TKey, TValue>(this Microsoft.Extensions.Hosting.IHostApplicationBuilder! builder, string! connectionName, System.Action<Dekaf.Aspire.DekafShareConsumerSettings!>? configureSettings = null, System.Action<System.IServiceProvider!, Dekaf.ShareConsumerBuilder<TKey, TValue>!>? configureBuilder = null) -> void
+static Microsoft.Extensions.Hosting.AspireDekafShareConsumerExtensions.AddKeyedDekafShareConsumer<TKey, TValue>(this Microsoft.Extensions.Hosting.IHostApplicationBuilder! builder, string! name, System.Action<Dekaf.Aspire.DekafShareConsumerSettings!>? configureSettings = null, System.Action<System.IServiceProvider!, Dekaf.ShareConsumerBuilder<TKey, TValue>!>? configureBuilder = null) -> void
+static Microsoft.Extensions.Hosting.AspireDekafShareConsumerExtensions.AddKeyedDekafShareConsumer<TKey, TValue>(this Microsoft.Extensions.Hosting.IHostApplicationBuilder! builder, string! name, System.Action<Dekaf.ShareConsumerBuilder<TKey, TValue>!>! configureBuilder) -> void
+static Microsoft.Extensions.Hosting.AspireDekafShareConsumerExtensions.AddKeyedDekafShareConsumerService<TService, TKey, TValue>(this Microsoft.Extensions.Hosting.IHostApplicationBuilder! builder, string! name, System.Action<Dekaf.Aspire.DekafShareConsumerSettings!>? configureSettings = null, System.Action<System.IServiceProvider!, Dekaf.ShareConsumerBuilder<TKey, TValue>!>? configureBuilder = null) -> void

@@ -481,6 +481,47 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # Dekaf.Aspire.Hosting resource-model tests plus one AppHost run that starts the
+  # Kafka and Schema Registry containers through Aspire's orchestrator (Docker).
+  # Builds in place: the test AppHost locates Aspire's orchestrator in the local
+  # NuGet cache, so prebuilt binaries from the build job cannot run here.
+  aspire-hosting:
+    name: Aspire Hosting Tests (net10.0)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('global.json', '**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/Directory.Build.targets') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Run Aspire hosting tests
+        run: >-
+          dotnet test --project tests/Dekaf.Tests.Aspire.Hosting --configuration Release
+          --hangdump --hangdump-timeout 10m --log-level Debug
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: test-results-aspire-hosting-net10.0
+          path: |
+            **/TestResults/**
+          retention-days: 7
+
   # The produce-path leak gates carry ProducerDebugCounters balance assertions
   # (rent/return parity, zero duplicate pool returns, completion-source
   # conservation) that are [Conditional("DEBUG")] — compiled out of the Release
@@ -866,7 +907,7 @@ jobs:
   # build job computed.
   publish:
     name: Publish NuGet
-    needs: [build, gssapi-packages, unit-net8, unit-net10, leak-gates-debug, eventhubs-integration, aot-smoke, aot-integration-publish, release-matrix, release-matrix-aot, code-quality, nuget-audit]
+    needs: [build, gssapi-packages, unit-net8, unit-net10, aspire-hosting, leak-gates-debug, eventhubs-integration, aot-smoke, aot-integration-publish, release-matrix, release-matrix-aot, code-quality, nuget-audit]
     if: github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -947,7 +988,7 @@ jobs:
   # release-only jobs skip on PR runs).
   ci-passed:
     name: CI Passed
-    needs: [changes, doc-snippets, build, gssapi-packages, unit-net8, unit-net10, leak-gates-debug, integration, eventhubs-integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality, nuget-audit]
+    needs: [changes, doc-snippets, build, gssapi-packages, unit-net8, unit-net10, aspire-hosting, leak-gates-debug, integration, eventhubs-integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality, nuget-audit]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

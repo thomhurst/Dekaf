@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.Aspire.Hosting</PackageId>
+    <Description>Aspire hosting integration for Apache Kafka and Confluent Schema Registry, with share groups enabled and Dekaf-based health checks. The AppHost does not depend on librdkafka.</Description>
+    <PackageTags>kafka;aspire;integration;hosting;schema-registry</PackageTags>
+    <!-- First release: there is no published baseline to validate against yet. -->
+    <PackageValidationBaselineVersion></PackageValidationBaselineVersion>
+    <!-- AppHosts run on the full runtime; Aspire.Hosting itself is not trimmable. -->
+    <IsAotCompatible>false</IsAotCompatible>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Dekaf.Tests.Aspire.Hosting" />
+    <ProjectReference Include="..\Dekaf\Dekaf.csproj" />
+    <ProjectReference Include="..\Dekaf.Extensions.HealthChecks\Dekaf.Extensions.HealthChecks.csproj" />
+    <PackageReference Include="Aspire.Hosting" />
+  </ItemGroup>
+
+</Project>

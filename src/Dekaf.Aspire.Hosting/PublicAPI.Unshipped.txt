@@ -1,0 +1,23 @@
+#nullable enable
+Aspire.Hosting.DekafKafkaBuilderExtensions
+Aspire.Hosting.DekafKafkaServerResource
+Aspire.Hosting.DekafKafkaServerResource.ConnectionStringExpression.get -> Aspire.Hosting.ApplicationModel.ReferenceExpression!
+Aspire.Hosting.DekafKafkaServerResource.DekafKafkaServerResource(string! name) -> void
+Aspire.Hosting.DekafKafkaServerResource.Host.get -> Aspire.Hosting.ApplicationModel.EndpointReferenceExpression!
+Aspire.Hosting.DekafKafkaServerResource.InternalEndpoint.get -> Aspire.Hosting.ApplicationModel.EndpointReference!
+Aspire.Hosting.DekafKafkaServerResource.Port.get -> Aspire.Hosting.ApplicationModel.EndpointReferenceExpression!
+Aspire.Hosting.DekafKafkaServerResource.PrimaryEndpoint.get -> Aspire.Hosting.ApplicationModel.EndpointReference!
+Aspire.Hosting.DekafKafkaUIContainerResource
+Aspire.Hosting.DekafKafkaUIContainerResource.DekafKafkaUIContainerResource(string! name) -> void
+Aspire.Hosting.DekafKafkaUIContainerResource.PrimaryEndpoint.get -> Aspire.Hosting.ApplicationModel.EndpointReference!
+Aspire.Hosting.DekafSchemaRegistryBuilderExtensions
+Aspire.Hosting.DekafSchemaRegistryResource
+Aspire.Hosting.DekafSchemaRegistryResource.ConnectionStringExpression.get -> Aspire.Hosting.ApplicationModel.ReferenceExpression!
+Aspire.Hosting.DekafSchemaRegistryResource.DekafSchemaRegistryResource(string! name) -> void
+Aspire.Hosting.DekafSchemaRegistryResource.PrimaryEndpoint.get -> Aspire.Hosting.ApplicationModel.EndpointReference!
+static Aspire.Hosting.DekafKafkaBuilderExtensions.AddDekafKafka(this Aspire.Hosting.IDistributedApplicationBuilder! builder, string! name, int? port = null) -> Aspire.Hosting.ApplicationModel.IResourceBuilder<Aspire.Hosting.DekafKafkaServerResource!>!
+static Aspire.Hosting.DekafKafkaBuilderExtensions.WithDataBindMount(this Aspire.Hosting.ApplicationModel.IResourceBuilder<Aspire.Hosting.DekafKafkaServerResource!>! builder, string! source) -> Aspire.Hosting.ApplicationModel.IResourceBuilder<Aspire.Hosting.DekafKafkaServerResource!>!
+static Aspire.Hosting.DekafKafkaBuilderExtensions.WithDataVolume(this Aspire.Hosting.ApplicationModel.IResourceBuilder<Aspire.Hosting.DekafKafkaServerResource!>! builder, string? name = null) -> Aspire.Hosting.ApplicationModel.IResourceBuilder<Aspire.Hosting.DekafKafkaServerResource!>!
+static Aspire.Hosting.DekafKafkaBuilderExtensions.WithHostPort(this Aspire.Hosting.ApplicationModel.IResourceBuilder<Aspire.Hosting.DekafKafkaUIContainerResource!>! builder, int? port) -> Aspire.Hosting.ApplicationModel.IResourceBuilder<Aspire.Hosting.DekafKafkaUIContainerResource!>!
+static Aspire.Hosting.DekafKafkaBuilderExtensions.WithKafkaUI(this Aspire.Hosting.ApplicationModel.IResourceBuilder<Aspire.Hosting.DekafKafkaServerResource!>! builder, System.Action<Aspire.Hosting.ApplicationModel.IResourceBuilder<Aspire.Hosting.DekafKafkaUIContainerResource!>!>? configureContainer = null, string? containerName = null) -> Aspire.Hosting.ApplicationModel.IResourceBuilder<Aspire.Hosting.DekafKafkaServerResource!>!
+static Aspire.Hosting.DekafSchemaRegistryBuilderExtensions.AddDekafSchemaRegistry(this Aspire.Hosting.IDistributedApplicationBuilder! builder, string! name, Aspire.Hosting.ApplicationModel.IResourceBuilder<Aspire.Hosting.DekafKafkaServerResource!>! kafka, int? port = null) -> Aspire.Hosting.ApplicationModel.IResourceBuilder<Aspire.Hosting.DekafSchemaRegistryResource!>!

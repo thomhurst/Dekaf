@@ -33,6 +33,8 @@
     <ProjectReference Include="..\..\src\Dekaf.Extensions.Hosting\Dekaf.Extensions.Hosting.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.OpenTelemetry\Dekaf.OpenTelemetry.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Extensions.HealthChecks\Dekaf.Extensions.HealthChecks.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Aspire\Dekaf.Aspire.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Aspire.SchemaRegistry\Dekaf.Aspire.SchemaRegistry.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Outbox\Dekaf.Outbox.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Outbox.EntityFrameworkCore\Dekaf.Outbox.EntityFrameworkCore.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Outbox.DynamoDB\Dekaf.Outbox.DynamoDB.csproj" />
