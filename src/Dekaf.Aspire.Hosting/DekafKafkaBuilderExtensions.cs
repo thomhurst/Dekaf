@@ -119,6 +119,11 @@ public static class DekafKafkaBuilderExtensions
 
         application.OnBeforeStart((@event, _) =>
         {
+            // The UI can be removed from the model after this call (for example by test fixtures); a link to its
+            // endpoint would then reference a resource that never starts and stall the orchestrator.
+            if (!@event.Model.Resources.Contains(kafkaUi))
+                return Task.CompletedTask;
+
             foreach (var kafka in @event.Model.Resources.OfType<DekafKafkaServerResource>())
             {
                 kafkaUiBuilder.WithRelationship(kafka, ManagesRelationship);
