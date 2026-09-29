@@ -40,6 +40,11 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     // The latest broker assignment while it names topic IDs that metadata cannot resolve yet;
     // null otherwise, so a steady heartbeat pays one field read.
     private volatile ShareGroupHeartbeatAssignment? _unresolvedAssignment;
+    // How many of _unresolvedAssignment's topics were unknown when it was last processed; a
+    // heartbeat processes it again only once metadata resolves more of them.
+    private int _unresolvedTopicCount;
+    // Refreshes metadata for an unresolved assignment off the heartbeat path, rate-limited.
+    private readonly UnresolvedAssignmentMetadataRefresher _unresolvedRefresher;
     private readonly SemaphoreSlim _lock = new(1, 1);
     private readonly object _heartbeatGuard = new();
     private CancellationTokenSource? _heartbeatCts;
@@ -85,6 +90,8 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             ? () => GetCoordinationConnectionIndex(getConnectionCount())
             : () => GetCoordinationConnectionIndex(options.ConnectionsPerBroker);
         _heartbeatIntervalMs = options.HeartbeatIntervalMs;
+        _unresolvedRefresher = new UnresolvedAssignmentMetadataRefresher(
+            metadataManager, _logger, options.RetryBackoffMs, options.RetryBackoffMaxMs);
     }
 
     // A push samples membership without taking the coordination lock. Suppress identities
@@ -477,46 +484,74 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             _heartbeatIntervalMs = response.HeartbeatIntervalMs;
 
         // The broker sends an assignment only when it changes. One that names a topic this
-        // client's metadata does not know yet (created after the last refresh) stays pending
-        // and is resolved again on every heartbeat until metadata catches up.
-        var assignment = response.Assignment ?? _unresolvedAssignment;
+        // client's metadata does not know yet (created after the last refresh) is published
+        // without that topic and stays pending; a background metadata refresh runs meanwhile, and
+        // a later heartbeat processes it again once metadata resolves more of its topics.
+        var assignment = GetAssignmentToProcess(response.Assignment);
         if (assignment is null)
             return false;
-
-        if (HasUnknownTopic(assignment))
-            await RefreshMetadataForUnresolvedAssignmentAsync(cancellationToken).ConfigureAwait(false);
 
         ProcessShareGroupAssignment(assignment);
         return true;
     }
 
-    private bool HasUnknownTopic(ShareGroupHeartbeatAssignment assignment)
+    /// <summary>
+    /// Returns the assignment a successful heartbeat must process: the one it carried, or, when
+    /// it carried none, the pending unresolved one once metadata knows more of its topics (null
+    /// otherwise). While any assigned topic is unknown, starts a background metadata refresh
+    /// instead of waiting for one, so the heartbeat publishes what it can and keeps its cadence.
+    /// Without a received or pending assignment this is one field read.
+    /// </summary>
+    private ShareGroupHeartbeatAssignment? GetAssignmentToProcess(ShareGroupHeartbeatAssignment? received)
+    {
+        var assignment = received ?? _unresolvedAssignment;
+        if (assignment is null)
+            return null;
+
+        // A new assignment refreshes without the backoff an earlier unresolved one built up.
+        if (received is not null)
+            _unresolvedRefresher.Reset();
+
+        var unknownTopics = CountUnknownTopics(assignment);
+        if (unknownTopics > 0)
+            _unresolvedRefresher.Request();
+
+        return received is null && unknownTopics >= Volatile.Read(ref _unresolvedTopicCount)
+            ? null
+            : assignment;
+    }
+
+    private int CountUnknownTopics(ShareGroupHeartbeatAssignment assignment)
     {
         var metadata = _metadataManager.Metadata;
         var topics = assignment.TopicPartitions;
+        var unknown = 0;
         for (var i = 0; i < topics.Count; i++)
         {
             if (metadata.GetTopic(topics[i].TopicId) is null)
-                return true;
+                unknown++;
         }
 
-        return false;
+        return unknown;
     }
 
     /// <summary>
-    /// Best-effort: a failed refresh leaves the assignment pending for the next heartbeat
-    /// instead of failing this one. Only cancellation propagates.
+    /// The latest background refresh for an unresolved assignment. Lets tests wait for it.
     /// </summary>
-    private async ValueTask RefreshMetadataForUnresolvedAssignmentAsync(CancellationToken cancellationToken)
+    internal Task UnresolvedAssignmentRefreshTask => _unresolvedRefresher.Current;
+
+    internal bool HasUnresolvedAssignment => _unresolvedAssignment is not null;
+
+    /// <summary>
+    /// A fenced epoch ends the membership the pending assignment belonged to. Dropping it keeps a
+    /// rejoin that answers without an assignment from publishing partitions the new membership
+    /// was never given.
+    /// </summary>
+    private void FenceMemberEpoch()
     {
-        try
-        {
-            await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
-        {
-            LogUnresolvedAssignmentMetadataRefreshFailed(ex);
-        }
+        _memberEpoch = 0;
+        _unresolvedAssignment = null;
+        _state = CoordinatorState.Unjoined;
     }
 
     private async ValueTask<KafkaConnectionLease> LeaseHeartbeatConnectionAsync(
@@ -582,7 +617,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
         var newAssignment = new HashSet<TopicPartition>();
         var retry = ReferenceEquals(assignment, _unresolvedAssignment);
-        var unresolved = false;
+        var unknownTopics = 0;
 
         foreach (var tp in assignment.TopicPartitions)
         {
@@ -592,7 +627,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                 // Warn once per assignment; the retries on later heartbeats stay quiet.
                 if (!retry)
                     LogUnknownTopicIdInAssignment(tp.TopicId);
-                unresolved = true;
+                unknownTopics++;
                 continue;
             }
 
@@ -602,7 +637,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             }
         }
 
-        _unresolvedAssignment = unresolved ? assignment : null;
+        // Count first: the volatile write of the assignment publishes it.
+        Volatile.Write(ref _unresolvedTopicCount, unknownTopics);
+        _unresolvedAssignment = unknownTopics > 0 ? assignment : null;
         var oldAssignment = _assignedPartitions;
 
         if (newAssignment.Count == oldAssignment.Count && newAssignment.SetEquals(oldAssignment))
@@ -716,8 +753,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                 catch (GroupException ex) when (ex.ErrorCode == ErrorCode.FencedMemberEpoch)
                 {
                     LogRetriableCoordinatorError(ex.ErrorCode);
-                    _memberEpoch = 0;
-                    _state = CoordinatorState.Unjoined;
+                    FenceMemberEpoch();
                 }
                 catch (GroupException ex) when (ex.ErrorCode == ErrorCode.UnknownMemberId)
                 {
@@ -835,8 +871,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                             // No lock needed: these writes are idempotent resets.
                             // The next EnsureActiveGroupAsync (which holds _lock) will
                             // see the Unjoined state and trigger a fresh join.
-                            _memberEpoch = 0;
-                            _state = CoordinatorState.Unjoined;
+                            FenceMemberEpoch();
                             NotifyAssignmentChange();
                             break;
 
@@ -1014,6 +1049,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         LogCoordinatorDisposing();
 
         await StopHeartbeatAsync().ConfigureAwait(false);
+        await _unresolvedRefresher.StopAsync().ConfigureAwait(false);
 
         _lock.Dispose();
     }
@@ -1072,9 +1108,6 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "ShareGroupHeartbeat: unknown topic ID {TopicId} in assignment, waiting for metadata to resolve it")]
     private partial void LogUnknownTopicIdInAssignment(Guid topicId);
-
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Metadata refresh for an assignment with unknown topic IDs failed; retrying on the next heartbeat")]
-    private partial void LogUnresolvedAssignmentMetadataRefreshFailed(Exception exception);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "ShareGroupHeartbeat: assignment updated to {PartitionCount} partitions")]
     private partial void LogAssignmentUpdate(int partitionCount);

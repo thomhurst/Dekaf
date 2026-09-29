@@ -3,6 +3,7 @@ using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Serialization;
+using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Tests.Integration;
 
@@ -686,15 +687,24 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
     [Test]
     public async Task NewProtocol_TopicCreatedAfterJoin_IsAssignedAndConsumed()
     {
-        // The assignment names the new topic by ID before this consumer's metadata knows it.
+        // The assignment names the new topic by ID before this consumer's metadata knows it: the
+        // consumer refreshed metadata only at startup (a long max age rules out the periodic
+        // refresh), and the coordinator's warning below proves the unresolved path ran.
         var topic = $"late-topic-{Guid.NewGuid():N}";
         var groupId = $"test-group-{Guid.NewGuid():N}";
+        using var logs = new CapturingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder =>
+        {
+            builder.SetMinimumLevel(LogLevel.Warning);
+            builder.AddProvider(logs);
+        });
         await using var admin = KafkaContainer.CreateAdminClient();
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+            .WithMetadataMaxAge(TimeSpan.FromHours(1))
+            .WithLoggerFactory(loggerFactory).BuildAsync();
         consumer.Subscribe(topic);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
@@ -723,6 +733,8 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await consume;
         await Assert.That(received.Count).IsEqualTo(5);
         await Assert.That(consumer.Assignment.Contains(new TopicPartition(topic, 0))).IsTrue();
+        await Assert.That(logs.Entries.Any(static entry =>
+            entry.Message.StartsWith("ConsumerGroupHeartbeat: unknown topic ID", StringComparison.Ordinal))).IsTrue();
 
         async Task<bool> HasMemberAsync()
         {

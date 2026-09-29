@@ -4,6 +4,7 @@ using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Serialization;
 using Dekaf.ShareConsumer;
+using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Tests.Integration;
 
@@ -114,9 +115,18 @@ public sealed class ShareConsumerSubscriptionTests(KafkaTestContainer kafka) : K
     [Test]
     public async Task TopicCreatedAfterJoin_IsAssignedAndConsumed()
     {
-        // The assignment names the new topic by ID before this consumer's metadata knows it.
+        // The assignment names the new topic by ID before this consumer's metadata knows it: the
+        // share consumer refreshes metadata at startup and on fetch errors, not for a subscribed
+        // topic that does not exist yet, and the coordinator's warning below proves the unresolved
+        // path ran.
         var topic = $"share-late-topic-{Guid.NewGuid():N}";
         var group = $"share-late-topic-{Guid.NewGuid():N}";
+        using var logs = new CapturingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder =>
+        {
+            builder.SetMinimumLevel(LogLevel.Warning);
+            builder.AddProvider(logs);
+        });
         await using var admin = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers).Build();
         await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
@@ -126,7 +136,7 @@ public sealed class ShareConsumerSubscriptionTests(KafkaTestContainer kafka) : K
         });
         await using var consumer = await Kafka.CreateShareConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(group)
-            .SubscribeTo(topic).BuildAsync();
+            .WithLoggerFactory(loggerFactory).SubscribeTo(topic).BuildAsync();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         var received = new List<string>();
         var poll = ConsumeAsync();
@@ -143,6 +153,8 @@ public sealed class ShareConsumerSubscriptionTests(KafkaTestContainer kafka) : K
         await poll;
         await Assert.That(received.Count).IsEqualTo(5);
         await Assert.That(consumer.Assignment.Contains(new TopicPartition(topic, 0))).IsTrue();
+        await Assert.That(logs.Entries.Any(static entry =>
+            entry.Message.StartsWith("ShareGroupHeartbeat: unknown topic ID", StringComparison.Ordinal))).IsTrue();
 
         async Task<bool> HasMemberAsync()
         {
