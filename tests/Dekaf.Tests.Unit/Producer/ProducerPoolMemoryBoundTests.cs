@@ -235,11 +235,11 @@ public class ProducerPoolMemoryBoundTests
         await using var accumulator = new RecordAccumulator(options);
         var available = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
 
-        // Arenas: seven fit 8MiB. A batch-pool slot keeps at most two 128KB completion arrays, so 32 fit.
+        // Arenas: seven fit 8MiB. A batch-pool slot keeps at most two 256KB completion arrays, so 16 fit.
         await Assert.That(accumulator.ArenaPoolRegistrationForTest!.Limit.PoolSize).IsEqualTo(7);
         await Assert.That(accumulator.ArenaPoolRegistrationForTest!.Limit.PoolSize)
             .IsEqualTo(RecordAccumulator.ComputePoolSize(options));
-        await Assert.That(accumulator.BatchPoolMaxSizeForTest).IsEqualTo(32);
+        await Assert.That(accumulator.BatchPoolMaxSizeForTest).IsEqualTo(16);
         await Assert.That(accumulator.BatchPoolMaxSizeForTest)
             .IsEqualTo(RecordAccumulator.ComputeBatchPoolSize(options, options.BufferMemory, available));
         await Assert.That(BatchArena.PoolCapacity).IsGreaterThanOrEqualTo(7);
@@ -261,16 +261,16 @@ public class ProducerPoolMemoryBoundTests
 
         await using var accumulator = new RecordAccumulator(options);
 
-        // 8MiB / (2 × 128KB) completion arrays; no arena bound applies to Incremental.
-        await Assert.That(accumulator.BatchPoolMaxSizeForTest).IsEqualTo(32);
+        // 8MiB / (2 × 256KB) completion arrays; no arena bound applies to Incremental.
+        await Assert.That(accumulator.BatchPoolMaxSizeForTest).IsEqualTo(16);
         await Assert.That(accumulator.ArenaPoolRegistrationForTest).IsNull();
     }
 
     [Test]
-    [Arguments(288L * 1024 * 1024, 32L * 1024 * 1024, DefaultBatchSize, 115)]                      // 384Mi pod: arenas 25; 28.8MB / (2 × 128KB) arrays
-    [Arguments(64L * 1024 * 1024 * 1024, 8L * 1024 * 1024, DefaultBatchSize, 32)]                  // 8MiB / (2 × 128KB) arrays
-    [Arguments(64L * 1024 * 1024 * 1024, 256L * 1024 * 1024, 16_384, BatchArena.MaxPoolSizeCap)]   // small batches: small arrays, churn cap
-    [Arguments(20L * 1024 * 1024, 256L * 1024 * 1024, DefaultBatchSize, 8)]                        // 2MiB budget / (2 × 128KB) arrays
+    [Arguments(288L * 1024 * 1024, 32L * 1024 * 1024, DefaultBatchSize, 57)]                       // 384Mi pod: arenas 25; 28.8MB / (2 × 256KB) arrays
+    [Arguments(64L * 1024 * 1024 * 1024, 8L * 1024 * 1024, DefaultBatchSize, 16)]                  // 8MiB / (2 × 256KB) arrays
+    [Arguments(64L * 1024 * 1024 * 1024, 256L * 1024 * 1024, 16_384, BatchArena.MaxPoolSizeCap)]   // small batches: 256MB / (2 × 256KB) reaches the churn cap
+    [Arguments(20L * 1024 * 1024, 256L * 1024 * 1024, DefaultBatchSize, 4)]                        // 2MiB budget / (2 × 256KB) arrays
     public async Task ComputeBatchPoolSize_IsBoundedByCompletionArraysNotArenas(
         long availableMemoryBytes,
         long bufferMemory,
@@ -280,7 +280,7 @@ public class ProducerPoolMemoryBoundTests
         var options = CreateOptions(bufferMemory, batchSize);
 
         var batchPoolSize = RecordAccumulator.ComputeBatchPoolSize(options, (ulong)bufferMemory, availableMemoryBytes);
-        var arrayBytes = (long)PartitionBatch.GetInitialRecordCapacity(options) * IntPtr.Size;
+        var arrayBytes = (long)ProducerContainerPools.MaxRecordArrayLength * IntPtr.Size;
 
         await Assert.That(batchPoolSize).IsEqualTo(expected);
         await Assert.That(batchPoolSize).IsGreaterThanOrEqualTo(RecordAccumulator.ComputePoolSize(options, availableMemoryBytes));
@@ -700,7 +700,7 @@ public class ProducerPoolMemoryBoundTests
 
         var accumulator = producer.RecordAccumulator;
         var limit = accumulator.ArenaPoolRegistrationForTest!.Limit;
-        var arrayBytes = (ulong)PartitionBatch.GetInitialRecordCapacity(accumulator.OptionsForTest) * (ulong)IntPtr.Size;
+        var arrayBytes = (ulong)ProducerContainerPools.MaxRecordArrayLength * (ulong)IntPtr.Size;
 
         await Assert.That(accumulator.MaxBufferMemory).IsEqualTo(32UL * 1024 * 1024);
         await Assert.That((ulong)limit.RetainedBytes).IsLessThanOrEqualTo(accumulator.MaxBufferMemory);
@@ -734,7 +734,7 @@ public class ProducerPoolMemoryBoundTests
         accumulator.SetMaxBufferMemory(8 * 1024 * 1024);
 
         var replacement = accumulator.ArenaPoolRegistrationForTest!;
-        await Assert.That(accumulator.BatchPoolRetentionLimitForTest).IsEqualTo(32);
+        await Assert.That(accumulator.BatchPoolRetentionLimitForTest).IsEqualTo(16);
         await Assert.That(original.IsDisposed).IsTrue();
         await Assert.That(ReferenceEquals(replacement, original)).IsFalse();
         await Assert.That(replacement.IsDisposed).IsFalse();
@@ -779,7 +779,7 @@ public class ProducerPoolMemoryBoundTests
         var expectedArenas = RecordAccumulator.ComputePoolSize(options, 256UL * 1024 * 1024, available);
         var expectedBatches = RecordAccumulator.ComputeBatchPoolSize(options, 256UL * 1024 * 1024, available);
         await Assert.That(expectedArenas).IsGreaterThan(7);
-        await Assert.That(expectedBatches).IsGreaterThan(32);
+        await Assert.That(expectedBatches).IsGreaterThan(16);
         await Assert.That(accumulator.BatchPoolRetentionLimitForTest).IsEqualTo(expectedBatches);
         await Assert.That(accumulator.BatchPoolMaxSizeForTest).IsGreaterThanOrEqualTo(expectedBatches);
         await Assert.That(accumulator.ArenaPoolRegistrationForTest!.Limit.PoolSize).IsEqualTo(expectedArenas);
@@ -837,7 +837,7 @@ public class ProducerPoolMemoryBoundTests
 
         accumulator.SetMaxBufferMemory(8 * 1024 * 1024);
 
-        await Assert.That(accumulator.BatchPoolRetentionLimitForTest).IsEqualTo(32);
+        await Assert.That(accumulator.BatchPoolRetentionLimitForTest).IsEqualTo(16);
         await Assert.That(accumulator.ArenaPoolRegistrationForTest).IsNull();
     }
 
@@ -1049,7 +1049,7 @@ public class ProducerPoolMemoryBoundTests
 
         await Assert.That(accumulator.ArenaPoolRegistrationForTest!.Limit.RetainedBytes).IsEqualTo(8 * MiB);
         await Assert.That(accumulator.ArenaPoolRegistrationForTest!.Limit.PoolSize).IsEqualTo(7);
-        await Assert.That(accumulator.BatchPoolRetentionLimitForTest).IsEqualTo(32);
+        await Assert.That(accumulator.BatchPoolRetentionLimitForTest).IsEqualTo(16);
     }
 
     [Test]
@@ -1262,8 +1262,54 @@ public class ProducerPoolMemoryBoundTests
         var plainSize = RecordAccumulator.ComputeBatchPoolSize(plain, 8UL * 1024 * 1024, 64 * GiB);
         var largeArenaSize = RecordAccumulator.ComputeBatchPoolSize(largeArena, 8UL * 1024 * 1024, 64 * GiB);
 
-        await Assert.That(plainSize).IsEqualTo(32);
+        await Assert.That(plainSize).IsEqualTo(16);
         await Assert.That(largeArenaSize).IsEqualTo(plainSize);
+    }
+
+    [Test]
+    public async Task BatchArrayReuseQueue_DoesNotKeepArraysLongerThanTheBudgetedLength()
+    {
+        // Batches of tiny records grow their completion arrays; the pools budget each array at
+        // MaxRecordArrayLength, so a longer one must not be queued.
+        var queue = new BatchArrayReuseQueue(maxSize: 8);
+
+        queue.EnqueueOrReturn(new PooledValueTaskSource<RecordMetadata>[ProducerContainerPools.MaxRecordArrayLength + 1]);
+        queue.EnqueueOrReturn(ProducerContainerPools.CompletionSources.Rent(ProducerContainerPools.MaxRecordArrayLength));
+
+        await Assert.That(queue.RetainedCount).IsEqualTo(1);
+        await Assert.That(queue.TryDequeue(out var kept)).IsTrue();
+        await Assert.That(kept!.Length).IsLessThanOrEqualTo(ProducerContainerPools.MaxRecordArrayLength);
+    }
+
+    [Test]
+    public async Task PartitionBatchPool_ReuseQueue_FollowsARaisedRetentionLimit()
+    {
+        // A pool created small (a small auto-tuned share) and raised later must queue up to the
+        // new limit, not its constructor-time size.
+        var (pool, _) = CreatePools(maxPoolSize: 2);
+        pool.SetRetentionLimit(6);
+        var queue = pool.ArrayReuseQueueForTest;
+
+        for (var i = 0; i < 8; i++)
+            queue.EnqueueOrReturn(ProducerContainerPools.CompletionSources.Rent(16));
+
+        await Assert.That(queue.RetainedCount).IsEqualTo(6);
+    }
+
+    [Test]
+    public async Task PrepareForPooling_DropsAnOversizedFireOnlyArray()
+    {
+        var options = CreateOptions(bufferMemory: 8 * MiB);
+        var batch = new PartitionBatch(new TopicPartition("pool-memory-bound", 0), options);
+        var storage = typeof(PartitionBatch).GetField(
+            "_completionSources",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        storage.SetValue(batch, new PooledValueTaskSource<RecordMetadata>[ProducerContainerPools.MaxRecordArrayLength * 2]);
+
+        batch.PrepareForPooling(options);
+
+        var retained = (PooledValueTaskSource<RecordMetadata>[])storage.GetValue(batch)!;
+        await Assert.That(retained.Length).IsLessThanOrEqualTo(ProducerContainerPools.MaxRecordArrayLength);
     }
 
     [Test]

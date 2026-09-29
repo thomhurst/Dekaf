@@ -392,7 +392,7 @@ internal static class ProducerContainerPools
 {
     // Max initial record capacity is 16384 (from ComputeInitialRecordCapacity).
     // GrowArray doubles, so allow up to 32768 to cover one growth step.
-    private const int MaxRecordArrayLength = 32768;
+    internal const int MaxRecordArrayLength = 32768;
     private static readonly RatchetableArrayPool<Header> s_headers = new(
         maxArrayLength: 1024,
         initialArraysPerBucket: 16);
@@ -3434,8 +3434,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Size of the <see cref="PartitionBatchPool"/> and ReadyBatch pool for
     /// <paramref name="bufferMemory"/>. Pooled batches keep no arena, only their completion
-    /// array (initial record capacity × pointer size, up to 128KB), so the churn size is bounded
-    /// by how many of those arrays fit the retained-memory budget, not by arena size.
+    /// array (at most <see cref="ProducerContainerPools.MaxRecordArrayLength"/> references,
+    /// 256KB), so the churn size is bounded by how many of those arrays fit the retained-memory
+    /// budget, not by arena size.
     /// </summary>
     internal static int ComputeBatchPoolSize(ProducerOptions options, ulong bufferMemory, long availableMemoryBytes)
     {
@@ -3444,7 +3445,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Each slot can hold two arrays: one in a pooled batch and one in the batch pool's
         // reuse queue (awaited batches hand theirs back through it). No arena floor applies:
         // these pools hold no arenas, whatever the strategy.
-        var completionArrayBytes = (long)PartitionBatch.GetInitialRecordCapacity(options) * IntPtr.Size;
+        // Arrays grow with the records in a batch, and pools keep them up to MaxRecordArrayLength
+        // (longer ones are dropped), so charge each retained array at that length.
+        var completionArrayBytes = (long)ProducerContainerPools.MaxRecordArrayLength * IntPtr.Size;
         var fitting = ComputeRetainedBudgetBytes(bufferMemory, availableMemoryBytes)
             / (CompletionArraysPerBatchPoolSlot * completionArrayBytes);
         return (int)Math.Clamp(Math.Min(churnPoolSize, fitting), MinimumPoolSize, BatchArena.MaxPoolSizeCap);
@@ -9149,7 +9152,8 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
         _retentionLimit = maxPoolSize;
         _options = options;
         _compressionRatioEstimator = compressionRatioEstimator ?? new CompressionRatioEstimator();
-        _arrayReuseQueue = new BatchArrayReuseQueue(maxSize: maxPoolSize);
+        // Capacity at the cap (512 references) so the queue can follow a growing retention limit.
+        _arrayReuseQueue = new BatchArrayReuseQueue(maxSize: BatchArena.MaxPoolSizeCap);
         _arrayReuseQueue.SetRetentionLimit(maxPoolSize);
     }
 
@@ -9188,6 +9192,8 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
             base.Clear();
         }
     }
+
+    internal BatchArrayReuseQueue ArrayReuseQueueForTest => _arrayReuseQueue;
 
     /// <summary>Batches currently retained through <see cref="Return"/>.</summary>
     internal int RetainedCount => Volatile.Read(ref _retainedCount);
@@ -9526,7 +9532,14 @@ internal sealed class PartitionBatch
         _incrementalBuffer = null;
 
         // Awaited batches transfer completion storage to ReadyBatch. Fire-only batches
-        // retain their array across pool rotations and skip this cross-thread handoff.
+        // retain their array across pool rotations and skip this cross-thread handoff, unless
+        // it grew past what the pool budgets for; the dedicated ArrayPool drops such arrays.
+        if (_completionSources is { Length: > ProducerContainerPools.MaxRecordArrayLength } oversized)
+        {
+            _completionSources = null;
+            ProducerContainerPools.CompletionSources.Return(oversized, clearArray: false);
+        }
+
         if (_completionSources is null)
         {
             if (_arrayReuseQueue is not null && _arrayReuseQueue.TryDequeue(out var reusable))
@@ -10716,6 +10729,13 @@ internal sealed class BatchArrayReuseQueue
     /// </summary>
     public void EnqueueOrReturn(PooledValueTaskSource<RecordMetadata>[] completionSources)
     {
+        // Arrays that grew past the budgeted length are not kept (the ArrayPool drops them).
+        if (completionSources.Length > ProducerContainerPools.MaxRecordArrayLength)
+        {
+            ProducerContainerPools.CompletionSources.Return(completionSources, clearArray: false);
+            return;
+        }
+
         var epoch = Volatile.Read(ref _releaseEpoch);
         if (Interlocked.Increment(ref _retainedCount) > Volatile.Read(ref _retentionLimit))
         {
