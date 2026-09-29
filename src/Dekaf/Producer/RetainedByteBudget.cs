@@ -48,6 +48,29 @@ internal sealed class RetainedByteBudget
         return false;
     }
 
+    /// <summary>
+    /// Reserves <paramref name="bytes"/> and creates the item that will hold them. Returns null,
+    /// reserving nothing, when the limit is reached. If <paramref name="create"/> throws (for
+    /// example, a pinned allocation running out of memory), the reservation is released, since
+    /// no pooled item would ever release it.
+    /// </summary>
+    public T? ReserveThenCreate<T>(int bytes, Func<int, T> create)
+        where T : class
+    {
+        if (!TryReserve(bytes))
+            return null;
+
+        try
+        {
+            return create(bytes);
+        }
+        catch
+        {
+            Release(bytes);
+            throw;
+        }
+    }
+
     /// <summary>Releases bytes reserved by an item that left the pool.</summary>
     public void Release(int bytes)
     {

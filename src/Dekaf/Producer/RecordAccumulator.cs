@@ -923,9 +923,11 @@ internal sealed class BatchArena
         var missing = Math.Max(0, count - s_pool.ApproximateCount);
         for (var i = 0; i < missing; i++)
         {
-            if (!s_retainedBytes.TryReserve(capacity))
+            var arena = s_retainedBytes.ReserveThenCreate(capacity, static capacity => new BatchArena(capacity));
+            if (arena is null)
                 return;
-            s_pool.Return(new BatchArena(capacity));
+
+            s_pool.Return(arena);
         }
     }
 
@@ -3251,19 +3253,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Scale pool sizes with BufferMemory/BatchSize to prevent pool exhaustion.
         // Small batches (e.g., 16KB) create high batch churn (~6,250/sec at 100K msg/sec)
         // and need larger pools than the default 256 designed for 1MB batches.
-        // Both sizes are bounded by the batch storage the process can afford to keep idle.
+        // Each size is bounded by what its pool actually keeps idle: pooled batches keep only
+        // their completion arrays, and idle arenas live in the process-wide arena pool.
         var availableMemoryBytes = GetAvailableMemoryBytes();
-        var poolSize = ComputePoolSize(options, availableMemoryBytes);
+        var arenaPoolSize = ComputePoolSize(options, availableMemoryBytes);
+        var batchPoolSize = ComputeBatchPoolSize(options, options.BufferMemory, availableMemoryBytes);
         // Full-arena producers register with the process-wide arena pool last, once nothing
         // else in the constructor can throw, so a failed construction leaves no registration.
         if (options.BufferMemoryAllocationStrategy != BufferMemoryAllocationStrategy.Full)
             IncrementalBatchBuffer.RatchetPoolSize(
-                poolSize * ReadyBatchPoolSizeRatio,
+                batchPoolSize * ReadyBatchPoolSizeRatio,
                 options.BatchSize);
         // ReadyBatch lifecycle spans seal→send→response→cleanup (longer than PartitionBatch),
         // so its pool needs to be larger to avoid exhaustion under sustained throughput.
-        _readyBatchPool = new ReadyBatchPool(maxPoolSize: poolSize * ReadyBatchPoolSizeRatio, failureObserver: this);
-        _batchPool = new PartitionBatchPool(options, _compressionRatioEstimator, maxPoolSize: poolSize);
+        _readyBatchPool = new ReadyBatchPool(maxPoolSize: batchPoolSize * ReadyBatchPoolSizeRatio, failureObserver: this);
+        _batchPool = new PartitionBatchPool(options, _compressionRatioEstimator, maxPoolSize: batchPoolSize);
         _batchPool.SetReadyBatchPool(_readyBatchPool); // Wire up pools
         _maxBufferMemory = (long)options.BufferMemory;
 
@@ -3277,15 +3281,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Pre-warm a small number of pool entries to cover initial burst without
         // excessive upfront memory usage. The pools grow lazily on demand after this.
         // ReadyBatch is lightweight (no arena), so warm more of those.
-        // PartitionBatch and BatchArena each allocate a ~BatchSize POH buffer,
-        // so pre-warm only a handful (e.g., 8 × 1MB = 8MB for default settings).
-        var preWarmCount = Math.Min(poolSize / 8, 16);
-        _readyBatchPool.PreWarm(Math.Min(poolSize, 32));
-        _batchPool.PreWarm(preWarmCount);
+        // Each BatchArena is a ~BatchSize POH buffer, so pre-warm only a handful
+        // (e.g., 8 × 1MB = 8MB for default settings).
+        var arenaPreWarmCount = Math.Min(arenaPoolSize / 8, 16);
+        _readyBatchPool.PreWarm(Math.Min(batchPoolSize, 32));
+        _batchPool.PreWarm(Math.Min(batchPoolSize / 8, 16));
         if (options.BufferMemoryAllocationStrategy != BufferMemoryAllocationStrategy.Full)
         {
             IncrementalBatchBuffer.PreWarm(
-                Math.Min(poolSize * ReadyBatchPoolSizeRatio, 256),
+                Math.Min(batchPoolSize * ReadyBatchPoolSizeRatio, 256),
                 options.BatchSize);
         }
 
@@ -3303,7 +3307,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         if (options.BufferMemoryAllocationStrategy == BufferMemoryAllocationStrategy.Full)
         {
-            _arenaPoolRegistration = RegisterAndPreWarmArenas(options, poolSize, preWarmCount, availableMemoryBytes);
+            _arenaPoolRegistration = RegisterAndPreWarmArenas(options, arenaPoolSize, arenaPreWarmCount, availableMemoryBytes);
         }
     }
 
@@ -3397,6 +3401,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var batchCapacity = (int)Math.Min(bufferMemory / (ulong)Math.Max(options.BatchSize, 1), int.MaxValue);
         var churnPoolSize = Math.Clamp(batchCapacity / 4, BatchArena.DefaultPoolSize, BatchArena.MaxPoolSizeCap);
         return Math.Min(churnPoolSize, ComputeMemoryBoundedPoolSize(options, bufferMemory, availableMemoryBytes));
+    }
+
+    /// <summary>
+    /// Size of the <see cref="PartitionBatchPool"/> and ReadyBatch pool for
+    /// <paramref name="bufferMemory"/>. Pooled batches keep no arena, only their completion
+    /// array (initial record capacity × pointer size, up to 128KB), so the churn size is bounded
+    /// by how many of those arrays fit the retained-memory budget, not by arena size.
+    /// </summary>
+    internal static int ComputeBatchPoolSize(ProducerOptions options, ulong bufferMemory, long availableMemoryBytes)
+    {
+        var batchCapacity = (int)Math.Min(bufferMemory / (ulong)Math.Max(options.BatchSize, 1), int.MaxValue);
+        var churnPoolSize = Math.Clamp(batchCapacity / 4, BatchArena.DefaultPoolSize, BatchArena.MaxPoolSizeCap);
+        var completionArrayBytes = (long)PartitionBatch.GetInitialRecordCapacity(options) * IntPtr.Size;
+        var fitting = ComputeRetainedArenaBytes(options, bufferMemory, availableMemoryBytes) / completionArrayBytes;
+        return (int)Math.Clamp(Math.Min(churnPoolSize, fitting), MinimumPoolSize, BatchArena.MaxPoolSizeCap);
     }
 
     /// <summary>
@@ -6212,8 +6231,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // enters this lock after its write, so reading it here makes the last resize use
             // the latest BufferMemory instead of whichever notification arrived last.
             var bufferMemory = (ulong)Volatile.Read(ref _maxBufferMemory);
+            _batchPool.SetRetentionLimit(ComputeBatchPoolSize(_options, bufferMemory, availableMemoryBytes));
             var poolSize = ComputePoolSize(_options, bufferMemory, availableMemoryBytes);
-            _batchPool.SetRetentionLimit(poolSize);
 
             if (_options.BufferMemoryAllocationStrategy != BufferMemoryAllocationStrategy.Full)
                 return;
@@ -9289,9 +9308,7 @@ internal sealed class PartitionBatch
         _effectiveBatchSizeLimit = GetEffectiveBatchSizeLimit(topicPartition, options, _compressionRatioEstimator);
         _createdStopwatchTimestamp = Stopwatch.GetTimestamp();
 
-        _initialRecordCapacity = options.InitialBatchRecordCapacity > 0
-            ? Math.Clamp(options.InitialBatchRecordCapacity, 16, 16384)
-            : ComputeInitialRecordCapacity(options.BatchSize);
+        _initialRecordCapacity = GetInitialRecordCapacity(options);
 
         // Pool-created batches rent their storage in Reset, like every pooled batch.
         if (allocateAppendBuffer)
@@ -9302,6 +9319,12 @@ internal sealed class PartitionBatch
         _completionSources = ProducerContainerPools.CompletionSources.Rent(_initialRecordCapacity);
         _completionSourceCount = 0;
     }
+
+    /// <summary>Initial completion-array length for a batch with these options.</summary>
+    internal static int GetInitialRecordCapacity(ProducerOptions options)
+        => options.InitialBatchRecordCapacity > 0
+            ? Math.Clamp(options.InitialBatchRecordCapacity, 16, 16384)
+            : ComputeInitialRecordCapacity(options.BatchSize);
 
     private static int ComputeInitialRecordCapacity(int batchSize)
     {
