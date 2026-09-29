@@ -1221,6 +1221,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // ReadyBatch lifecycle (seal→send→response→cleanup) is longer than PartitionBatch
     // (create→fill→seal), so its pool needs proportionally more capacity.
     private const int ReadyBatchPoolSizeRatio = 2;
+    internal const int ReadyBatchPoolSizeRatioForTest = ReadyBatchPoolSizeRatio;
     private const int DisposeAppendInProgressWaitMs = 5000;
     private static readonly long DisposeAppendInProgressWaitTicks =
         (long)(DisposeAppendInProgressWaitMs * (Stopwatch.Frequency / 1000.0));
@@ -1310,6 +1311,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly Lock _arenaPoolRegistrationLock = new();
     internal BatchArena.ArenaPoolRegistration? ArenaPoolRegistrationForTest => Volatile.Read(ref _arenaPoolRegistration);
     internal int BatchPoolRetentionLimitForTest => _batchPool.RetentionLimit;
+    internal int ReadyBatchPoolMaxSizeForTest => _readyBatchPool.MaxPoolSize;
     internal int BatchPoolRetainedCountForTest => _batchPool.RetainedCount;
     internal void ResizeBatchStorageForTest() => ResizeBatchStorage();
     internal ProducerOptions OptionsForTest => _options;
@@ -6272,7 +6274,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // enters this lock after its write, so reading it here makes the last resize use
             // the latest BufferMemory instead of whichever notification arrived last.
             var bufferMemory = (ulong)Volatile.Read(ref _maxBufferMemory);
-            _batchPool.SetRetentionLimit(ComputeBatchPoolSize(_options, bufferMemory, availableMemoryBytes));
+            var batchPoolSize = ComputeBatchPoolSize(_options, bufferMemory, availableMemoryBytes);
+            _batchPool.SetRetentionLimit(batchPoolSize);
+            // ReadyBatch objects hold no batch storage, so their pool only grows with the batch
+            // pool; the same goes for the incremental chunk pools, which size themselves.
+            var readyBatchPoolSize = batchPoolSize * ReadyBatchPoolSizeRatio;
+            if (readyBatchPoolSize > _readyBatchPool.MaxPoolSize)
+                _readyBatchPool.RatchetMaxPoolSize(readyBatchPoolSize);
+            if (_options.BufferMemoryAllocationStrategy != BufferMemoryAllocationStrategy.Full)
+                IncrementalBatchBuffer.RatchetPoolSize(readyBatchPoolSize, _options.BatchSize);
             var poolSize = ComputePoolSize(_options, bufferMemory, availableMemoryBytes);
 
             if (_options.BufferMemoryAllocationStrategy != BufferMemoryAllocationStrategy.Full)

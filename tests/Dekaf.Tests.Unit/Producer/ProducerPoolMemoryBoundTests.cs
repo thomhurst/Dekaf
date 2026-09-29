@@ -783,6 +783,21 @@ public class ProducerPoolMemoryBoundTests
         await Assert.That(accumulator.BatchPoolRetentionLimitForTest).IsEqualTo(expectedBatches);
         await Assert.That(accumulator.BatchPoolMaxSizeForTest).IsGreaterThanOrEqualTo(expectedBatches);
         await Assert.That(accumulator.ArenaPoolRegistrationForTest!.Limit.PoolSize).IsEqualTo(expectedArenas);
+        // The ReadyBatch pool keeps its 2x ratio to the batch pool after growing.
+        await Assert.That(accumulator.ReadyBatchPoolMaxSizeForTest)
+            .IsGreaterThanOrEqualTo(expectedBatches * RecordAccumulator.ReadyBatchPoolSizeRatioForTest);
+    }
+
+    [Test]
+    public async Task SetMaxBufferMemory_Downward_KeepsTheReadyBatchPool()
+    {
+        // ReadyBatch objects hold no batch storage, so a reduction leaves their pool alone.
+        await using var accumulator = new RecordAccumulator(CreateOptions(bufferMemory: 256 * MiB));
+        var before = accumulator.ReadyBatchPoolMaxSizeForTest;
+
+        accumulator.SetMaxBufferMemory(8 * 1024 * 1024);
+
+        await Assert.That(accumulator.ReadyBatchPoolMaxSizeForTest).IsEqualTo(before);
     }
 
     [Test]
