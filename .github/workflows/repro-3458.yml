@@ -35,11 +35,18 @@ jobs:
           brew install docker colima
           colima start --cpu 3 --memory 8 || colima start --cpu 3 --memory 8 --vm-type qemu
           docker info --format '{{.ServerVersion}} {{.OperatingSystem}}'
+      - name: Pre-pull images
+        timeout-minutes: 20
+        run: |
+          for i in apache/kafka:4.3.1 confluentinc/cp-schema-registry:8.2.0 kafbat/kafka-ui:v1.5.0 hectorvent/floci:latest nginx:1.27-alpine; do docker pull -q $i & done; wait
+          docker images
       - name: Developer certificate
         if: matrix.cert == 'trusted'
         timeout-minutes: 5
         run: |
-          dotnet dev-certs https --trust || dotnet dev-certs https
+          dotnet dev-certs https
+          dotnet dev-certs https --export-path "$RUNNER_TEMP/devcert.pem" --format PEM --no-password
+          sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$RUNNER_TEMP/devcert.pem"
           dotnet dev-certs https --check --trust || true
       - name: Install dotnet-stack
         run: dotnet tool install -g dotnet-stack
