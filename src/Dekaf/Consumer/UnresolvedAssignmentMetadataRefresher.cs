@@ -149,11 +149,17 @@ internal sealed partial class UnresolvedAssignmentMetadataRefresher
                 ClearBackoff();
         }
 
+        // Full fence, then read the demand. A Request records its generation (a full fence) before
+        // it tries to claim the slot, so for any request this refresh could have turned away,
+        // either its claim sees the slot free or the read below sees its generation. Checking
+        // only after the release covers a Reset at any point up to here, including after the
+        // checks above.
         Interlocked.Exchange(ref _inFlight, 0);
 
-        // The current assignment asked for a refresh while this older one ran: that request found
-        // the refresher busy, so start it now rather than wait for a later heartbeat.
-        if (stale && Volatile.Read(ref _requestedGeneration) == Volatile.Read(ref _generation))
+        // A newer assignment asked for a refresh while this one ran: that request found the
+        // refresher busy, so start it now rather than wait for a later heartbeat.
+        var requested = Volatile.Read(ref _requestedGeneration);
+        if (requested != generation && requested == Volatile.Read(ref _generation))
             Request();
     }
 
