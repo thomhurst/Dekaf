@@ -133,6 +133,31 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         await Assert.That(coordinator.HasUnresolvedAssignment).IsTrue();
     }
 
+    // A refresh that fails for a resolved topic (UNKNOWN_TOPIC_OR_PARTITION) returns its name with
+    // an empty topic ID. That is no evidence of a replacement topic: the partitions stay.
+    [Test]
+    public async Task ConsumerProtocol_ResolvedTopicReturnedWithEmptyId_KeepsItsPartitions()
+    {
+        var refreshResponse = new TaskCompletionSource<MetadataResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        SetupUnresolvedTopicCluster(
+            count => LateTopicBeat(count == 1 ? CreateLateAssignment() : null),
+            _ => new ValueTask<MetadataResponse>(refreshResponse.Task),
+            out _);
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(heartbeatIntervalMs: 60_000), _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(
+            new HashSet<string> { "test-topic", "late-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("test-topic", 0)]);
+
+        refreshResponse.SetResult(CreateLateTopicMetadata(includeLateTopic: false, testTopicId: Guid.Empty));
+        await coordinator.UnresolvedAssignmentRefreshTask.WaitAsync(TimeSpan.FromSeconds(30));
+        await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+
+        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("test-topic", 0)]);
+        await Assert.That(coordinator.HasUnresolvedAssignment).IsTrue();
+    }
+
     // A slow refresh (busy refresh lock, a broker at its request timeout) must neither hold back
     // the assignment the heartbeat received, revocations included, nor the heartbeats after it.
     [Test]

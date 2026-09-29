@@ -8,8 +8,8 @@ namespace Dekaf.Consumer;
 /// While the same broker assignment stays pending, a topic ID it already resolved keeps that name
 /// even if a later metadata snapshot leaves the topic out (a full refresh that briefly misses it),
 /// so reprocessing the assignment never revokes partitions the broker still assigns. A cached name
-/// is dropped once the snapshot maps it to a different topic ID (the topic was deleted and
-/// recreated), so the old ID never reaches fetches that use the replacement topic's ID. Only IDs
+/// is dropped once the snapshot maps it to a different, non-empty topic ID (the topic was deleted
+/// and recreated), so the old ID never reaches fetches that use the replacement topic's ID. Only IDs
 /// that never resolved stay unknown. Shared by the KIP-848 and share group coordinators.
 /// </summary>
 internal static class PendingAssignmentTopics
@@ -33,7 +33,7 @@ internal static class PendingAssignmentTopics
 
         if (resolvedNames is not null
             && resolvedNames.TryGetValue(topicId, out name)
-            && !snapshot.Topics.ContainsKey(name))
+            && !NamesAnotherTopic(snapshot, name, topicId))
         {
             return true;
         }
@@ -41,4 +41,11 @@ internal static class PendingAssignmentTopics
         name = null;
         return false;
     }
+
+    // An error entry (UNKNOWN_TOPIC_OR_PARTITION on a refresh) keeps the name with an empty ID;
+    // only a non-empty different ID proves the topic was recreated.
+    private static bool NamesAnotherTopic(ClusterMetadataSnapshot snapshot, string name, Guid topicId) =>
+        snapshot.Topics.TryGetValue(name, out var topic)
+        && topic.TopicId != Guid.Empty
+        && topic.TopicId != topicId;
 }
