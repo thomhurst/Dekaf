@@ -1,5 +1,3 @@
-using Dekaf.Internal;
-
 namespace Dekaf.Producer;
 
 /// <summary>
@@ -8,8 +6,8 @@ namespace Dekaf.Producer;
 /// <remarks>
 /// A count-bounded pool shared by producers with different batch sizes can fill slots sized
 /// for small arenas with large ones. Reserving each item's bytes before it is pooled keeps the
-/// idle total within the largest budget any producer requested, whatever the item sizes.
-/// A limit of 0 means no producer has set a budget yet; bytes are still tracked, and the
+/// idle total within the budget of the live producers, whatever the item sizes.
+/// A limit of 0 means no producer has set a budget; bytes are still tracked, and the
 /// pool's count bound applies alone. Reserve and release run once per pooled item, never per record.
 /// </remarks>
 internal sealed class RetainedByteBudget
@@ -20,11 +18,14 @@ internal sealed class RetainedByteBudget
     /// <summary>Bytes currently reserved by pooled items.</summary>
     public long RetainedBytes => Volatile.Read(ref _retainedBytes);
 
-    /// <summary>Largest budget requested so far, or 0 when none has been set.</summary>
+    /// <summary>Current byte limit, or 0 when none has been set.</summary>
     public long Limit => Volatile.Read(ref _limit);
 
-    /// <summary>Raises the limit to <paramref name="bytes"/> if it is larger. The limit never shrinks.</summary>
-    public void RatchetLimit(long bytes) => InterlockedHelper.RatchetUp(ref _limit, bytes);
+    /// <summary>
+    /// Sets the byte limit. Lowering it does not evict pooled items; later reservations fail
+    /// until releases bring the total under the new limit.
+    /// </summary>
+    public void SetLimit(long bytes) => Volatile.Write(ref _limit, bytes);
 
     /// <summary>
     /// Reserves <paramref name="bytes"/> for an item about to be pooled.

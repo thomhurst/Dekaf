@@ -270,7 +270,7 @@ public class ProducerPoolMemoryBoundTests
         // producer returning its arenas into those slots must still stop at the byte budget.
         const long budget = 29 * MiB;
         var retained = new RetainedByteBudget();
-        retained.RatchetLimit(budget);
+        retained.SetLimit(budget);
         var accepted = 0;
 
         for (var i = 0; i < 512; i++)
@@ -302,7 +302,7 @@ public class ProducerPoolMemoryBoundTests
     public async Task RetainedByteBudget_Release_MakesRoomForTheNextItem()
     {
         var retained = new RetainedByteBudget();
-        retained.RatchetLimit(DefaultArenaCapacity);
+        retained.SetLimit(DefaultArenaCapacity);
 
         var first = retained.TryReserve(DefaultArenaCapacity);
         var whileFull = retained.TryReserve(DefaultArenaCapacity);
@@ -316,21 +316,164 @@ public class ProducerPoolMemoryBoundTests
     }
 
     [Test]
-    public async Task RetainedByteBudget_Limit_OnlyRatchetsUp()
+    public async Task RetainedByteBudget_LoweredLimit_RejectsReservationsUntilReleasesFit()
     {
+        // A disposed producer with a large budget leaves a smaller one: later returns must
+        // honor the smaller budget even though more bytes are still reserved.
         var retained = new RetainedByteBudget();
+        retained.SetLimit(4L * DefaultArenaCapacity);
+        for (var i = 0; i < 4; i++)
+            retained.TryReserve(DefaultArenaCapacity);
 
-        retained.RatchetLimit(64 * MiB);
-        retained.RatchetLimit(8 * MiB);
+        retained.SetLimit(2L * DefaultArenaCapacity);
+        var whileOver = retained.TryReserve(DefaultArenaCapacity);
+        retained.Release(DefaultArenaCapacity);
+        retained.Release(DefaultArenaCapacity);
+        retained.Release(DefaultArenaCapacity);
+        var afterReleases = retained.TryReserve(DefaultArenaCapacity);
 
-        await Assert.That(retained.Limit).IsEqualTo(64 * MiB);
+        await Assert.That(retained.Limit).IsEqualTo(2L * DefaultArenaCapacity);
+        await Assert.That(whileOver).IsFalse();
+        await Assert.That(afterReleases).IsTrue();
+        await Assert.That(retained.RetainedBytes).IsEqualTo(2L * DefaultArenaCapacity);
+    }
+
+    #endregion
+
+    #region Live producer limits
+
+    private static readonly ArenaPoolLimit IdleLimit = new(1, 1, RetainedBytes: 0);
+
+    [Test]
+    public async Task ArenaPoolLimits_EffectiveLimit_IsTheLargestLiveRequest()
+    {
+        var limits = new ArenaPoolLimits(IdleLimit);
+        var large = new ArenaPoolLimit(128, 512, 256 * MiB);
+        var small = new ArenaPoolLimit(7, 7, 8 * MiB);
+
+        limits.Register(large, out var beforeLarge, out var afterLarge);
+        limits.Register(small, out var beforeSmall, out var afterSmall);
+
+        await Assert.That(beforeLarge).IsEqualTo(IdleLimit);
+        await Assert.That(afterLarge).IsEqualTo(large);
+        await Assert.That(beforeSmall).IsEqualTo(large);
+        await Assert.That(afterSmall).IsEqualTo(large);
+        await Assert.That(limits.Current).IsEqualTo(large);
+    }
+
+    [Test]
+    public async Task ArenaPoolLimits_DisposingTheLargestProducer_FallsBackToTheRemainingRequest()
+    {
+        // The review scenario: a default producer, then an 8MiB one; disposing the default
+        // producer must let the 8MiB bound take effect.
+        var limits = new ArenaPoolLimits(IdleLimit);
+        var large = limits.Register(new ArenaPoolLimit(128, 512, 256 * MiB), out _, out _);
+        var small = new ArenaPoolLimit(7, 7, 8 * MiB);
+        limits.Register(small, out _, out _);
+
+        var removed = limits.Unregister(large, out var previous, out var current);
+
+        await Assert.That(removed).IsTrue();
+        await Assert.That(previous.RetainedBytes).IsEqualTo(256 * MiB);
+        await Assert.That(current).IsEqualTo(small);
+        await Assert.That(BatchArena.ShouldReleasePooledArenas(previous.RetainedBytes, current.RetainedBytes)).IsTrue();
+    }
+
+    [Test]
+    public async Task ArenaPoolLimits_EachFieldTakesItsOwnMaximum()
+    {
+        var limits = new ArenaPoolLimits(IdleLimit);
+        limits.Register(new ArenaPoolLimit(128, 128, 8 * MiB), out _, out _);
+        limits.Register(new ArenaPoolLimit(16, 512, 64 * MiB), out _, out _);
+
+        await Assert.That(limits.Current).IsEqualTo(new ArenaPoolLimit(128, 512, 64 * MiB));
+    }
+
+    [Test]
+    public async Task ArenaPoolLimits_LastUnregister_ReturnsToIdle()
+    {
+        var limits = new ArenaPoolLimits(IdleLimit);
+        var registration = limits.Register(new ArenaPoolLimit(25, 25, 29 * MiB), out _, out _);
+
+        var removed = limits.Unregister(registration, out var previous, out var current);
+        var removedAgain = limits.Unregister(registration, out _, out var afterSecond);
+
+        await Assert.That(removed).IsTrue();
+        await Assert.That(previous.RetainedBytes).IsEqualTo(29 * MiB);
+        await Assert.That(current).IsEqualTo(IdleLimit);
+        await Assert.That(removedAgain).IsFalse();
+        await Assert.That(afterSecond).IsEqualTo(IdleLimit);
+        await Assert.That(BatchArena.ShouldReleasePooledArenas(previous.RetainedBytes, current.RetainedBytes)).IsTrue();
+    }
+
+    [Test]
+    public async Task ArenaPoolLimits_ConcurrentRegistrations_EndAtIdle(CancellationToken cancellationToken)
+    {
+        var limits = new ArenaPoolLimits(IdleLimit);
+
+        await Task.WhenAll(Enumerable.Range(1, 32).Select(i => Task.Run(() =>
+        {
+            for (var j = 0; j < 500; j++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var registration = limits.Register(new ArenaPoolLimit(i, i, i * MiB), out _, out var current);
+                if (current.RetainedBytes < i * MiB)
+                    throw new InvalidOperationException("Effective limit fell below a live request.");
+                limits.Unregister(registration, out _, out _);
+            }
+        }, cancellationToken)));
+
+        await Assert.That(limits.Current).IsEqualTo(IdleLimit);
+    }
+
+    [Test]
+    [Arguments(0L, 29L * 1024 * 1024, true)]                  // first producer bounds a previously unbounded pool
+    [Arguments(29L * 1024 * 1024, 29L * 1024 * 1024, false)]  // same effective budget keeps pooled arenas
+    [Arguments(8L * 1024 * 1024, 256L * 1024 * 1024, false)]  // a larger budget keeps pooled arenas
+    [Arguments(256L * 1024 * 1024, 8L * 1024 * 1024, true)]   // the largest producer was disposed
+    [Arguments(29L * 1024 * 1024, 0L, true)]                  // the last producer was disposed
+    [Arguments(0L, 0L, true)]
+    public async Task ShouldReleasePooledArenas_OnlyKeepsArenasWhenTheBudgetDidNotFall(
+        long previousLimit,
+        long currentLimit,
+        bool expected)
+    {
+        await Assert.That(BatchArena.ShouldReleasePooledArenas(previousLimit, currentLimit)).IsEqualTo(expected);
+    }
+
+    [Test]
+    public async Task RecordAccumulator_Dispose_ReleasesItsArenaPoolRegistration()
+    {
+        var accumulator = new RecordAccumulator(CreateOptions(bufferMemory: 8 * MiB));
+        var registration = accumulator.ArenaPoolRegistrationForTest;
+
+        await Assert.That(registration).IsNotNull();
+        await Assert.That(registration!.IsDisposed).IsFalse();
+
+        await accumulator.DisposeAsync();
+
+        await Assert.That(registration.IsDisposed).IsTrue();
+    }
+
+    [Test]
+    public async Task RecordAccumulator_Incremental_DoesNotRegisterArenaLimits()
+    {
+        await using var accumulator = new RecordAccumulator(new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            BatchSize = DefaultBatchSize,
+            BufferMemory = 8 * MiB,
+            BufferMemoryAllocationStrategy = BufferMemoryAllocationStrategy.Incremental,
+        });
+
+        await Assert.That(accumulator.ArenaPoolRegistrationForTest).IsNull();
     }
 
     [Test]
     public async Task RetainedByteBudget_ZeroByteItems_AreAlwaysAccepted()
     {
         var retained = new RetainedByteBudget();
-        retained.RatchetLimit(1);
+        retained.SetLimit(1);
         retained.TryReserve(1);
 
         var accepted = retained.TryReserve(0);
@@ -348,7 +491,7 @@ public class ProducerPoolMemoryBoundTests
         const int threadCount = 16;
         const int operationsPerThread = 20_000;
         var retained = new RetainedByteBudget();
-        retained.RatchetLimit(budget);
+        retained.SetLimit(budget);
         long heldPeak = 0;
         long held = 0;
 

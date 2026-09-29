@@ -754,38 +754,80 @@ internal sealed class BatchArena
     internal const int MaxPoolSizeCap = 512;
     internal const long MissRatchetThreshold = 128;
     private static int s_maxPoolSize = InitialPoolSize;
-    // Ceiling for miss-driven growth: the largest memory-bounded pool size any
-    // RecordAccumulator has requested. Misses never grow the pool past what the
+    // Ceiling for miss-driven growth: the largest memory-bounded pool size any live
+    // RecordAccumulator requested. Misses never grow the pool past what the
     // producers' memory bounds allow.
     private static int s_missRatchetLimit = InitialPoolSize;
     // Byte ceiling on pooled arenas. Producers with different batch sizes share this pool, so
     // a count sized for small arenas could otherwise retain as many large ones.
     private static readonly RetainedByteBudget s_retainedBytes = new();
+    // Limits requested by live producers. When the producer with the largest request is
+    // disposed, the byte and miss limits fall back to the remaining producers' requests.
+    private static readonly ArenaPoolLimits s_limits = new(
+        new ArenaPoolLimit(InitialPoolSize, InitialPoolSize, RetainedBytes: 0));
+    private static readonly Lock s_limitsApplyLock = new();
     private static long s_drops;
     private static long s_lastRatchetMissCount;
 
     /// <summary>
-    /// Increases the static pool size limit if the new value is larger.
-    /// Called when a new RecordAccumulator is created with a higher pool size requirement.
-    /// Thread-safe via CAS ratchet — the pool size only ever increases because arenas are
-    /// expensive POH allocations; shrinking would discard them only to re-allocate later.
-    /// Note: in multi-producer scenarios, a disposed small-batch producer leaves the raised
-    /// cap in place. This is acceptable because re-creating POH buffers on demand is costlier
-    /// than retaining the pool headroom, and most applications use a single producer config.
-    /// Worst-case amplification: if a transient small-batch producer (e.g., 256KB batches)
-    /// ratchets the cap to 512, then a 1MB-batch producer can retain up to
-    /// 512 × ~1.1MB ≈ ~560MB of POH memory instead of the normal 128 × ~1.1MB ≈ ~140MB.
+    /// Registers a producer's arena pool limits. Dispose the result when the producer is disposed.
     /// </summary>
-    /// <param name="newSize">The pool size the producer starts with.</param>
-    /// <param name="missRatchetLimit">
-    /// The largest size sustained misses may grow the pool to for this producer's memory bound.
-    /// </param>
-    /// <param name="retainedByteLimit">The producer's budget for idle arena bytes.</param>
-    internal static void RatchetPoolSize(int newSize, int missRatchetLimit, long retainedByteLimit)
+    /// <remarks>
+    /// The effective limits are the largest requests among live producers. The slot count only
+    /// ever increases (Reservoir capacity is fixed per pool), but the byte limit bounds retention
+    /// whatever the slot count: when a disposal lowers it, the pooled arenas are released and
+    /// later returns are held to the remaining producers' budget.
+    /// </remarks>
+    internal static ArenaPoolRegistration Register(ArenaPoolLimit limit)
     {
-        s_retainedBytes.RatchetLimit(retainedByteLimit);
-        InterlockedHelper.RatchetUp(ref s_missRatchetLimit, Math.Max(newSize, missRatchetLimit));
-        RaisePoolSize(newSize);
+        var registration = s_limits.Register(limit, out var previous, out var current);
+        ApplyLimits(previous, current);
+        return new ArenaPoolRegistration(registration);
+    }
+
+    private static void Unregister(ArenaPoolLimits.Registration registration)
+    {
+        if (s_limits.Unregister(registration, out var previous, out var current))
+            ApplyLimits(previous, current);
+    }
+
+    private static void ApplyLimits(ArenaPoolLimit previous, ArenaPoolLimit current)
+    {
+        lock (s_limitsApplyLock)
+        {
+            // Re-read under the apply lock so concurrent registrations publish the latest limits.
+            current = s_limits.Current;
+            s_retainedBytes.SetLimit(current.RetainedBytes);
+            Volatile.Write(ref s_missRatchetLimit, Math.Max(current.PoolSize, current.MissRatchetLimit));
+            RaisePoolSize(current.PoolSize);
+
+            if (ShouldReleasePooledArenas(previous.RetainedBytes, current.RetainedBytes)
+                && s_retainedBytes.RetainedBytes > 0)
+            {
+                s_pool.Clear();
+            }
+        }
+    }
+
+    /// <summary>
+    /// A 0 limit is unbounded, so only a finite limit at least as large as before keeps the
+    /// pooled arenas. Otherwise they are released and producers re-rent within the new limit.
+    /// </summary>
+    internal static bool ShouldReleasePooledArenas(long previousLimit, long currentLimit)
+        => previousLimit == 0 || currentLimit == 0 || currentLimit < previousLimit;
+
+    /// <summary>A producer's registration with the arena pool limits.</summary>
+    internal sealed class ArenaPoolRegistration(ArenaPoolLimits.Registration registration) : IDisposable
+    {
+        private int _disposed;
+
+        internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                Unregister(registration);
+        }
     }
 
     private static void RaisePoolSize(int newSize)
@@ -819,7 +861,7 @@ internal sealed class BatchArena
     /// <summary>Bytes held by arenas in the process-wide pool.</summary>
     internal static long RetainedBytes => s_retainedBytes.RetainedBytes;
 
-    /// <summary>Largest idle-arena byte budget any producer requested, or 0 before the first producer.</summary>
+    /// <summary>Largest idle-arena byte budget among live producers, or 0 when none is registered.</summary>
     internal static long RetainedByteLimit => s_retainedBytes.Limit;
 
     internal static int ComputeRatchetPoolSize(int currentSize, long missesSinceLastRatchet, int limit)
@@ -1212,6 +1254,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     private readonly PartitionBatchPool _batchPool;
     internal int BatchPoolMaxSizeForTest => _batchPool.MaxPoolSize;
+    // Full-arena producers register their limits with the process-wide arena pool.
+    private readonly BatchArena.ArenaPoolRegistration? _arenaPoolRegistration;
+    internal BatchArena.ArenaPoolRegistration? ArenaPoolRegistrationForTest => _arenaPoolRegistration;
     private readonly ReadyBatchPool _readyBatchPool; // Pool for ReadyBatch objects to eliminate per-batch allocations
     private readonly CompressionRatioEstimator _compressionRatioEstimator = new();
 
@@ -3180,10 +3225,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var availableMemoryBytes = GetAvailableMemoryBytes();
         var poolSize = ComputePoolSize(options, availableMemoryBytes);
         if (options.BufferMemoryAllocationStrategy == BufferMemoryAllocationStrategy.Full)
-            BatchArena.RatchetPoolSize(
+            _arenaPoolRegistration = BatchArena.Register(new ArenaPoolLimit(
                 poolSize,
                 ComputeMemoryBoundedPoolSize(options, availableMemoryBytes),
-                ComputeRetainedArenaBytes(options, availableMemoryBytes));
+                ComputeRetainedArenaBytes(options, availableMemoryBytes)));
         else
             IncrementalBatchBuffer.RatchetPoolSize(
                 poolSize * ReadyBatchPoolSizeRatio,
@@ -8782,6 +8827,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Clear the batch pool
         _batchPool.Clear();
+        _arenaPoolRegistration?.Dispose();
 
         // Dispose resources to prevent leaks
         _wakeupSignal?.Dispose();
