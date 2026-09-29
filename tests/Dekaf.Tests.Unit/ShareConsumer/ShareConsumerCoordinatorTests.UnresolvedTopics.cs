@@ -267,6 +267,7 @@ public sealed partial class ShareConsumerCoordinatorTests
     public async Task Assignment_ResolvedAfterJoin_CountsTheJoinRebalanceOnce(CancellationToken cancellationToken)
     {
         var cluster = new UnresolvedTopicCluster("share-late-only");
+        var refreshResponse = new TaskCompletionSource<MetadataResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
         cluster.Heartbeat = count => Beat(count switch
         {
             1 => new ShareGroupHeartbeatAssignment
@@ -276,7 +277,8 @@ public sealed partial class ShareConsumerCoordinatorTests
             3 => CreateLateAssignment(),
             _ => null
         });
-        cluster.Metadata = _ => ValueTask.FromResult(CreateClusterMetadata(includeLateTopic: true));
+        // The refresh the join starts finds the new topic, once the test lets it answer.
+        cluster.Metadata = _ => new ValueTask<MetadataResponse>(refreshResponse.Task);
         var metrics = new ShareConsumerTelemetryMetrics();
         metrics.Subscribe([RebalanceTotal]);
         await using var metadata = cluster.CreateMetadataManager();
@@ -290,6 +292,7 @@ public sealed partial class ShareConsumerCoordinatorTests
         await Assert.That(coordinator.Assignment.Count).IsEqualTo(0);
         await Assert.That(RebalanceCount(metrics)).IsEqualTo(1d);
 
+        refreshResponse.SetResult(CreateClusterMetadata(includeLateTopic: true));
         await coordinator.UnresolvedAssignmentRefreshTask.WaitAsync(cancellationToken);
         await SendHeartbeatAsync(coordinator, cancellationToken);
 
@@ -303,6 +306,42 @@ public sealed partial class ShareConsumerCoordinatorTests
 
         await SendHeartbeatAsync(coordinator, cancellationToken);
 
+        await Assert.That(coordinator.Assignment).IsEquivalentTo(
+            [new TopicPartition("first", 0), new TopicPartition("late", 0)]);
+        await Assert.That(RebalanceCount(metrics)).IsEqualTo(2d);
+    }
+
+    // A Stable member with a counted, partly unresolved assignment loses its coordinator. When
+    // metadata resolves the rest before the rejoin, the rejoin replays that assignment. The
+    // replay is not a new rebalance, but the rejoin itself is and counts once.
+    [Test]
+    public async Task Assignment_ReplayedByRejoinAfterCoordinatorLoss_CountsTheRejoin(CancellationToken cancellationToken)
+    {
+        var cluster = new UnresolvedTopicCluster("share-replayed-rejoin");
+        cluster.Heartbeat = count => Beat(count == 1 ? CreateLateAssignment() : null);
+        cluster.Metadata = _ => ValueTask.FromResult(CreateClusterMetadata(includeLateTopic: false));
+        var metrics = new ShareConsumerTelemetryMetrics();
+        metrics.Subscribe([RebalanceTotal]);
+        await using var metadata = cluster.CreateMetadataManager();
+        await using var coordinator = new ShareConsumerCoordinator(
+            cluster.Options, cluster.Pool, metadata, telemetryMetrics: metrics);
+        coordinator.UpdateSubscription(["first", "late"]);
+
+        await coordinator.EnsureActiveGroupAsync(cancellationToken);
+        await coordinator.StopHeartbeatAsync();
+        await coordinator.UnresolvedAssignmentRefreshTask.WaitAsync(cancellationToken);
+
+        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("first", 0)]);
+        await Assert.That(coordinator.HasUnresolvedAssignment).IsTrue();
+        await Assert.That(RebalanceCount(metrics)).IsEqualTo(1d);
+
+        // Coordinator lost; metadata learns the late topic before the rejoin.
+        coordinator.RequestRejoin();
+        metadata.Metadata.Update(CreateClusterMetadata(includeLateTopic: true));
+
+        await coordinator.EnsureActiveGroupAsync(cancellationToken);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
         await Assert.That(coordinator.Assignment).IsEquivalentTo(
             [new TopicPartition("first", 0), new TopicPartition("late", 0)]);
         await Assert.That(RebalanceCount(metrics)).IsEqualTo(2d);

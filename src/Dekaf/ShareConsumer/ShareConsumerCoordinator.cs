@@ -718,14 +718,18 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
     /// <summary>
     /// Counts the rebalance the assignment just processed completed, once per broker assignment:
-    /// <paramref name="counted"/> when it is the pending one, already counted.
+    /// <paramref name="counted"/> when it is the pending one, already counted. Only a count made
+    /// here covers the join in progress; replaying an assignment an earlier membership counted
+    /// leaves the join to <see cref="CompleteJoin"/>.
     /// </summary>
     private void RecordRebalance(bool counted)
     {
-        _joinRebalanceRecorded = true;
         _unresolvedAssignmentCounted = _unresolvedAssignment is not null;
-        if (!counted)
-            _telemetryMetrics?.Rebalanced();
+        if (counted)
+            return;
+
+        _joinRebalanceRecorded = true;
+        _telemetryMetrics?.Rebalanced();
     }
 
     /// <summary>
