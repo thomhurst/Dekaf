@@ -31,6 +31,8 @@ internal sealed partial class UnresolvedAssignmentMetadataRefresher
     private readonly int _maxBackoffMs;
     private readonly CancellationTokenSource _cts = new();
     private readonly Lock _gate = new();
+    // Bound once, so starting a refresh allocates no delegate or closure.
+    private readonly Func<Task> _refresh;
 
     // All fields below are guarded by _gate.
     private Task _task = Task.CompletedTask;
@@ -41,6 +43,8 @@ internal sealed partial class UnresolvedAssignmentMetadataRefresher
     private int _generation;
     // The latest generation that requested a refresh.
     private int _requestedGeneration = -1;
+    // The generation the refresh in flight serves. Written only while no refresh is in flight.
+    private int _refreshGeneration;
     // Refreshes completed for the current generation, and the Stopwatch timestamp before which
     // the next may not start.
     private int _attempts;
@@ -56,6 +60,7 @@ internal sealed partial class UnresolvedAssignmentMetadataRefresher
         _logger = logger;
         _initialBackoffMs = Math.Max(retryBackoffMs, 1);
         _maxBackoffMs = Math.Max(retryBackoffMaxMs, MaxIntervalMs);
+        _refresh = RefreshAsync;
     }
 
     /// <summary>
@@ -125,14 +130,20 @@ internal sealed partial class UnresolvedAssignmentMetadataRefresher
             return;
 
         _inFlight = true;
+        _refreshGeneration = _generation;
         // Task.Run: the refresh may wait for the metadata refresh lock or a slow broker, and none
         // of that may run inline on the heartbeat. Only queues the work, so it is safe under the lock.
-        var generation = _generation;
-        _task = Task.Run(() => RefreshAsync(generation));
+        // One task per refresh: at most one runs at a time, backoff-limited, and only while an
+        // assignment is unresolved, so the steady heartbeat never gets here.
+        _task = Task.Run(_refresh);
     }
 
-    private async Task RefreshAsync(int generation)
+    private async Task RefreshAsync()
     {
+        int generation;
+        lock (_gate)
+            generation = _refreshGeneration;
+
         var cancellationToken = _cts.Token;
         try
         {
