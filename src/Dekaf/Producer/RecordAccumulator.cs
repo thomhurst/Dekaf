@@ -769,6 +769,9 @@ internal sealed class BatchArena
         idle: new ArenaPoolLimit(InitialPoolSize, InitialPoolSize, RetainedBytes: 0),
         drained: new ArenaPoolLimit(InitialPoolSize, InitialPoolSize, RetainedByteBudget.RetainNone));
     private static readonly Lock s_limitsApplyLock = new();
+    // Byte limit most recently published by ApplyLimits (guarded by s_limitsApplyLock). A
+    // reduction is judged against this, not against a registry snapshot taken outside the lock.
+    private static long s_appliedRetainedBytes;
     // Changes each time a limit reduction releases the pooled arenas. A return that spans a
     // change may have reserved under the old limit, so it releases the pool again.
     private static int s_releaseEpoch;
@@ -786,28 +789,49 @@ internal sealed class BatchArena
     /// </remarks>
     internal static ArenaPoolRegistration Register(ArenaPoolLimit limit)
     {
-        var registration = s_limits.Register(limit, out var previous, out var current);
-        ApplyLimits(previous, current);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit.PoolSize);
+        var registration = s_limits.Register(limit, out _, out _);
+        try
+        {
+            ApplyLimits();
+        }
+        catch
+        {
+            // Applying can allocate (a larger Reservoir) under memory pressure. The caller never
+            // receives a handle, so remove the request here or it would outlive the producer.
+            if (s_limits.Unregister(registration, out _, out _))
+            {
+                try { ApplyLimits(); }
+                catch { /* Keep the original failure; the next registration re-applies limits. */ }
+            }
+
+            throw;
+        }
+
         return new ArenaPoolRegistration(registration);
     }
 
     private static void Unregister(ArenaPoolLimits.Registration registration)
     {
-        if (s_limits.Unregister(registration, out var previous, out var current))
-            ApplyLimits(previous, current);
+        if (s_limits.Unregister(registration, out _, out _))
+            ApplyLimits();
     }
 
-    private static void ApplyLimits(ArenaPoolLimit previous, ArenaPoolLimit current)
+    private static void ApplyLimits()
     {
         lock (s_limitsApplyLock)
         {
-            // Re-read under the apply lock so concurrent registrations publish the latest limits.
-            current = s_limits.Current;
+            // Read under the apply lock so concurrent registrations publish the latest limits,
+            // and compare with the limit this lock last published.
+            var current = s_limits.Current;
+            var previousBytes = s_appliedRetainedBytes;
+            s_appliedRetainedBytes = current.RetainedBytes;
             s_retainedBytes.SetLimit(current.RetainedBytes);
             Volatile.Write(ref s_missRatchetLimit, Math.Max(current.PoolSize, current.MissRatchetLimit));
             RaisePoolSize(current.PoolSize);
 
-            if (ShouldReleasePooledArenas(previous.RetainedBytes, current.RetainedBytes))
+            if (current.RetainedBytes != previousBytes
+                && ShouldReleasePooledArenas(previousBytes, current.RetainedBytes))
             {
                 // Order matters for ReturnToPool: limit, then epoch, then release.
                 Interlocked.Increment(ref s_releaseEpoch);
@@ -9079,6 +9103,9 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
     // Batches admitted by Return and not yet rented or destroyed. Unlike ApproximateCount it
     // is reserved before pooling, so concurrent returns cannot exceed RetentionLimit.
     private int _retainedCount;
+    // Changes each time a lowered limit releases the pooled batches. A return that spans a
+    // change may have been admitted under the old limit, so it releases the pool again.
+    private int _releaseEpoch;
 
     /// <summary>
     /// Creates a new PartitionBatchPool.
@@ -9122,13 +9149,22 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
         var previous = Interlocked.Exchange(ref _retentionLimit, limit);
         if (limit > MaxPoolSize)
+        {
             RatchetMaxPoolSize(limit);
+        }
         else if (limit < previous)
+        {
+            // Order matters for Return: limit, then epoch, then release.
+            Interlocked.Increment(ref _releaseEpoch);
             base.Clear();
+        }
     }
 
     /// <summary>Batches currently retained through <see cref="Return"/>.</summary>
     internal int RetainedCount => Volatile.Read(ref _retainedCount);
+
+    /// <summary>Number of limit reductions that released the pooled batches.</summary>
+    internal int ReleaseEpoch => Volatile.Read(ref _releaseEpoch);
 
     /// <summary>Rents a batch, releasing its retention slot when it came from the pool.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -9149,6 +9185,7 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public new void Return(PartitionBatch item)
     {
+        var epoch = Volatile.Read(ref _releaseEpoch);
         if (Interlocked.Increment(ref _retainedCount) > Volatile.Read(ref _retentionLimit))
         {
             Interlocked.Decrement(ref _retainedCount);
@@ -9157,6 +9194,11 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
 
         item.MarkPoolRetention();
         base.Return(item);
+
+        // A lowered limit may have been published while this return was between admission
+        // and pooling; its release ran before the batch arrived, so release again.
+        if (Volatile.Read(ref _releaseEpoch) != epoch)
+            base.Clear();
     }
 
     protected override void Destroy(PartitionBatch item)
@@ -9226,7 +9268,9 @@ internal sealed class PartitionBatch
 
     // Arena holding the encoded record bytes - all records in one contiguous buffer
     private BatchArena? _arena;
+    private IncrementalBatchBuffer? _incrementalBuffer;
     internal bool HasAppendBufferForTest => _arena is not null || _incrementalBuffer is not null;
+
     // Set while the batch holds a PartitionBatchPool retention slot. Only the pool touches it,
     // and a pooled batch has a single owner at a time.
     private bool _poolRetained;
@@ -9239,7 +9283,6 @@ internal sealed class PartitionBatch
         _poolRetained = false;
         return retained;
     }
-    private IncrementalBatchBuffer? _incrementalBuffer;
 
     private int _recordCount;
 

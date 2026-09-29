@@ -1059,6 +1059,72 @@ public class ProducerPoolMemoryBoundTests
     }
 
     [Test]
+    public async Task PartitionBatchPool_OnlyLoweringTheLimit_AdvancesTheReleaseEpoch()
+    {
+        // Returns compare the epoch before admission and after pooling; only a reduction may
+        // bump it, or every raise would force a needless release.
+        var (pool, _) = CreatePools(maxPoolSize: 8);
+        var initial = pool.ReleaseEpoch;
+
+        pool.SetRetentionLimit(16);
+        var afterRaise = pool.ReleaseEpoch;
+        pool.SetRetentionLimit(16);
+        var afterSame = pool.ReleaseEpoch;
+        pool.SetRetentionLimit(4);
+        var afterLower = pool.ReleaseEpoch;
+
+        await Assert.That(afterRaise).IsEqualTo(initial);
+        await Assert.That(afterSame).IsEqualTo(initial);
+        await Assert.That(afterLower).IsEqualTo(initial + 1);
+    }
+
+    [Test]
+    [Timeout(60_000)]
+    public async Task PartitionBatchPool_ReturnsRacingRepeatedReductions_EndWithinTheFinalLimit(CancellationToken cancellationToken)
+    {
+        // Returns interleave with limit reductions; after both stop, the pool must hold no more
+        // than the final limit, however the returns and releases were ordered.
+        const int returners = 16;
+        const int roundsPerReturner = 200;
+        var (pool, readyPool) = CreatePools(maxPoolSize: 256);
+        var stop = 0;
+
+        var reducer = Task.Run(() =>
+        {
+            var random = new Random(7);
+            while (Volatile.Read(ref stop) == 0)
+            {
+                pool.SetRetentionLimit(random.Next(64, 257));
+                pool.SetRetentionLimit(random.Next(1, 64));
+            }
+        }, cancellationToken);
+        await Task.WhenAll(Enumerable.Range(0, returners).Select(i => Task.Run(() =>
+        {
+            for (var round = 0; round < roundsPerReturner; round++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var batch = pool.Rent(new TopicPartition("pool-memory-bound", i), partitionCount: 1);
+                FillCompleteAndReturn(pool, readyPool, batch);
+            }
+        }, cancellationToken)));
+        Volatile.Write(ref stop, 1);
+        await reducer;
+        pool.SetRetentionLimit(2);
+
+        await Assert.That(pool.RetainedCount).IsLessThanOrEqualTo(2);
+        await Assert.That(pool.ApproximateCount).IsLessThanOrEqualTo(2);
+        await Assert.That(pool.RetainedCount).IsGreaterThanOrEqualTo(0);
+    }
+
+    [Test]
+    public async Task BatchArena_Register_RejectsANonPositivePoolSize()
+    {
+        // Validated before registering, so a bad request never enters the effective limits.
+        await Assert.That(() => BatchArena.Register(new ArenaPoolLimit(0, 1, MiB)))
+            .Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
     public async Task PartitionBatchPool_SetRetentionLimit_RejectsNonPositive()
     {
         var (pool, _) = CreatePools(maxPoolSize: 2);
