@@ -743,10 +743,10 @@ internal sealed class BatchArena
     // bounds the retained bytes by BufferMemory and available memory, so small containers
     // get smaller pools.
     internal const int DefaultPoolSize = 128;
-    // Capacity before any RecordAccumulator sizes the pool. Kept small so a process
-    // whose producers compute a memory-bounded pool size below DefaultPoolSize never
-    // retains more arenas than that bound.
-    internal const int InitialPoolSize = 16;
+    // Capacity before any RecordAccumulator sizes the pool. The pool only ratchets up, so this
+    // is the smallest memory-bounded pool size a producer can compute: a producer whose bound
+    // is that small never retains more arenas than the bound allows.
+    internal const int InitialPoolSize = RecordAccumulator.MinimumPoolSize;
     // Upper bound on pool size. Worst-case POH retention: MaxPoolSizeCap × arena capacity.
     // With 16KB batches (the smallest that triggers scaling): 512 × ~18KB ≈ 9MB.
     // With 256KB batches and 256MB buffer: 512 × ~280KB ≈ 140MB POH retention.
