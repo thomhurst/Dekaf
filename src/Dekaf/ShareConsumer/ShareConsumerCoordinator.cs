@@ -63,6 +63,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     // counts one whose heartbeat carried partitions; a join that ends without any counts at
     // Stable instead. Written only under _lock or by that join's own heartbeats.
     private bool _joinRebalanceRecorded;
+    // The broker assignment whose rebalance was counted last. Processing the same pending
+    // assignment again once metadata resolves more of its topics is not another rebalance.
+    private ShareGroupHeartbeatAssignment? _countedAssignment;
     private TaskCompletionSource<bool>? _assignmentChanged;
     private readonly Func<int> _getCoordinationConnectionIndex;
     // Where the next coordinator lookup starts. It rests on the last broker that answered, so a
@@ -699,20 +702,43 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             // A rejoin can complete with the existing assignment. Repeated assignment
             // payloads while stable are not new rebalances and do not notify waiters.
             if (_state == CoordinatorState.Joining && newAssignment.Count > 0)
-                RecordRebalance();
+                RecordRebalance(assignment);
             return;
         }
 
-        RecordRebalance();
+        RecordRebalance(assignment);
 
         LogAssignmentUpdate(newAssignment.Count);
         _assignedPartitions = newAssignment;
         NotifyAssignmentChange();
     }
 
-    private void RecordRebalance()
+    /// <summary>
+    /// Counts the rebalance <paramref name="assignment"/> completed, once per broker assignment.
+    /// </summary>
+    private void RecordRebalance(ShareGroupHeartbeatAssignment assignment)
     {
         _joinRebalanceRecorded = true;
+        if (ReferenceEquals(assignment, _countedAssignment))
+            return;
+
+        _countedAssignment = assignment;
+        _telemetryMetrics?.Rebalanced();
+    }
+
+    /// <summary>
+    /// Completes a join: a member with an epoch is live even without partitions. Counts the join
+    /// as one rebalance unless its heartbeats already counted an assignment, and covers the
+    /// assignment still pending resolution so resolving it later does not count again.
+    /// </summary>
+    private void CompleteJoin()
+    {
+        _state = CoordinatorState.Stable;
+        if (_joinRebalanceRecorded)
+            return;
+
+        _joinRebalanceRecorded = true;
+        _countedAssignment = _unresolvedAssignment;
         _telemetryMetrics?.Rebalanced();
     }
 
@@ -787,7 +813,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                         if (_memberEpoch > 0 && Volatile.Read(ref _subscriptionVersion) ==
                             Volatile.Read(ref _acknowledgedSubscriptionVersion))
                         {
-                            _state = CoordinatorState.Stable;
+                            CompleteJoin();
                             break;
                         }
                         continue;
@@ -800,11 +826,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                     // arrives; polls wait on the assignment signal meanwhile.
                     if (_memberEpoch > 0)
                     {
-                        _state = CoordinatorState.Stable;
-                        // A join without partitions (no assignment, or an empty one) is still a
-                        // completed rebalance; one that carried partitions has counted already.
-                        if (!_joinRebalanceRecorded)
-                            RecordRebalance();
+                        CompleteJoin();
                         LogJoinedGroup(_options.GroupId, _memberId!, _memberEpoch, _assignedPartitions.Count);
                     }
                     else

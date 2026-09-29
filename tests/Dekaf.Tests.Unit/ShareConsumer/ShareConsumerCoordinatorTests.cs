@@ -356,6 +356,35 @@ public sealed partial class ShareConsumerCoordinatorTests
             .IsEqualTo(joinAssignment == JoinAssignment.Partitions ? 1d : 2d);
     }
 
+    // A join accepted while the subscription was emptied publishes the empty subscription on a
+    // follow-up heartbeat and completes through the unsubscribe path. It still counts once.
+    [Test]
+    public async Task EnsureActiveGroupAsync_UnsubscribedDuringJoin_CountsOneRebalance(CancellationToken cancellationToken)
+    {
+        var heartbeatCount = 0;
+        ShareConsumerCoordinator? joining = null;
+        var metrics = new ShareConsumerTelemetryMetrics();
+        metrics.Subscribe([RebalanceTotal]);
+        await using var harness = CoordinatorHarness.Create(
+            new ShareConsumerOptions { BootstrapServers = ["broker-0:9092"], GroupId = "share-unsubscribed-join" },
+            Guid.Parse("00000000-0000-0000-0000-000000000001"),
+            _ =>
+            {
+                // Unsubscribe while the join heartbeat is in flight.
+                if (Interlocked.Increment(ref heartbeatCount) == 1)
+                    joining!.UpdateSubscription([]);
+                return Success(epoch: 1, assignment: null);
+            },
+            metrics);
+        joining = harness.Coordinator;
+
+        await joining.EnsureActiveGroupAsync(cancellationToken);
+
+        await Assert.That(joining.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(heartbeatCount).IsEqualTo(2);
+        await Assert.That(RebalanceCount(metrics)).IsEqualTo(1d);
+    }
+
     // A fenced member loses its partitions. The rejoin from epoch 0 becomes Stable on its first
     // successful heartbeat even without an assignment, so it must not expose or fetch the
     // partitions of the fenced membership.

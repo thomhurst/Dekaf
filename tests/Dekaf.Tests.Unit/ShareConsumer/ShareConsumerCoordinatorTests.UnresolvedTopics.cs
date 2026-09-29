@@ -5,6 +5,7 @@ using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.ShareConsumer;
+using Dekaf.Telemetry;
 using NSubstitute;
 
 namespace Dekaf.Tests.Unit.ShareConsumer;
@@ -258,6 +259,49 @@ public sealed partial class ShareConsumerCoordinatorTests
             HeartbeatIntervalMs = heartbeatIntervalMs,
             Assignment = assignment
         });
+
+    // A join whose assignment names only a topic metadata does not know yet publishes nothing and
+    // counts as one rebalance. Resolving that same assignment later is not another one; a new
+    // assignment from the broker is.
+    [Test]
+    public async Task Assignment_ResolvedAfterJoin_CountsTheJoinRebalanceOnce(CancellationToken cancellationToken)
+    {
+        var cluster = new UnresolvedTopicCluster("share-late-only");
+        cluster.Heartbeat = count => Beat(count switch
+        {
+            1 => new ShareGroupHeartbeatAssignment
+            {
+                TopicPartitions = [new ShareGroupHeartbeatTopicPartitions { TopicId = LateTopicId, Partitions = [0] }]
+            },
+            3 => CreateLateAssignment(),
+            _ => null
+        });
+        cluster.Metadata = _ => ValueTask.FromResult(CreateClusterMetadata(includeLateTopic: true));
+        var metrics = new ShareConsumerTelemetryMetrics();
+        metrics.Subscribe([RebalanceTotal]);
+        await using var metadata = cluster.CreateMetadataManager();
+        await using var coordinator = new ShareConsumerCoordinator(
+            cluster.Options, cluster.Pool, metadata, telemetryMetrics: metrics);
+        coordinator.UpdateSubscription(["first", "late"]);
+
+        await coordinator.EnsureActiveGroupAsync(cancellationToken);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(coordinator.Assignment.Count).IsEqualTo(0);
+        await Assert.That(RebalanceCount(metrics)).IsEqualTo(1d);
+
+        await coordinator.UnresolvedAssignmentRefreshTask.WaitAsync(cancellationToken);
+        await SendHeartbeatAsync(coordinator, cancellationToken);
+
+        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("late", 0)]);
+        await Assert.That(RebalanceCount(metrics)).IsEqualTo(1d);
+
+        await SendHeartbeatAsync(coordinator, cancellationToken);
+
+        await Assert.That(coordinator.Assignment).IsEquivalentTo(
+            [new TopicPartition("first", 0), new TopicPartition("late", 0)]);
+        await Assert.That(RebalanceCount(metrics)).IsEqualTo(2d);
+    }
 
     private static ShareGroupHeartbeatAssignment CreateLateAssignment() => new()
     {
