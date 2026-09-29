@@ -79,9 +79,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // The latest broker assignment while it names topic IDs that metadata cannot resolve yet;
     // null otherwise, so a steady heartbeat pays one field read.
     private volatile ConsumerGroupHeartbeatAssignment? _unresolvedAssignment;
-    // How many of _unresolvedAssignment's topics were unknown when it was last processed; a
-    // heartbeat processes it again only once metadata resolves more of them.
-    private int _unresolvedTopicCount;
+    // The metadata snapshot _unresolvedAssignment was last resolved against. Every metadata update
+    // swaps the snapshot, so a heartbeat processes the assignment again only after metadata
+    // changed, whichever topic IDs it resolved or lost.
+    private ClusterMetadataSnapshot? _unresolvedSnapshot;
     // Refreshes metadata for an unresolved assignment off the heartbeat path, rate-limited.
     private readonly UnresolvedAssignmentMetadataRefresher _unresolvedRefresher;
     private volatile HashSet<TopicPartition> _newlyExpandedPartitions = [];
@@ -2511,10 +2512,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     /// <summary>
     /// Returns the assignment a successful heartbeat must process: the one it carried, or, when
-    /// it carried none, the pending unresolved one once metadata knows more of its topics (null
-    /// otherwise). While any assigned topic is unknown, starts a background metadata refresh
-    /// instead of waiting for one, so the heartbeat publishes what it can (revocations included)
-    /// and keeps its cadence. Without a received or pending assignment this is one field read.
+    /// it carried none, the pending unresolved one once metadata has changed since it was last
+    /// resolved (null otherwise). While any assigned topic is unknown, starts a background
+    /// metadata refresh instead of waiting for one, so the heartbeat publishes what it can
+    /// (revocations included) and keeps its cadence. Without a received or pending assignment
+    /// this is one field read.
     /// </summary>
     private ConsumerGroupHeartbeatAssignment? GetAssignmentToProcess(ConsumerGroupHeartbeatAssignment? received)
     {
@@ -2526,27 +2528,25 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (received is not null)
             _unresolvedRefresher.Reset();
 
-        var unknownTopics = CountUnknownTopics(assignment);
-        if (unknownTopics > 0)
+        var snapshot = _metadataManager.Metadata.CaptureSnapshot();
+        if (HasUnknownTopic(snapshot, assignment))
             _unresolvedRefresher.Request();
 
-        return received is null && unknownTopics >= Volatile.Read(ref _unresolvedTopicCount)
+        return received is null && ReferenceEquals(snapshot, Volatile.Read(ref _unresolvedSnapshot))
             ? null
             : assignment;
     }
 
-    private int CountUnknownTopics(ConsumerGroupHeartbeatAssignment assignment)
+    private static bool HasUnknownTopic(ClusterMetadataSnapshot snapshot, ConsumerGroupHeartbeatAssignment assignment)
     {
-        var metadata = _metadataManager.Metadata;
         var topics = assignment.AssignedTopicPartitions;
-        var unknown = 0;
         for (var i = 0; i < topics.Count; i++)
         {
-            if (metadata.GetTopic(topics[i].TopicId) is null)
-                unknown++;
+            if (!snapshot.TopicsById.ContainsKey(topics[i].TopicId))
+                return true;
         }
 
-        return unknown;
+        return false;
     }
 
     private static ConsumerGroupHeartbeatResponse WithAssignment(
@@ -2578,12 +2578,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         var newAssignment = new HashSet<TopicPartition>();
         var newlyExpandedPartitions = new HashSet<TopicPartition>();
         var retry = ReferenceEquals(assignment, _unresolvedAssignment);
+        // Resolve against one snapshot, recorded below: an update during processing makes the next
+        // heartbeat process the assignment again.
+        var snapshot = _metadataManager.Metadata.CaptureSnapshot();
         var unknownTopics = 0;
 
         foreach (var tp in assignment.AssignedTopicPartitions)
         {
-            var topicInfo = _metadataManager.Metadata.GetTopic(tp.TopicId);
-            if (topicInfo is null)
+            if (!snapshot.TopicsById.TryGetValue(tp.TopicId, out var topicInfo))
             {
                 // Warn once per assignment; the retries on later heartbeats stay quiet.
                 if (!retry)
@@ -2647,8 +2649,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         var classificationChanged = false;
         lock (_assignmentStateLock)
         {
-            // Count first: the volatile write of the assignment publishes it.
-            Volatile.Write(ref _unresolvedTopicCount, unknownTopics);
+            // Snapshot first: the volatile write of the assignment publishes it.
+            Volatile.Write(ref _unresolvedSnapshot, unknownTopics > 0 ? snapshot : null);
             _unresolvedAssignment = unknownTopics > 0 ? assignment : null;
 
             // The heartbeat loop can acknowledge ownership before the poll loop initializes

@@ -52,6 +52,32 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         await Assert.That(heartbeats()).IsEqualTo(3);
     }
 
+    // Metadata can resolve one assigned topic while losing another, leaving the number of unknown
+    // topics unchanged. The pending assignment must still be processed again.
+    [Test]
+    public async Task ConsumerProtocol_UnknownTopicsSwappedAtSameCount_IsProcessedAgain()
+    {
+        var refreshResponse = new TaskCompletionSource<MetadataResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        SetupUnresolvedTopicCluster(
+            count => LateTopicBeat(count == 1 ? CreateLateAssignment() : null),
+            _ => new ValueTask<MetadataResponse>(refreshResponse.Task),
+            out _);
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(heartbeatIntervalMs: 60_000), _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(
+            new HashSet<string> { "test-topic", "late-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("test-topic", 0)]);
+
+        // The late topic resolves while test-topic disappears: still one unknown topic.
+        refreshResponse.SetResult(CreateLateTopicMetadata(includeLateTopic: true, includeTestTopic: false));
+        await coordinator.UnresolvedAssignmentRefreshTask.WaitAsync(TimeSpan.FromSeconds(30));
+        await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+
+        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("late-topic", 0)]);
+        await Assert.That(coordinator.HasUnresolvedAssignment).IsTrue();
+    }
+
     // A slow refresh (busy refresh lock, a broker at its request timeout) must neither hold back
     // the assignment the heartbeat received, revocations included, nor the heartbeats after it.
     [Test]
@@ -266,9 +292,11 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         PendingTopicPartitions = []
     };
 
-    private static MetadataResponse CreateLateTopicMetadata(bool includeLateTopic)
+    private static MetadataResponse CreateLateTopicMetadata(bool includeLateTopic, bool includeTestTopic = true)
     {
-        List<TopicMetadata> topics = [CreateTopic("test-topic", TestTopicId)];
+        List<TopicMetadata> topics = [];
+        if (includeTestTopic)
+            topics.Add(CreateTopic("test-topic", TestTopicId));
         if (includeLateTopic)
             topics.Add(CreateTopic("late-topic", LateTopicId));
 

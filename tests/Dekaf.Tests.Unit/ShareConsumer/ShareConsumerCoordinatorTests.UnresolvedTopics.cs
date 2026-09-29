@@ -56,6 +56,31 @@ public sealed partial class ShareConsumerCoordinatorTests
         await Assert.That(cluster.HeartbeatRequests).IsEqualTo(3);
     }
 
+    // Metadata can resolve one assigned topic while losing another, leaving the number of unknown
+    // topics unchanged. The pending assignment must still be processed again.
+    [Test]
+    public async Task Assignment_UnknownTopicsSwappedAtSameCount_IsProcessedAgain(CancellationToken cancellationToken)
+    {
+        var cluster = new UnresolvedTopicCluster("share-swapped-unknown");
+        var refreshResponse = new TaskCompletionSource<MetadataResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        cluster.Heartbeat = count => Beat(count == 1 ? CreateLateAssignment() : null);
+        cluster.Metadata = _ => new ValueTask<MetadataResponse>(refreshResponse.Task);
+        await using var metadata = cluster.CreateMetadataManager();
+        await using var coordinator = new ShareConsumerCoordinator(cluster.Options, cluster.Pool, metadata);
+        coordinator.UpdateSubscription(["first", "late"]);
+
+        await coordinator.EnsureActiveGroupAsync(cancellationToken);
+        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("first", 0)]);
+
+        // The late topic resolves while the first one disappears: still one unknown topic.
+        refreshResponse.SetResult(CreateClusterMetadata(includeLateTopic: true, includeFirstTopic: false));
+        await coordinator.UnresolvedAssignmentRefreshTask.WaitAsync(cancellationToken);
+        await SendHeartbeatAsync(coordinator, cancellationToken);
+
+        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("late", 0)]);
+        await Assert.That(coordinator.HasUnresolvedAssignment).IsTrue();
+    }
+
     // A slow refresh (busy refresh lock, a broker at its request timeout) must neither hold back
     // the assignment the heartbeat received nor the heartbeats after it.
     [Test]
@@ -161,9 +186,11 @@ public sealed partial class ShareConsumerCoordinatorTests
         ]
     };
 
-    private static MetadataResponse CreateClusterMetadata(bool includeLateTopic)
+    private static MetadataResponse CreateClusterMetadata(bool includeLateTopic, bool includeFirstTopic = true)
     {
-        List<TopicMetadata> topics = [CreateTopic("first", KnownTopicId)];
+        List<TopicMetadata> topics = [];
+        if (includeFirstTopic)
+            topics.Add(CreateTopic("first", KnownTopicId));
         if (includeLateTopic)
             topics.Add(CreateTopic("late", LateTopicId));
 
