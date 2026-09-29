@@ -19,7 +19,7 @@ on:
         type: number
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || inputs.pr_number }}
   cancel-in-progress: true
 
 jobs:
@@ -140,5 +140,5 @@ jobs:
 
             Perform the review directly using these instructions and the allowed read tools, then post through the required helper. Do not finish with terminal output alone: a review is incomplete until the helper confirms the comment was posted.
           claude_args: |
-            --add-dir pr-head --allowedTools "Read,Glob,Grep,Bash(.github/scripts/pr-review-comment.sh:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)" --model claude-sonnet-5
+            --add-dir pr-head --allowedTools "Read,Glob,Grep,Bash(.github/scripts/pr-review-comment.sh:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
           allowed_bots: "dependabot[bot]"
