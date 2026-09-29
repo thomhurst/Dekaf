@@ -343,11 +343,14 @@ public class ProducerPoolMemoryBoundTests
     #region Live producer limits
 
     private static readonly ArenaPoolLimit IdleLimit = new(1, 1, RetainedBytes: 0);
+    private static readonly ArenaPoolLimit DrainedLimit = new(1, 1, RetainedByteBudget.RetainNone);
+
+    private static ArenaPoolLimits CreateLimits() => new(IdleLimit, DrainedLimit);
 
     [Test]
     public async Task ArenaPoolLimits_EffectiveLimit_IsTheLargestLiveRequest()
     {
-        var limits = new ArenaPoolLimits(IdleLimit);
+        var limits = CreateLimits();
         var large = new ArenaPoolLimit(128, 512, 256 * MiB);
         var small = new ArenaPoolLimit(7, 7, 8 * MiB);
 
@@ -366,7 +369,7 @@ public class ProducerPoolMemoryBoundTests
     {
         // The review scenario: a default producer, then an 8MiB one; disposing the default
         // producer must let the 8MiB bound take effect.
-        var limits = new ArenaPoolLimits(IdleLimit);
+        var limits = CreateLimits();
         var large = limits.Register(new ArenaPoolLimit(128, 512, 256 * MiB), out _, out _);
         var small = new ArenaPoolLimit(7, 7, 8 * MiB);
         limits.Register(small, out _, out _);
@@ -382,7 +385,7 @@ public class ProducerPoolMemoryBoundTests
     [Test]
     public async Task ArenaPoolLimits_EachFieldTakesItsOwnMaximum()
     {
-        var limits = new ArenaPoolLimits(IdleLimit);
+        var limits = CreateLimits();
         limits.Register(new ArenaPoolLimit(128, 128, 8 * MiB), out _, out _);
         limits.Register(new ArenaPoolLimit(16, 512, 64 * MiB), out _, out _);
 
@@ -390,9 +393,9 @@ public class ProducerPoolMemoryBoundTests
     }
 
     [Test]
-    public async Task ArenaPoolLimits_LastUnregister_ReturnsToIdle()
+    public async Task ArenaPoolLimits_LastUnregister_KeepsNoArenas()
     {
-        var limits = new ArenaPoolLimits(IdleLimit);
+        var limits = CreateLimits();
         var registration = limits.Register(new ArenaPoolLimit(25, 25, 29 * MiB), out _, out _);
 
         var removed = limits.Unregister(registration, out var previous, out var current);
@@ -400,16 +403,17 @@ public class ProducerPoolMemoryBoundTests
 
         await Assert.That(removed).IsTrue();
         await Assert.That(previous.RetainedBytes).IsEqualTo(29 * MiB);
-        await Assert.That(current).IsEqualTo(IdleLimit);
+        // Not the unbounded idle limit: an arena returned after the last disposal must not be pooled.
+        await Assert.That(current).IsEqualTo(DrainedLimit);
         await Assert.That(removedAgain).IsFalse();
-        await Assert.That(afterSecond).IsEqualTo(IdleLimit);
+        await Assert.That(afterSecond).IsEqualTo(DrainedLimit);
         await Assert.That(BatchArena.ShouldReleasePooledArenas(previous.RetainedBytes, current.RetainedBytes)).IsTrue();
     }
 
     [Test]
-    public async Task ArenaPoolLimits_ConcurrentRegistrations_EndAtIdle(CancellationToken cancellationToken)
+    public async Task ArenaPoolLimits_ConcurrentRegistrations_EndDrained(CancellationToken cancellationToken)
     {
-        var limits = new ArenaPoolLimits(IdleLimit);
+        var limits = CreateLimits();
 
         await Task.WhenAll(Enumerable.Range(1, 32).Select(i => Task.Run(() =>
         {
@@ -423,7 +427,79 @@ public class ProducerPoolMemoryBoundTests
             }
         }, cancellationToken)));
 
-        await Assert.That(limits.Current).IsEqualTo(IdleLimit);
+        await Assert.That(limits.Current).IsEqualTo(DrainedLimit);
+    }
+
+    [Test]
+    public async Task ArenaPoolLimits_BeforeAnyRegistration_IsIdle()
+    {
+        await Assert.That(CreateLimits().Current).IsEqualTo(IdleLimit);
+    }
+
+    [Test]
+    public async Task RetainedByteBudget_RetainNone_RejectsEveryNonEmptyItem()
+    {
+        var retained = new RetainedByteBudget();
+        retained.SetLimit(RetainedByteBudget.RetainNone);
+
+        var arena = retained.TryReserve(DefaultArenaCapacity);
+        var oneByte = retained.TryReserve(1);
+        var empty = retained.TryReserve(0);
+
+        await Assert.That(arena).IsFalse();
+        await Assert.That(oneByte).IsFalse();
+        await Assert.That(empty).IsTrue();
+        await Assert.That(retained.RetainedBytes).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task RegisterThen_FailureAfterRegistration_DisposesTheRegistration()
+    {
+        // A producer whose construction fails after registering (for example, pre-warming runs
+        // out of memory) must not leave its allowance in the process-wide pool.
+        var registration = new TrackingDisposable();
+
+        var thrown = await Assert.That(() => RecordAccumulator.RegisterThen(
+                () => registration,
+                () => throw new InvalidOperationException("pre-warm")))
+            .Throws<InvalidOperationException>();
+
+        await Assert.That(thrown!.Message).IsEqualTo("pre-warm");
+        await Assert.That(registration.DisposeCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task RegisterThen_Success_KeepsTheRegistration()
+    {
+        var registration = new TrackingDisposable();
+        var ran = false;
+
+        var returned = RecordAccumulator.RegisterThen(() => registration, () => ran = true);
+
+        await Assert.That(ran).IsTrue();
+        await Assert.That(ReferenceEquals(returned, registration)).IsTrue();
+        await Assert.That(registration.DisposeCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task RecordAccumulator_InvalidOptions_LeavesNoRegistration()
+    {
+        // Validation throws before registration; nothing to release.
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            BatchSize = DefaultBatchSize,
+            ArenaCapacity = 1,
+        };
+
+        await Assert.That(() => new RecordAccumulator(options)).Throws<InvalidOperationException>();
+    }
+
+    private sealed class TrackingDisposable : IDisposable
+    {
+        public int DisposeCount { get; private set; }
+
+        public void Dispose() => DisposeCount++;
     }
 
     [Test]
@@ -431,7 +507,8 @@ public class ProducerPoolMemoryBoundTests
     [Arguments(29L * 1024 * 1024, 29L * 1024 * 1024, false)]  // same effective budget keeps pooled arenas
     [Arguments(8L * 1024 * 1024, 256L * 1024 * 1024, false)]  // a larger budget keeps pooled arenas
     [Arguments(256L * 1024 * 1024, 8L * 1024 * 1024, true)]   // the largest producer was disposed
-    [Arguments(29L * 1024 * 1024, 0L, true)]                  // the last producer was disposed
+    [Arguments(29L * 1024 * 1024, RetainedByteBudget.RetainNone, true)] // the last producer was disposed
+    [Arguments(RetainedByteBudget.RetainNone, 29L * 1024 * 1024, false)] // a new producer after drain
     [Arguments(0L, 0L, true)]
     public async Task ShouldReleasePooledArenas_OnlyKeepsArenasWhenTheBudgetDidNotFall(
         long previousLimit,

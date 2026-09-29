@@ -763,8 +763,11 @@ internal sealed class BatchArena
     private static readonly RetainedByteBudget s_retainedBytes = new();
     // Limits requested by live producers. When the producer with the largest request is
     // disposed, the byte and miss limits fall back to the remaining producers' requests.
+    // Before any producer registers, only the slot count bounds the pool (benchmarks and tests
+    // use arenas without a producer). After the last producer is disposed, keep no arenas.
     private static readonly ArenaPoolLimits s_limits = new(
-        new ArenaPoolLimit(InitialPoolSize, InitialPoolSize, RetainedBytes: 0));
+        idle: new ArenaPoolLimit(InitialPoolSize, InitialPoolSize, RetainedBytes: 0),
+        drained: new ArenaPoolLimit(InitialPoolSize, InitialPoolSize, RetainedByteBudget.RetainNone));
     private static readonly Lock s_limitsApplyLock = new();
     private static long s_drops;
     private static long s_lastRatchetMissCount;
@@ -811,7 +814,8 @@ internal sealed class BatchArena
 
     /// <summary>
     /// A 0 limit is unbounded, so only a finite limit at least as large as before keeps the
-    /// pooled arenas. Otherwise they are released and producers re-rent within the new limit.
+    /// pooled arenas. Otherwise (including <see cref="RetainedByteBudget.RetainNone"/>) they are
+    /// released and producers re-rent within the new limit.
     /// </summary>
     internal static bool ShouldReleasePooledArenas(long previousLimit, long currentLimit)
         => previousLimit == 0 || currentLimit == 0 || currentLimit < previousLimit;
@@ -861,7 +865,10 @@ internal sealed class BatchArena
     /// <summary>Bytes held by arenas in the process-wide pool.</summary>
     internal static long RetainedBytes => s_retainedBytes.RetainedBytes;
 
-    /// <summary>Largest idle-arena byte budget among live producers, or 0 when none is registered.</summary>
+    /// <summary>
+    /// Largest idle-arena byte budget among live producers; 0 before the first producer registers,
+    /// <see cref="RetainedByteBudget.RetainNone"/> after the last one is disposed.
+    /// </summary>
     internal static long RetainedByteLimit => s_retainedBytes.Limit;
 
     internal static int ComputeRatchetPoolSize(int currentSize, long missesSinceLastRatchet, int limit)
@@ -3224,12 +3231,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Both sizes are bounded by the batch storage the process can afford to keep idle.
         var availableMemoryBytes = GetAvailableMemoryBytes();
         var poolSize = ComputePoolSize(options, availableMemoryBytes);
-        if (options.BufferMemoryAllocationStrategy == BufferMemoryAllocationStrategy.Full)
-            _arenaPoolRegistration = BatchArena.Register(new ArenaPoolLimit(
-                poolSize,
-                ComputeMemoryBoundedPoolSize(options, availableMemoryBytes),
-                ComputeRetainedArenaBytes(options, availableMemoryBytes)));
-        else
+        // Full-arena producers register with the process-wide arena pool last, once nothing
+        // else in the constructor can throw, so a failed construction leaves no registration.
+        if (options.BufferMemoryAllocationStrategy != BufferMemoryAllocationStrategy.Full)
             IncrementalBatchBuffer.RatchetPoolSize(
                 poolSize * ReadyBatchPoolSizeRatio,
                 options.BatchSize);
@@ -3255,12 +3259,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var preWarmCount = Math.Min(poolSize / 8, 16);
         _readyBatchPool.PreWarm(Math.Min(poolSize, 32));
         _batchPool.PreWarm(preWarmCount);
-        if (options.BufferMemoryAllocationStrategy == BufferMemoryAllocationStrategy.Full)
-        {
-            BatchArena.PreWarm(preWarmCount,
-                ProducerOptions.GetEffectiveArenaCapacity(options.BatchSize, options.ArenaCapacity));
-        }
-        else
+        if (options.BufferMemoryAllocationStrategy != BufferMemoryAllocationStrategy.Full)
         {
             IncrementalBatchBuffer.PreWarm(
                 Math.Min(poolSize * ReadyBatchPoolSizeRatio, 256),
@@ -3278,6 +3277,51 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         _appendWorkerQueuedSequences = new long[_appendWorkerCount * AppendWorkerSequenceStride];
         _appendWorkerProcessedSequences = new long[_appendWorkerCount * AppendWorkerSequenceStride];
+
+        if (options.BufferMemoryAllocationStrategy == BufferMemoryAllocationStrategy.Full)
+        {
+            _arenaPoolRegistration = RegisterAndPreWarmArenas(options, poolSize, preWarmCount, availableMemoryBytes);
+        }
+    }
+
+    private static BatchArena.ArenaPoolRegistration RegisterAndPreWarmArenas(
+        ProducerOptions options,
+        int poolSize,
+        int preWarmCount,
+        long availableMemoryBytes)
+    {
+        var limit = new ArenaPoolLimit(
+            poolSize,
+            ComputeMemoryBoundedPoolSize(options, availableMemoryBytes),
+            ComputeRetainedArenaBytes(options, availableMemoryBytes));
+        var arenaCapacity = ProducerOptions.GetEffectiveArenaCapacity(options.BatchSize, options.ArenaCapacity);
+        // Pre-warming allocates pinned arenas and can run out of memory; the accumulator is then
+        // never constructed, so DisposeAsync cannot release the registration.
+        return RegisterThen(
+            () => BatchArena.Register(limit),
+            () => BatchArena.PreWarm(preWarmCount, arenaCapacity));
+    }
+
+    /// <summary>
+    /// Registers, then runs <paramref name="afterRegistration"/>; disposes the registration and
+    /// rethrows if it fails. Runs once per producer construction.
+    /// </summary>
+    internal static TRegistration RegisterThen<TRegistration>(
+        Func<TRegistration> register,
+        Action afterRegistration)
+        where TRegistration : IDisposable
+    {
+        var registration = register();
+        try
+        {
+            afterRegistration();
+            return registration;
+        }
+        catch
+        {
+            registration.Dispose();
+            throw;
+        }
     }
 
     /// <summary>

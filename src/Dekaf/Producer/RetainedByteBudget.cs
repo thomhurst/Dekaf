@@ -8,17 +8,20 @@ namespace Dekaf.Producer;
 /// for small arenas with large ones. Reserving each item's bytes before it is pooled keeps the
 /// idle total within the budget of the live producers, whatever the item sizes.
 /// A limit of 0 means no producer has set a budget; bytes are still tracked, and the
-/// pool's count bound applies alone. Reserve and release run once per pooled item, never per record.
+/// pool's count bound applies alone. <see cref="RetainNone"/> rejects every non-empty item. Reserve and release run once per pooled item, never per record.
 /// </remarks>
 internal sealed class RetainedByteBudget
 {
+    /// <summary>Limit that rejects every non-empty item, used once no producer needs arenas.</summary>
+    public const long RetainNone = -1;
+
     private long _retainedBytes;
     private long _limit;
 
     /// <summary>Bytes currently reserved by pooled items.</summary>
     public long RetainedBytes => Volatile.Read(ref _retainedBytes);
 
-    /// <summary>Current byte limit, or 0 when none has been set.</summary>
+    /// <summary>Current byte limit: 0 when none has been set, <see cref="RetainNone"/> to keep nothing.</summary>
     public long Limit => Volatile.Read(ref _limit);
 
     /// <summary>

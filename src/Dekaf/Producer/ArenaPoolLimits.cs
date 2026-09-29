@@ -20,17 +20,21 @@ internal sealed class ArenaPoolLimits
 {
     private readonly Lock _lock = new();
     private readonly List<Registration> _registrations = [];
-    private readonly ArenaPoolLimit _idle;
+    private readonly ArenaPoolLimit _drained;
     private ArenaPoolLimit _current;
 
-    /// <param name="idle">Effective limit while no producer is registered.</param>
-    public ArenaPoolLimits(ArenaPoolLimit idle)
+    /// <param name="idle">Effective limit before any producer registers.</param>
+    /// <param name="drained">Effective limit once every registered producer has unregistered.</param>
+    public ArenaPoolLimits(ArenaPoolLimit idle, ArenaPoolLimit drained)
     {
-        _idle = idle;
+        _drained = drained;
         _current = idle;
     }
 
-    /// <summary>Effective limit: the largest request among live registrations, or the idle limit.</summary>
+    /// <summary>
+    /// Effective limit: the largest request among live registrations, the idle limit before the
+    /// first registration, or the drained limit after the last unregistration.
+    /// </summary>
     public ArenaPoolLimit Current
     {
         get { lock (_lock) { return _current; } }
@@ -75,7 +79,7 @@ internal sealed class ArenaPoolLimits
     private ArenaPoolLimit ComputeUnlocked()
     {
         if (_registrations.Count == 0)
-            return _idle;
+            return _drained;
 
         var poolSize = 0;
         var missRatchetLimit = 0;
