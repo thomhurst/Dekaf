@@ -1284,6 +1284,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly Lock _arenaPoolRegistrationLock = new();
     internal BatchArena.ArenaPoolRegistration? ArenaPoolRegistrationForTest => Volatile.Read(ref _arenaPoolRegistration);
     internal int BatchPoolRetentionLimitForTest => _batchPool.RetentionLimit;
+    internal int BatchPoolRetainedCountForTest => _batchPool.RetainedCount;
+    internal void ResizeBatchStorageForTest() => ResizeBatchStorage();
     internal ProducerOptions OptionsForTest => _options;
     private readonly ReadyBatchPool _readyBatchPool; // Pool for ReadyBatch objects to eliminate per-batch allocations
     private readonly CompressionRatioEstimator _compressionRatioEstimator = new();
@@ -6193,7 +6195,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (newLimit > previous)
             SignalBufferSpaceAvailable();
 
-        ResizeBatchStorage(newLimit);
+        ResizeBatchStorage();
     }
 
     /// <summary>
@@ -6201,24 +6203,28 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// limit and, for Full arenas, this producer's arena pool registration. Runs once per budget
     /// rebalance (producer or consumer construction and disposal), never on the append path.
     /// </summary>
-    private void ResizeBatchStorage(ulong bufferMemory)
+    private void ResizeBatchStorage()
     {
         var availableMemoryBytes = GetAvailableMemoryBytes();
-        var poolSize = ComputePoolSize(_options, bufferMemory, availableMemoryBytes);
-        _batchPool.SetRetentionLimit(poolSize);
-
-        if (_options.BufferMemoryAllocationStrategy != BufferMemoryAllocationStrategy.Full)
-            return;
-
-        var limit = CreateArenaPoolLimit(_options, bufferMemory, poolSize, availableMemoryBytes);
         lock (_arenaPoolRegistrationLock)
         {
+            // Overlapping rebalances can finish out of order. Every writer of _maxBufferMemory
+            // enters this lock after its write, so reading it here makes the last resize use
+            // the latest BufferMemory instead of whichever notification arrived last.
+            var bufferMemory = (ulong)Volatile.Read(ref _maxBufferMemory);
+            var poolSize = ComputePoolSize(_options, bufferMemory, availableMemoryBytes);
+            _batchPool.SetRetentionLimit(poolSize);
+
+            if (_options.BufferMemoryAllocationStrategy != BufferMemoryAllocationStrategy.Full)
+                return;
+
             var previous = _arenaPoolRegistration;
             if (previous is null || Volatile.Read(ref _disposed) != 0)
                 return;
 
             // Register before releasing the old request, so the effective limit never dips
             // below this producer's need in between (a dip would release pooled arenas).
+            var limit = CreateArenaPoolLimit(_options, bufferMemory, poolSize, availableMemoryBytes);
             Volatile.Write(ref _arenaPoolRegistration, BatchArena.Register(limit));
             previous.Dispose();
         }
@@ -9051,6 +9057,9 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
     private ReadyBatchPool? _readyBatchPool;
     private readonly BatchArrayReuseQueue _arrayReuseQueue;
     private int _retentionLimit;
+    // Batches admitted by Return and not yet rented or destroyed. Unlike ApproximateCount it
+    // is reserved before pooling, so concurrent returns cannot exceed RetentionLimit.
+    private int _retainedCount;
 
     /// <summary>
     /// Creates a new PartitionBatchPool.
@@ -9099,18 +9108,43 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
             base.Clear();
     }
 
+    /// <summary>Batches currently retained through <see cref="Return"/>.</summary>
+    internal int RetainedCount => Volatile.Read(ref _retainedCount);
+
+    /// <summary>Rents a batch, releasing its retention slot when it came from the pool.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public new PartitionBatch Rent()
+    {
+        var batch = base.Rent();
+        if (batch.ClearPoolRetention())
+            Interlocked.Decrement(ref _retainedCount);
+        return batch;
+    }
+
     /// <summary>
     /// Returns a batch to the pool, or discards it when the pool already holds
-    /// <see cref="RetentionLimit"/> batches. A discarded batch skips the pooling reset, so it
-    /// never rents an arena it would not keep.
+    /// <see cref="RetentionLimit"/> batches. The slot is reserved atomically before pooling, so
+    /// concurrent returns after a lowered limit cannot fill the pool's larger historical
+    /// capacity. A discarded batch skips the pooling reset.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public new void Return(PartitionBatch item)
     {
-        if (ApproximateCount >= Volatile.Read(ref _retentionLimit))
+        if (Interlocked.Increment(ref _retainedCount) > Volatile.Read(ref _retentionLimit))
+        {
+            Interlocked.Decrement(ref _retainedCount);
             return;
+        }
 
+        item.MarkPoolRetention();
         base.Return(item);
+    }
+
+    protected override void Destroy(PartitionBatch item)
+    {
+        // Rejected returns and Clear destroy retained batches; pre-warmed ones hold no slot.
+        if (item.ClearPoolRetention())
+            Interlocked.Decrement(ref _retainedCount);
     }
 
     protected override PartitionBatch Create()
@@ -9174,6 +9208,18 @@ internal sealed class PartitionBatch
     // Arena holding the encoded record bytes - all records in one contiguous buffer
     private BatchArena? _arena;
     internal bool HasAppendBufferForTest => _arena is not null || _incrementalBuffer is not null;
+    // Set while the batch holds a PartitionBatchPool retention slot. Only the pool touches it,
+    // and a pooled batch has a single owner at a time.
+    private bool _poolRetained;
+
+    internal void MarkPoolRetention() => _poolRetained = true;
+
+    internal bool ClearPoolRetention()
+    {
+        var retained = _poolRetained;
+        _poolRetained = false;
+        return retained;
+    }
     private IncrementalBatchBuffer? _incrementalBuffer;
 
     private int _recordCount;

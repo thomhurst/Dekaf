@@ -887,6 +887,108 @@ public class ProducerPoolMemoryBoundTests
     }
 
     [Test]
+    [Timeout(60_000)]
+    public async Task PartitionBatchPool_ConcurrentReturnsAfterLoweredLimit_NeverExceedIt(CancellationToken cancellationToken)
+    {
+        // A pool that once held 128 batches is lowered to 1; a burst of concurrent returns must
+        // still retain at most one, not fill the historical capacity.
+        const int returners = 64;
+        var (pool, readyPool) = CreatePools(maxPoolSize: 128);
+        var batches = Enumerable.Range(0, returners)
+            .Select(i =>
+            {
+                var batch = pool.Rent(new TopicPartition("pool-memory-bound", i), partitionCount: 1);
+                Append(batch);
+                var ready = batch.Complete()!;
+                ready.CompleteSend(0, DateTimeOffset.UnixEpoch);
+                readyPool.Return(ready);
+                return batch;
+            })
+            .ToArray();
+        pool.SetRetentionLimit(1);
+
+        using var barrier = new Barrier(returners);
+        await Task.WhenAll(batches.Select(batch => Task.Factory.StartNew(
+            () =>
+            {
+                barrier.SignalAndWait(cancellationToken);
+                pool.Return(batch);
+            },
+            cancellationToken,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default)));
+
+        await Assert.That(pool.RetainedCount).IsEqualTo(1);
+        await Assert.That(pool.ApproximateCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task PartitionBatchPool_RetainedCount_BalancesAcrossRentReturnAndClear()
+    {
+        var (pool, readyPool) = CreatePools(maxPoolSize: 4);
+        var batches = Enumerable.Range(0, 6)
+            .Select(i => pool.Rent(new TopicPartition("pool-memory-bound", i), partitionCount: 1))
+            .ToList();
+        foreach (var batch in batches)
+            FillCompleteAndReturn(pool, readyPool, batch);
+        var afterReturns = pool.RetainedCount;
+
+        var rented = pool.Rent(new TopicPartition("pool-memory-bound", 0), partitionCount: 1);
+        var afterRent = pool.RetainedCount;
+        FillCompleteAndReturn(pool, readyPool, rented);
+        pool.SetRetentionLimit(2);
+        var afterLowering = pool.RetainedCount;
+
+        await Assert.That(afterReturns).IsEqualTo(4);
+        await Assert.That(afterRent).IsEqualTo(3);
+        await Assert.That(afterLowering).IsEqualTo(0);
+        await Assert.That(pool.ApproximateCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ResizeBatchStorage_StaleNotification_UsesTheLatestBufferMemory()
+    {
+        // A 64MiB rebalance notification that finishes after a later 8MiB one must not
+        // re-register the 64MiB budget.
+        var options = CreateOptions(bufferMemory: 64 * MiB);
+        await using var accumulator = new RecordAccumulator(options);
+        accumulator.SetMaxBufferMemory(8 * 1024 * 1024);
+
+        accumulator.ResizeBatchStorageForTest();
+
+        await Assert.That(accumulator.ArenaPoolRegistrationForTest!.Limit.RetainedBytes).IsEqualTo(8 * MiB);
+        await Assert.That(accumulator.BatchPoolRetentionLimitForTest).IsEqualTo(7);
+    }
+
+    [Test]
+    [Timeout(60_000)]
+    public async Task SetMaxBufferMemory_ConcurrentRebalances_EndAtTheFinalBufferMemory(CancellationToken cancellationToken)
+    {
+        var options = CreateOptions(bufferMemory: 64 * MiB);
+        await using var accumulator = new RecordAccumulator(options);
+
+        await Task.WhenAll(Enumerable.Range(0, 8).Select(seed => Task.Run(() =>
+        {
+            var random = new Random(seed);
+            for (var i = 0; i < 200; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                accumulator.SetMaxBufferMemory((ulong)random.Next(4, 129) * 1024 * 1024);
+            }
+        }, cancellationToken)));
+
+        var final = accumulator.MaxBufferMemory;
+        var available = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+        var registration = accumulator.ArenaPoolRegistrationForTest!;
+
+        await Assert.That(registration.IsDisposed).IsFalse();
+        await Assert.That(registration.Limit.PoolSize)
+            .IsEqualTo(RecordAccumulator.ComputePoolSize(options, final, available));
+        await Assert.That(accumulator.BatchPoolRetentionLimitForTest)
+            .IsEqualTo(RecordAccumulator.ComputePoolSize(options, final, available));
+    }
+
+    [Test]
     public async Task PartitionBatchPool_SetRetentionLimit_RejectsNonPositive()
     {
         var (pool, _) = CreatePools(maxPoolSize: 2);
@@ -1025,6 +1127,24 @@ public class ProducerPoolMemoryBoundTests
         var reference = new WeakReference(batch);
         FillCompleteAndReturn(pool, readyPool, batch);
         return reference;
+    }
+
+    private static void Append(PartitionBatch batch)
+    {
+        ReadOnlySpan<byte> value = [1, 2, 3, 4, 5, 6, 7, 8];
+        var result = batch.TryAppendFromSpans(
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            ReadOnlySpan<byte>.Empty,
+            keyIsNull: true,
+            value,
+            valueIsNull: false,
+            headers: null,
+            headerCount: 0,
+            completionSource: null,
+            callback: null,
+            PartitionBatch.EstimateRecordSize(0, value.Length, null, 0));
+        if (!result.Success)
+            throw new InvalidOperationException("Record did not fit in an empty batch.");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
