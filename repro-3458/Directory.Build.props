@@ -1,0 +1,3 @@
+<Project>
+  <!-- Isolates the repro from the repository's build settings. -->
+</Project>

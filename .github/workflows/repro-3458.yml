@@ -1,0 +1,64 @@
+# Temporary: reproduce issue #3458 (TUnit.Aspire fixture never starts resources on macOS).
+name: repro-3458
+on:
+  push:
+    branches: [repro/3458-macos]
+permissions:
+  contents: read
+jobs:
+  repro:
+    name: ${{ matrix.os }} cert=${{ matrix.cert }} variant=${{ matrix.variant }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15-intel]
+        cert: [none, trusted]
+        variant: [issue, plain-container]
+        include:
+          - os: ubuntu-latest
+            cert: none
+            variant: issue
+    env:
+      REPRO_VARIANT: ${{ matrix.variant }}
+      DOTNET_NOLOGO: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Start Docker (Colima)
+        if: runner.os == 'macOS'
+        timeout-minutes: 15
+        run: |
+          brew install docker colima
+          colima start --cpu 3 --memory 8 || colima start --cpu 3 --memory 8 --vm-type qemu
+          docker info --format '{{.ServerVersion}} {{.OperatingSystem}}'
+      - name: Developer certificate
+        if: matrix.cert == 'trusted'
+        timeout-minutes: 5
+        run: |
+          dotnet dev-certs https --trust || dotnet dev-certs https
+          dotnet dev-certs https --check --trust || true
+      - name: Install dotnet-stack
+        run: dotnet tool install -g dotnet-stack
+      - name: Build
+        working-directory: repro-3458/Tests
+        run: dotnet build
+      - name: Run TUnit.Aspire fixture test
+        working-directory: repro-3458/Tests
+        timeout-minutes: 8
+        run: |
+          ( sleep 120; for p in $(pgrep -f 'Tests(\.dll)?$|bin/Debug/net10.0/Tests'); do echo "=== stacks pid $p ==="; ~/.dotnet/tools/dotnet-stack report -p $p || true; done ) &
+          dotnet run -- --treenode-filter "/*/*/TUnitAspireFixtureTests/*" --output Detailed 2>&1 | tee fixture.log
+      - name: Run plain testing builder test
+        if: always()
+        working-directory: repro-3458/Tests
+        timeout-minutes: 8
+        run: |
+          ( sleep 120; for p in $(pgrep -f 'Tests(\.dll)?$|bin/Debug/net10.0/Tests'); do echo "=== stacks pid $p ==="; ~/.dotnet/tools/dotnet-stack report -p $p || true; done ) &
+          dotnet run -- --treenode-filter "/*/*/PlainTestingBuilderTests/*" --output Detailed 2>&1 | tee plain.log
+      - name: Aspire dev-cert cache
+        if: always()
+        run: ls -la ~/.aspire/dev-certs/https 2>&1 || true

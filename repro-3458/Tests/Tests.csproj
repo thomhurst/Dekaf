@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="TUnit" Version="1.69.21" />
+    <PackageReference Include="TUnit.Aspire" Version="1.69.21" />
+    <ProjectReference Include="..\AppHost\AppHost.csproj" />
+  </ItemGroup>
+</Project>
