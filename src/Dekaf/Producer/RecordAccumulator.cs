@@ -8817,6 +8817,25 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
+        try
+        {
+            await DisposeCoreAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            // A disposal step that throws must not leave this producer's arena pool allowance
+            // registered: _disposed is already set, so a retry returns immediately.
+            ReleaseArenaPoolRegistration();
+        }
+    }
+
+    /// <summary>Test hook: runs first in disposal, to simulate a failing disposal step.</summary>
+    internal Action? DisposeStepHookForTest { get; set; }
+
+    private async ValueTask DisposeCoreAsync()
+    {
+        DisposeStepHookForTest?.Invoke();
+
         // Wake a flush waiting on the append workers: it stops waiting once disposed, since a
         // worker can stay blocked until the drain below fails its queued items.
         Interlocked.Exchange(ref _flushTcs, null)?.TrySetResult(true);
@@ -9044,7 +9063,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Clear the batch pool
         _batchPool.Clear();
-        ReleaseArenaPoolRegistration();
 
         // Dispose resources to prevent leaks
         _wakeupSignal?.Dispose();
@@ -9222,6 +9240,9 @@ internal sealed class PartitionBatchPool
 
     internal BatchArrayReuseQueue ArrayReuseQueueForTest => _arrayReuseQueue;
 
+    /// <summary>Test hook: runs before each pooling reset, to simulate a failing reset.</summary>
+    internal Action<PartitionBatch>? PoolingResetHookForTest { get; set; }
+
     /// <summary>Batches currently retained through <see cref="Return"/>.</summary>
     internal int RetainedCount => Volatile.Read(ref _retainedCount);
 
@@ -9279,7 +9300,19 @@ internal sealed class PartitionBatchPool
         }
 
         item.MarkPoolRetention();
-        _pool.Return(item);
+        try
+        {
+            _pool.Return(item);
+        }
+        catch
+        {
+            // The pooling reset (PrepareForPooling) threw, so the batch never reached the pool:
+            // give back its slot and storage, or the slot would count against the limit forever.
+            if (item.ClearPoolRetention())
+                Interlocked.Decrement(ref _retainedCount);
+            item.ReleaseForDiscard();
+            throw;
+        }
 
         // A lowered limit may have been published while this return was between admission
         // and pooling; its release ran before the batch arrived, so release again.
@@ -9324,7 +9357,10 @@ internal sealed class PartitionBatchPool
         protected override PartitionBatch Create() => owner.CreateBatch();
 
         protected override void Reset(PartitionBatch item)
-            => item.PrepareForPooling(owner._options, owner._arrayReuseQueue);
+        {
+            owner.PoolingResetHookForTest?.Invoke(item);
+            item.PrepareForPooling(owner._options, owner._arrayReuseQueue);
+        }
 
         protected override void Destroy(PartitionBatch item) => owner.DestroyBatch(item);
     }
@@ -10770,7 +10806,7 @@ internal sealed class BatchArrayReuseQueue
         _retentionLimit = maxSize;
         _pool = new Reservoir.ObjectPool<
             PooledValueTaskSource<RecordMetadata>[],
-            CompletionSourceArrayPolicy>(new CompletionSourceArrayPolicy(this), maxSize);
+            CompletionSourceArrayPolicy>(new CompletionSourceArrayPolicy(this), maxSize, threadLocalFastPath: false);
     }
 
     /// <summary>Arrays currently queued for reuse.</summary>

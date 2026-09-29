@@ -1422,6 +1422,44 @@ public class ProducerPoolMemoryBoundTests
     }
 
     [Test]
+    public async Task PartitionBatchPool_FailedPoolingReset_GivesBackTheSlotAndStorage()
+    {
+        // If PrepareForPooling throws (for example, renting a completion array under memory
+        // pressure), the batch never reaches the pool; its slot must not stay reserved.
+        var (pool, readyPool) = CreatePools(maxPoolSize: 2);
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 100, initialCapBytes: 1);
+        var batch = pool.Rent(new TopicPartition("pool-memory-bound", 0), partitionCount: 1);
+        budget.Charge(300);
+        batch.AddAdmissionLease(budget, generation: 1, bytes: 300);
+        pool.PoolingResetHookForTest = _ => throw new InvalidOperationException("reset failed");
+
+        await Assert.That(() => pool.Return(batch)).Throws<InvalidOperationException>();
+
+        await Assert.That(pool.RetainedCount).IsEqualTo(0);
+        await Assert.That(pool.ApproximateCount).IsEqualTo(0);
+        await Assert.That(budget.UnackedBytes).IsEqualTo(0);
+        await Assert.That(batch.HasAppendBufferForTest).IsFalse();
+
+        // Later rotations are admitted normally, not counted against a ghost slot.
+        pool.PoolingResetHookForTest = null;
+        FillCompleteAndReturn(pool, readyPool, pool.Rent(new TopicPartition("pool-memory-bound", 1), partitionCount: 1));
+        FillCompleteAndReturn(pool, readyPool, pool.Rent(new TopicPartition("pool-memory-bound", 2), partitionCount: 1));
+        await Assert.That(pool.RetainedCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task RecordAccumulator_DisposalStepThrows_StillReleasesTheArenaRegistration()
+    {
+        var accumulator = new RecordAccumulator(CreateOptions(bufferMemory: 8 * MiB));
+        var registration = accumulator.ArenaPoolRegistrationForTest!;
+        accumulator.DisposeStepHookForTest = () => throw new InvalidOperationException("dispose step failed");
+
+        await Assert.That(async () => await accumulator.DisposeAsync()).Throws<InvalidOperationException>();
+
+        await Assert.That(registration.IsDisposed).IsTrue();
+    }
+
+    [Test]
     public async Task PartitionBatchPool_SetRetentionLimit_RejectsNonPositive()
     {
         var (pool, _) = CreatePools(maxPoolSize: 2);
