@@ -32,7 +32,7 @@ public sealed class ShareConsumerConnectionOwnershipTests
         var method = typeof(ShareConsumerCoordinator).GetMethod(
             "SendShareGroupHeartbeatAsync",
             BindingFlags.Instance | BindingFlags.NonPublic)!;
-        var heartbeat = (ValueTask<bool>)method.Invoke(
+        var heartbeat = (ValueTask)method.Invoke(
             coordinator,
             [1, CancellationToken.None])!;
 
@@ -67,7 +67,7 @@ public sealed class ShareConsumerConnectionOwnershipTests
         var method = typeof(ShareConsumerCoordinator).GetMethod(
             "SendShareGroupHeartbeatAsync",
             BindingFlags.Instance | BindingFlags.NonPublic)!;
-        var heartbeat = (ValueTask<bool>)method.Invoke(
+        var heartbeat = (ValueTask)method.Invoke(
             coordinator,
             [1, CancellationToken.None])!;
 

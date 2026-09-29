@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Threading.Tasks.Sources;
 using BenchmarkDotNet.Attributes;
 using Dekaf.Consumer;
@@ -301,8 +302,8 @@ public class ShareConsumerPollBenchmarks
         TopicPartitions = [new ShareGroupHeartbeatTopicPartitions { TopicId = TopicId, Partitions = [0] }]
     };
 
-    private Func<bool, CancellationToken, ValueTask<bool>>? _sendLegacyHeartbeat;
-    private Func<CancellationToken, ValueTask<bool>>? _sendHeartbeat;
+    private Func<int, CancellationToken, ValueTask>? _sendHeartbeat;
+    private Func<int, CancellationToken, ValueTask<bool>>? _sendLegacyHeartbeat;
 
     internal void PrepareSubscriptionHeartbeats()
     {
@@ -310,19 +311,31 @@ public class ShareConsumerPollBenchmarks
         var coordinator = typeof(KafkaShareConsumer<int, int>).GetField("_coordinator", flags)!.GetValue(_compatibility)!;
         typeof(ShareConsumerCoordinator).GetField("_coordinatorId", flags)!.SetValue(coordinator, 1);
         var method = typeof(ShareConsumerCoordinator).GetMethod("SendShareGroupHeartbeatAsync", flags)!;
-        // Keep the same fixture compatible with the baseline's redundant initial-join argument.
-        if (method.GetParameters().Length == 1)
-            _sendHeartbeat = method.CreateDelegate<Func<CancellationToken, ValueTask<bool>>>(coordinator);
+        // Keep the same fixture compatible with the baseline, whose heartbeat reports whether it
+        // carried an assignment.
+        if (method.ReturnType == typeof(ValueTask))
+            _sendHeartbeat = method.CreateDelegate<Func<int, CancellationToken, ValueTask>>(coordinator);
         else
-            _sendLegacyHeartbeat = method.CreateDelegate<Func<bool, CancellationToken, ValueTask<bool>>>(coordinator);
+            _sendLegacyHeartbeat = method.CreateDelegate<Func<int, CancellationToken, ValueTask<bool>>>(coordinator);
     }
 
-    internal ValueTask<bool> SendSubscriptionHeartbeat()
+    // Both signatures go through the same pooled state machine, so the baseline and the candidate
+    // pay the same wrapper cost and neither allocates when the response completes asynchronously.
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    internal async ValueTask SendSubscriptionHeartbeat()
     {
-        var pending = _sendHeartbeat is { } send
-            ? send(CancellationToken.None) : _sendLegacyHeartbeat!(false, CancellationToken.None);
-        _connection.CompleteHeartbeat();
-        return pending;
+        if (_sendHeartbeat is { } send)
+        {
+            var pending = send(1, CancellationToken.None);
+            _connection.CompleteHeartbeat();
+            await pending;
+        }
+        else
+        {
+            var pending = _sendLegacyHeartbeat!(1, CancellationToken.None);
+            _connection.CompleteHeartbeat();
+            await pending;
+        }
     }
 
     internal void RepeatSubscription(bool batch)

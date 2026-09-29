@@ -59,6 +59,14 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     private long _lastSuccessfulHeartbeatTimestamp;
     private string? _lastHeartbeatFailure;
     private int _disposed;
+    // Whether the join in progress has counted its completed rebalance. The assignment path
+    // counts one whose heartbeat carried partitions; a join that ends without any counts at
+    // Stable instead. Written only under _lock or by that join's own heartbeats.
+    private bool _joinRebalanceRecorded;
+    // Whether the rebalance of the pending _unresolvedAssignment was counted already. Processing
+    // it again once metadata resolves more of its topics is not another rebalance. A flag rather
+    // than a reference, so nothing keeps a resolved assignment alive.
+    private bool _unresolvedAssignmentCounted;
     private TaskCompletionSource<bool>? _assignmentChanged;
     private readonly Func<int> _getCoordinationConnectionIndex;
     // Where the next coordinator lookup starts. It rests on the last broker that answered, so a
@@ -404,7 +412,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     /// <see cref="_coordinatorId"/> here: a heartbeat loop that fails concurrently invalidates
     /// that field, and leasing broker -1 would surface as an unknown-broker failure.
     /// </param>
-    private async ValueTask<bool> SendShareGroupHeartbeatAsync(
+    private async ValueTask SendShareGroupHeartbeatAsync(
         int coordinatorId,
         CancellationToken cancellationToken)
     {
@@ -420,7 +428,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         // Unsubscribe may race coordinator discovery or an in-flight join. Kafka rejects
         // an empty epoch-zero subscription, so let the polling loop observe unsubscribe.
         if (memberEpoch == 0 && subscription is not { Count: > 0 })
-            return false;
+            return;
 
         // Share groups always use client-generated UUID v4 member IDs.
         // Generate once when _memberId is null; subsequent heartbeats reuse the stored ID.
@@ -497,15 +505,14 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         if (assignment is null)
         {
             if (_unresolvedAssignment is null)
-                return false;
+                return;
 
             assignment = GetPendingAssignmentToRetry();
             if (assignment is null)
-                return false;
+                return;
         }
 
         ProcessShareGroupAssignment(assignment);
-        return true;
     }
 
     /// <summary>
@@ -563,8 +570,13 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     private void FenceMemberEpoch()
     {
         _memberEpoch = 0;
+        // A fenced member owns nothing. The rejoin starts from epoch 0 and becomes Stable on
+        // its first successful heartbeat even when that carries no assignment, so partitions
+        // kept from the fenced membership would be exposed and fetched as its own.
+        _assignedPartitions = [];
         DropUnresolvedAssignment();
         _state = CoordinatorState.Unjoined;
+        NotifyAssignmentChange();
     }
 
     /// <summary>
@@ -646,6 +658,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     {
         var newAssignment = new HashSet<TopicPartition>();
         var retry = ReferenceEquals(assignment, _unresolvedAssignment);
+        var counted = retry && _unresolvedAssignmentCounted;
         // Resolve against one snapshot, recorded below: an update during processing makes the next
         // heartbeat process the assignment again.
         var snapshot = _metadataManager.Metadata.CaptureSnapshot();
@@ -676,6 +689,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             : null;
         Volatile.Write(ref _unresolvedSnapshot, unknownTopics > 0 ? snapshot : null);
         _unresolvedAssignment = unknownTopics > 0 ? assignment : null;
+        // Provisional: holds when no rebalance is recorded below. RecordRebalance overwrites it on
+        // the paths that record one.
+        _unresolvedAssignmentCounted = counted && unknownTopics > 0;
         if (unknownTopics > 0)
         {
             // A new assignment refreshes without the backoff an earlier unresolved one built up.
@@ -691,15 +707,47 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             // A rejoin can complete with the existing assignment. Repeated assignment
             // payloads while stable are not new rebalances and do not notify waiters.
             if (_state == CoordinatorState.Joining && newAssignment.Count > 0)
-                _telemetryMetrics?.Rebalanced();
+                RecordRebalance(counted);
             return;
         }
 
-        _telemetryMetrics?.Rebalanced();
+        RecordRebalance(counted);
 
         LogAssignmentUpdate(newAssignment.Count);
         _assignedPartitions = newAssignment;
         NotifyAssignmentChange();
+    }
+
+    /// <summary>
+    /// Counts the rebalance the assignment just processed completed, once per broker assignment:
+    /// <paramref name="counted"/> when it is the pending one, already counted. Only a count made
+    /// here covers the join in progress; replaying an assignment an earlier membership counted
+    /// leaves the join to <see cref="CompleteJoin"/>.
+    /// </summary>
+    private void RecordRebalance(bool counted)
+    {
+        _unresolvedAssignmentCounted = _unresolvedAssignment is not null;
+        if (counted)
+            return;
+
+        _joinRebalanceRecorded = true;
+        _telemetryMetrics?.Rebalanced();
+    }
+
+    /// <summary>
+    /// Completes a join: a member with an epoch is live even without partitions. Counts the join
+    /// as one rebalance unless its heartbeats already counted an assignment, and covers the
+    /// assignment still pending resolution so resolving it later does not count again.
+    /// </summary>
+    private void CompleteJoin()
+    {
+        _state = CoordinatorState.Stable;
+        if (_joinRebalanceRecorded)
+            return;
+
+        _joinRebalanceRecorded = true;
+        _unresolvedAssignmentCounted = _unresolvedAssignment is not null;
+        _telemetryMetrics?.Rebalanced();
     }
 
     /// <summary>
@@ -718,9 +766,10 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             var startedAt = Stopwatch.GetTimestamp();
             // Reuse SessionTimeoutMs as the client-side join deadline. This is the broker's
             // inactivity timeout (default 45s), not a dedicated join timeout — but it provides
-            // a reasonable upper bound for how long we should wait for an assignment.
+            // a reasonable upper bound for how long a join may go without a successful heartbeat.
             var timeout = TimeSpan.FromMilliseconds(_options.SessionTimeoutMs);
             var retryFailureCount = 0;
+            _joinRebalanceRecorded = false;
             Exception? lastJoinFailure = null;
 
             while (_state != CoordinatorState.Stable)
@@ -762,7 +811,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                     _state = CoordinatorState.Joining;
                     LogCoordinatorStateTransition(CoordinatorState.Joining);
 
-                    var gotAssignment = await SendShareGroupHeartbeatAsync(coordinatorId, cancellationToken)
+                    await SendShareGroupHeartbeatAsync(coordinatorId, cancellationToken)
                         .ConfigureAwait(false);
 
                     if (_subscribedTopics is not { Count: > 0 })
@@ -772,22 +821,27 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                         if (_memberEpoch > 0 && Volatile.Read(ref _subscriptionVersion) ==
                             Volatile.Read(ref _acknowledgedSubscriptionVersion))
                         {
-                            _state = CoordinatorState.Stable;
+                            CompleteJoin();
                             break;
                         }
                         continue;
                     }
 
-                    if (gotAssignment && _assignedPartitions.Count > 0)
+                    // A member epoch from a successful heartbeat makes this a live member, as in
+                    // the KIP-848 consumer, even with no partitions: its subscribed topic may not
+                    // exist yet, or the group has more members than partitions. The heartbeat
+                    // loop keeps the membership alive and publishes the assignment once it
+                    // arrives; polls wait on the assignment signal meanwhile.
+                    if (_memberEpoch > 0)
                     {
-                        _state = CoordinatorState.Stable;
-                        LogJoinedGroup(_options.GroupId, _memberId!, _memberEpoch);
+                        CompleteJoin();
+                        LogJoinedGroup(_options.GroupId, _memberId!, _memberEpoch, _assignedPartitions.Count);
                     }
                     else
                     {
-                        // Broker accepted us but hasn't assigned partitions yet.
-                        // This is a successful heartbeat, so preserve the broker cadence.
-                        LogWaitingForAssignment();
+                        // The broker answered without a member epoch. This is a successful
+                        // heartbeat, so preserve the broker cadence.
+                        LogWaitingForMemberEpoch();
                         retryFailureCount = 0;
                         await Task.Delay(
                             GetWaitForAssignmentDelayMs(_heartbeatIntervalMs),
@@ -916,7 +970,6 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                             // The next EnsureActiveGroupAsync (which holds _lock) will
                             // see the Unjoined state and trigger a fresh join.
                             FenceMemberEpoch();
-                            NotifyAssignmentChange();
                             break;
 
                         case ErrorCode.UnknownMemberId:
@@ -1100,8 +1153,8 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
     #region Logging
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Joined share group {GroupId} as member {MemberId} (epoch {Epoch})")]
-    private partial void LogJoinedGroup(string groupId, string memberId, int epoch);
+    [LoggerMessage(Level = LogLevel.Information, Message = "Joined share group {GroupId} as member {MemberId} (epoch {Epoch}, {PartitionCount} partitions assigned)")]
+    private partial void LogJoinedGroup(string groupId, string memberId, int epoch, int partitionCount);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Retriable coordinator error {ErrorCode}, will re-discover coordinator")]
     private partial void LogRetriableCoordinatorError(ErrorCode? errorCode);
@@ -1159,8 +1212,8 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Debug, Message = "ShareGroupHeartbeat: member epoch updated to {MemberEpoch}")]
     private partial void LogMemberEpochUpdated(int memberEpoch);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "ShareGroupHeartbeat: waiting for partition assignment")]
-    private partial void LogWaitingForAssignment();
+    [LoggerMessage(Level = LogLevel.Debug, Message = "ShareGroupHeartbeat: accepted without a member epoch, retrying")]
+    private partial void LogWaitingForMemberEpoch();
 
     #endregion
 }

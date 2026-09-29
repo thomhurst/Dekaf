@@ -20,7 +20,7 @@ public class ShareConsumerSubscriptionHeartbeatBenchmarks
     }
 
     [Benchmark]
-    public ValueTask<bool> UnchangedHeartbeat() => _consumer.SendSubscriptionHeartbeat();
+    public ValueTask UnchangedHeartbeat() => _consumer.SendSubscriptionHeartbeat();
 
     [GlobalCleanup]
     public ValueTask Cleanup() => _consumer.Cleanup();

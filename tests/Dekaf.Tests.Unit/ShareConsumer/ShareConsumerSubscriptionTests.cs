@@ -122,7 +122,7 @@ public sealed class ShareConsumerSubscriptionTests
         fixture.Consumer.Subscribe("first");
         fixture.Consumer.Unsubscribe();
         fixture.ResetMemberEpoch();
-        await Assert.That(await fixture.Heartbeat()).IsFalse();
+        await fixture.Heartbeat();
         await Assert.That(fixture.Requests.Count).IsEqualTo(0);
     }
 
@@ -265,7 +265,7 @@ public sealed class ShareConsumerSubscriptionTests
                 .SetValue(Consumer, true);
         }
         public void ResetMemberEpoch() => Set("_memberEpoch", 0);
-        public ValueTask<bool> Heartbeat() => (ValueTask<bool>)SendHeartbeat.Invoke(Coordinator, [1, CancellationToken.None])!;
+        public ValueTask Heartbeat() => (ValueTask)SendHeartbeat.Invoke(Coordinator, [1, CancellationToken.None])!;
         public static ShareGroupHeartbeatResponse Success() => new() { ErrorCode = ErrorCode.None, MemberEpoch = 1 };
         public async ValueTask DisposeAsync()
         {
