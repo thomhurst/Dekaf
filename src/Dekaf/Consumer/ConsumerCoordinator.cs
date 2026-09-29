@@ -76,6 +76,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // all writes replacing the reference entirely (never in-place mutation) — verified at
     // every assignment site: ProcessConsumerGroupAssignment() and DisposeAsync().
     private volatile HashSet<TopicPartition> _assignedPartitions = [];
+    // The latest broker assignment while it names topic IDs that metadata cannot resolve yet;
+    // null otherwise, so a steady heartbeat pays one field read.
+    private volatile ConsumerGroupHeartbeatAssignment? _unresolvedAssignment;
+    // The metadata snapshot _unresolvedAssignment was last resolved against. Every metadata update
+    // swaps the snapshot, so a heartbeat processes the assignment again only after metadata
+    // changed, whichever topic IDs it resolved or lost.
+    private ClusterMetadataSnapshot? _unresolvedSnapshot;
+    // Names of _unresolvedAssignment's topics that resolved at least once, so a snapshot that
+    // briefly leaves one out does not revoke its partitions; null while nothing is pending.
+    private IReadOnlyDictionary<Guid, string>? _unresolvedResolvedNames;
+    // Refreshes metadata for an unresolved assignment off the heartbeat path, rate-limited.
+    private readonly UnresolvedAssignmentMetadataRefresher _unresolvedRefresher;
     private volatile HashSet<TopicPartition> _newlyExpandedPartitions = [];
     private readonly SemaphoreSlim _lock = new(1, 1);
     // Serializes user rebalance callbacks without holding the coordinator state lock. This
@@ -221,6 +233,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             : () => GetCoordinationConnectionIndex(options.ConnectionsPerBroker);
         _isDisposed = () => Volatile.Read(ref _disposed) != 0;
         _heartbeatIntervalMs = options.HeartbeatIntervalMs;
+        _unresolvedRefresher = new UnresolvedAssignmentMetadataRefresher(
+            metadataManager, _logger, options.RetryBackoffMs, options.RetryBackoffMaxMs);
         _maxPollIntervalStopwatchTicks = options.MaxPollIntervalMs * Stopwatch.Frequency / 1000;
         _lastPollTimestamp = Stopwatch.GetTimestamp();
     }
@@ -1961,12 +1975,17 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             _assignedPartitions = [];
             _newlyExpandedPartitions = [];
+            _unresolvedAssignment = null;
+            _unresolvedResolvedNames = null;
             if (revoked is not null)
             {
                 Interlocked.Increment(ref _assignmentVersion);
                 EnqueueRevokedPartitions(revoked);
             }
         }
+
+        // A refresh still running for the dropped assignment must not start a follow-up.
+        _unresolvedRefresher.Reset();
 
         if (revoked is not null)
             _onPartitionsRevoked?.Invoke(revoked);
@@ -2217,6 +2236,19 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
             response = await connection.SendWithClientTelemetryAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
                 request, version, TelemetryMetricCollector, cancellationToken).ConfigureAwait(false);
+        }
+
+        // The broker sends an assignment only when it changes. One that names a topic this
+        // client's metadata does not know yet (created after the last refresh) is published
+        // without that topic and stays pending; a background metadata refresh runs meanwhile, and
+        // a later heartbeat processes it again once metadata resolves more of its topics.
+        // Without a received or pending assignment this reads one field.
+        if (response.Assignment is null &&
+            _unresolvedAssignment is not null &&
+            response.ErrorCode == ErrorCode.None &&
+            GetPendingAssignmentToRetry() is { } pendingAssignment)
+        {
+            response = WithAssignment(response, pendingAssignment);
         }
 
         // A successful join replaces the membership. The version turns odd before the response's
@@ -2488,6 +2520,67 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     }
 
     /// <summary>
+    /// The pending unresolved assignment, once metadata has changed since it was last resolved;
+    /// null otherwise. While metadata is unchanged its unknown topics are still unknown, so this
+    /// only asks for a background refresh (rate-limited) instead of waiting for one: the
+    /// heartbeat publishes what it can (revocations included) and keeps its cadence. Runs only
+    /// while an assignment is pending.
+    /// </summary>
+    private ConsumerGroupHeartbeatAssignment? GetPendingAssignmentToRetry()
+    {
+        var pending = _unresolvedAssignment;
+        if (pending is null)
+            return null;
+
+        if (ReferenceEquals(_metadataManager.Metadata.CaptureSnapshot(), Volatile.Read(ref _unresolvedSnapshot)))
+        {
+            _unresolvedRefresher.Request();
+            return null;
+        }
+
+        return pending;
+    }
+
+    /// <summary>
+    /// The names every resolvable topic of a still-pending assignment resolved to. Runs only while
+    /// an assignment is unresolved.
+    /// </summary>
+    private static Dictionary<Guid, string> CollectResolvedNames(
+        ClusterMetadataSnapshot snapshot,
+        IReadOnlyDictionary<Guid, string>? resolvedNames,
+        IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions> topics)
+    {
+        var names = new Dictionary<Guid, string>(topics.Count);
+        for (var i = 0; i < topics.Count; i++)
+        {
+            if (PendingAssignmentTopics.TryResolve(snapshot, resolvedNames, topics[i].TopicId, out var name))
+                names[topics[i].TopicId] = name;
+        }
+
+        return names;
+    }
+
+    private static ConsumerGroupHeartbeatResponse WithAssignment(
+        ConsumerGroupHeartbeatResponse response,
+        ConsumerGroupHeartbeatAssignment assignment) => new()
+    {
+        ThrottleTimeMs = response.ThrottleTimeMs,
+        ErrorCode = response.ErrorCode,
+        ErrorMessage = response.ErrorMessage,
+        MemberId = response.MemberId,
+        MemberEpoch = response.MemberEpoch,
+        HeartbeatIntervalMs = response.HeartbeatIntervalMs,
+        Assignment = assignment
+    };
+
+    /// <summary>
+    /// The latest background refresh for an unresolved assignment. Lets tests wait for it.
+    /// </summary>
+    internal Task UnresolvedAssignmentRefreshTask => _unresolvedRefresher.Current;
+
+    internal bool HasUnresolvedAssignment => _unresolvedAssignment is not null;
+
+    /// <summary>
     /// Processes a ConsumerGroupHeartbeat assignment response, resolving topic UUIDs to names
     /// and computing the partition diff (revoked/assigned) against the current assignment.
     /// </summary>
@@ -2495,24 +2588,33 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     {
         var newAssignment = new HashSet<TopicPartition>();
         var newlyExpandedPartitions = new HashSet<TopicPartition>();
+        var retry = ReferenceEquals(assignment, _unresolvedAssignment);
+        // Resolve against one snapshot, recorded below: an update during processing makes the next
+        // heartbeat process the assignment again.
+        var snapshot = _metadataManager.Metadata.CaptureSnapshot();
+        // A topic this pending assignment already resolved keeps its name if the snapshot drops it.
+        var resolvedNames = retry ? _unresolvedResolvedNames : null;
+        var unknownTopics = 0;
 
         foreach (var tp in assignment.AssignedTopicPartitions)
         {
-            var topicInfo = _metadataManager.Metadata.GetTopic(tp.TopicId);
-            if (topicInfo is null)
+            if (!PendingAssignmentTopics.TryResolve(snapshot, resolvedNames, tp.TopicId, out var topicName))
             {
-                LogUnknownTopicIdInAssignment(tp.TopicId);
+                // Warn once per assignment; the retries on later heartbeats stay quiet.
+                if (!retry)
+                    LogUnknownTopicIdInAssignment(tp.TopicId);
+                unknownTopics++;
                 continue;
             }
 
             foreach (var partition in tp.Partitions)
             {
-                newAssignment.Add(new TopicPartition(topicInfo.Name, partition));
+                newAssignment.Add(new TopicPartition(topicName, partition));
             }
 
             foreach (var partition in tp.NewPartitions)
             {
-                newlyExpandedPartitions.Add(new TopicPartition(topicInfo.Name, partition));
+                newlyExpandedPartitions.Add(new TopicPartition(topicName, partition));
             }
         }
 
@@ -2560,6 +2662,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         var classificationChanged = false;
         lock (_assignmentStateLock)
         {
+            // Names and snapshot first: the volatile write of the assignment publishes them.
+            _unresolvedResolvedNames = unknownTopics > 0
+                ? CollectResolvedNames(snapshot, resolvedNames, assignment.AssignedTopicPartitions)
+                : null;
+            Volatile.Write(ref _unresolvedSnapshot, unknownTopics > 0 ? snapshot : null);
+            _unresolvedAssignment = unknownTopics > 0 ? assignment : null;
+
             // The heartbeat loop can acknowledge ownership before the poll loop initializes
             // positions. Retain prior classifications until that initialization explicitly
             // acknowledges them, while dropping partitions that are no longer assigned.
@@ -2583,6 +2692,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 if (assignmentCallbacksCompletion is not null)
                     _pendingAssignmentCallbacks = assignmentCallbacksCompletion.Task;
             }
+        }
+
+        if (unknownTopics > 0)
+        {
+            // A new assignment refreshes without the backoff an earlier unresolved one built up.
+            if (!retry)
+                _unresolvedRefresher.Reset();
+            _unresolvedRefresher.Request();
         }
 
         if (revoked is not null)
@@ -3647,6 +3764,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         // Backstop: nothing starts a heartbeat once _disposed is set, but stop any that did.
         await StopHeartbeatAsync().ConfigureAwait(false);
+        await _unresolvedRefresher.StopAsync().ConfigureAwait(false);
 
         // Revocation commits that will now never run must not hold up an assignment sync.
         foreach (var pending in _pendingRebalanceCallbacks)
@@ -3730,7 +3848,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Error, Message = "{CallbackName} rebalance listener callback threw an exception")]
     private partial void LogRebalanceListenerCallbackError(string callbackName, Exception exception);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "ConsumerGroupHeartbeat: unknown topic ID {TopicId} in assignment, skipping")]
+    [LoggerMessage(Level = LogLevel.Warning, Message = "ConsumerGroupHeartbeat: unknown topic ID {TopicId} in assignment, waiting for metadata to resolve it")]
     private partial void LogUnknownTopicIdInAssignment(Guid topicId);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "ConsumerGroupHeartbeat: assignment updated, {AssignedCount} assigned, {RevokedCount} revoked")]

@@ -1,7 +1,10 @@
 using Dekaf.Admin;
+using Dekaf.Errors;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 using Dekaf.Serialization;
 using Dekaf.ShareConsumer;
+using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Tests.Integration;
 
@@ -107,5 +110,73 @@ public sealed class ShareConsumerSubscriptionTests(KafkaTestContainer kafka) : K
         }
         await Assert.That(consumer.Assignment.All(partition => partition.Topic == second)).IsTrue();
         await consumer.CloseAsync(timeout.Token);
+    }
+
+    [Test]
+    public async Task TopicCreatedAfterJoin_IsAssignedAndConsumed()
+    {
+        // The assignment names the new topic by ID before this consumer's metadata knows it: the
+        // share consumer refreshes metadata at startup and on fetch errors, not for a subscribed
+        // topic that does not exist yet, and the coordinator's warning below proves the unresolved
+        // path ran.
+        var topic = $"share-late-topic-{Guid.NewGuid():N}";
+        var group = $"share-late-topic-{Guid.NewGuid():N}";
+        using var logs = new CapturingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder =>
+        {
+            builder.SetMinimumLevel(LogLevel.Warning);
+            builder.AddProvider(logs);
+        });
+        await using var admin = Kafka.CreateAdminClient()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).Build();
+        await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+        {
+            [new ConfigResource { Type = ConfigResourceType.Group, Name = group }] =
+                [ConfigAlter.Set("share.auto.offset.reset", "earliest")]
+        });
+        await using var consumer = await Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(group)
+            .WithLoggerFactory(loggerFactory).SubscribeTo(topic).BuildAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var received = new List<string>();
+        var poll = ConsumeAsync();
+
+        // Join before the topic exists so its assignment arrives on a later heartbeat.
+        while (!await HasMemberAsync())
+            await Task.Delay(100, timeout.Token);
+
+        await KafkaContainer.CreateTopicAsync(topic);
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync();
+        await ShareConsumerTestHelper.ProduceAsync(producer, topic, count: 5);
+
+        await poll;
+        await Assert.That(received.Count).IsEqualTo(5);
+        await Assert.That(consumer.Assignment.Contains(new TopicPartition(topic, 0))).IsTrue();
+        await Assert.That(logs.Entries.Any(static entry =>
+            entry.Message.StartsWith("ShareGroupHeartbeat: unknown topic ID", StringComparison.Ordinal))).IsTrue();
+
+        async Task<bool> HasMemberAsync()
+        {
+            try
+            {
+                var groups = await admin.DescribeShareGroupsAsync([group], timeout.Token);
+                return groups.TryGetValue(group, out var description) && description.Members.Count > 0;
+            }
+            catch (GroupException ex) when (ex.ErrorCode == ErrorCode.GroupIdNotFound)
+            {
+                return false;
+            }
+        }
+
+        async Task ConsumeAsync()
+        {
+            await foreach (var record in consumer.PollAsync(timeout.Token))
+            {
+                received.Add(record.Value);
+                if (received.Count == 5)
+                    return;
+            }
+        }
     }
 }

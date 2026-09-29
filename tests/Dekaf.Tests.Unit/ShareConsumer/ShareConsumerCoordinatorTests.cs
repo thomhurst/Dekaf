@@ -11,7 +11,7 @@ using NSubstitute;
 
 namespace Dekaf.Tests.Unit.ShareConsumer;
 
-public sealed class ShareConsumerCoordinatorTests
+public sealed partial class ShareConsumerCoordinatorTests
 {
     // Regression test for #3339 (share-group counterpart): FindCoordinator succeeds on a healthy
     // broker and names a coordinator whose connection is reset during setup. The join loop must
