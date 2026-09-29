@@ -820,6 +820,73 @@ public class ProducerPoolMemoryBoundTests
     }
 
     [Test]
+    public async Task PartitionBatchPool_PooledBatch_KeepsNoArenaUntilRentedAgain()
+    {
+        // Idle arenas must live only in the byte-bounded arena pool; a pooled batch that kept
+        // its own would let both pools retain a full budget each.
+        var (pool, readyPool) = CreatePools(maxPoolSize: 2);
+        var batch = pool.Rent(new TopicPartition("pool-memory-bound", 0), partitionCount: 1);
+        var rentedWithBuffer = batch.HasAppendBufferForTest;
+
+        FillCompleteAndReturn(pool, readyPool, batch);
+        var pooledWithBuffer = batch.HasAppendBufferForTest;
+        var again = pool.Rent(new TopicPartition("pool-memory-bound", 1), partitionCount: 1);
+
+        await Assert.That(rentedWithBuffer).IsTrue();
+        await Assert.That(pooledWithBuffer).IsFalse();
+        await Assert.That(ReferenceEquals(again, batch)).IsTrue();
+        await Assert.That(again.HasAppendBufferForTest).IsTrue();
+    }
+
+    [Test]
+    [Arguments(BufferMemoryAllocationStrategy.Full)]
+    [Arguments(BufferMemoryAllocationStrategy.Incremental)]
+    public async Task PartitionBatchPool_PreWarmedBatches_RentStorageOnFirstUse(BufferMemoryAllocationStrategy strategy)
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            BatchSize = DefaultBatchSize,
+            BufferMemoryAllocationStrategy = strategy,
+        };
+        var readyPool = new ReadyBatchPool(4);
+        var pool = new PartitionBatchPool(options, maxPoolSize: 4);
+        pool.SetReadyBatchPool(readyPool);
+        pool.PreWarm(4);
+
+        var batch = pool.Rent(new TopicPartition("pool-memory-bound", 0), partitionCount: 1);
+        FillCompleteAndReturn(pool, readyPool, pool.Rent(new TopicPartition("pool-memory-bound", 1), partitionCount: 1));
+
+        await Assert.That(pool.Misses).IsEqualTo(0);
+        await Assert.That(batch.HasAppendBufferForTest).IsTrue();
+    }
+
+    [Test]
+    public async Task DirectlyConstructedBatch_StillAllocatesItsStorage()
+    {
+        var batch = new PartitionBatch(new TopicPartition("pool-memory-bound", 0), CreateOptions(bufferMemory: 8 * MiB));
+
+        await Assert.That(batch.HasAppendBufferForTest).IsTrue();
+    }
+
+    [Test]
+    [NotInParallel(nameof(BatchArena))]
+    public async Task BatchArena_DisposingTheLargestRegistration_AdvancesTheReleaseEpoch()
+    {
+        // A registration larger than any real producer's is the effective limit while it lives,
+        // so disposing it always lowers the limit and must release the pooled arenas.
+        var epochBefore = BatchArena.ReleaseEpoch;
+        var registration = BatchArena.Register(new ArenaPoolLimit(1, 1, long.MaxValue / 2));
+        var limitWhileRegistered = BatchArena.RetainedByteLimit;
+
+        registration.Dispose();
+
+        await Assert.That(limitWhileRegistered).IsEqualTo(long.MaxValue / 2);
+        await Assert.That(BatchArena.RetainedByteLimit).IsLessThan(long.MaxValue / 2);
+        await Assert.That(BatchArena.ReleaseEpoch).IsGreaterThan(epochBefore);
+    }
+
+    [Test]
     public async Task PartitionBatchPool_SetRetentionLimit_RejectsNonPositive()
     {
         var (pool, _) = CreatePools(maxPoolSize: 2);

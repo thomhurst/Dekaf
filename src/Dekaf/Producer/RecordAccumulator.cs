@@ -769,6 +769,9 @@ internal sealed class BatchArena
         idle: new ArenaPoolLimit(InitialPoolSize, InitialPoolSize, RetainedBytes: 0),
         drained: new ArenaPoolLimit(InitialPoolSize, InitialPoolSize, RetainedByteBudget.RetainNone));
     private static readonly Lock s_limitsApplyLock = new();
+    // Changes each time a limit reduction releases the pooled arenas. A return that spans a
+    // change may have reserved under the old limit, so it releases the pool again.
+    private static int s_releaseEpoch;
     private static long s_drops;
     private static long s_lastRatchetMissCount;
 
@@ -804,10 +807,12 @@ internal sealed class BatchArena
             Volatile.Write(ref s_missRatchetLimit, Math.Max(current.PoolSize, current.MissRatchetLimit));
             RaisePoolSize(current.PoolSize);
 
-            if (ShouldReleasePooledArenas(previous.RetainedBytes, current.RetainedBytes)
-                && s_retainedBytes.RetainedBytes > 0)
+            if (ShouldReleasePooledArenas(previous.RetainedBytes, current.RetainedBytes))
             {
-                s_pool.Clear();
+                // Order matters for ReturnToPool: limit, then epoch, then release.
+                Interlocked.Increment(ref s_releaseEpoch);
+                if (s_retainedBytes.RetainedBytes > 0)
+                    s_pool.Clear();
             }
         }
     }
@@ -866,6 +871,9 @@ internal sealed class BatchArena
 
     /// <summary>Bytes held by arenas in the process-wide pool.</summary>
     internal static long RetainedBytes => s_retainedBytes.RetainedBytes;
+
+    /// <summary>Number of limit reductions that released the pooled arenas.</summary>
+    internal static int ReleaseEpoch => Volatile.Read(ref s_releaseEpoch);
 
     /// <summary>
     /// Largest idle-arena byte budget among live producers; 0 before the first producer registers,
@@ -972,6 +980,7 @@ internal sealed class BatchArena
         arena._position = 0;
 
         var length = arena._buffer.Length;
+        var epoch = Volatile.Read(ref s_releaseEpoch);
         if (length > arena._maxPooledCapacity || !s_retainedBytes.TryReserve(length))
         {
             arena._buffer = null!;
@@ -981,6 +990,12 @@ internal sealed class BatchArena
 
         // A full pool destroys the arena, which releases the reservation.
         s_pool.Return(arena);
+
+        // A limit reduction publishes the new limit, bumps the epoch, then releases the pool.
+        // If it ran while this return was between reserving and pooling, the arena may have
+        // been reserved under the old limit and pooled after the release, so release again.
+        if (Volatile.Read(ref s_releaseEpoch) != epoch)
+            s_pool.Clear();
     }
 
     // Append threads rent arenas that sender cleanup can return. Shared storage also
@@ -3386,10 +3401,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Largest pool size whose idle batch storage fits the producer's memory bound.
     /// </summary>
     /// <remarks>
-    /// With <see cref="BufferMemoryAllocationStrategy.Full"/>, every pooled batch keeps a full
-    /// arena (BatchSize + 12.5%, or ArenaCapacity) whether or not a batch ever filled it. Arenas
-    /// are pinned and allocated without zeroing, so untouched pages are invisible to container
-    /// RSS metrics while still counting against the GC heap limit. The bound is
+    /// With <see cref="BufferMemoryAllocationStrategy.Full"/>, every idle arena is a full
+    /// BatchSize + 12.5% (or ArenaCapacity) whether or not a batch ever filled it. Idle arenas
+    /// live only in the process-wide arena pool, which holds them to
+    /// <see cref="ComputeRetainedArenaBytes(ProducerOptions, long)"/> bytes; pooled batches rent
+    /// theirs on reuse. Arenas are pinned and allocated without zeroing, so untouched pages are
+    /// invisible to container RSS metrics while still counting against the GC heap limit. The bound is
     /// <see cref="ComputeRetainedArenaBytes(ProducerOptions, long)"/> divided by the arena size, and never below
     /// <see cref="MinimumPoolSize"/>. <see cref="BufferMemoryAllocationStrategy.Incremental"/>
     /// batches return their chunks before pooling, so no arena bound applies to them.
@@ -9022,9 +9039,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 /// Extends <see cref="ObjectPool{T}"/> for pre-warm support and miss tracking.
 /// </summary>
 /// <remarks>
-/// Each pooled batch keeps a full BatchArena (BatchSize + 12.5%, pinned) and its completion
-/// array, so the pool disables Reservoir's thread-local tier: that tier keeps one extra item
-/// per returning thread outside <see cref="ObjectPool{T}.MaxPoolSize"/>, so retention grows
+/// Pooled batches keep no arena (they rent one in Reset), but they keep their completion array
+/// (up to 128KB), so the pool disables Reservoir's thread-local tier: that tier keeps one extra
+/// item per returning thread outside <see cref="ObjectPool{T}.MaxPoolSize"/>, so retention grows
 /// with the thread-pool size instead of staying within the memory-bounded pool size.
 /// </remarks>
 internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
@@ -9098,7 +9115,7 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
 
     protected override PartitionBatch Create()
     {
-        var batch = new PartitionBatch(default, _options, _compressionRatioEstimator);
+        var batch = new PartitionBatch(default, _options, _compressionRatioEstimator, allocateAppendBuffer: false);
         batch.SetReadyBatchPool(_readyBatchPool);
         batch.SetArrayReuseQueue(_arrayReuseQueue);
         return batch;
@@ -9156,6 +9173,7 @@ internal sealed class PartitionBatch
 
     // Arena holding the encoded record bytes - all records in one contiguous buffer
     private BatchArena? _arena;
+    internal bool HasAppendBufferForTest => _arena is not null || _incrementalBuffer is not null;
     private IncrementalBatchBuffer? _incrementalBuffer;
 
     private int _recordCount;
@@ -9216,7 +9234,8 @@ internal sealed class PartitionBatch
     internal PartitionBatch(
         TopicPartition topicPartition,
         ProducerOptions options,
-        CompressionRatioEstimator? compressionRatioEstimator)
+        CompressionRatioEstimator? compressionRatioEstimator,
+        bool allocateAppendBuffer = true)
     {
         _topicPartition = topicPartition;
         _options = options;
@@ -9228,7 +9247,9 @@ internal sealed class PartitionBatch
             ? Math.Clamp(options.InitialBatchRecordCapacity, 16, 16384)
             : ComputeInitialRecordCapacity(options.BatchSize);
 
-        CreateAppendBuffer(options, rentFullArenaFromPool: false);
+        // Pool-created batches rent their storage in Reset, like every pooled batch.
+        if (allocateAppendBuffer)
+            CreateAppendBuffer(options, rentFullArenaFromPool: false);
         _recordCount = 0;
 
         // Rent arrays from pool - eliminates List allocations.
@@ -9291,6 +9312,8 @@ internal sealed class PartitionBatch
             topicPartition,
             _options,
             _compressionRatioEstimator);
+        if (_arena is null && _incrementalBuffer is null)
+            CreateAppendBuffer(_options);
         EnsureNormalArenaCapacity();
         _createdStopwatchTimestamp = Stopwatch.GetTimestamp();
         _recordCount = 0;
@@ -9327,7 +9350,11 @@ internal sealed class PartitionBatch
         if (_incrementalBuffer is not null)
             IncrementalBatchBuffer.ReturnToPool(_incrementalBuffer);
 
-        CreateAppendBuffer(options);
+        // A pooled batch keeps no append storage: Reset rents it when the batch is next used.
+        // Idle arenas then live only in the byte-bounded process-wide arena pool, instead of
+        // also sitting in every pooled batch.
+        _arena = null;
+        _incrementalBuffer = null;
 
         // Awaited batches transfer completion storage to ReadyBatch. Fire-only batches
         // retain their array across pool rotations and skip this cross-thread handoff.
