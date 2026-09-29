@@ -57,7 +57,8 @@ public sealed partial class ShareConsumerCoordinatorTests
     }
 
     // Metadata can resolve one assigned topic while losing another, leaving the number of unknown
-    // topics unchanged. The pending assignment must still be processed again.
+    // topics unchanged. The pending assignment must still be processed again; the topic it had
+    // already resolved keeps its partitions.
     [Test]
     public async Task Assignment_UnknownTopicsSwappedAtSameCount_IsProcessedAgain(CancellationToken cancellationToken)
     {
@@ -77,7 +78,33 @@ public sealed partial class ShareConsumerCoordinatorTests
         await coordinator.UnresolvedAssignmentRefreshTask.WaitAsync(cancellationToken);
         await SendHeartbeatAsync(coordinator, cancellationToken);
 
-        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("late", 0)]);
+        await Assert.That(coordinator.Assignment).IsEquivalentTo(
+            [new TopicPartition("first", 0), new TopicPartition("late", 0)]);
+        await Assert.That(coordinator.HasUnresolvedAssignment).IsFalse();
+    }
+
+    // A full refresh that briefly leaves out a topic the pending assignment already resolved must
+    // not revoke partitions the broker still assigns.
+    [Test]
+    public async Task Assignment_ResolvedTopicMissingFromLaterMetadata_KeepsItsPartitions(CancellationToken cancellationToken)
+    {
+        var cluster = new UnresolvedTopicCluster("share-resolved-topic-missing");
+        var refreshResponse = new TaskCompletionSource<MetadataResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        cluster.Heartbeat = count => Beat(count == 1 ? CreateLateAssignment() : null);
+        cluster.Metadata = _ => new ValueTask<MetadataResponse>(refreshResponse.Task);
+        await using var metadata = cluster.CreateMetadataManager();
+        await using var coordinator = new ShareConsumerCoordinator(cluster.Options, cluster.Pool, metadata);
+        coordinator.UpdateSubscription(["first", "late"]);
+
+        await coordinator.EnsureActiveGroupAsync(cancellationToken);
+        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("first", 0)]);
+
+        // Metadata changes and knows neither topic.
+        refreshResponse.SetResult(CreateClusterMetadata(includeLateTopic: false, includeFirstTopic: false));
+        await coordinator.UnresolvedAssignmentRefreshTask.WaitAsync(cancellationToken);
+        await SendHeartbeatAsync(coordinator, cancellationToken);
+
+        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("first", 0)]);
         await Assert.That(coordinator.HasUnresolvedAssignment).IsTrue();
     }
 

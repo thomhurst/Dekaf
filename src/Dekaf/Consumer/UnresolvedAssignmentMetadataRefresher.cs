@@ -73,6 +73,14 @@ internal sealed partial class UnresolvedAssignmentMetadataRefresher
         if (Interlocked.CompareExchange(ref _inFlight, 1, 0) != 0)
             return;
 
+        // The claim is a full fence, as is StopAsync's write of _stopped before it reads _inFlight:
+        // either StopAsync sees this claim and waits for the slot to clear, or this sees the stop.
+        if (Volatile.Read(ref _stopped) != 0)
+        {
+            Interlocked.Exchange(ref _inFlight, 0);
+            return;
+        }
+
         // Task.Run: the refresh may wait for the metadata refresh lock or a slow broker, and none
         // of that may run inline on the heartbeat.
         var generation = Volatile.Read(ref _generation);
@@ -94,12 +102,23 @@ internal sealed partial class UnresolvedAssignmentMetadataRefresher
     /// </summary>
     public async ValueTask StopAsync()
     {
-        Volatile.Write(ref _stopped, 1);
+        Interlocked.Exchange(ref _stopped, 1);
         await _cts.CancelAsync().ConfigureAwait(false);
-        // A refresh ending as this stops may already have started its follow-up.
-        Task task;
-        while (!(task = Current).IsCompleted)
-            await task.ConfigureAwait(false);
+
+        // A Request that claimed the slot before seeing the stop may not have published its task
+        // yet, so wait for the slot, not only the latest published task. Once the slot is clear
+        // no refresh starts again: every later claim sees the stop and releases.
+        while (Volatile.Read(ref _inFlight) != 0)
+        {
+            var task = Current;
+            if (task.IsCompleted)
+                await Task.Delay(1).ConfigureAwait(false);
+            else
+                await task.ConfigureAwait(false);
+        }
+
+        // The refresh that cleared the slot may still be finishing its last lines.
+        await Current.ConfigureAwait(false);
         // Not disposed: a heartbeat racing its owner's disposal may still start (and immediately
         // cancel) a refresh that reads the token, and a source without timers or linked
         // registrations holds nothing to release.

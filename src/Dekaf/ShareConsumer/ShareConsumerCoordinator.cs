@@ -44,6 +44,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     // swaps the snapshot, so a heartbeat processes the assignment again only after metadata
     // changed, whichever topic IDs it resolved or lost.
     private ClusterMetadataSnapshot? _unresolvedSnapshot;
+    // Names of _unresolvedAssignment's topics that resolved at least once, so a snapshot that
+    // briefly leaves one out does not revoke its partitions; null while nothing is pending.
+    private IReadOnlyDictionary<Guid, string>? _unresolvedResolvedNames;
     // Refreshes metadata for an unresolved assignment off the heartbeat path, rate-limited.
     private readonly UnresolvedAssignmentMetadataRefresher _unresolvedRefresher;
     private readonly SemaphoreSlim _lock = new(1, 1);
@@ -388,6 +391,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         _memberEpoch = 0;
         _assignedPartitions = [];
         _unresolvedAssignment = null;
+        _unresolvedResolvedNames = null;
         _state = CoordinatorState.Unjoined;
         NotifyAssignmentChange();
     }
@@ -514,7 +518,8 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             _unresolvedRefresher.Reset();
 
         var snapshot = _metadataManager.Metadata.CaptureSnapshot();
-        if (HasUnknownTopic(snapshot, assignment))
+        var resolvedNames = ReferenceEquals(assignment, _unresolvedAssignment) ? _unresolvedResolvedNames : null;
+        if (HasUnknownTopic(snapshot, resolvedNames, assignment))
             _unresolvedRefresher.Request();
 
         return received is null && ReferenceEquals(snapshot, Volatile.Read(ref _unresolvedSnapshot))
@@ -522,16 +527,38 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             : assignment;
     }
 
-    private static bool HasUnknownTopic(ClusterMetadataSnapshot snapshot, ShareGroupHeartbeatAssignment assignment)
+    private static bool HasUnknownTopic(
+        ClusterMetadataSnapshot snapshot,
+        IReadOnlyDictionary<Guid, string>? resolvedNames,
+        ShareGroupHeartbeatAssignment assignment)
     {
         var topics = assignment.TopicPartitions;
         for (var i = 0; i < topics.Count; i++)
         {
-            if (!snapshot.TopicsById.ContainsKey(topics[i].TopicId))
+            if (!PendingAssignmentTopics.TryResolve(snapshot, resolvedNames, topics[i].TopicId, out _))
                 return true;
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// The names every resolvable topic of a still-pending assignment resolved to. Runs only while
+    /// an assignment is unresolved.
+    /// </summary>
+    private static Dictionary<Guid, string> CollectResolvedNames(
+        ClusterMetadataSnapshot snapshot,
+        IReadOnlyDictionary<Guid, string>? resolvedNames,
+        IReadOnlyList<ShareGroupHeartbeatTopicPartitions> topics)
+    {
+        var names = new Dictionary<Guid, string>(topics.Count);
+        for (var i = 0; i < topics.Count; i++)
+        {
+            if (PendingAssignmentTopics.TryResolve(snapshot, resolvedNames, topics[i].TopicId, out var name))
+                names[topics[i].TopicId] = name;
+        }
+
+        return names;
     }
 
     /// <summary>
@@ -550,6 +577,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     {
         _memberEpoch = 0;
         _unresolvedAssignment = null;
+        _unresolvedResolvedNames = null;
         _state = CoordinatorState.Unjoined;
     }
 
@@ -611,6 +639,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         if (assignment.TopicPartitions.Count == 0 && _assignedPartitions.Count == 0)
         {
             _unresolvedAssignment = null;
+            _unresolvedResolvedNames = null;
             return;
         }
 
@@ -619,11 +648,13 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         // Resolve against one snapshot, recorded below: an update during processing makes the next
         // heartbeat process the assignment again.
         var snapshot = _metadataManager.Metadata.CaptureSnapshot();
+        // A topic this pending assignment already resolved keeps its name if the snapshot drops it.
+        var resolvedNames = retry ? _unresolvedResolvedNames : null;
         var unknownTopics = 0;
 
         foreach (var tp in assignment.TopicPartitions)
         {
-            if (!snapshot.TopicsById.TryGetValue(tp.TopicId, out var topicInfo))
+            if (!PendingAssignmentTopics.TryResolve(snapshot, resolvedNames, tp.TopicId, out var topicName))
             {
                 // Warn once per assignment; the retries on later heartbeats stay quiet.
                 if (!retry)
@@ -634,11 +665,14 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
             foreach (var partition in tp.Partitions)
             {
-                newAssignment.Add(new TopicPartition(topicInfo.Name, partition));
+                newAssignment.Add(new TopicPartition(topicName, partition));
             }
         }
 
-        // Snapshot first: the volatile write of the assignment publishes it.
+        // Names and snapshot first: the volatile write of the assignment publishes them.
+        _unresolvedResolvedNames = unknownTopics > 0
+            ? CollectResolvedNames(snapshot, resolvedNames, assignment.TopicPartitions)
+            : null;
         Volatile.Write(ref _unresolvedSnapshot, unknownTopics > 0 ? snapshot : null);
         _unresolvedAssignment = unknownTopics > 0 ? assignment : null;
         var oldAssignment = _assignedPartitions;

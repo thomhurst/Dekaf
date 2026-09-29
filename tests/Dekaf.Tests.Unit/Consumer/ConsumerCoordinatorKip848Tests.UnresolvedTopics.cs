@@ -53,7 +53,8 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     }
 
     // Metadata can resolve one assigned topic while losing another, leaving the number of unknown
-    // topics unchanged. The pending assignment must still be processed again.
+    // topics unchanged. The pending assignment must still be processed again; the topic it had
+    // already resolved keeps its partitions.
     [Test]
     public async Task ConsumerProtocol_UnknownTopicsSwappedAtSameCount_IsProcessedAgain()
     {
@@ -74,7 +75,34 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         await coordinator.UnresolvedAssignmentRefreshTask.WaitAsync(TimeSpan.FromSeconds(30));
         await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
 
-        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("late-topic", 0)]);
+        await Assert.That(coordinator.Assignment).IsEquivalentTo(
+            [new TopicPartition("test-topic", 0), new TopicPartition("late-topic", 0)]);
+        await Assert.That(coordinator.HasUnresolvedAssignment).IsFalse();
+    }
+
+    // A full refresh that briefly leaves out a topic the pending assignment already resolved must
+    // not revoke partitions the broker still assigns.
+    [Test]
+    public async Task ConsumerProtocol_ResolvedTopicMissingFromLaterMetadata_KeepsItsPartitions()
+    {
+        var refreshResponse = new TaskCompletionSource<MetadataResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        SetupUnresolvedTopicCluster(
+            count => LateTopicBeat(count == 1 ? CreateLateAssignment() : null),
+            _ => new ValueTask<MetadataResponse>(refreshResponse.Task),
+            out _);
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(heartbeatIntervalMs: 60_000), _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(
+            new HashSet<string> { "test-topic", "late-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("test-topic", 0)]);
+
+        // Metadata changes and knows neither topic.
+        refreshResponse.SetResult(CreateLateTopicMetadata(includeLateTopic: false, includeTestTopic: false));
+        await coordinator.UnresolvedAssignmentRefreshTask.WaitAsync(TimeSpan.FromSeconds(30));
+        await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+
+        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("test-topic", 0)]);
         await Assert.That(coordinator.HasUnresolvedAssignment).IsTrue();
     }
 
