@@ -106,6 +106,33 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         await Assert.That(coordinator.HasUnresolvedAssignment).IsTrue();
     }
 
+    // A resolved topic deleted and recreated under the same name gets a new topic ID. The cached
+    // name must not keep translating the old ID: fetches would use the replacement topic's ID, a
+    // topic the broker never assigned to this member.
+    [Test]
+    public async Task ConsumerProtocol_ResolvedTopicRecreatedWithNewId_DropsItsPartitions()
+    {
+        var refreshResponse = new TaskCompletionSource<MetadataResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        SetupUnresolvedTopicCluster(
+            count => LateTopicBeat(count == 1 ? CreateLateAssignment() : null),
+            _ => new ValueTask<MetadataResponse>(refreshResponse.Task),
+            out _);
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(heartbeatIntervalMs: 60_000), _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(
+            new HashSet<string> { "test-topic", "late-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("test-topic", 0)]);
+
+        // "test-topic" now names a different topic ID; the late topic is still unknown.
+        refreshResponse.SetResult(CreateLateTopicMetadata(includeLateTopic: false, testTopicId: Guid.NewGuid()));
+        await coordinator.UnresolvedAssignmentRefreshTask.WaitAsync(TimeSpan.FromSeconds(30));
+        await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+
+        await Assert.That(coordinator.Assignment).IsEmpty();
+        await Assert.That(coordinator.HasUnresolvedAssignment).IsTrue();
+    }
+
     // A slow refresh (busy refresh lock, a broker at its request timeout) must neither hold back
     // the assignment the heartbeat received, revocations included, nor the heartbeats after it.
     [Test]
@@ -320,11 +347,12 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         PendingTopicPartitions = []
     };
 
-    private static MetadataResponse CreateLateTopicMetadata(bool includeLateTopic, bool includeTestTopic = true)
+    private static MetadataResponse CreateLateTopicMetadata(
+        bool includeLateTopic, bool includeTestTopic = true, Guid? testTopicId = null)
     {
         List<TopicMetadata> topics = [];
         if (includeTestTopic)
-            topics.Add(CreateTopic("test-topic", TestTopicId));
+            topics.Add(CreateTopic("test-topic", testTopicId ?? TestTopicId));
         if (includeLateTopic)
             topics.Add(CreateTopic("late-topic", LateTopicId));
 

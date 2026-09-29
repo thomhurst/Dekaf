@@ -108,6 +108,32 @@ public sealed partial class ShareConsumerCoordinatorTests
         await Assert.That(coordinator.HasUnresolvedAssignment).IsTrue();
     }
 
+    // A resolved topic deleted and recreated under the same name gets a new topic ID. The cached
+    // name must not keep translating the old ID: fetches would use the replacement topic's ID, a
+    // topic the broker never assigned to this member.
+    [Test]
+    public async Task Assignment_ResolvedTopicRecreatedWithNewId_DropsItsPartitions(CancellationToken cancellationToken)
+    {
+        var cluster = new UnresolvedTopicCluster("share-resolved-topic-recreated");
+        var refreshResponse = new TaskCompletionSource<MetadataResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        cluster.Heartbeat = count => Beat(count == 1 ? CreateLateAssignment() : null);
+        cluster.Metadata = _ => new ValueTask<MetadataResponse>(refreshResponse.Task);
+        await using var metadata = cluster.CreateMetadataManager();
+        await using var coordinator = new ShareConsumerCoordinator(cluster.Options, cluster.Pool, metadata);
+        coordinator.UpdateSubscription(["first", "late"]);
+
+        await coordinator.EnsureActiveGroupAsync(cancellationToken);
+        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("first", 0)]);
+
+        // "first" now names a different topic ID; the late topic is still unknown.
+        refreshResponse.SetResult(CreateClusterMetadata(includeLateTopic: false, firstTopicId: Guid.NewGuid()));
+        await coordinator.UnresolvedAssignmentRefreshTask.WaitAsync(cancellationToken);
+        await SendHeartbeatAsync(coordinator, cancellationToken);
+
+        await Assert.That(coordinator.Assignment).IsEmpty();
+        await Assert.That(coordinator.HasUnresolvedAssignment).IsTrue();
+    }
+
     // A slow refresh (busy refresh lock, a broker at its request timeout) must neither hold back
     // the assignment the heartbeat received nor the heartbeats after it.
     [Test]
@@ -213,11 +239,12 @@ public sealed partial class ShareConsumerCoordinatorTests
         ]
     };
 
-    private static MetadataResponse CreateClusterMetadata(bool includeLateTopic, bool includeFirstTopic = true)
+    private static MetadataResponse CreateClusterMetadata(
+        bool includeLateTopic, bool includeFirstTopic = true, Guid? firstTopicId = null)
     {
         List<TopicMetadata> topics = [];
         if (includeFirstTopic)
-            topics.Add(CreateTopic("first", KnownTopicId));
+            topics.Add(CreateTopic("first", firstTopicId ?? KnownTopicId));
         if (includeLateTopic)
             topics.Add(CreateTopic("late", LateTopicId));
 
