@@ -650,6 +650,185 @@ public class ProducerPoolMemoryBoundTests
 
     #endregion
 
+    #region BufferMemory rebalance
+
+    [Test]
+    public async Task SetMaxBufferMemory_Downward_ShrinksBatchPoolAndReplacesArenaRegistration()
+    {
+        // An auto-tuned producer's BufferMemory falls when another client joins the budget.
+        var options = CreateOptions(bufferMemory: 64 * MiB);
+        await using var accumulator = new RecordAccumulator(options);
+        var original = accumulator.ArenaPoolRegistrationForTest!;
+
+        accumulator.SetMaxBufferMemory(8 * 1024 * 1024);
+
+        var replacement = accumulator.ArenaPoolRegistrationForTest!;
+        await Assert.That(accumulator.BatchPoolRetentionLimitForTest).IsEqualTo(7);
+        await Assert.That(original.IsDisposed).IsTrue();
+        await Assert.That(ReferenceEquals(replacement, original)).IsFalse();
+        await Assert.That(replacement.IsDisposed).IsFalse();
+        await Assert.That(replacement.Limit.RetainedBytes).IsEqualTo(8 * MiB);
+        await Assert.That(replacement.Limit.PoolSize).IsEqualTo(7);
+    }
+
+    [Test]
+    public async Task AutoTunedProducer_WhenAnotherProducerJoinsTheBudget_ShrinksItsBatchStorage()
+    {
+        // 768MiB client budget: one producer gets 128MiB of BufferMemory, two get 64MiB each.
+        await using var client = Kafka.Connect("localhost:9092", builder =>
+            builder.WithMemoryBudget(768UL * 1024 * 1024));
+        await using var first = (KafkaProducer<string, string>)client.CreateProducer<string, string>().Build();
+        var accumulator = first.RecordAccumulator;
+        var available = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+        var alone = accumulator.BatchPoolRetentionLimitForTest;
+
+        await using var second = client.CreateProducer<string, string>().Build();
+
+        await Assert.That(accumulator.MaxBufferMemory).IsEqualTo(64UL * 1024 * 1024);
+        await Assert.That(alone).IsEqualTo(
+            RecordAccumulator.ComputePoolSize(accumulator.OptionsForTest, 128UL * 1024 * 1024, available));
+        await Assert.That(accumulator.BatchPoolRetentionLimitForTest).IsEqualTo(
+            RecordAccumulator.ComputePoolSize(accumulator.OptionsForTest, 64UL * 1024 * 1024, available));
+        await Assert.That(accumulator.BatchPoolRetentionLimitForTest).IsLessThan(alone);
+        await Assert.That(accumulator.ArenaPoolRegistrationForTest!.Limit.RetainedBytes)
+            .IsLessThanOrEqualTo(64 * MiB);
+    }
+
+    [Test]
+    public async Task SetMaxBufferMemory_Upward_GrowsBatchPool()
+    {
+        var options = CreateOptions(bufferMemory: 8 * MiB);
+        await using var accumulator = new RecordAccumulator(options);
+
+        accumulator.SetMaxBufferMemory(256UL * 1024 * 1024);
+
+        var expected = RecordAccumulator.ComputePoolSize(options, 256UL * 1024 * 1024, GC.GetGCMemoryInfo().TotalAvailableMemoryBytes);
+        await Assert.That(expected).IsGreaterThan(7);
+        await Assert.That(accumulator.BatchPoolRetentionLimitForTest).IsEqualTo(expected);
+        await Assert.That(accumulator.BatchPoolMaxSizeForTest).IsGreaterThanOrEqualTo(expected);
+        await Assert.That(accumulator.ArenaPoolRegistrationForTest!.Limit.PoolSize).IsEqualTo(expected);
+    }
+
+    [Test]
+    public async Task SetMaxBufferMemory_UnchangedLimit_KeepsTheRegistration()
+    {
+        var accumulator = new RecordAccumulator(CreateOptions(bufferMemory: 8 * MiB));
+        await using var _ = accumulator;
+        var original = accumulator.ArenaPoolRegistrationForTest;
+
+        accumulator.SetMaxBufferMemory(8 * 1024 * 1024);
+
+        await Assert.That(ReferenceEquals(accumulator.ArenaPoolRegistrationForTest, original)).IsTrue();
+        await Assert.That(original!.IsDisposed).IsFalse();
+    }
+
+    [Test]
+    public async Task SetMaxBufferMemory_AfterDispose_DoesNotRegisterAgain()
+    {
+        var accumulator = new RecordAccumulator(CreateOptions(bufferMemory: 8 * MiB));
+        await accumulator.DisposeAsync();
+
+        accumulator.SetMaxBufferMemory(64 * 1024 * 1024);
+
+        await Assert.That(accumulator.ArenaPoolRegistrationForTest!.IsDisposed).IsTrue();
+    }
+
+    [Test]
+    public async Task SetMaxBufferMemory_Incremental_ResizesPoolWithoutRegistering()
+    {
+        await using var accumulator = new RecordAccumulator(new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            BatchSize = DefaultBatchSize,
+            BufferMemory = 1024 * MiB,
+            BufferMemoryAllocationStrategy = BufferMemoryAllocationStrategy.Incremental,
+        });
+
+        accumulator.SetMaxBufferMemory(8 * 1024 * 1024);
+
+        await Assert.That(accumulator.BatchPoolRetentionLimitForTest).IsEqualTo(BatchArena.DefaultPoolSize);
+        await Assert.That(accumulator.ArenaPoolRegistrationForTest).IsNull();
+    }
+
+    [Test]
+    [Timeout(60_000)]
+    public async Task SetMaxBufferMemory_ConcurrentWithDispose_LeavesNoLiveRegistration(CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < 50; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var accumulator = new RecordAccumulator(CreateOptions(bufferMemory: 8 * MiB));
+            using var start = new ManualResetEventSlim();
+            var rebalance = Task.Run(() =>
+            {
+                start.Wait(cancellationToken);
+                for (var i = 0; i < 20; i++)
+                    accumulator.SetMaxBufferMemory((ulong)(i % 2 == 0 ? 64 : 8) * 1024 * 1024);
+            }, cancellationToken);
+            var dispose = Task.Run(async () =>
+            {
+                start.Wait(cancellationToken);
+                await accumulator.DisposeAsync();
+            }, cancellationToken);
+
+            start.Set();
+            await Task.WhenAll(rebalance, dispose);
+
+            await Assert.That(accumulator.ArenaPoolRegistrationForTest!.IsDisposed).IsTrue();
+        }
+    }
+
+    [Test]
+    public async Task PartitionBatchPool_LoweredRetentionLimit_ReleasesPooledBatchesAndCapsReturns()
+    {
+        var (pool, readyPool) = CreatePools(maxPoolSize: 8);
+        var batches = Enumerable.Range(0, 8)
+            .Select(_ => pool.Rent(new TopicPartition("pool-memory-bound", 0), partitionCount: 1))
+            .ToList();
+        foreach (var batch in batches)
+            FillCompleteAndReturn(pool, readyPool, batch);
+        var pooledBefore = pool.ApproximateCount;
+
+        pool.SetRetentionLimit(2);
+        var pooledAfterLowering = pool.ApproximateCount;
+        var rented = Enumerable.Range(0, 5)
+            .Select(_ => pool.Rent(new TopicPartition("pool-memory-bound", 0), partitionCount: 1))
+            .ToList();
+        foreach (var batch in rented)
+            FillCompleteAndReturn(pool, readyPool, batch);
+
+        await Assert.That(pooledBefore).IsEqualTo(8);
+        await Assert.That(pooledAfterLowering).IsEqualTo(0);
+        await Assert.That(pool.ApproximateCount).IsEqualTo(2);
+        await Assert.That(pool.RetentionLimit).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task PartitionBatchPool_RaisedRetentionLimit_GrowsCapacity()
+    {
+        var (pool, readyPool) = CreatePools(maxPoolSize: 2);
+
+        pool.SetRetentionLimit(6);
+        var batches = Enumerable.Range(0, 6)
+            .Select(_ => pool.Rent(new TopicPartition("pool-memory-bound", 0), partitionCount: 1))
+            .ToList();
+        foreach (var batch in batches)
+            FillCompleteAndReturn(pool, readyPool, batch);
+
+        await Assert.That(pool.MaxPoolSize).IsGreaterThanOrEqualTo(6);
+        await Assert.That(pool.ApproximateCount).IsEqualTo(6);
+    }
+
+    [Test]
+    public async Task PartitionBatchPool_SetRetentionLimit_RejectsNonPositive()
+    {
+        var (pool, _) = CreatePools(maxPoolSize: 2);
+
+        await Assert.That(() => pool.SetRetentionLimit(0)).Throws<ArgumentOutOfRangeException>();
+    }
+
+    #endregion
+
     #region Thread-local retention
 
     [Test]

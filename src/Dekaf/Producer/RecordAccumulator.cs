@@ -827,6 +827,8 @@ internal sealed class BatchArena
 
         internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
 
+        internal ArenaPoolLimit Limit => registration.Limit;
+
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _disposed, 1) == 0)
@@ -1261,9 +1263,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     private readonly PartitionBatchPool _batchPool;
     internal int BatchPoolMaxSizeForTest => _batchPool.MaxPoolSize;
-    // Full-arena producers register their limits with the process-wide arena pool.
-    private readonly BatchArena.ArenaPoolRegistration? _arenaPoolRegistration;
-    internal BatchArena.ArenaPoolRegistration? ArenaPoolRegistrationForTest => _arenaPoolRegistration;
+    // Full-arena producers register their limits with the process-wide arena pool. Budget
+    // rebalances replace the registration; the lock orders replacement against disposal.
+    private BatchArena.ArenaPoolRegistration? _arenaPoolRegistration;
+    private readonly Lock _arenaPoolRegistrationLock = new();
+    internal BatchArena.ArenaPoolRegistration? ArenaPoolRegistrationForTest => Volatile.Read(ref _arenaPoolRegistration);
+    internal int BatchPoolRetentionLimitForTest => _batchPool.RetentionLimit;
+    internal ProducerOptions OptionsForTest => _options;
     private readonly ReadyBatchPool _readyBatchPool; // Pool for ReadyBatch objects to eliminate per-batch allocations
     private readonly CompressionRatioEstimator _compressionRatioEstimator = new();
 
@@ -3290,10 +3296,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int preWarmCount,
         long availableMemoryBytes)
     {
-        var limit = new ArenaPoolLimit(
-            poolSize,
-            ComputeMemoryBoundedPoolSize(options, availableMemoryBytes),
-            ComputeRetainedArenaBytes(options, availableMemoryBytes));
+        var limit = CreateArenaPoolLimit(options, options.BufferMemory, poolSize, availableMemoryBytes);
         var arenaCapacity = ProducerOptions.GetEffectiveArenaCapacity(options.BatchSize, options.ArenaCapacity);
         // Pre-warming allocates pinned arenas and can run out of memory; the accumulator is then
         // never constructed, so DisposeAsync cannot release the registration.
@@ -3301,6 +3304,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             () => BatchArena.Register(limit),
             () => BatchArena.PreWarm(preWarmCount, arenaCapacity));
     }
+
+    private static ArenaPoolLimit CreateArenaPoolLimit(
+        ProducerOptions options,
+        ulong bufferMemory,
+        int poolSize,
+        long availableMemoryBytes)
+        => new(
+            poolSize,
+            ComputeMemoryBoundedPoolSize(options, bufferMemory, availableMemoryBytes),
+            ComputeRetainedArenaBytes(options, bufferMemory, availableMemoryBytes));
 
     /// <summary>
     /// Registers, then runs <paramref name="afterRegistration"/>; disposes the registration and
@@ -3348,18 +3361,25 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <inheritdoc cref="ComputePoolSize(ProducerOptions)"/>
     /// <param name="options">Producer options.</param>
     /// <param name="availableMemoryBytes">
-    /// Memory available to the GC, or 0 when unknown. See <see cref="ComputeMemoryBoundedPoolSize"/>.
+    /// Memory available to the GC, or 0 when unknown. See <see cref="ComputeMemoryBoundedPoolSize(ProducerOptions, long)"/>.
     /// </param>
     internal static int ComputePoolSize(ProducerOptions options, long availableMemoryBytes)
+        => ComputePoolSize(options, options.BufferMemory, availableMemoryBytes);
+
+    /// <summary>
+    /// Pool size for <paramref name="bufferMemory"/>, which differs from
+    /// <see cref="ProducerOptions.BufferMemory"/> after an auto-tuned budget rebalance.
+    /// </summary>
+    internal static int ComputePoolSize(ProducerOptions options, ulong bufferMemory, long availableMemoryBytes)
     {
         // BufferMemory / BatchSize gives the max batch count the buffer can hold.
         // Divide by 4: most batches are either filling or in-flight, not all in the pool
         // simultaneously. The pool grows lazily on miss, so undersizing causes a few extra
         // allocations during ramp-up but avoids excessive steady-state POH retention.
         // With default 256MB/1MB = 256 batches, pool = max(64, 128) = 128 (DefaultPoolSize floor), ~140MB of arenas.
-        var batchCapacity = (int)Math.Min(options.BufferMemory / (ulong)Math.Max(options.BatchSize, 1), int.MaxValue);
+        var batchCapacity = (int)Math.Min(bufferMemory / (ulong)Math.Max(options.BatchSize, 1), int.MaxValue);
         var churnPoolSize = Math.Clamp(batchCapacity / 4, BatchArena.DefaultPoolSize, BatchArena.MaxPoolSizeCap);
-        return Math.Min(churnPoolSize, ComputeMemoryBoundedPoolSize(options, availableMemoryBytes));
+        return Math.Min(churnPoolSize, ComputeMemoryBoundedPoolSize(options, bufferMemory, availableMemoryBytes));
     }
 
     /// <summary>
@@ -3370,16 +3390,22 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// arena (BatchSize + 12.5%, or ArenaCapacity) whether or not a batch ever filled it. Arenas
     /// are pinned and allocated without zeroing, so untouched pages are invisible to container
     /// RSS metrics while still counting against the GC heap limit. The bound is
-    /// <see cref="ComputeRetainedArenaBytes"/> divided by the arena size, and never below
+    /// <see cref="ComputeRetainedArenaBytes(ProducerOptions, long)"/> divided by the arena size, and never below
     /// <see cref="MinimumPoolSize"/>. <see cref="BufferMemoryAllocationStrategy.Incremental"/>
     /// batches return their chunks before pooling, so no arena bound applies to them.
     /// </remarks>
     internal static int ComputeMemoryBoundedPoolSize(ProducerOptions options, long availableMemoryBytes)
+        => ComputeMemoryBoundedPoolSize(options, options.BufferMemory, availableMemoryBytes);
+
+    private static int ComputeMemoryBoundedPoolSize(
+        ProducerOptions options,
+        ulong bufferMemory,
+        long availableMemoryBytes)
     {
         if (options.BufferMemoryAllocationStrategy != BufferMemoryAllocationStrategy.Full)
             return BatchArena.MaxPoolSizeCap;
 
-        var batchCount = (ulong)ComputeRetainedArenaBytes(options, availableMemoryBytes)
+        var batchCount = (ulong)ComputeRetainedArenaBytes(options, bufferMemory, availableMemoryBytes)
             / (ulong)GetPooledArenaCapacity(options);
         return (int)Math.Clamp(batchCount, (ulong)MinimumPoolSize, (ulong)BatchArena.MaxPoolSizeCap);
     }
@@ -3391,8 +3417,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// but at least one arena so batch rotation can reuse storage.
     /// </summary>
     internal static long ComputeRetainedArenaBytes(ProducerOptions options, long availableMemoryBytes)
+        => ComputeRetainedArenaBytes(options, options.BufferMemory, availableMemoryBytes);
+
+    private static long ComputeRetainedArenaBytes(
+        ProducerOptions options,
+        ulong bufferMemory,
+        long availableMemoryBytes)
     {
-        var retainedBytes = (long)Math.Min(options.BufferMemory, long.MaxValue);
+        var retainedBytes = (long)Math.Min(bufferMemory, long.MaxValue);
         if (availableMemoryBytes > 0)
             retainedBytes = Math.Min(retainedBytes, availableMemoryBytes / RetainedMemoryDivisor);
         return Math.Max(retainedBytes, GetPooledArenaCapacity(options));
@@ -6143,6 +6175,36 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Growing: wake any waiters so they retry their reservation immediately.
         if (newLimit > previous)
             SignalBufferSpaceAvailable();
+
+        ResizeBatchStorage(newLimit);
+    }
+
+    /// <summary>
+    /// Re-sizes idle batch storage for a rebalanced BufferMemory: the batch pool's retention
+    /// limit and, for Full arenas, this producer's arena pool registration. Runs once per budget
+    /// rebalance (producer or consumer construction and disposal), never on the append path.
+    /// </summary>
+    private void ResizeBatchStorage(ulong bufferMemory)
+    {
+        var availableMemoryBytes = GetAvailableMemoryBytes();
+        var poolSize = ComputePoolSize(_options, bufferMemory, availableMemoryBytes);
+        _batchPool.SetRetentionLimit(poolSize);
+
+        if (_options.BufferMemoryAllocationStrategy != BufferMemoryAllocationStrategy.Full)
+            return;
+
+        var limit = CreateArenaPoolLimit(_options, bufferMemory, poolSize, availableMemoryBytes);
+        lock (_arenaPoolRegistrationLock)
+        {
+            var previous = _arenaPoolRegistration;
+            if (previous is null || Volatile.Read(ref _disposed) != 0)
+                return;
+
+            // Register before releasing the old request, so the effective limit never dips
+            // below this producer's need in between (a dip would release pooled arenas).
+            Volatile.Write(ref _arenaPoolRegistration, BatchArena.Register(limit));
+            previous.Dispose();
+        }
     }
 
     /// <summary>Test-only synchronous reservation helper.</summary>
@@ -8871,7 +8933,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Clear the batch pool
         _batchPool.Clear();
-        _arenaPoolRegistration?.Dispose();
+        lock (_arenaPoolRegistrationLock)
+            _arenaPoolRegistration?.Dispose();
 
         // Dispose resources to prevent leaks
         _wakeupSignal?.Dispose();
@@ -8970,6 +9033,7 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
     private readonly CompressionRatioEstimator _compressionRatioEstimator;
     private ReadyBatchPool? _readyBatchPool;
     private readonly BatchArrayReuseQueue _arrayReuseQueue;
+    private int _retentionLimit;
 
     /// <summary>
     /// Creates a new PartitionBatchPool.
@@ -8983,6 +9047,7 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
         int maxPoolSize = BatchArena.DefaultPoolSize)
         : base(maxPoolSize, threadLocalFastPath: false)
     {
+        _retentionLimit = maxPoolSize;
         _options = options;
         _compressionRatioEstimator = compressionRatioEstimator ?? new CompressionRatioEstimator();
         _arrayReuseQueue = new BatchArrayReuseQueue(maxSize: maxPoolSize);
@@ -8995,6 +9060,40 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
     public void SetReadyBatchPool(ReadyBatchPool pool)
     {
         _readyBatchPool = pool;
+    }
+
+    /// <summary>
+    /// Most batches the pool keeps. Starts at the constructor's pool size and follows
+    /// BufferMemory rebalances; <see cref="ObjectPool{T}.MaxPoolSize"/> can only grow.
+    /// </summary>
+    public int RetentionLimit => Volatile.Read(ref _retentionLimit);
+
+    /// <summary>
+    /// Changes <see cref="RetentionLimit"/>. Lowering it releases every pooled batch (and its
+    /// arena); later returns are kept only while fewer than the new limit are pooled.
+    /// </summary>
+    public void SetRetentionLimit(int limit)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+        var previous = Interlocked.Exchange(ref _retentionLimit, limit);
+        if (limit > MaxPoolSize)
+            RatchetMaxPoolSize(limit);
+        else if (limit < previous)
+            base.Clear();
+    }
+
+    /// <summary>
+    /// Returns a batch to the pool, or discards it when the pool already holds
+    /// <see cref="RetentionLimit"/> batches. A discarded batch skips the pooling reset, so it
+    /// never rents an arena it would not keep.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public new void Return(PartitionBatch item)
+    {
+        if (ApproximateCount >= Volatile.Read(ref _retentionLimit))
+            return;
+
+        base.Return(item);
     }
 
     protected override PartitionBatch Create()
