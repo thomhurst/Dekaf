@@ -947,11 +947,19 @@ internal sealed class BatchArena
         var missing = Math.Max(0, count - s_pool.ApproximateCount);
         for (var i = 0; i < missing; i++)
         {
+            // Same protocol as ReturnToPool: a limit reduction between reserving and pooling
+            // has already released the pool, so release again rather than keep this arena.
+            var epoch = Volatile.Read(ref s_releaseEpoch);
             var arena = s_retainedBytes.ReserveThenCreate(capacity, static capacity => new BatchArena(capacity));
             if (arena is null)
                 return;
 
             s_pool.Return(arena);
+            if (Volatile.Read(ref s_releaseEpoch) != epoch)
+            {
+                s_pool.Clear();
+                return;
+            }
         }
     }
 
