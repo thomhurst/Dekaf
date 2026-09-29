@@ -749,45 +749,56 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             batchCompletionCallback,
             recordAppendedCallback,
             ResolveLeaderIdForUnackedBudget);
-        if (options.TransactionalId is not null)
-            _accumulator.OnTransactionalBatchFailed = OnTransactionalBatchFailed;
-        _uniformStickyPartitioner?.SetPartitionQueueByteProvider(_accumulator.GetPartitionQueueBytes);
-        _uniformStickyPartitioner?.SetRackLocalPartitionsProvider(
-            _metadataManager.Metadata.GetPartitionsForRack);
+        try
+        {
+            if (options.TransactionalId is not null)
+                _accumulator.OnTransactionalBatchFailed = OnTransactionalBatchFailed;
+            _uniformStickyPartitioner?.SetPartitionQueueByteProvider(_accumulator.GetPartitionQueueBytes);
+            _uniformStickyPartitioner?.SetRackLocalPartitionsProvider(
+                _metadataManager.Metadata.GetPartitionsForRack);
 
-        // Inflight tracker enables coordinated retry with multiple in-flight batches per partition.
-        // The broker uses sequence numbers to guarantee ordering, so multiple batches can be
-        // in-flight simultaneously. The tracker enables coordinated retry on
-        // OutOfOrderSequenceNumber instead of blind backoff.
-        // Only pre-warm for idempotent producers — non-idempotent producers skip sequence
-        // assignment and inflight tracking entirely (no producer ID or sequence numbers).
-        var inflightPool = new InflightEntryPool(options.EnableIdempotence
-            ? producerPoolSizes.InflightEntries
-            : 1); // Minimum valid size; entries never rented for non-idempotent
-        if (options.EnableIdempotence)
-            inflightPool.PreWarm(Math.Min(options.MaxInFlightRequestsPerConnection * PoolSizing.InflightEntriesPerBatch, inflightPool.MaxPoolSize));
-        _inflightTracker = new PartitionInflightTracker(inflightPool);
+            // Inflight tracker enables coordinated retry with multiple in-flight batches per partition.
+            // The broker uses sequence numbers to guarantee ordering, so multiple batches can be
+            // in-flight simultaneously. The tracker enables coordinated retry on
+            // OutOfOrderSequenceNumber instead of blind backoff.
+            // Only pre-warm for idempotent producers — non-idempotent producers skip sequence
+            // assignment and inflight tracking entirely (no producer ID or sequence numbers).
+            var inflightPool = new InflightEntryPool(options.EnableIdempotence
+                ? producerPoolSizes.InflightEntries
+                : 1); // Minimum valid size; entries never rented for non-idempotent
+            if (options.EnableIdempotence)
+                inflightPool.PreWarm(Math.Min(options.MaxInFlightRequestsPerConnection * PoolSizing.InflightEntriesPerBatch, inflightPool.MaxPoolSize));
+            _inflightTracker = new PartitionInflightTracker(inflightPool);
 
-        GcConfigurationCheck.WarnIfWorkstationGc(_logger);
+            GcConfigurationCheck.WarnIfWorkstationGc(_logger);
 
-        _senderCts = new CancellationTokenSource();
-        _senderTask = Task.Factory.StartNew(
-            () => SenderLoopAsync(_senderCts.Token),
-            CancellationToken.None,
-            TaskCreationOptions.LongRunning,
-            TaskScheduler.Default).Unwrap();
-        _lingerTask = Task.Factory.StartNew(
-            () => LingerLoopAsync(_senderCts.Token),
-            CancellationToken.None,
-            TaskCreationOptions.LongRunning,
-            TaskScheduler.Default).Unwrap();
-        // Sender-loop cancellation is also a test seam. Keep append admission alive until
-        // accumulator disposal completes its channels and owns draining any unread work.
-        _appendWorkerCts = CancellationTokenSource.CreateLinkedTokenSource(_accumulator.DisposalToken);
-        _accumulator.StartAppendWorkers(_appendWorkerCts.Token);
+            _senderCts = new CancellationTokenSource();
+            _senderTask = Task.Factory.StartNew(
+                () => SenderLoopAsync(_senderCts.Token),
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default).Unwrap();
+            _lingerTask = Task.Factory.StartNew(
+                () => LingerLoopAsync(_senderCts.Token),
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default).Unwrap();
+            // Sender-loop cancellation is also a test seam. Keep append admission alive until
+            // accumulator disposal completes its channels and owns draining any unread work.
+            _appendWorkerCts = CancellationTokenSource.CreateLinkedTokenSource(_accumulator.DisposalToken);
+            _accumulator.StartAppendWorkers(_appendWorkerCts.Token);
 
-        _stateSource = new ProducerStateSource(options.ClientId, _accumulator, _brokerSenders);
-        DekafMetrics.RegisterProducerState(_stateSource);
+            _stateSource = new ProducerStateSource(options.ClientId, _accumulator, _brokerSenders);
+            DekafMetrics.RegisterProducerState(_stateSource);
+        }
+        catch
+        {
+            // The caller never receives this producer, so nothing will dispose the accumulator;
+            // release its process-wide arena pool registration so the failed producer's limits
+            // do not outlive it.
+            _accumulator.ReleaseArenaPoolRegistration();
+            throw;
+        }
     }
 
     private static CompressionCodecRegistry CreateCompressionCodecRegistry(ProducerOptions options)

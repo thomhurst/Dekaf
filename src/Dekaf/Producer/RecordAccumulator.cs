@@ -1309,6 +1309,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // rebalances replace the registration; the lock orders replacement against disposal.
     private BatchArena.ArenaPoolRegistration? _arenaPoolRegistration;
     private readonly Lock _arenaPoolRegistrationLock = new();
+    private bool _arenaPoolReleased; // guarded by _arenaPoolRegistrationLock
     internal BatchArena.ArenaPoolRegistration? ArenaPoolRegistrationForTest => Volatile.Read(ref _arenaPoolRegistration);
     internal int BatchPoolRetentionLimitForTest => _batchPool.RetentionLimit;
     internal int ReadyBatchPoolMaxSizeForTest => _readyBatchPool.MaxPoolSize;
@@ -6264,6 +6265,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Releases this producer's arena pool registration. Called by disposal, and by an owner
+    /// whose construction fails after creating the accumulator (it will never be disposed).
+    /// Idempotent; a later budget rebalance does not register again.
+    /// </summary>
+    internal void ReleaseArenaPoolRegistration()
+    {
+        lock (_arenaPoolRegistrationLock)
+        {
+            _arenaPoolReleased = true;
+            _arenaPoolRegistration?.Dispose();
+        }
+    }
+
+    /// <summary>
     /// Re-sizes idle batch storage for a rebalanced BufferMemory: the batch pool's retention
     /// limit and, for Full arenas, this producer's arena pool registration. Runs once per budget
     /// rebalance (producer or consumer construction and disposal), never on the append path.
@@ -6292,7 +6307,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 return;
 
             var previous = _arenaPoolRegistration;
-            if (previous is null || Volatile.Read(ref _disposed) != 0)
+            if (previous is null || _arenaPoolReleased)
                 return;
 
             // Register before releasing the old request, so the effective limit never dips
@@ -9029,8 +9044,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Clear the batch pool
         _batchPool.Clear();
-        lock (_arenaPoolRegistrationLock)
-            _arenaPoolRegistration?.Dispose();
+        ReleaseArenaPoolRegistration();
 
         // Dispose resources to prevent leaks
         _wakeupSignal?.Dispose();

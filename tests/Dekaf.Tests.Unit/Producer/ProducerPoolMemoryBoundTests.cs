@@ -1355,6 +1355,29 @@ public class ProducerPoolMemoryBoundTests
     }
 
     [Test]
+    public async Task ReleaseArenaPoolRegistration_WithoutDispose_ReleasesAndBlocksReregistration()
+    {
+        // A KafkaProducer whose constructor fails after creating its accumulator never disposes
+        // it; releasing the registration must stick even if a budget rebalance arrives later.
+        var accumulator = new RecordAccumulator(CreateOptions(bufferMemory: 8 * MiB));
+        try
+        {
+            var registration = accumulator.ArenaPoolRegistrationForTest!;
+
+            accumulator.ReleaseArenaPoolRegistration();
+            accumulator.ReleaseArenaPoolRegistration();
+            accumulator.SetMaxBufferMemory(64 * 1024 * 1024);
+
+            await Assert.That(registration.IsDisposed).IsTrue();
+            await Assert.That(ReferenceEquals(accumulator.ArenaPoolRegistrationForTest, registration)).IsTrue();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task PartitionBatchPool_SetRetentionLimit_RejectsNonPositive()
     {
         var (pool, _) = CreatePools(maxPoolSize: 2);
