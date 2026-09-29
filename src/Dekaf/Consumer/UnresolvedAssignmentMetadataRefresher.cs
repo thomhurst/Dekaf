@@ -13,6 +13,10 @@ namespace Dekaf.Consumer;
 /// (a deleted topic, say) costs a Metadata request only rarely. Used by the KIP-848 and share
 /// group coordinators; nothing here runs while every assigned topic is known.
 /// </summary>
+/// <remarks>
+/// Called at heartbeat cadence, and only while an assignment is unresolved, so a plain lock
+/// guards the state; the steady heartbeat never reaches this type.
+/// </remarks>
 internal sealed partial class UnresolvedAssignmentMetadataRefresher
 {
     /// <summary>
@@ -26,9 +30,12 @@ internal sealed partial class UnresolvedAssignmentMetadataRefresher
     private readonly int _initialBackoffMs;
     private readonly int _maxBackoffMs;
     private readonly CancellationTokenSource _cts = new();
+    private readonly Lock _gate = new();
+
+    // All fields below are guarded by _gate.
     private Task _task = Task.CompletedTask;
-    private int _inFlight;
-    private int _stopped;
+    private bool _inFlight;
+    private bool _stopped;
     // Bumped by Reset for each new assignment. A refresh started for an older generation neither
     // applies its backoff to the current one nor stands in for the refresh it asked for.
     private int _generation;
@@ -54,7 +61,14 @@ internal sealed partial class UnresolvedAssignmentMetadataRefresher
     /// <summary>
     /// The latest refresh (completed when none ran). Never faults.
     /// </summary>
-    public Task Current => Volatile.Read(ref _task);
+    public Task Current
+    {
+        get
+        {
+            lock (_gate)
+                return _task;
+        }
+    }
 
     /// <summary>
     /// Starts a refresh unless the backoff has not elapsed or the owner stopped. While one is
@@ -63,38 +77,26 @@ internal sealed partial class UnresolvedAssignmentMetadataRefresher
     /// </summary>
     public void Request()
     {
-        if (Volatile.Read(ref _stopped) != 0 ||
-            Stopwatch.GetTimestamp() < Volatile.Read(ref _notBefore))
-            return;
-
-        // Record the demand before claiming: either the claim succeeds, or the running refresh
-        // (whose release is a full fence before it reads this) sees it.
-        Interlocked.Exchange(ref _requestedGeneration, Volatile.Read(ref _generation));
-        if (Interlocked.CompareExchange(ref _inFlight, 1, 0) != 0)
-            return;
-
-        // The claim is a full fence, as is StopAsync's write of _stopped before it reads _inFlight:
-        // either StopAsync sees this claim and waits for the slot to clear, or this sees the stop.
-        if (Volatile.Read(ref _stopped) != 0)
+        lock (_gate)
         {
-            Interlocked.Exchange(ref _inFlight, 0);
-            return;
+            _requestedGeneration = _generation;
+            StartIfDueLocked();
         }
-
-        // Task.Run: the refresh may wait for the metadata refresh lock or a slow broker, and none
-        // of that may run inline on the heartbeat.
-        var generation = Volatile.Read(ref _generation);
-        Volatile.Write(ref _task, Task.Run(() => RefreshAsync(generation)));
     }
 
     /// <summary>
-    /// A new assignment arrived: its refreshes start without the backoff the previous one built
-    /// up, and a refresh still running for the previous one does not count for it.
+    /// A new assignment arrived, or the pending one was dropped: later refreshes start without the
+    /// backoff the previous one built up, and a refresh still running for it neither counts for
+    /// the next assignment nor starts a follow-up.
     /// </summary>
     public void Reset()
     {
-        Interlocked.Increment(ref _generation);
-        ClearBackoff();
+        lock (_gate)
+        {
+            _generation++;
+            _attempts = 0;
+            _notBefore = 0;
+        }
     }
 
     /// <summary>
@@ -102,32 +104,31 @@ internal sealed partial class UnresolvedAssignmentMetadataRefresher
     /// </summary>
     public async ValueTask StopAsync()
     {
-        Interlocked.Exchange(ref _stopped, 1);
-        await _cts.CancelAsync().ConfigureAwait(false);
-
-        // A Request that claimed the slot before seeing the stop may not have published its task
-        // yet, so wait for the slot, not only the latest published task. Once the slot is clear
-        // no refresh starts again: every later claim sees the stop and releases.
-        while (Volatile.Read(ref _inFlight) != 0)
+        Task task;
+        lock (_gate)
         {
-            var task = Current;
-            if (task.IsCompleted)
-                await Task.Delay(1).ConfigureAwait(false);
-            else
-                await task.ConfigureAwait(false);
+            // Starting a refresh and publishing its task happen under the lock, so the task read
+            // here is the last one that will ever run.
+            _stopped = true;
+            task = _task;
         }
 
-        // The refresh that cleared the slot may still be finishing its last lines.
-        await Current.ConfigureAwait(false);
-        // Not disposed: a heartbeat racing its owner's disposal may still start (and immediately
-        // cancel) a refresh that reads the token, and a source without timers or linked
-        // registrations holds nothing to release.
+        await _cts.CancelAsync().ConfigureAwait(false);
+        await task.ConfigureAwait(false);
+        // Not disposed: a heartbeat racing its owner's disposal may still read the token, and a
+        // source without timers or linked registrations holds nothing to release.
     }
 
-    private void ClearBackoff()
+    private void StartIfDueLocked()
     {
-        Volatile.Write(ref _attempts, 0);
-        Volatile.Write(ref _notBefore, 0);
+        if (_stopped || _inFlight || Stopwatch.GetTimestamp() < _notBefore)
+            return;
+
+        _inFlight = true;
+        // Task.Run: the refresh may wait for the metadata refresh lock or a slow broker, and none
+        // of that may run inline on the heartbeat. Only queues the work, so it is safe under the lock.
+        var generation = _generation;
+        _task = Task.Run(() => RefreshAsync(generation));
     }
 
     private async Task RefreshAsync(int generation)
@@ -154,32 +155,22 @@ internal sealed partial class UnresolvedAssignmentMetadataRefresher
 
     private void Complete(int generation)
     {
-        var stale = Volatile.Read(ref _generation) != generation;
-        if (!stale)
+        lock (_gate)
         {
-            var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
-                _initialBackoffMs, _maxBackoffMs, Interlocked.Increment(ref _attempts));
-            Volatile.Write(ref _notBefore, Stopwatch.GetTimestamp() + (delayMs * Stopwatch.Frequency / 1000));
+            _inFlight = false;
+            if (generation == _generation)
+            {
+                var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
+                    _initialBackoffMs, _maxBackoffMs, ++_attempts);
+                _notBefore = Stopwatch.GetTimestamp() + (delayMs * Stopwatch.Frequency / 1000);
+                return;
+            }
 
-            // A Reset between the check above and these writes cleared the backoff first; undo
-            // what this stale refresh just wrote over it.
-            stale = Volatile.Read(ref _generation) != generation;
-            if (stale)
-                ClearBackoff();
+            // A newer assignment asked for a refresh while this one ran: that request found the
+            // refresher busy, so start it now rather than wait for a later heartbeat.
+            if (_requestedGeneration == _generation)
+                StartIfDueLocked();
         }
-
-        // Full fence, then read the demand. A Request records its generation (a full fence) before
-        // it tries to claim the slot, so for any request this refresh could have turned away,
-        // either its claim sees the slot free or the read below sees its generation. Checking
-        // only after the release covers a Reset at any point up to here, including after the
-        // checks above.
-        Interlocked.Exchange(ref _inFlight, 0);
-
-        // A newer assignment asked for a refresh while this one ran: that request found the
-        // refresher busy, so start it now rather than wait for a later heartbeat.
-        var requested = Volatile.Read(ref _requestedGeneration);
-        if (requested != generation && requested == Volatile.Read(ref _generation))
-            Request();
     }
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Metadata refresh for an assignment with unknown topic IDs failed; a later heartbeat retries")]
