@@ -109,6 +109,24 @@ public class DekafKafkaResourceTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task WithKafkaUI_LinksBrokersOnlyWhileTheUIIsInTheModel(bool removeUI)
+    {
+        // Placeholder orchestrator paths satisfy the options validation of Aspire's own BeforeStartEvent handlers.
+        var builder = DistributedApplication.CreateBuilder(["--DcpPublisher:CliPath=dcp", "--DcpPublisher:DashboardPath=dashboard"]);
+        var kafka = builder.AddDekafKafka("kafka").WithKafkaUI();
+        var ui = builder.Resources.OfType<DekafKafkaUIContainerResource>().Single();
+        if (removeUI)
+            builder.Resources.Remove(ui);
+
+        using var app = builder.Build();
+        await builder.Eventing.PublishAsync(new BeforeStartEvent(app.Services, app.Services.GetRequiredService<DistributedApplicationModel>()));
+
+        await Assert.That(kafka.Resource.Annotations.OfType<ResourceUrlsCallbackAnnotation>().Any()).IsEqualTo(!removeUI);
+    }
+
+    [Test]
     public async Task HealthCheck_UsesADekafAdminClientPerBroker()
     {
         var builder = DistributedApplication.CreateBuilder();
