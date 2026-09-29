@@ -790,7 +790,7 @@ internal sealed class BatchArena
     internal static ArenaPoolRegistration Register(ArenaPoolLimit limit)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit.PoolSize);
-        var registration = s_limits.Register(limit, out _, out _);
+        var registration = s_limits.Register(limit);
         try
         {
             ApplyLimits();
@@ -799,7 +799,7 @@ internal sealed class BatchArena
         {
             // Applying can allocate (a larger Reservoir) under memory pressure. The caller never
             // receives a handle, so remove the request here or it would outlive the producer.
-            if (s_limits.Unregister(registration, out _, out _))
+            if (s_limits.Unregister(registration))
             {
                 try { ApplyLimits(); }
                 catch { /* Keep the original failure; the next registration re-applies limits. */ }
@@ -813,7 +813,7 @@ internal sealed class BatchArena
 
     private static void Unregister(ArenaPoolLimits.Registration registration)
     {
-        if (s_limits.Unregister(registration, out _, out _))
+        if (s_limits.Unregister(registration))
             ApplyLimits();
     }
 
@@ -3388,17 +3388,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal const int MinimumPoolSize = 1;
 
     /// <summary>
-    /// Idle pooled batch storage may use at most 1/<c>RetainedMemoryDivisor</c> of the memory
+    /// Idle batch storage may use at most 1/<c>RetainedMemoryDivisor</c> of the memory
     /// available to the GC. In a container this is the GC heap limit (75% of the memory limit
-    /// by default), so a 384Mi pod keeps at most ~29MB of idle arenas per pool.
+    /// by default), so a 384Mi pod keeps at most ~29MB of idle arenas in the process-wide
+    /// arena pool, and at most that much in completion arrays in each batch pool.
     /// </summary>
     internal const int RetainedMemoryDivisor = 10;
 
     /// <summary>
-    /// Computes the recommended pool size based on producer options.
-    /// Scales with BufferMemory/BatchSize to prevent pool exhaustion under high batch churn.
-    /// At high throughput, batches cycle through: create → fill → seal → send → response → cleanup → pool.
-    /// The pool must cover peak in-flight batch count to avoid heap allocations.
+    /// Computes the arena pool slots this producer requests: the churn size (BufferMemory/BatchSize,
+    /// clamped) bounded by how many arenas fit its retained-memory budget. At high throughput,
+    /// batches cycle through: create → fill → seal → send → response → cleanup → pool, so the
+    /// pool must cover peak in-flight batch count to avoid heap allocations.
+    /// See <see cref="ComputeBatchPoolSize"/> for the batch pools.
     /// </summary>
     internal static int ComputePoolSize(ProducerOptions options)
         => ComputePoolSize(options, GetAvailableMemoryBytes());

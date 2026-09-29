@@ -402,10 +402,11 @@ and transactions have identical semantics under both strategies.
 With `Full`, every batch arena is `BatchSize` plus 12.5% (about 1.1MB with the default 1MB
 `BatchSize`), even when the batch holds one small record. Arenas are pinned and allocated without
 zeroing, so container RSS metrics undercount them while the GC heap limit counts them in full.
-The producer keeps idle arenas for reuse, bounded by the smaller of `BufferMemory` and 10% of the
-memory available to the GC (75% of the container memory limit by default). In small containers
-with low-volume topics, a smaller `WithBatchSize` or the `Incremental` strategy keeps live batch
-memory proportional to the records buffered.
+Idle arenas are kept for reuse in a pool shared by every producer in the process. Each producer
+allows the smaller of its `BufferMemory` and 10% of the memory available to the GC (75% of the
+container memory limit by default), and the pool keeps no more than the largest allowance among
+live producers. In small containers with low-volume topics, a smaller `WithBatchSize` or the
+`Incremental` strategy keeps live batch memory proportional to the records buffered.
 
 ### WithDeliveryLatencyTarget
 

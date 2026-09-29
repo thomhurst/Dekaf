@@ -383,13 +383,13 @@ public class ProducerPoolMemoryBoundTests
         var large = new ArenaPoolLimit(128, 512, 256 * MiB);
         var small = new ArenaPoolLimit(7, 7, 8 * MiB);
 
-        limits.Register(large, out var beforeLarge, out var afterLarge);
-        limits.Register(small, out var beforeSmall, out var afterSmall);
+        var beforeLarge = limits.Current;
+        limits.Register(large);
+        var afterLarge = limits.Current;
+        limits.Register(small);
 
         await Assert.That(beforeLarge).IsEqualTo(IdleLimit);
         await Assert.That(afterLarge).IsEqualTo(large);
-        await Assert.That(beforeSmall).IsEqualTo(large);
-        await Assert.That(afterSmall).IsEqualTo(large);
         await Assert.That(limits.Current).IsEqualTo(large);
     }
 
@@ -399,11 +399,13 @@ public class ProducerPoolMemoryBoundTests
         // The review scenario: a default producer, then an 8MiB one; disposing the default
         // producer must let the 8MiB bound take effect.
         var limits = CreateLimits();
-        var large = limits.Register(new ArenaPoolLimit(128, 512, 256 * MiB), out _, out _);
+        var large = limits.Register(new ArenaPoolLimit(128, 512, 256 * MiB));
         var small = new ArenaPoolLimit(7, 7, 8 * MiB);
-        limits.Register(small, out _, out _);
+        limits.Register(small);
+        var previous = limits.Current;
 
-        var removed = limits.Unregister(large, out var previous, out var current);
+        var removed = limits.Unregister(large);
+        var current = limits.Current;
 
         await Assert.That(removed).IsTrue();
         await Assert.That(previous.RetainedBytes).IsEqualTo(256 * MiB);
@@ -415,8 +417,8 @@ public class ProducerPoolMemoryBoundTests
     public async Task ArenaPoolLimits_EachFieldTakesItsOwnMaximum()
     {
         var limits = CreateLimits();
-        limits.Register(new ArenaPoolLimit(128, 128, 8 * MiB), out _, out _);
-        limits.Register(new ArenaPoolLimit(16, 512, 64 * MiB), out _, out _);
+        limits.Register(new ArenaPoolLimit(128, 128, 8 * MiB));
+        limits.Register(new ArenaPoolLimit(16, 512, 64 * MiB));
 
         await Assert.That(limits.Current).IsEqualTo(new ArenaPoolLimit(128, 512, 64 * MiB));
     }
@@ -425,10 +427,13 @@ public class ProducerPoolMemoryBoundTests
     public async Task ArenaPoolLimits_LastUnregister_KeepsNoArenas()
     {
         var limits = CreateLimits();
-        var registration = limits.Register(new ArenaPoolLimit(25, 25, 29 * MiB), out _, out _);
+        var registration = limits.Register(new ArenaPoolLimit(25, 25, 29 * MiB));
+        var previous = limits.Current;
 
-        var removed = limits.Unregister(registration, out var previous, out var current);
-        var removedAgain = limits.Unregister(registration, out _, out var afterSecond);
+        var removed = limits.Unregister(registration);
+        var current = limits.Current;
+        var removedAgain = limits.Unregister(registration);
+        var afterSecond = limits.Current;
 
         await Assert.That(removed).IsTrue();
         await Assert.That(previous.RetainedBytes).IsEqualTo(29 * MiB);
@@ -449,10 +454,10 @@ public class ProducerPoolMemoryBoundTests
             for (var j = 0; j < 500; j++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var registration = limits.Register(new ArenaPoolLimit(i, i, i * MiB), out _, out var current);
-                if (current.RetainedBytes < i * MiB)
+                var registration = limits.Register(new ArenaPoolLimit(i, i, i * MiB));
+                if (limits.Current.RetainedBytes < i * MiB)
                     throw new InvalidOperationException("Effective limit fell below a live request.");
-                limits.Unregister(registration, out _, out _);
+                limits.Unregister(registration);
             }
         }, cancellationToken)));
 

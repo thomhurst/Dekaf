@@ -40,38 +40,31 @@ internal sealed class ArenaPoolLimits
         get { lock (_lock) { return _current; } }
     }
 
-    /// <summary>Adds a producer's request and returns the effective limit before and after.</summary>
-    public Registration Register(ArenaPoolLimit limit, out ArenaPoolLimit previous, out ArenaPoolLimit current)
+    /// <summary>Adds a producer's request to the effective limit.</summary>
+    public Registration Register(ArenaPoolLimit limit)
     {
         var registration = new Registration(limit);
         lock (_lock)
         {
             _registrations.Add(registration);
-            previous = _current;
             _current = ComputeUnlocked();
-            current = _current;
         }
 
         return registration;
     }
 
     /// <summary>
-    /// Removes a producer's request and returns the effective limit before and after.
+    /// Removes a producer's request from the effective limit.
     /// Returns false when the registration was already removed.
     /// </summary>
-    public bool Unregister(Registration registration, out ArenaPoolLimit previous, out ArenaPoolLimit current)
+    public bool Unregister(Registration registration)
     {
         lock (_lock)
         {
-            previous = _current;
             if (!_registrations.Remove(registration))
-            {
-                current = _current;
                 return false;
-            }
 
             _current = ComputeUnlocked();
-            current = _current;
             return true;
         }
     }
