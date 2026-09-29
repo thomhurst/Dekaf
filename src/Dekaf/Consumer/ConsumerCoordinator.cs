@@ -1984,6 +1984,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             }
         }
 
+        // A refresh still running for the dropped assignment must not start a follow-up.
+        _unresolvedRefresher.Reset();
+
         if (revoked is not null)
             _onPartitionsRevoked?.Invoke(revoked);
 
@@ -2239,9 +2242,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // client's metadata does not know yet (created after the last refresh) is published
         // without that topic and stays pending; a background metadata refresh runs meanwhile, and
         // a later heartbeat processes it again once metadata resolves more of its topics.
-        if (response.ErrorCode == ErrorCode.None &&
-            GetAssignmentToProcess(response.Assignment) is { } pendingAssignment &&
-            !ReferenceEquals(pendingAssignment, response.Assignment))
+        // Without a received or pending assignment this reads one field.
+        if (response.Assignment is null &&
+            _unresolvedAssignment is not null &&
+            response.ErrorCode == ErrorCode.None &&
+            GetPendingAssignmentToRetry() is { } pendingAssignment)
         {
             response = WithAssignment(response, pendingAssignment);
         }
@@ -2515,46 +2520,25 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Returns the assignment a successful heartbeat must process: the one it carried, or, when
-    /// it carried none, the pending unresolved one once metadata has changed since it was last
-    /// resolved (null otherwise). While any assigned topic is unknown, starts a background
-    /// metadata refresh instead of waiting for one, so the heartbeat publishes what it can
-    /// (revocations included) and keeps its cadence. Without a received or pending assignment
-    /// this is one field read.
+    /// The pending unresolved assignment, once metadata has changed since it was last resolved;
+    /// null otherwise. While metadata is unchanged its unknown topics are still unknown, so this
+    /// only asks for a background refresh (rate-limited) instead of waiting for one: the
+    /// heartbeat publishes what it can (revocations included) and keeps its cadence. Runs only
+    /// while an assignment is pending.
     /// </summary>
-    private ConsumerGroupHeartbeatAssignment? GetAssignmentToProcess(ConsumerGroupHeartbeatAssignment? received)
+    private ConsumerGroupHeartbeatAssignment? GetPendingAssignmentToRetry()
     {
-        var assignment = received ?? _unresolvedAssignment;
-        if (assignment is null)
+        var pending = _unresolvedAssignment;
+        if (pending is null)
             return null;
 
-        // A new assignment refreshes without the backoff an earlier unresolved one built up.
-        if (received is not null)
-            _unresolvedRefresher.Reset();
-
-        var snapshot = _metadataManager.Metadata.CaptureSnapshot();
-        var resolvedNames = ReferenceEquals(assignment, _unresolvedAssignment) ? _unresolvedResolvedNames : null;
-        if (HasUnknownTopic(snapshot, resolvedNames, assignment))
-            _unresolvedRefresher.Request();
-
-        return received is null && ReferenceEquals(snapshot, Volatile.Read(ref _unresolvedSnapshot))
-            ? null
-            : assignment;
-    }
-
-    private static bool HasUnknownTopic(
-        ClusterMetadataSnapshot snapshot,
-        IReadOnlyDictionary<Guid, string>? resolvedNames,
-        ConsumerGroupHeartbeatAssignment assignment)
-    {
-        var topics = assignment.AssignedTopicPartitions;
-        for (var i = 0; i < topics.Count; i++)
+        if (ReferenceEquals(_metadataManager.Metadata.CaptureSnapshot(), Volatile.Read(ref _unresolvedSnapshot)))
         {
-            if (!PendingAssignmentTopics.TryResolve(snapshot, resolvedNames, topics[i].TopicId, out _))
-                return true;
+            _unresolvedRefresher.Request();
+            return null;
         }
 
-        return false;
+        return pending;
     }
 
     /// <summary>
@@ -2708,6 +2692,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 if (assignmentCallbacksCompletion is not null)
                     _pendingAssignmentCallbacks = assignmentCallbacksCompletion.Task;
             }
+        }
+
+        if (unknownTopics > 0)
+        {
+            // A new assignment refreshes without the backoff an earlier unresolved one built up.
+            if (!retry)
+                _unresolvedRefresher.Reset();
+            _unresolvedRefresher.Request();
         }
 
         if (revoked is not null)
