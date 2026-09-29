@@ -15,7 +15,7 @@ jobs:
       matrix:
         os: [macos-15-intel]
         cert: [none, trusted]
-        variant: [issue, plain-container]
+        variant: [issue, issue-project, plain-container]
         include:
           - os: ubuntu-latest
             cert: none
@@ -50,14 +50,21 @@ jobs:
         working-directory: repro-3458/Tests
         timeout-minutes: 8
         run: |
-          ( sleep 120; for p in $(pgrep -f 'Tests(\.dll)?$|bin/Debug/net10.0/Tests'); do echo "=== stacks pid $p ==="; ~/.dotnet/tools/dotnet-stack report -p $p || true; done ) &
+          ( sleep 120; for p in $(pgrep -f 'bin/Debug/net10.0/Tests'); do echo "=== stacks pid $p ==="; ~/.dotnet/tools/dotnet-stack report -p $p || true; done ) &
           dotnet run -- --treenode-filter "/*/*/TUnitAspireFixtureTests/*" --output Detailed 2>&1 | tee fixture.log
+      - name: Run Kafka + Schema Registry end-to-end test
+        if: always() && matrix.variant != 'plain-container'
+        working-directory: repro-3458/Tests
+        timeout-minutes: 8
+        run: |
+          ( sleep 150; for p in $(pgrep -f 'bin/Debug/net10.0/Tests'); do echo "=== stacks pid $p ==="; ~/.dotnet/tools/dotnet-stack report -p $p || true; done ) &
+          dotnet run -- --treenode-filter "/*/*/KafkaAndSchemaRegistryTests/*" --output Detailed 2>&1 | tee e2e.log
       - name: Run plain testing builder test
         if: always()
         working-directory: repro-3458/Tests
         timeout-minutes: 8
         run: |
-          ( sleep 120; for p in $(pgrep -f 'Tests(\.dll)?$|bin/Debug/net10.0/Tests'); do echo "=== stacks pid $p ==="; ~/.dotnet/tools/dotnet-stack report -p $p || true; done ) &
+          ( sleep 120; for p in $(pgrep -f 'bin/Debug/net10.0/Tests'); do echo "=== stacks pid $p ==="; ~/.dotnet/tools/dotnet-stack report -p $p || true; done ) &
           dotnet run -- --treenode-filter "/*/*/PlainTestingBuilderTests/*" --output Detailed 2>&1 | tee plain.log
       - name: Aspire dev-cert cache
         if: always()

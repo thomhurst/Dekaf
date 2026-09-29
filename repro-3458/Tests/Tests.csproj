@@ -8,6 +8,8 @@
   <ItemGroup>
     <PackageReference Include="TUnit" Version="1.69.21" />
     <PackageReference Include="TUnit.Aspire" Version="1.69.21" />
+    <PackageReference Include="Dekaf" Version="1.23.0" />
+    <PackageReference Include="Dekaf.SchemaRegistry" Version="1.23.0" />
     <ProjectReference Include="..\AppHost\AppHost.csproj" />
   </ItemGroup>
 </Project>

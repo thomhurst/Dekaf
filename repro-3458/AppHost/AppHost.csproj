@@ -11,4 +11,7 @@
     <PackageReference Include="Dekaf.Aspire.Hosting" Version="1.23.0" />
     <PackageReference Include="Aspire.Hosting.Redis" Version="13.5.4" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Worker\Worker.csproj" />
+  </ItemGroup>
 </Project>

@@ -14,6 +14,15 @@ switch (variant)
         builder.AddDekafSchemaRegistry("schema-registry", kafka);
         break;
     }
+    case "issue-project":
+    {
+        var kafka = builder.AddDekafKafka("kafka").WithKafkaUI();
+        var registry = builder.AddDekafSchemaRegistry("schema-registry", kafka);
+        builder.AddContainer("floci", "hectorvent/floci", "latest").WithHttpEndpoint(targetPort: 4566);
+        builder.AddProject<Projects.Worker>("worker").WithReference(kafka).WithReference(registry)
+            .WaitFor(kafka).WaitFor(registry);
+        break;
+    }
     case "kafka-only":
         builder.AddDekafKafka("kafka");
         break;
