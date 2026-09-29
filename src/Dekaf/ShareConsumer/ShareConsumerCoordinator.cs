@@ -59,6 +59,10 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     private long _lastSuccessfulHeartbeatTimestamp;
     private string? _lastHeartbeatFailure;
     private int _disposed;
+    // Whether the join in progress has counted its completed rebalance. The assignment path
+    // counts one whose heartbeat carried partitions; a join that ends without any counts at
+    // Stable instead. Written only under _lock or by that join's own heartbeats.
+    private bool _joinRebalanceRecorded;
     private TaskCompletionSource<bool>? _assignmentChanged;
     private readonly Func<int> _getCoordinationConnectionIndex;
     // Where the next coordinator lookup starts. It rests on the last broker that answered, so a
@@ -690,15 +694,21 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             // A rejoin can complete with the existing assignment. Repeated assignment
             // payloads while stable are not new rebalances and do not notify waiters.
             if (_state == CoordinatorState.Joining && newAssignment.Count > 0)
-                _telemetryMetrics?.Rebalanced();
+                RecordRebalance();
             return;
         }
 
-        _telemetryMetrics?.Rebalanced();
+        RecordRebalance();
 
         LogAssignmentUpdate(newAssignment.Count);
         _assignedPartitions = newAssignment;
         NotifyAssignmentChange();
+    }
+
+    private void RecordRebalance()
+    {
+        _joinRebalanceRecorded = true;
+        _telemetryMetrics?.Rebalanced();
     }
 
     /// <summary>
@@ -720,6 +730,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             // a reasonable upper bound for how long a join may go without a successful heartbeat.
             var timeout = TimeSpan.FromMilliseconds(_options.SessionTimeoutMs);
             var retryFailureCount = 0;
+            _joinRebalanceRecorded = false;
             Exception? lastJoinFailure = null;
 
             while (_state != CoordinatorState.Stable)
@@ -785,6 +796,10 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                     if (_memberEpoch > 0)
                     {
                         _state = CoordinatorState.Stable;
+                        // A join without partitions (no assignment, or an empty one) is still a
+                        // completed rebalance; one that carried partitions has counted already.
+                        if (!_joinRebalanceRecorded)
+                            RecordRebalance();
                         LogJoinedGroup(_options.GroupId, _memberId!, _memberEpoch, _assignedPartitions.Count);
                     }
                     else

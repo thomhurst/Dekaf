@@ -7,6 +7,7 @@ using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.ShareConsumer;
+using Dekaf.Telemetry;
 using NSubstitute;
 
 namespace Dekaf.Tests.Unit.ShareConsumer;
@@ -312,6 +313,56 @@ public sealed partial class ShareConsumerCoordinatorTests
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
     }
 
+    // Every completed join counts one rebalance, whether its heartbeat carried partitions, an
+    // empty assignment or none; a join that carried partitions must not count twice. A later
+    // assignment (the topic appeared) is another rebalance.
+    [Test]
+    [Arguments(JoinAssignment.None)]
+    [Arguments(JoinAssignment.Empty)]
+    [Arguments(JoinAssignment.Partitions)]
+    public async Task EnsureActiveGroupAsync_CountsOneRebalancePerJoin(
+        JoinAssignment joinAssignment, CancellationToken cancellationToken)
+    {
+        var topicId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var partitions = new ShareGroupHeartbeatAssignment
+        {
+            TopicPartitions = [new ShareGroupHeartbeatTopicPartitions { TopicId = topicId, Partitions = [0] }]
+        };
+        var heartbeatCount = 0;
+        var metrics = new ShareConsumerTelemetryMetrics();
+        metrics.Subscribe([RebalanceTotal]);
+        await using var harness = CoordinatorHarness.Create(
+            new ShareConsumerOptions { BootstrapServers = ["broker-0:9092"], GroupId = "share-rebalance" },
+            topicId,
+            _ => Interlocked.Increment(ref heartbeatCount) == 1
+                ? Success(epoch: 1, joinAssignment switch
+                {
+                    JoinAssignment.None => null,
+                    JoinAssignment.Empty => new ShareGroupHeartbeatAssignment { TopicPartitions = [] },
+                    _ => partitions
+                })
+                : Success(epoch: 1, partitions),
+            metrics);
+        var coordinator = harness.Coordinator;
+
+        await coordinator.EnsureActiveGroupAsync(cancellationToken);
+
+        await Assert.That(RebalanceCount(metrics)).IsEqualTo(1d);
+
+        await SendHeartbeatAsync(coordinator, cancellationToken);
+
+        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("first", 0)]);
+        await Assert.That(RebalanceCount(metrics))
+            .IsEqualTo(joinAssignment == JoinAssignment.Partitions ? 1d : 2d);
+    }
+
+    public enum JoinAssignment
+    {
+        None,
+        Empty,
+        Partitions
+    }
+
     // Joining without partitions must not swallow join failures: a join with no successful
     // heartbeat still reports the timeout, and a non-retriable group error still propagates.
     [Test]
@@ -456,6 +507,15 @@ public sealed partial class ShareConsumerCoordinatorTests
         await Assert.That(delay).IsEqualTo(TimeSpan.Zero);
     }
 
+    private const string RebalanceTotal = "org.apache.kafka.consumer.share.coordinator.rebalance.total";
+
+    private static double RebalanceCount(ShareConsumerTelemetryMetrics metrics)
+    {
+        var snapshot = new List<ClientTelemetryMetric>();
+        metrics.Collect(new ClientTelemetrySubscription(Guid.Empty, 1, 0, 60_000, 4096, false, [RebalanceTotal]), snapshot);
+        return snapshot.Single(metric => metric.Name == RebalanceTotal).Value;
+    }
+
     private static ShareGroupHeartbeatResponse Success(
         int epoch, ShareGroupHeartbeatAssignment? assignment, int heartbeatIntervalMs = 60_000) => new()
     {
@@ -485,7 +545,8 @@ public sealed partial class ShareConsumerCoordinatorTests
         public static CoordinatorHarness Create(
             ShareConsumerOptions options,
             Guid topicId,
-            Func<ShareGroupHeartbeatRequest, ShareGroupHeartbeatResponse> respond)
+            Func<ShareGroupHeartbeatRequest, ShareGroupHeartbeatResponse> respond,
+            ShareConsumerTelemetryMetrics? telemetryMetrics = null)
         {
             var pool = Substitute.For<IConnectionPool>();
             var connection = Substitute.For<IKafkaConnection>();
@@ -519,7 +580,7 @@ public sealed partial class ShareConsumerCoordinatorTests
                     }]
                 }]
             });
-            var coordinator = new ShareConsumerCoordinator(options, pool, metadata);
+            var coordinator = new ShareConsumerCoordinator(options, pool, metadata, telemetryMetrics: telemetryMetrics);
             coordinator.UpdateSubscription(["first"]);
             return new CoordinatorHarness(metadata, coordinator);
         }
