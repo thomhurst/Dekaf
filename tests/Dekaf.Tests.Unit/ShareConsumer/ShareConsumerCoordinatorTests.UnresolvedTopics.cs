@@ -212,7 +212,7 @@ public sealed partial class ShareConsumerCoordinatorTests
                 ErrorMessage = "fenced",
                 HeartbeatIntervalMs = 1
             }),
-            3 => Beat(null, heartbeatIntervalMs: 1),
+            3 => Beat(null),
             _ => Beat(new ShareGroupHeartbeatAssignment
             {
                 TopicPartitions = [new ShareGroupHeartbeatTopicPartitions { TopicId = KnownTopicId, Partitions = [1] }]
@@ -238,7 +238,12 @@ public sealed partial class ShareConsumerCoordinatorTests
 
         await coordinator.EnsureActiveGroupAsync(cancellationToken);
 
+        // Joined without partitions, not with the fenced membership's.
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(coordinator.Assignment.Count).IsEqualTo(0);
+
+        await SendHeartbeatAsync(coordinator, cancellationToken);
+
         await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("first", 1)]);
     }
 

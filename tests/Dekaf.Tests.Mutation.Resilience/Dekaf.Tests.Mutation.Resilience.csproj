@@ -23,6 +23,7 @@
     <Compile Include="..\Dekaf.Tests.Unit\Metadata\MetadataManagerTests.cs" Link="Metadata\MetadataManagerTests.cs" />
     <Compile Include="..\Dekaf.Tests.Unit\Consumer\ConsumerCoordinatorKip848Tests.cs" Link="Consumer\ConsumerCoordinatorKip848Tests.cs" />
     <Compile Include="..\Dekaf.Tests.Unit\ShareConsumer\ShareConsumerCoordinatorTests.cs" Link="ShareConsumer\ShareConsumerCoordinatorTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\ShareConsumer\ShareConsumerCoordinatorTests.UnresolvedTopics.cs" Link="ShareConsumer\ShareConsumerCoordinatorTests.UnresolvedTopics.cs" />
   </ItemGroup>
 
   <ItemGroup>

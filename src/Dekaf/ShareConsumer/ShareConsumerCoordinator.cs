@@ -566,8 +566,13 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     private void FenceMemberEpoch()
     {
         _memberEpoch = 0;
+        // A fenced member owns nothing. The rejoin starts from epoch 0 and becomes Stable on
+        // its first successful heartbeat even when that carries no assignment, so partitions
+        // kept from the fenced membership would be exposed and fetched as its own.
+        _assignedPartitions = [];
         DropUnresolvedAssignment();
         _state = CoordinatorState.Unjoined;
+        NotifyAssignmentChange();
     }
 
     /// <summary>
@@ -935,7 +940,6 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                             // The next EnsureActiveGroupAsync (which holds _lock) will
                             // see the Unjoined state and trigger a fresh join.
                             FenceMemberEpoch();
-                            NotifyAssignmentChange();
                             break;
 
                         case ErrorCode.UnknownMemberId:

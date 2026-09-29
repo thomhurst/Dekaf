@@ -356,6 +356,45 @@ public sealed partial class ShareConsumerCoordinatorTests
             .IsEqualTo(joinAssignment == JoinAssignment.Partitions ? 1d : 2d);
     }
 
+    // A fenced member loses its partitions. The rejoin from epoch 0 becomes Stable on its first
+    // successful heartbeat even without an assignment, so it must not expose or fetch the
+    // partitions of the fenced membership.
+    [Test]
+    public async Task HeartbeatLoop_Fenced_DropsAssignment_AndRejoinWithoutAssignmentOwnsNothing(
+        CancellationToken cancellationToken)
+    {
+        var topicId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var heartbeatCount = 0;
+        await using var harness = CoordinatorHarness.Create(
+            new ShareConsumerOptions { BootstrapServers = ["broker-0:9092"], GroupId = "share-fenced-owned" },
+            topicId,
+            _ => Interlocked.Increment(ref heartbeatCount) switch
+            {
+                // The join answer starts a fast loop so the fence arrives without a poll.
+                1 => Success(epoch: 1, new ShareGroupHeartbeatAssignment
+                {
+                    TopicPartitions = [new ShareGroupHeartbeatTopicPartitions { TopicId = topicId, Partitions = [0] }]
+                }, heartbeatIntervalMs: 1),
+                2 => new ShareGroupHeartbeatResponse { ErrorCode = ErrorCode.FencedMemberEpoch },
+                _ => Success(epoch: 2, assignment: null)
+            });
+        var coordinator = harness.Coordinator;
+
+        await coordinator.EnsureActiveGroupAsync(cancellationToken);
+        var changed = coordinator.GetAssignmentChangeTask();
+        if (coordinator.State == CoordinatorState.Stable)
+            await changed.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+        await Assert.That(coordinator.Assignment.Count).IsEqualTo(0);
+
+        await coordinator.EnsureActiveGroupAsync(cancellationToken);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(coordinator.MemberEpoch).IsEqualTo(2);
+        await Assert.That(coordinator.Assignment.Count).IsEqualTo(0);
+    }
+
     public enum JoinAssignment
     {
         None,
