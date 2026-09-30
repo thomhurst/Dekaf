@@ -12,7 +12,7 @@
     <PackageVersion Include="Aspire.Hosting" Version="13.6.0" />
     <PackageVersion Include="Aspire.Hosting.Testing" Version="13.6.0" />
     <PackageVersion Include="AWSSDK.DynamoDBv2" Version="4.0.107" />
-    <PackageVersion Include="AWSSDK.KeyManagementService" Version="4.0.100.14" />
+    <PackageVersion Include="AWSSDK.KeyManagementService" Version="4.0.100.15" />
     <PackageVersion Include="Azure.Identity" Version="1.21.0" />
     <PackageVersion Include="Azure.Security.KeyVault.Keys" Version="4.10.1" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
