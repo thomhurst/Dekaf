@@ -84,7 +84,7 @@ function Lane({lane, ticks}) {
   );
 }
 
-const javaLetters = ['J', 'a', 'v', 'a'];
+const droppedWord = 'librdkafka';
 
 function Hero() {
   const ticks = useTickingOffsets();
@@ -96,21 +96,27 @@ function Hero() {
 
       <div className={`${styles.container} ${styles.heroBody}`}>
         <Heading as="h1" className={styles.headline}>
-          Taking the{' '}
-          <span className={styles.java}>
-            Java
-            <span className={styles.javaLetters} aria-hidden="true">
-              {javaLetters.map((letter, index) => (
-                <span className={styles.javaLetter} style={{'--i': index}} key={index}>{letter}</span>
+          Kafka in pure C#,
+          <br />without{' '}
+          <span className={styles.dropped}>
+            {droppedWord}
+            <span className={styles.droppedLetters} aria-hidden="true">
+              {[...droppedWord].map((letter, index) => (
+                <span
+                  className={styles.droppedLetter}
+                  style={{'--i': index, '--tx': `${(0.2 + index * 0.32).toFixed(2)}em`, '--ty': `${(2.5 + (index % 3) * 0.12).toFixed(2)}em`, '--turn': `${index % 2 ? 9 : -9}deg`}}
+                  key={index}>
+                  {letter}
+                </span>
               ))}
             </span>
-          </span>
-          <br />out of Kafka.
+          </span>.
         </Heading>
         <div className={styles.heroFoot}>
           <p className={styles.heroDescription}>
-            Dekaf is a pure C# Apache Kafka client for .NET. It speaks the Kafka wire
-            protocol itself, so there is no librdkafka to ship and no JVM to run.
+            Dekaf is an Apache Kafka client for .NET. Unlike Confluent.Kafka, which wraps the
+            native librdkafka library, it implements the Kafka wire protocol in C#, so there is
+            nothing native to ship and no interop layer to cross.
           </p>
           <div className={styles.heroActions}>
             <Link className={styles.primaryButton} to="/docs/getting-started">Start building</Link>
@@ -211,9 +217,9 @@ function ReadTheLog() {
 }
 
 const contents = [
-  ['Java', '0 mg'],
+  ['librdkafka', 'Not included'],
   ['Native libraries', 'None'],
-  ['Interop layer', 'None'],
+  ['P/Invoke interop', 'None'],
 ];
 
 function Performance() {

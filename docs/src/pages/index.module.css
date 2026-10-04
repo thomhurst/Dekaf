@@ -75,22 +75,19 @@
 }
 
 /*
- * "Java" is taken out: the letters turn into copper records and drop into the stream
- * below, leaving the word faint so the sentence still reads.
+ * "librdkafka" is taken out: the letters turn into copper records and drop into the
+ * stream below, leaving the word faint so the sentence still reads. Each letter's drift
+ * (--tx, --ty, --turn) is set inline.
  */
-.java { position: relative; display: inline-block; color: color-mix(in srgb, var(--foam) 26%, transparent); }
-.javaLetters { position: absolute; inset: 0; display: flex; }
-.javaLetter {
+.dropped { position: relative; display: inline-block; color: color-mix(in srgb, var(--foam) 26%, transparent); }
+.droppedLetters { position: absolute; inset: 0; display: flex; }
+.droppedLetter {
   display: inline-block;
   color: var(--foam);
   border-radius: 0.05em;
   animation: takeOut 1.6s cubic-bezier(0.55, 0, 0.75, 0.3) forwards;
-  animation-delay: calc(1s + var(--i) * 0.12s);
+  animation-delay: calc(1s + var(--i) * 0.07s);
 }
-.javaLetter:nth-child(1) { --tx: 0.5em; --ty: 4.1em; --turn: -10deg; }
-.javaLetter:nth-child(2) { --tx: 1.4em; --ty: 4.3em; --turn: 8deg; }
-.javaLetter:nth-child(3) { --tx: 2.5em; --ty: 4.15em; --turn: -6deg; }
-.javaLetter:nth-child(4) { --tx: 3.7em; --ty: 4.4em; --turn: 12deg; }
 
 .heroFoot {
   display: grid;
@@ -243,5 +240,5 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .laneTrack { animation: none; }
-  .javaLetters { display: none; }
+  .droppedLetters { display: none; }
 }

@@ -49,7 +49,7 @@ function rehypeStripHeadingAnchors() {
 /** @type {import('@docusaurus/types').Config} */
 const config = {
   title: 'Dekaf',
-  tagline: 'Taking the Java out of Kafka',
+  tagline: 'Kafka in pure C#, without librdkafka',
   favicon: 'img/favicon.ico',
 
   url: 'https://thomhurst.github.io',
@@ -115,7 +115,7 @@ const config = {
       ({
         siteTitle: 'Dekaf',
         siteDescription:
-          'High-performance, pure C# Apache Kafka client library for .NET. A native, zero-allocation implementation with no interop overhead or JVM dependency.',
+          'High-performance, pure C# Apache Kafka client library for .NET. A zero-allocation implementation of the Kafka wire protocol with no librdkafka and no native interop.',
         // Categories come from URL path segments. Under /Dekaf/docs/, deeper values give
         // every root-level page its own single-entry section, so keep the index flat and
         // let each link's title and description carry the signal.
