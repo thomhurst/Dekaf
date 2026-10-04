@@ -109,7 +109,7 @@ function Hero() {
         </Heading>
         <div className={styles.heroFoot}>
           <p className={styles.heroDescription}>
-            Dekaf is a pure C# Apache Kafka client for .NET 10+. It speaks the Kafka wire
+            Dekaf is a pure C# Apache Kafka client for .NET. It speaks the Kafka wire
             protocol itself, so there is no librdkafka to ship and no JVM to run.
           </p>
           <div className={styles.heroActions}>
@@ -173,8 +173,8 @@ function ReadTheLog() {
     <div className={`${styles.container} ${styles.log}`}>
       <Entry offset={0} title="Add the package." id="install-heading">
         <div className={styles.entrySplit}>
-          <p>One NuGet package for .NET 10 and later. Nothing native ships with it, so it runs
-            anywhere .NET runs.</p>
+          <p>One NuGet package with assets for .NET 10, .NET 8, and .NET Standard 2.0. Nothing
+            native ships with it.</p>
           <CodeBlock language="bash">dotnet add package Dekaf</CodeBlock>
         </div>
       </Entry>
@@ -214,7 +214,6 @@ const contents = [
   ['Java', '0 mg'],
   ['Native libraries', 'None'],
   ['Interop layer', 'None'],
-  ['Runs on', '.NET 10+'],
 ];
 
 function Performance() {
@@ -251,7 +250,7 @@ function Performance() {
 
 export default function Home() {
   return (
-    <Layout title="Pure C# Kafka Client" description="Dekaf is a high-performance, pure C# Apache Kafka client for .NET 10+.">
+    <Layout title="Pure C# Kafka Client" description="Dekaf is a high-performance, pure C# Apache Kafka client for .NET.">
       <main className={`${styles.home} dekaf-home`}>
         <Hero />
         <ReadTheLog />

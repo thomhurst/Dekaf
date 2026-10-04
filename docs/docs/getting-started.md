@@ -9,7 +9,7 @@ Let's get you producing and consuming messages. This won't take long.
 
 ## Prerequisites
 
-- .NET 10 SDK or later
+- A .NET 8 or .NET 10 project (the core packages also ship `netstandard2.0` assets; see [API and Runtime Compatibility](api-compatibility.md))
 - Access to a Kafka cluster (or we'll show you how to run one locally)
 
 ## Installation

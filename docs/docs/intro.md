@@ -6,7 +6,7 @@ description: "Dekaf is a high-performance, pure C# Apache Kafka client for .NET,
 
 # Introduction
 
-**Dekaf** is a high-performance, pure C# Apache Kafka client for .NET 10+. The name comes from "decaf"—we've taken the Java out of Kafka.
+**Dekaf** is a high-performance, pure C# Apache Kafka client for .NET. The name comes from "decaf"—we've taken the Java out of Kafka.
 
 ## Why Build Another Kafka Client?
 
@@ -68,7 +68,7 @@ Dekaf makes sense if you:
 - Want a pure .NET solution (no native DLLs to wrangle)
 - Care about predictable performance and low GC pressure
 - Like modern C# APIs (async streams, nullable references, etc.)
-- Are on .NET 10 or later
+- Target .NET 8 or .NET 10 (the core packages also ship `netstandard2.0` assets; see [API and Runtime Compatibility](api-compatibility.md))
 
 ## Getting Help
 

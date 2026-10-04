@@ -115,7 +115,7 @@ const config = {
       ({
         siteTitle: 'Dekaf',
         siteDescription:
-          'High-performance, pure C# Apache Kafka client library for .NET 10+. A native, zero-allocation implementation with no interop overhead or JVM dependency.',
+          'High-performance, pure C# Apache Kafka client library for .NET. A native, zero-allocation implementation with no interop overhead or JVM dependency.',
         // Categories come from URL path segments. Under /Dekaf/docs/, deeper values give
         // every root-level page its own single-entry section, so keep the index flat and
         // let each link's title and description carry the signal.
