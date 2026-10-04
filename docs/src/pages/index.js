@@ -1,10 +1,8 @@
-import {useState} from 'react';
+import {useEffect, useState} from 'react';
 import Link from '@docusaurus/Link';
 import Layout from '@theme/Layout';
 import Heading from '@theme/Heading';
 import CodeBlock from '@theme/CodeBlock';
-import Tabs from '@theme/Tabs';
-import TabItem from '@theme/TabItem';
 
 import styles from './index.module.css';
 
@@ -32,123 +30,106 @@ await foreach (var message in consumer.ConsumeAsync())
     Console.WriteLine(message.Value);
 }`;
 
-function PartitionDemo() {
-  const [sent, setSent] = useState(0);
-  const activePartition = sent === 0 ? null : (sent - 1) % 3;
+/*
+ * Each hero lane is one partition. Records get deterministic widths and tones so the
+ * server render and the client render agree. The track holds the sequence twice and
+ * slides by half its width, which loops without a seam.
+ */
+const lanes = [
+  {partition: 0, seconds: 90, base: 48112, rate: 1},
+  {partition: 1, seconds: 70, base: 33071, rate: 2},
+  {partition: 2, seconds: 110, base: 51204, rate: 1},
+  {partition: 3, seconds: 80, base: 29988, rate: 2},
+];
 
+function makeRecords(seed, count = 44) {
+  let state = seed * 7919 + 104729;
+  const next = () => {
+    state = (state * 9301 + 49297) % 233280;
+    return state / 233280;
+  };
+  return Array.from({length: count}, () => {
+    const roll = next();
+    const tone = roll < 0.12 ? 'hot' : roll < 0.26 ? 'caramel' : roll < 0.38 ? 'steel' : 'dim';
+    return {tone, width: 14 + Math.round(next() * 72)};
+  });
+}
+
+function useTickingOffsets() {
+  const [ticks, setTicks] = useState(0);
+  useEffect(() => {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      return undefined;
+    }
+    const id = window.setInterval(() => setTicks(value => value + 1), 900);
+    return () => window.clearInterval(id);
+  }, []);
+  return ticks;
+}
+
+function Lane({lane, ticks}) {
+  const records = makeRecords(lane.partition + 1);
   return (
-    <figure className={styles.messageFlow}>
-      <div className={styles.flowIntro}>
-        <div>
-          <span className={styles.flowTitle}>A place for every message.</span>
-          <p>One topic. Three partitions. Keep the conversation moving.</p>
-        </div>
-        <button className={styles.sendButton} type="button" onClick={() => setSent(count => count + 1)}>
-          Produce a message <span aria-hidden="true">+</span>
-        </button>
+    <div className={styles.lane} style={{'--lane-seconds': `${lane.seconds}s`}}>
+      <div className={styles.laneTrack}>
+        {[...records, ...records].map((record, index) => (
+          <span className={`${styles.record} ${styles[record.tone]}`} style={{width: record.width}} key={index} />
+        ))}
       </div>
-      <div className={styles.flowDiagram}>
-        <div className={styles.producerNode} aria-hidden="true">
-          <span className={styles.producerSymbol}>C#</span>
-          <span>Your producer</span>
-        </div>
-        <div className={styles.partitionList}>
-          {[0, 1, 2].map(partition => {
-            const count = Math.floor((sent + 2 - partition) / 3);
-            return (
-              <div className={styles.partitionRow} key={partition}>
-                <span className={styles.partitionLabel}>Partition {partition}</span>
-                <div className={styles.records} aria-hidden="true">
-                  {Array.from({length: 7}, (_, index) => (
-                    <span
-                      className={`${styles.record} ${sent > 0 && activePartition === partition && index === 6 ? styles.newRecord : ''}`}
-                      key={count + index}>
-                      <span>{String(count + index).padStart(2, '0')}</span>
-                    </span>
-                  ))}
-                </div>
-                <span className={styles.offset}>offset {count + 6}</span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-      <figcaption className={styles.flowCaption}>
-        <span>Interactive illustration · messages distributed in turn</span>
-        <span role="status" aria-live="polite" aria-atomic="true">
-          {sent === 0
-            ? 'Send a message to try it'
-            : `Message ${sent} appended to partition ${activePartition}, offset ${Math.floor((sent + 2 - activePartition) / 3) + 6}`}
-        </span>
-      </figcaption>
-    </figure>
+      <span className={styles.laneLabel}>
+        <span>p{lane.partition}</span>
+        <span>{(lane.base + ticks * lane.rate).toLocaleString('en-US')}</span>
+      </span>
+    </div>
   );
 }
+
+const javaLetters = ['J', 'a', 'v', 'a'];
 
 function Hero() {
+  const ticks = useTickingOffsets();
   return (
     <header className={styles.hero}>
-      <div className={styles.container}>
-        <div className={styles.heroIntro}>
-          <div className={styles.heroTitle}>
-            <p className={styles.productLine}>Dekaf / The pure C# Apache Kafka client</p>
-            <Heading as="h1">Kafka, fluent<br />in C#.</Heading>
-          </div>
-          <div className={styles.heroCopy}>
-            <p>All the Kafka.<br />{' '}Right at home in .NET.</p>
-            <p className={styles.heroDescription}>
-              Produce, consume, and work with Kafka through a fully managed client.
-              Built in C#, from the fluent API to the wire protocol.
-            </p>
+      <div className={styles.lanes} aria-hidden="true">
+        {lanes.slice(0, 2).map(lane => <Lane lane={lane} ticks={ticks} key={lane.partition} />)}
+      </div>
+
+      <div className={`${styles.container} ${styles.heroBody}`}>
+        <Heading as="h1" className={styles.headline}>
+          Taking the{' '}
+          <span className={styles.java}>
+            Java
+            <span className={styles.javaLetters} aria-hidden="true">
+              {javaLetters.map((letter, index) => (
+                <span className={styles.javaLetter} style={{'--i': index}} key={index}>{letter}</span>
+              ))}
+            </span>
+          </span>
+          <br />out of Kafka.
+        </Heading>
+        <div className={styles.heroFoot}>
+          <p className={styles.heroDescription}>
+            Dekaf is a pure C# Apache Kafka client for .NET 10+. It speaks the Kafka wire
+            protocol itself, so there is no librdkafka to ship and no JVM to run.
+          </p>
+          <div className={styles.heroActions}>
             <Link className={styles.primaryButton} to="/docs/getting-started">Start building</Link>
-            <Link className={styles.sourceLink} href="https://github.com/thomhurst/Dekaf">Explore the source</Link>
+            <code className={styles.installChip}>dotnet add package Dekaf</code>
           </div>
         </div>
-        <PartitionDemo />
-        <div className={styles.heroFootnote}>
-          <span>No native libraries to ship.</span>
-          <span>No interop layer to cross.</span>
-          <span>Just .NET 10+.</span>
-        </div>
+      </div>
+
+      <div className={styles.lanes} aria-hidden="true">
+        {lanes.slice(2).map(lane => <Lane lane={lane} ticks={ticks} key={lane.partition} />)}
       </div>
     </header>
-  );
-}
-
-function CodeExample() {
-  return (
-    <section className={`${styles.container} ${styles.codeSection}`} aria-labelledby="code-heading">
-      <div className={styles.codeCopy}>
-        <Heading as="h2" id="code-heading">Small API.<br />Big conversations.</Heading>
-        <p>
-          Start with a broker address and a topic. Fluent builders and async streams
-          make the rest feel familiar.
-        </p>
-        <div className={styles.install}>
-          <span>Get the package</span>
-          <CodeBlock language="bash">dotnet add package Dekaf</CodeBlock>
-        </div>
-        <Link className={styles.textLink} to="/docs/getting-started">Follow the quickstart</Link>
-      </div>
-      <div className={styles.codeExample}>
-        <Tabs aria-label="Kafka code examples">
-          <TabItem value="producer" label="Producer" default>
-            <CodeBlock language="csharp" title="Producer.cs">{producerCode}</CodeBlock>
-          </TabItem>
-          <TabItem value="consumer" label="Consumer">
-            <CodeBlock language="csharp" title="Consumer.cs">{consumerCode}</CodeBlock>
-          </TabItem>
-        </Tabs>
-        <p className={styles.codeNote}>Connect to your local Kafka broker at localhost:9092.</p>
-      </div>
-    </section>
   );
 }
 
 const guides = [
   {
     title: 'Send with confidence',
-    description: 'From your first message to batching, idempotence, and transactions.',
+    description: 'Batching, idempotence, and transactions.',
     links: [
       ['Producer guide', '/docs/producer/basics'],
       ['Delivery guarantees', '/docs/producer/transactions'],
@@ -156,7 +137,7 @@ const guides = [
   },
   {
     title: 'Keep consumers moving',
-    description: 'Read async streams, share work across groups, and take control of offsets.',
+    description: 'Consumer groups, rebalances, and offset control.',
     links: [
       ['Consumer guide', '/docs/consumer/basics'],
       ['Consumer groups', '/docs/consumer/consumer-groups'],
@@ -164,7 +145,7 @@ const guides = [
   },
   {
     title: 'Make it your stack',
-    description: 'Plug in serializers, compression, and the .NET services you already use.',
+    description: 'Serializers, compression, and the .NET services you already use.',
     links: [
       ['Dependency injection', '/docs/dependency-injection'],
       ['Serialization', '/docs/serialization/built-in'],
@@ -172,14 +153,46 @@ const guides = [
   },
 ];
 
-function Guides() {
+function Entry({offset, title, children, id}) {
   return (
-    <section className={styles.guides} aria-labelledby="guides-heading">
-      <div className={styles.container}>
-        <div className={styles.guideHeading}>
-          <Heading as="h2" id="guides-heading">Pick up the thread.</Heading>
-          <Link className={styles.textLink} to="/docs/">Browse all documentation</Link>
+    <section className={styles.entry} aria-labelledby={id}>
+      <div className={styles.entryOffset} aria-hidden="true">
+        <span className={styles.entryMarker} />
+        offset {offset}
+      </div>
+      <div className={styles.entryBody}>
+        <Heading as="h2" id={id}>{title}</Heading>
+        {children}
+      </div>
+    </section>
+  );
+}
+
+function ReadTheLog() {
+  return (
+    <div className={`${styles.container} ${styles.log}`}>
+      <Entry offset={0} title="Add the package." id="install-heading">
+        <div className={styles.entrySplit}>
+          <p>One NuGet package for .NET 10 and later. Nothing native ships with it, so it runs
+            anywhere .NET runs.</p>
+          <CodeBlock language="bash">dotnet add package Dekaf</CodeBlock>
         </div>
+      </Entry>
+      <Entry offset={1} title="Produce a message." id="produce-heading">
+        <div className={styles.entrySplit}>
+          <p>Build a producer from a broker address, then await the broker's acknowledgement.
+            Fluent builders guide you to a valid configuration.</p>
+          <CodeBlock language="csharp" title="Producer.cs">{producerCode}</CodeBlock>
+        </div>
+      </Entry>
+      <Entry offset={2} title="Read it back." id="consume-heading">
+        <div className={styles.entrySplit}>
+          <p>Join a consumer group and read records as an async stream with
+            {' '}<code>await foreach</code>.</p>
+          <CodeBlock language="csharp" title="Consumer.cs">{consumerCode}</CodeBlock>
+        </div>
+      </Entry>
+      <Entry offset={3} title="Keep reading." id="guides-heading">
         <div className={styles.guideList}>
           {guides.map(guide => (
             <article className={styles.guide} key={guide.title}>
@@ -191,17 +204,40 @@ function Guides() {
             </article>
           ))}
         </div>
-      </div>
-    </section>
+        <Link className={styles.textLink} to="/docs/">Browse all documentation</Link>
+      </Entry>
+    </div>
   );
 }
+
+const contents = [
+  ['Java', '0 mg'],
+  ['Native libraries', 'None'],
+  ['Interop layer', 'None'],
+  ['Runs on', '.NET 10+'],
+];
 
 function Performance() {
   return (
     <section className={`${styles.container} ${styles.performance}`} aria-labelledby="performance-heading">
-      <div className={styles.performanceMark} aria-hidden="true">0 B<span>per message<br />on the hot path</span></div>
+      <dl className={styles.contentsLabel} aria-label="What's in Dekaf">
+        <div className={styles.labelName}>
+          <dt>Dekaf</dt>
+          <dd>100% C# Kafka client</dd>
+        </div>
+        <div className={styles.labelLead}>
+          <dt>Allocations per message<span>on the hot path</span></dt>
+          <dd>0 B</dd>
+        </div>
+        {contents.map(([name, value]) => (
+          <div className={styles.labelRow} key={name}>
+            <dt>{name}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
       <div className={styles.performanceCopy}>
-        <Heading as="h2" id="performance-heading">Less work for the runtime.<br />More room for your messages.</Heading>
+        <Heading as="h2" id="performance-heading">Less work for the runtime. More room for your messages.</Heading>
         <p>Spans, pooled buffers, and ValueTask keep allocations off the hot path.
           Explore the benchmarks and the decisions behind the performance.</p>
         <div className={styles.performanceLinks}>
@@ -216,10 +252,9 @@ function Performance() {
 export default function Home() {
   return (
     <Layout title="Pure C# Kafka Client" description="Dekaf is a high-performance, pure C# Apache Kafka client for .NET 10+.">
-      <main className={styles.home}>
+      <main className={`${styles.home} dekaf-home`}>
         <Hero />
-        <CodeExample />
-        <Guides />
+        <ReadTheLog />
         <Performance />
       </main>
     </Layout>

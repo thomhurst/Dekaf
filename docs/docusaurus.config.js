@@ -2,18 +2,18 @@
 /** @type {import('prism-react-renderer').PrismTheme} */
 const dekafPrismTheme = {
   plain: {
-    color: '#eee6fa',
-    backgroundColor: '#2a203c',
+    color: '#ece6df',
+    backgroundColor: '#1d1916',
   },
   styles: [
-    {types: ['comment', 'prolog', 'doctype', 'cdata'], style: {color: '#bcb0ce'}},
-    {types: ['keyword', 'builtin', 'constant', 'boolean'], style: {color: '#c5a7f9'}},
-    {types: ['function', 'class-name', 'attr-name'], style: {color: '#92b7e1'}},
-    {types: ['string', 'char', 'attr-value', 'number'], style: {color: '#edaa76'}},
-    {types: ['tag', 'selector', 'variable'], style: {color: '#d4c0f2'}},
-    {types: ['inserted'], style: {color: '#a6cbb4'}},
-    {types: ['deleted'], style: {color: '#eba1b5'}},
-    {types: ['changed'], style: {color: '#edaa76'}},
+    {types: ['comment', 'prolog', 'doctype', 'cdata'], style: {color: '#8f857c', fontStyle: 'italic'}},
+    {types: ['keyword', 'builtin', 'constant', 'boolean'], style: {color: '#e09a68'}},
+    {types: ['function', 'class-name', 'attr-name'], style: {color: '#9fb6c3'}},
+    {types: ['string', 'char', 'attr-value', 'number'], style: {color: '#cdb48c'}},
+    {types: ['tag', 'selector', 'variable'], style: {color: '#e6c9b0'}},
+    {types: ['inserted'], style: {color: '#a3c0aa'}},
+    {types: ['deleted'], style: {color: '#e0a19b'}},
+    {types: ['changed'], style: {color: '#cdb48c'}},
   ],
 };
 
@@ -89,7 +89,7 @@ const config = {
       innerHTML: `window.tlumaConfig = {
   source: 'thomhurst/dekaf',
   theme: 'auto',
-  brandColor: 'blue',
+  brandColor: 'slate',
   button: 'bottom-right',
   welcomePulse: true,
   edgePadding: '1rem',

@@ -10,7 +10,7 @@
   margin: 0;
   overflow: hidden;
   border: 1px solid var(--dekaf-border);
-  border-radius: 12px;
+  border-radius: 8px;
   background: var(--dekaf-surface);
   box-shadow: none;
 }
@@ -20,29 +20,24 @@
   gap: 0.25rem;
   padding: 1.1rem 1.2rem 1rem;
   border-bottom: 1px solid var(--dekaf-border);
-  background: var(--dekaf-lilac);
+  background: var(--dekaf-tint);
 }
 
 .heading strong {
   color: var(--dekaf-text);
-  font-family: var(--dekaf-font-display);
-  font-size: 1.15rem;
-  letter-spacing: -0.025em;
+  font-size: 1.1rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
 }
 
-.eyebrow,
-.client,
-.value,
-.scaleNote {
+.value {
   font-family: var(--dekaf-font-mono);
 }
 
 .eyebrow {
-  color: var(--dekaf-violet);
-  font-size: 0.75rem;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  color: var(--dekaf-accent);
+  font-size: 0.8rem;
+  font-weight: 700;
 }
 
 .description {
@@ -75,11 +70,11 @@
 }
 
 .dekafKey {
-  background: var(--dekaf-violet);
+  background: var(--dekaf-copper);
 }
 
 .confluentKey {
-  background: var(--dekaf-blue);
+  background: var(--dekaf-slate);
 }
 
 .legend .direction {
@@ -123,7 +118,7 @@
 
 .barLine {
   display: grid;
-  grid-template-columns: 3.25rem minmax(3rem, 1fr) minmax(8rem, auto);
+  grid-template-columns: 4.5rem minmax(3rem, 1fr) minmax(8rem, auto);
   gap: 0.45rem;
   align-items: center;
 }
@@ -161,11 +156,11 @@
 }
 
 .dekaf {
-  background: var(--dekaf-violet);
+  background: var(--dekaf-copper);
 }
 
 .confluent {
-  background: var(--dekaf-blue);
+  background: var(--dekaf-slate);
 }
 
 .scaleNote {
@@ -193,7 +188,7 @@
   }
 
   .barLine {
-    grid-template-columns: 2.9rem minmax(2.5rem, 1fr) minmax(7.5rem, auto);
+    grid-template-columns: 4.25rem minmax(2.5rem, 1fr) minmax(7.5rem, auto);
     gap: 0.32rem;
   }
 
