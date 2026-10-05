@@ -61,6 +61,8 @@ public sealed class ProgressWatchdogTests
     }
 
     [Test]
+    // Real watchdog deadlines include artifact capture; keep unrelated tests off its budget.
+    [NotInParallel]
     public async Task Track_Stall_CapturesStacksAndProducerDiagnosticsThenExits()
     {
         var outputDirectory = CreateOutputDirectory();

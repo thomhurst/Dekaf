@@ -107,9 +107,57 @@ public sealed class ProducerWorkloadTests
     }
 
     [Test]
-    [Arguments(false)]
-    [Arguments(true)]
-    public async Task DrainTimeout_ReturnsSerializableFailureWithRuntimeSamples(bool confluent)
+    public async Task ConfluentWorkload_WithUndeliveredMessages_FlushesAndRecordsTimeout()
+    {
+        var time = new ManualTimeProvider();
+        var duration = TimeSpan.FromMilliseconds(100);
+        var directory = Path.Join(Path.GetTempPath(), "dekaf-workload-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            using var watchdog = new ProgressWatchdog(directory);
+            var options = new StressTestOptions
+            {
+                BootstrapServers = "unused:9092",
+                Topic = "test",
+                DurationMinutes = 1,
+                MessageSizeBytes = 1000,
+                ProgressWatchdog = watchdog
+            };
+            var producer = Substitute.For<ConfluentKafka.IProducer<string, string>>();
+            producer.ProduceAsync("test", Arg.Any<ConfluentKafka.Message<string, string>>(), Arg.Any<CancellationToken>())
+                .Returns(_ =>
+                {
+                    time.Advance(duration);
+                    return Task.FromResult(new ConfluentKafka.DeliveryResult<string, string>());
+                });
+            producer.Flush(Arg.Any<TimeSpan>()).Returns(1);
+            var drainTimeout = TimeSpan.FromSeconds(30);
+
+            // Finish ingress and delivery explicitly; no deadline expiry is needed to reach Flush.
+            var result = await ProducerWorkload.RunAsync(producer, options, "Confluent", "producer-async",
+                new ThroughputTracker(), new LatencyTracker(), duration, awaitDelivery: true,
+                CancellationToken.None, drainTimeout: drainTimeout, ingressTimeProvider: time)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            producer.Received(1).Flush(Arg.Is<TimeSpan>(timeout => timeout > TimeSpan.Zero && timeout <= drainTimeout));
+            await Assert.That(result.Throughput.TotalErrors).IsEqualTo(1);
+            await Assert.That(result.Throughput.ErrorSamples.Single().ExceptionType).IsEqualTo("FlushTimeout");
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Test]
+    [Arguments(false, 100)]
+    [Arguments(true, 100)]
+    [Arguments(false, 0)]
+    [Arguments(true, 0)]
+    // Exercise the real drain deadline without unrelated suite-wide scheduling pressure.
+    [NotInParallel]
+    public async Task DrainTimeout_ReturnsSerializableFailureWithRuntimeSamples(bool confluent, int drainTimeoutMs)
     {
         var time = new ManualTimeProvider();
         var duration = TimeSpan.FromMilliseconds(100);
@@ -127,6 +175,7 @@ public sealed class ProducerWorkloadTests
                 ProgressWatchdog = watchdog
             };
             var throughput = new ThroughputTracker();
+            var flushed = false;
             Task<ProducerWorkloadResult> run;
             if (confluent)
             {
@@ -136,19 +185,20 @@ public sealed class ProducerWorkloadTests
                     .Returns(async call =>
                     {
                         deliveryToken = call.Arg<CancellationToken>();
+                        throughput.TakeSample();
                         time.Advance(duration);
                         await Task.Delay(Timeout.InfiniteTimeSpan, deliveryToken);
                         return new ConfluentKafka.DeliveryResult<string, string>();
                     });
                 producer.Flush(Arg.Any<TimeSpan>()).Returns(_ =>
                 {
-                    throughput.TakeSample();
+                    flushed = true;
                     if (!deliveryToken.WaitHandle.WaitOne(TimeSpan.FromSeconds(5)))
                         throw new TimeoutException("The delivery deadline was not armed");
                     return 1;
                 });
                 run = ProducerWorkload.RunAsync(producer, options, "Confluent", "producer-async", throughput, new LatencyTracker(),
-                    duration, awaitDelivery: true, CancellationToken.None, drainTimeout: TimeSpan.FromMilliseconds(100), ingressTimeProvider: time);
+                    duration, awaitDelivery: true, CancellationToken.None, drainTimeout: TimeSpan.FromMilliseconds(drainTimeoutMs), ingressTimeProvider: time);
             }
             else
             {
@@ -157,22 +207,26 @@ public sealed class ProducerWorkloadTests
                     .Returns(call =>
                     {
                         var pending = WaitForCancellationAsync(call.Arg<CancellationToken>());
+                        // Capture before ingress expires: an expired drain can skip FlushAsync.
+                        throughput.TakeSample();
                         time.Advance(duration);
                         return new ValueTask<RecordMetadata>(pending);
                     });
                 producer.FlushAsync(Arg.Any<CancellationToken>()).Returns(call =>
                 {
-                    throughput.TakeSample();
+                    flushed = true;
                     return new ValueTask(Task.Delay(Timeout.InfiniteTimeSpan, call.Arg<CancellationToken>()));
                 });
                 run = ProducerWorkload.RunAsync(producer, options, "Dekaf", "producer-async", throughput, new LatencyTracker(),
-                    duration, awaitDelivery: true, CancellationToken.None, drainTimeout: TimeSpan.FromMilliseconds(100), ingressTimeProvider: time);
+                    duration, awaitDelivery: true, CancellationToken.None, drainTimeout: TimeSpan.FromMilliseconds(drainTimeoutMs), ingressTimeProvider: time);
             }
             var result = await run.WaitAsync(TimeSpan.FromSeconds(5));
             await Assert.That(result.Throughput.TotalErrors).IsGreaterThan(0);
             await Assert.That(result.Throughput.ErrorSamples.Any(sample => sample.ExceptionType == "DeliveryDrainTimeout")).IsTrue();
+            if (drainTimeoutMs == 0)
+                await Assert.That(flushed).IsFalse();
             if (confluent)
-                await Assert.That(result.Throughput.ErrorSamples.Any(sample => sample.ExceptionType == "FlushTimeout")).IsTrue();
+                await Assert.That(result.Throughput.ErrorSamples.Any(sample => sample.ExceptionType == "FlushTimeout")).IsEqualTo(flushed);
             var json = JsonSerializer.Serialize(result.Throughput, JsonSerializerOptions.Web);
             using var document = JsonDocument.Parse(json);
             await Assert.That(document.RootElement.GetProperty("runtimeEnd").ValueKind).IsEqualTo(JsonValueKind.Object);
