@@ -7,6 +7,9 @@ namespace Dekaf.Tests.Unit.Outbox;
 public sealed class OutboxBucketHintDrainTests
 {
     [Test]
+    // Keep the dedicated workers racing each other without thousands of unrelated
+    // tests exhausting the 30-second budget across 3,000 barrier phases.
+    [NotInParallel]
     public async Task PendingHints_RacingWithDrain_AreConsumedByCurrentOrFollowingDrain()
     {
         using var notifier = new OutboxNotifier(new ManualTimeProvider(), 8193);
