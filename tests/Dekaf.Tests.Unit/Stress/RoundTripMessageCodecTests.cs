@@ -429,6 +429,8 @@ public class RoundTripMessageCodecTests
     }
 
     [Test]
+    // The real sampler cancellation must finish within the existing two-second bound.
+    [NotInParallel]
     public async Task StartSampler_WhenOperationThrows_StopsSamplerAndRethrows()
     {
         var throughput = new ThroughputTracker();
