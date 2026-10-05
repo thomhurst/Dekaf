@@ -618,11 +618,13 @@ public class MetadataManagerTests
         // refuses connections used to fault it on the first attempt with a raw
         // InvalidOperationException instead of retrying for the caller's budget.
         var attempts = 0;
+        var retried = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
             .Returns(_ =>
             {
-                Interlocked.Increment(ref attempts);
+                if (Interlocked.Increment(ref attempts) == 2)
+                    retried.TrySetResult();
                 return ValueTask.FromException<IKafkaConnection>(
                     new SocketException((int)SocketError.ConnectionRefused));
             });
@@ -636,9 +638,11 @@ public class MetadataManagerTests
                 RetryBackoffMaxMs = 10
             });
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        budget.CancelAfter(TimeSpan.FromMilliseconds(300));
+        var pending = manager.GetTopicMetadataAsync("orders", budget.Token).AsTask();
+        await retried.Task.WaitAsync(cancellationToken);
+        budget.Cancel();
 
-        var exception = await Assert.That(() => manager.GetTopicMetadataAsync("orders", budget.Token).AsTask())
+        var exception = await Assert.That(() => pending)
             .Throws<OperationCanceledException>();
 
         await Assert.That(exception!.InnerException).IsTypeOf<SocketException>();
@@ -655,11 +659,13 @@ public class MetadataManagerTests
         // fatal BootstrapResolutionException; the metadata wait must keep retrying instead, so
         // a producer's first produce during a DNS outage waits for max.block.ms.
         var attempts = 0;
+        var retried = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
             .Returns(_ =>
             {
-                Interlocked.Increment(ref attempts);
+                if (Interlocked.Increment(ref attempts) == 2)
+                    retried.TrySetResult();
                 return ValueTask.FromException<IKafkaConnection>(CreateDnsFailure("localhost", 9092));
             });
         await using var manager = new MetadataManager(
@@ -672,9 +678,11 @@ public class MetadataManagerTests
                 RetryBackoffMaxMs = 10
             });
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        budget.CancelAfter(TimeSpan.FromMilliseconds(300));
+        var pending = manager.GetTopicMetadataAsync("orders", budget.Token).AsTask();
+        await retried.Task.WaitAsync(cancellationToken);
+        budget.Cancel();
 
-        var exception = await Assert.That(() => manager.GetTopicMetadataAsync("orders", budget.Token).AsTask())
+        var exception = await Assert.That(() => pending)
             .Throws<OperationCanceledException>();
 
         await Assert.That(exception!.InnerException).IsTypeOf<DnsResolutionException>();
