@@ -48,6 +48,7 @@ dotnet test --project tests/Dekaf.Tests.Integration --configuration Release --fr
 - Investigate intermittent test failures instead of rerunning CI to obtain green. Use deterministic synchronization for timing-dependent tests and library serializers for protocol fixtures.
 - Review final changes for reuse, quality, and efficiency before opening a PR (`/simplify` when available). Preserve the performance requirements above.
 - Create ready-for-review PRs unless the user explicitly requests a draft. Before merging, squash to one commit, rebase onto fresh `origin/main`, and push with `--force-with-lease`.
+- Resolve each PR review thread, whether a human or a bot opened it, as soon as you have dispositioned it: the fix is pushed to the PR head and your reply names the commit, or your reply pushes back on the finding with evidence. Leave a thread open only while it has no disposition. If the reviewer replies after your disposition, unresolve the thread and handle the reply.
 
 ## Stress testing (loaded evidence)
 
