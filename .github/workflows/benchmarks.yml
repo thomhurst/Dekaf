@@ -70,7 +70,7 @@ jobs:
         run: python3 .github/scripts/benchmark_pipeline.py validate "$FILTERED_DIR/results"
       - name: Upload filtered results and log
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: benchmark-results-filtered
           path: ${{ env.FILTERED_DIR }}/
@@ -125,7 +125,7 @@ jobs:
 
       - name: Upload Results
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: benchmark-results-unit-${{ matrix.shard }}
           path: tools/Dekaf.Benchmarks/BenchmarkResults/**/results/**
@@ -187,7 +187,7 @@ jobs:
 
       - name: Upload Results
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: benchmark-results-client
           path: tools/Dekaf.Benchmarks/BenchmarkResults/**/results/**
@@ -311,7 +311,7 @@ jobs:
 
       - name: Upload Results
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: benchmark-results-client-native-${{ matrix.shard }}
           path: tools/Dekaf.Benchmarks/BenchmarkResults/**/results/**
