@@ -867,7 +867,7 @@ jobs:
 
       - name: Upload Results
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: results-${{ matrix.scenario }}-${{ matrix.brokers }}brokers${{ matrix.artifact_suffix }}
           path: |
@@ -877,7 +877,7 @@ jobs:
 
       - name: Upload exact baseline A-B-A controls
         if: always() && matrix.baseline_sha != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: aba-controls-${{ matrix.scenario }}-${{ matrix.brokers }}brokers
           path: aba-results/
@@ -1041,7 +1041,7 @@ jobs:
 
       - name: Upload Merged Results
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: stress-test-results-merged
           path: merged-results/
