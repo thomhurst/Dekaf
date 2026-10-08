@@ -465,13 +465,21 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
         {
             cancellationToken.ThrowIfCancellationRequested();
             await OnErrorAsync(exception, record, cancellationToken).ConfigureAwait(false);
+            // The broker already redelivers a record whose lock lapsed. Never retry or route it
+            // without a lock; the caller abandons it instead of acknowledging.
+            if (IsAcquisitionLockExpired())
+                return;
             var delay = _retryPolicy?.GetNextDelay(attempt, exception);
             var retryInPlace = delay is not null || (_retryPolicy is null && retryTopics?.IsEnabled != true &&
                 attempt < (_deadLetterOptions?.MaxFailures ?? 1));
             if (retryInPlace)
             {
                 if (delay is not null)
+                {
                     await Task.Delay(delay.Value, cancellationToken).ConfigureAwait(false);
+                    if (IsAcquisitionLockExpired())
+                        return;
+                }
                 attempt++;
                 try
                 {

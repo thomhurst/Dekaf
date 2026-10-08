@@ -650,6 +650,37 @@ public sealed class KafkaShareConsumerServiceTests
     }
 
     [Test]
+    public async Task AcquisitionExpiringBeforeProcessingFails_SkipsRetriesAndRouting()
+    {
+        var stale = new KafkaException(ErrorCode.InvalidRecordState, "acquisition expired");
+        var consumer = new TestConsumer(Record(0), Record(1))
+        {
+            AcquisitionLockTimeoutMs = 100,
+            CommitFailure = stale
+        };
+        var retry = Substitute.For<IRetryPolicy>();
+        retry.GetNextDelay(Arg.Any<int>(), Arg.Any<Exception>()).Returns(TimeSpan.Zero);
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        var calls = 0;
+        await using var service = new TestService(consumer, async (record, token) =>
+        {
+            if (record.Offset != 0) return;
+            calls++;
+            await Task.Delay(TimeSpan.FromMilliseconds(500), token);
+            throw new InvalidOperationException("failed after the lock lapsed");
+        }, options: new KafkaShareConsumerServiceOptions { RenewalInterval = TimeSpan.FromMilliseconds(5) },
+            retryPolicy: retry, deadLetterOptions: new DeadLetterOptions()) { Producer = producer };
+        await RunAsync(service);
+        // The broker already redelivers the record: no in-place retry, no routed copy, no disposition.
+        await Assert.That(calls).IsEqualTo(1);
+        await producer.DidNotReceive().ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>());
+        await Assert.That(service.FailureContext).IsNull();
+        await Assert.That(consumer.Abandoned).IsEquivalentTo([0L]);
+        await Assert.That(consumer.Acknowledgements.Where(x => x.Type != AcknowledgeType.Renew).Select(x => (x.Record.Offset, x.Type)))
+            .IsEquivalentTo([(1L, AcknowledgeType.Accept)]);
+    }
+
+    [Test]
     public async Task StaleAcquisitionAcknowledgementFailure_DoesNotStopService()
     {
         var stale = new KafkaException(ErrorCode.InvalidRecordState, "acquisition expired");

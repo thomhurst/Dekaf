@@ -67,6 +67,57 @@ public sealed partial class ShareConsumerRenewalTests
     }
 
     [Test]
+    public async Task Poll_InlineStaleRenewal_ReleasesRenewalState()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
+        {
+            ShareFetchResponse = new ShareFetchResponse
+            {
+                ErrorCode = ErrorCode.None,
+                AcquisitionLockTimeoutMs = 30_000,
+                Responses =
+                [
+                    new ShareFetchResponseTopic
+                    {
+                        TopicId = TopicId,
+                        Partitions =
+                        [
+                            new ShareFetchResponsePartition
+                            {
+                                PartitionIndex = 0,
+                                AcknowledgeErrorCode = ErrorCode.InvalidRecordState,
+                                CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
+                                AcquiredRecords = []
+                            }
+                        ]
+                    }
+                ],
+                NodeEndpoints = []
+            },
+            OnSend = cancellation.Cancel
+        };
+        await using var fixture = CreateFixture(connection);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Subscribe("topic");
+        EstablishSessions(fixture.Consumer, 1);
+        fixture.Consumer.Acknowledge(CreateRecord(), AcknowledgeType.Renew);
+        await Assert.That(RenewedRecordStateCount(fixture.Consumer)).IsEqualTo(1);
+
+        await using var poll = fixture.Consumer.PollAsync(cancellation.Token).GetAsyncEnumerator();
+        await poll.MoveNextAsync();
+
+        // The dropped renewal never succeeds, so its state and retained batch owner must not linger.
+        await Assert.That(RenewedRecordStateCount(fixture.Consumer)).IsEqualTo(0);
+        await Assert.That(HasPendingAcknowledgements(fixture.Consumer)).IsFalse();
+    }
+
+    private static int RenewedRecordStateCount(KafkaShareConsumer<string, string> consumer)
+        => (typeof(KafkaShareConsumer<string, string>)
+            .GetField("_renewedRecords", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(consumer) as System.Collections.ICollection)?.Count ?? 0;
+
+    [Test]
     public async Task Commit_StaleAcquisition_ReportsWithoutRequeue()
     {
         ShareAcknowledgementCommitResult[]? outcomes = null;
