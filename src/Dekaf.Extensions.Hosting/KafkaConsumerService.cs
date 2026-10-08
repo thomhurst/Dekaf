@@ -30,6 +30,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     private IKafkaProducer<byte[]?, byte[]?>? _dlqProducer;
     private int _disposeStarted;
     private volatile bool _hasInDoubtFailedRecord;
+    private volatile bool _consumerInitialized;
     private static readonly TimeSpan MaxRetryTopicDelayChunk = TimeSpan.FromMilliseconds(int.MaxValue - 1);
 
     /// <summary>
@@ -82,6 +83,10 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         _retryPolicy = retryPolicy;
         _retryTopicOptions = deadLetterOptions?.RetryTopics;
         _serviceOptions = serviceOptions ?? new KafkaConsumerServiceOptions();
+        ArgumentOutOfRangeException.ThrowIfLessThan(_serviceOptions.PollRetryBackoff, TimeSpan.FromMilliseconds(1));
+        ArgumentOutOfRangeException.ThrowIfLessThan(_serviceOptions.MaxPollRetryBackoff, _serviceOptions.PollRetryBackoff);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(_serviceOptions.MaxPollRetryBackoff.TotalMilliseconds, int.MaxValue - 1);
+
         if (deadLetterOptions is not null)
         {
             _deadLetterPolicy = deadLetterPolicy ?? new DefaultDeadLetterPolicy<TKey, TValue>(deadLetterOptions);
@@ -121,8 +126,10 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     /// <see cref="MessageFailureDisposition.Retry"/>.
     /// </summary>
     /// <remarks>
-    /// Returning <see cref="MessageFailureDisposition.Retry"/> exits the consume loop and leaves the
-    /// record uncommitted for redelivery after restart or rebalance. Returning
+    /// Returning <see cref="MessageFailureDisposition.Retry"/> exits the consume loop, faults the
+    /// service, and leaves the record uncommitted for redelivery after restart or rebalance. It is
+    /// not restarted by <see cref="KafkaConsumerServiceOptions.PollRetryBackoff"/>, because a new
+    /// consume loop would mark the failed record processed. Returning
     /// <see cref="MessageFailureDisposition.Discard"/> acknowledges the failed record and allows the
     /// service to continue.
     /// </remarks>
@@ -164,37 +171,48 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         {
             rawAccessor.EnableRawRecordTracking();
             _dlqProducer = BuildDlqProducer();
-
-            // Independent broker round-trips; initialize concurrently. If both fail, surface
-            // the AggregateException so neither root cause is silently dropped.
-            var initialization = Task.WhenAll(
-                _dlqProducer.InitializeAsync(stoppingToken).AsTask(),
-                _consumer.InitializeAsync(stoppingToken).AsTask());
-            try
-            {
-                await initialization.ConfigureAwait(false);
-            }
-            catch when (initialization.Exception?.InnerExceptions.Count > 1)
-            {
-                throw initialization.Exception;
-            }
         }
-        else
+        else if (_deadLetterOptions is not null)
         {
-            if (_deadLetterOptions is not null)
-            {
-                LogDeadLetterRoutingUnavailable(_consumer.GetType().Name);
-            }
-
-            await _consumer.InitializeAsync(stoppingToken).ConfigureAwait(false);
+            LogDeadLetterRoutingUnavailable(_consumer.GetType().Name);
         }
 
         using var retryRebalanceRegistration = _retryTopicOptions?.IsEnabled == true
             && _consumer is IConsumerRebalanceEventSource eventSource
                 ? eventSource.RegisterRuntimeRebalanceListener(new RetryTopicRebalanceListener(this))
                 : null;
+
+        // Failures outside record processing leave no record in doubt, so restarting them cannot
+        // commit away unprocessed work. A broker, topic, or ACL that is not ready yet then delays
+        // this consumer instead of faulting the host.
         var subscriptionTopics = BuildSubscriptionTopics();
-        _consumer.Subscribe(subscriptionTopics);
+        var restartAttempt = 0;
+        while (true)
+        {
+            try
+            {
+                await InitializeClientsAsync(stoppingToken).ConfigureAwait(false);
+                _consumerInitialized = true;
+                // Subscribe once. Restarting the consume loop keeps the existing subscription.
+                _consumer.Subscribe(subscriptionTopics);
+                break;
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                LogConsumerServiceStopping();
+                return;
+            }
+            catch (Exception ex) when (ServiceRestartPolicy.CanRestartAfter(ex))
+            {
+                if (!await DelayBeforeRestartAsync(ex, ++restartAttempt, stoppingToken).ConfigureAwait(false))
+                    return;
+            }
+            catch (Exception ex)
+            {
+                LogConsumerServiceFailed(ex);
+                throw;
+            }
+        }
 
         if (_logger.IsEnabled(LogLevel.Information))
         {
@@ -202,31 +220,90 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
             LogStartedConsuming(topics);
         }
 
+        while (true)
+        {
+            try
+            {
+                await foreach (var result in _consumer.ConsumeAsync(stoppingToken).ConfigureAwait(false))
+                {
+                    restartAttempt = 0;
+                    // Keep this catch in the long-lived loop state machine. An async helper would
+                    // allocate its own state-machine box whenever ProcessAsync suspends.
+                    try
+                    {
+                        await ProcessWithRetriesAsync(result, stoppingToken).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        _hasInDoubtFailedRecord = true;
+                        throw;
+                    }
+                }
+
+                return;
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                LogConsumerServiceStopping();
+                return;
+            }
+            // A new ConsumeAsync stream proves the last delivered record processed. Never
+            // restart after a processing failure: that record must stay uncommitted.
+            catch (Exception ex) when (!_hasInDoubtFailedRecord && ServiceRestartPolicy.CanRestartAfter(ex))
+            {
+                if (!await DelayBeforeRestartAsync(ex, ++restartAttempt, stoppingToken).ConfigureAwait(false))
+                    return;
+            }
+            catch (Exception ex)
+            {
+                LogConsumerServiceFailed(ex);
+                throw;
+            }
+        }
+    }
+
+    private async Task InitializeClientsAsync(CancellationToken stoppingToken)
+    {
+        if (_dlqProducer is null)
+        {
+            await _consumer.InitializeAsync(stoppingToken).ConfigureAwait(false);
+            return;
+        }
+
+        // Independent broker round-trips; initialize concurrently. If both fail, surface
+        // the AggregateException so neither root cause is silently dropped. Both clients
+        // return immediately once initialized, so a restart repeats only the failed work.
+        var initialization = Task.WhenAll(
+            _dlqProducer.InitializeAsync(stoppingToken).AsTask(),
+            _consumer.InitializeAsync(stoppingToken).AsTask());
         try
         {
-            await foreach (var result in _consumer.ConsumeAsync(stoppingToken).ConfigureAwait(false))
-            {
-                // Keep this catch in the long-lived loop state machine. An async helper would
-                // allocate its own state-machine box whenever ProcessAsync suspends.
-                try
-                {
-                    await ProcessWithRetriesAsync(result, stoppingToken).ConfigureAwait(false);
-                }
-                catch
-                {
-                    _hasInDoubtFailedRecord = true;
-                    throw;
-                }
-            }
+            await initialization.ConfigureAwait(false);
+        }
+        catch when (initialization.Exception?.InnerExceptions.Count > 1)
+        {
+            throw initialization.Exception;
+        }
+    }
+
+    /// <summary>Waits before a restart. Returns false when shutdown cancels the wait.</summary>
+    private async ValueTask<bool> DelayBeforeRestartAsync(
+        Exception exception, int restartAttempt, CancellationToken stoppingToken)
+    {
+        var delay = ServiceRestartPolicy.GetDelay(
+            _serviceOptions.PollRetryBackoff,
+            _serviceOptions.MaxPollRetryBackoff,
+            restartAttempt);
+        LogConsumerServiceRestarting(exception, restartAttempt, delay);
+        try
+        {
+            await Task.Delay(delay, stoppingToken).ConfigureAwait(false);
+            return true;
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
             LogConsumerServiceStopping();
-        }
-        catch (Exception ex)
-        {
-            LogConsumerServiceFailed(ex);
-            throw;
+            return false;
         }
     }
 
@@ -274,6 +351,11 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
         // First, cancel ExecuteAsync to stop the normal consume loop
         await base.StopAsync(cancellationToken).ConfigureAwait(false);
+
+        // Stopped before initialization succeeded: nothing was consumed, so there is nothing
+        // to drain or commit, and both would fail against an uninitialized consumer.
+        if (!_consumerInitialized)
+            return;
 
         // Then drain any remaining buffered messages — unless the consume loop stopped with an
         // in-doubt failed record: draining pulls from the consumer, which would prove that record
@@ -964,6 +1046,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Consumer service failed")]
     private partial void LogConsumerServiceFailed(Exception ex);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Consumer initialization, subscription, or polling failed; restart attempt {RestartAttempt} in {Delay}")]
+    private partial void LogConsumerServiceRestarting(Exception ex, int restartAttempt, TimeSpan delay);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Stopping consumer service")]
     private partial void LogStoppingConsumerService();

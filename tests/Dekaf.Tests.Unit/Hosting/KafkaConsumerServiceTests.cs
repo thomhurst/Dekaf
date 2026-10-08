@@ -710,6 +710,7 @@ public sealed partial class KafkaConsumerServiceTests
         SetDlqProducer(service, producer);
 
         await service.StartAsync(CancellationToken.None);
+        await WaitForSubscribeAsync(consumer);
         await service.StopAsync(CancellationToken.None);
 
         // The drain timeout cancelled the drained record's awaited DLQ write, so the final
@@ -1025,6 +1026,8 @@ public sealed partial class KafkaConsumerServiceTests
 
         await Assert.That(options.ShutdownTimeout).IsEqualTo(TimeSpan.FromSeconds(30));
         await Assert.That(options.DrainOnShutdown).IsTrue();
+        await Assert.That(options.PollRetryBackoff).IsEqualTo(TimeSpan.FromSeconds(1));
+        await Assert.That(options.MaxPollRetryBackoff).IsEqualTo(TimeSpan.FromSeconds(30));
     }
 
     [Test]

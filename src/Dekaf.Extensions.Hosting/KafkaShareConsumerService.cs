@@ -62,7 +62,8 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_options.RenewalInterval, TimeSpan.Zero);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(_options.RenewalInterval.TotalMilliseconds, int.MaxValue - 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(_options.PollRetryBackoff, TimeSpan.FromMilliseconds(1));
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(_options.PollRetryBackoff.TotalMilliseconds, int.MaxValue - 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(_options.MaxPollRetryBackoff, _options.PollRetryBackoff);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(_options.MaxPollRetryBackoff.TotalMilliseconds, int.MaxValue - 1);
         _deadLetterPolicy = deadLetterPolicy ?? (deadLetterOptions is null
             ? null : new DefaultDeadLetterPolicy<TKey, TValue>(deadLetterOptions));
     }
@@ -122,6 +123,7 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
             ((AsyncAutoResetSignal)state!).Signal(), _operationCompleted);
         ShareConsumeResult<TKey, TValue>? current = null;
         var initialized = false;
+        var restartAttempt = 0;
         Exception? executionFailure = null;
         try
         {
@@ -137,11 +139,28 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                     throw new InvalidOperationException("This share consumer does not support raw record capture required for durable routing.");
                 raw.EnableRawRecordTracking();
                 _producer = CreateDeadLetterProducer();
-                await _producer.InitializeAsync(_pollCancellation.Token).ConfigureAwait(false);
             }
-            await _consumer.InitializeAsync(_pollCancellation.Token).ConfigureAwait(false);
-            initialized = true;
-            _consumer.Subscribe(BuildTopics());
+            var topics = BuildTopics();
+            // No record is acquired yet, so a broker, topic, or ACL that is not ready yet delays
+            // this consumer instead of faulting the host. Both clients return immediately once
+            // initialized, so a restart repeats only the failed work.
+            while (true)
+            {
+                try
+                {
+                    if (_producer is not null)
+                        await _producer.InitializeAsync(_pollCancellation.Token).ConfigureAwait(false);
+                    await _consumer.InitializeAsync(_pollCancellation.Token).ConfigureAwait(false);
+                    initialized = true;
+                    _consumer.Subscribe(topics);
+                    break;
+                }
+                catch (Exception exception) when (
+                    !_pollCancellation.IsCancellationRequested && ServiceRestartPolicy.CanRestartAfter(exception))
+                {
+                    await DelayBeforeRestartAsync(exception, ++restartAttempt).ConfigureAwait(false);
+                }
+            }
             while (!_pollCancellation.IsCancellationRequested)
             {
                 try
@@ -149,6 +168,7 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                     await foreach (var record in _consumer.PollAsync(_pollCancellation.Token).ConfigureAwait(false))
                     {
                         current = record;
+                        restartAttempt = 0;
                         if (_acknowledgementFailure is { } pollFailure)
                             ExceptionDispatchInfo.Capture(pollFailure).Throw();
                         if (Volatile.Read(ref _shutdownStarted) != 0)
@@ -228,15 +248,14 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                     }
                     break;
                 }
-                catch (KafkaException exception) when (
+                catch (Exception exception) when (
                     current is null && _acknowledgementFailure is null &&
-                    !_pollCancellation.IsCancellationRequested &&
-                    (exception.IsRetriable || exception is KafkaTimeoutException { TimeoutKind: TimeoutKind.Rebalance }))
+                    !_pollCancellation.IsCancellationRequested && !_processingCancellation.IsCancellationRequested &&
+                    ServiceRestartPolicy.CanRestartAfter(exception))
                 {
                     // The failed iterator has been disposed. Start a new poll after backoff;
                     // never retry processing or acknowledgement failures as polling failures.
-                    await OnErrorAsync(exception, null, _pollCancellation.Token).ConfigureAwait(false);
-                    await Task.Delay(_options.PollRetryBackoff, _pollCancellation.Token).ConfigureAwait(false);
+                    await DelayBeforeRestartAsync(exception, ++restartAttempt).ConfigureAwait(false);
                 }
             }
             if (_acknowledgementFailure is { } acknowledgementFailure)
@@ -310,6 +329,15 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                 ExceptionDispatchInfo.Capture(finalAcknowledgementFailure).Throw();
             }
         }
+    }
+
+    private async Task DelayBeforeRestartAsync(Exception exception, int restartAttempt)
+    {
+        await OnErrorAsync(exception, null, _pollCancellation.Token).ConfigureAwait(false);
+        await Task.Delay(
+                ServiceRestartPolicy.GetDelay(_options.PollRetryBackoff, _options.MaxPollRetryBackoff, restartAttempt),
+                _pollCancellation.Token)
+            .ConfigureAwait(false);
     }
 
     private void ObserveAcknowledgements(ReadOnlySpan<ShareAcknowledgementCommitResult> results)
