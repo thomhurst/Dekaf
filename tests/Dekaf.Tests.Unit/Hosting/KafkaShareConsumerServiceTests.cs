@@ -23,16 +23,27 @@ namespace Dekaf.Tests.Unit.Hosting;
 
 public sealed class KafkaShareConsumerServiceTests
 {
+    public enum PollFailureKind { JoinTimeout, Retriable, Authorization, UnclassifiedTimeout }
+
     [Test]
-    [Arguments(true, false)]
-    [Arguments(false, false)]
-    [Arguments(true, true)]
-    [Arguments(false, true)]
-    public async Task RetriablePollFailure_RestartsDisposedIteratorAndProcessesRecords(bool joinTimeout, bool afterRecord)
+    [Arguments(PollFailureKind.JoinTimeout, false)]
+    [Arguments(PollFailureKind.JoinTimeout, true)]
+    [Arguments(PollFailureKind.Retriable, false)]
+    [Arguments(PollFailureKind.Retriable, true)]
+    [Arguments(PollFailureKind.Authorization, false)]
+    [Arguments(PollFailureKind.Authorization, true)]
+    [Arguments(PollFailureKind.UnclassifiedTimeout, false)]
+    [Arguments(PollFailureKind.UnclassifiedTimeout, true)]
+    public async Task PollFailure_RestartsDisposedIteratorAndProcessesRecords(PollFailureKind kind, bool afterRecord)
     {
-        var error = joinTimeout
-            ? (KafkaException)new KafkaTimeoutException("join timed out") { TimeoutKind = TimeoutKind.Rebalance }
-            : new KafkaException(ErrorCode.CoordinatorLoadInProgress, "coordinator loading");
+        var error = kind switch
+        {
+            PollFailureKind.JoinTimeout => new KafkaTimeoutException("join timed out") { TimeoutKind = TimeoutKind.Rebalance },
+            PollFailureKind.Retriable => new KafkaException(ErrorCode.CoordinatorLoadInProgress, "coordinator loading"),
+            // An ACL that is not granted yet heals without a restart of the process.
+            PollFailureKind.Authorization => new KafkaException(ErrorCode.GroupAuthorizationFailed, "denied"),
+            _ => (KafkaException)new KafkaTimeoutException("unclassified timeout"),
+        };
         var consumer = new TestConsumer(Record(0), Record(1))
         { PollFailure = error, FailPollAfterRecords = afterRecord ? 1 : 0 };
         await using var service = new TestService(consumer,
@@ -54,7 +65,11 @@ public sealed class KafkaShareConsumerServiceTests
         var consumer = new TestConsumer { PollFailure = new KafkaTimeoutException("join timed out")
             { TimeoutKind = TimeoutKind.Rebalance } };
         await using var service = new TestService(consumer,
-            options: new KafkaShareConsumerServiceOptions { PollRetryBackoff = TimeSpan.FromHours(1) });
+            options: new KafkaShareConsumerServiceOptions
+            {
+                PollRetryBackoff = TimeSpan.FromHours(1),
+                MaxPollRetryBackoff = TimeSpan.FromHours(1)
+            });
         await service.StartAsync(default);
         await service.ErrorObserved.Task.WaitAsync(TimeSpan.FromSeconds(10));
         await service.StopAsync(default).WaitAsync(TimeSpan.FromSeconds(10));
@@ -65,18 +80,75 @@ public sealed class KafkaShareConsumerServiceTests
     }
 
     [Test]
-    [Arguments(true)]
-    [Arguments(false)]
-    public async Task NonRetriablePollFailure_RemainsTerminal(bool authorization)
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    [Arguments(3)]
+    [Arguments(4)]
+    public async Task NonTransientPollFailure_RemainsTerminal(int kind)
     {
-        var error = authorization
-            ? (KafkaException)new KafkaException(ErrorCode.GroupAuthorizationFailed, "denied")
-            : new KafkaTimeoutException("unclassified timeout");
+        Exception error = kind switch
+        {
+            0 => new ObjectDisposedException("consumer"),
+            1 => new InvalidOperationException("misconfigured"),
+            2 => new KafkaException(ErrorCode.UnsupportedVersion, "unsupported"),
+            3 => new AuthenticationException("bad credentials"),
+            _ => new SerializationException("poison record"),
+        };
         var consumer = new TestConsumer { PollFailure = error };
-        await using var service = new TestService(consumer);
-        await Assert.That(async () => await RunAsync(service)).Throws<KafkaException>();
+        await using var service = new TestService(consumer,
+            options: new KafkaShareConsumerServiceOptions { PollRetryBackoff = TimeSpan.FromMilliseconds(1) });
+        await Assert.That(async () => await RunAsync(service)).Throws<Exception>();
         await Assert.That(consumer.PollAttempts).IsEqualTo(1);
         await Assert.That(service.Errors.Single()).IsSameReferenceAs(error);
+    }
+
+    [Test]
+    public async Task InitializationFailure_RestartsUntilInitializedThenSubscribesOnce()
+    {
+        var first = new KafkaTimeoutException("broker unreachable");
+        var second = new TimeoutException("metadata timed out");
+        var consumer = new TestConsumer(Record(0)) { InitializeFailures = new([first, second]) };
+        await using var service = new TestService(consumer,
+            options: new KafkaShareConsumerServiceOptions { PollRetryBackoff = TimeSpan.FromMilliseconds(1) });
+
+        await RunAsync(service);
+
+        await Assert.That(consumer.Events.Count(e => e == "initialize")).IsEqualTo(3);
+        await Assert.That(consumer.Events.Count(e => e == "subscribe")).IsEqualTo(1);
+        await Assert.That(service.Errors).IsEquivalentTo(new Exception[] { first, second });
+        await Assert.That(consumer.Delivered).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ShutdownDuringInitializationBackoff_SkipsCommitAndClose()
+    {
+        var consumer = new TestConsumer { InitializeFailures = new([new KafkaTimeoutException("broker unreachable")]) };
+        await using var service = new TestService(consumer,
+            options: new KafkaShareConsumerServiceOptions
+            {
+                PollRetryBackoff = TimeSpan.FromHours(1),
+                MaxPollRetryBackoff = TimeSpan.FromHours(1)
+            });
+        await service.StartAsync(default);
+        await service.ErrorObserved.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await service.StopAsync(default).WaitAsync(TimeSpan.FromSeconds(10));
+        await service.ExecuteTask!.WaitAsync(TimeSpan.FromSeconds(10));
+        await Assert.That(consumer.PollAttempts).IsEqualTo(0);
+        await Assert.That(consumer.Events.Contains("commit")).IsFalse();
+        await Assert.That(consumer.Events.Contains("close")).IsFalse();
+    }
+
+    [Test]
+    public async Task MaxPollRetryBackoffBelowPollRetryBackoff_IsRejected()
+    {
+        await Assert.That(() => new TestService(new TestConsumer(),
+            options: new KafkaShareConsumerServiceOptions
+            {
+                PollRetryBackoff = TimeSpan.FromSeconds(5),
+                MaxPollRetryBackoff = TimeSpan.FromSeconds(1)
+            }))
+            .Throws<ArgumentOutOfRangeException>();
     }
 
     [Test]
@@ -697,7 +769,12 @@ public sealed class KafkaShareConsumerServiceTests
         }
         internal void ReportAcknowledgementFailure(Exception exception)
             => _observer?.Invoke([new ShareAcknowledgementCommitResult(new TopicPartition("orders", 0), default, exception)]);
-        public ValueTask InitializeAsync(CancellationToken cancellationToken = default) { Events.Add("initialize"); return ValueTask.CompletedTask; }
+        public Queue<Exception> InitializeFailures { get; init; } = new();
+        public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
+        {
+            Events.Add("initialize");
+            return InitializeFailures.TryDequeue(out var failure) ? ValueTask.FromException(failure) : ValueTask.CompletedTask;
+        }
         public IKafkaShareConsumer<string, string> Subscribe(params string[] topics) { Subscription = topics.ToHashSet(); Events.Add("subscribe"); return this; }
         public IKafkaShareConsumer<string, string> Unsubscribe() => this;
         public async IAsyncEnumerable<ShareConsumeResult<string, string>> PollAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)

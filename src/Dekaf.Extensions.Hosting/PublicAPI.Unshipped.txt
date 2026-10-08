@@ -76,3 +76,9 @@ static Dekaf.Extensions.Hosting.DekafBuilderShareConsumerHostingExtensions.AddSh
 static Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey.For<TService>(object? serviceKey = null) -> Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey!
 static Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey.operator !=(Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey? left, Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey? right) -> bool
 static Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey.operator ==(Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey? left, Dekaf.Extensions.Hosting.KafkaShareConsumerServiceKey? right) -> bool
+Dekaf.Extensions.Hosting.KafkaConsumerServiceOptions.MaxPollRetryBackoff.get -> System.TimeSpan
+Dekaf.Extensions.Hosting.KafkaConsumerServiceOptions.MaxPollRetryBackoff.init -> void
+Dekaf.Extensions.Hosting.KafkaConsumerServiceOptions.PollRetryBackoff.get -> System.TimeSpan
+Dekaf.Extensions.Hosting.KafkaConsumerServiceOptions.PollRetryBackoff.init -> void
+Dekaf.Extensions.Hosting.KafkaShareConsumerServiceOptions.MaxPollRetryBackoff.get -> System.TimeSpan
+Dekaf.Extensions.Hosting.KafkaShareConsumerServiceOptions.MaxPollRetryBackoff.init -> void
