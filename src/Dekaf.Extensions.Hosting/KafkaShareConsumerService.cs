@@ -43,6 +43,10 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
     // whether this service renewed the record (a decorated consumer keeps renewal replay state).
     private bool _acquisitionLost;
     private bool _acquisitionRenewed;
+    // Set only while a renewal commit runs, so per-partition acknowledgement results can be
+    // attributed to the record being renewed rather than to acknowledgements flushed with it.
+    private ShareConsumeResult<TKey, TValue>? _renewingRecord;
+    private bool _renewalConfirmed;
     private Exception? _acknowledgementFailure;
     private int _shutdownStarted;
     private int _disposeStarted;
@@ -214,6 +218,7 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                                     operation.ConfigureAwait(false).GetAwaiter().UnsafeOnCompleted(_processingCompletedCallback);
                                     while (!operation.IsCompleted)
                                     {
+                                        var renewalStarted = 0L;
                                         try
                                         {
                                             if (processingToken.IsCancellationRequested || _acquisitionLost)
@@ -234,24 +239,35 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                                                 _acquisitionLost = true;
                                                 continue;
                                             }
-                                            var renewalStarted = Stopwatch.GetTimestamp();
+                                            renewalStarted = Stopwatch.GetTimestamp();
                                             _acquisitionRenewed = true;
+                                            _renewalConfirmed = false;
+                                            _renewingRecord = record;
                                             _consumer.Acknowledge(record, AcknowledgeType.Renew);
                                             await _consumer.CommitAsync(processingToken).ConfigureAwait(false);
                                             _lastRenewal = renewalStarted;
                                         }
                                         catch (Exception exception) when (IsStaleAcquisitionFailure(exception))
                                         {
-                                            // The broker rejected this partition's acquisitions, so the renewal
-                                            // did not extend the lock and the broker may already be redelivering
-                                            // the record. Treat it as lost even before the local deadline.
-                                            _acquisitionLost = true;
+                                            // The commit also flushes acknowledgements of earlier records, so the
+                                            // rejected partition may not be this record's. Per-partition results
+                                            // (ObserveAcknowledgements) decide for the built-in consumer: a rejected
+                                            // renewal marks the acquisition lost, a confirmed one extends the lock.
+                                            // A decorated consumer reports none, so assume this lock was rejected.
+                                            if (_consumer is not IHostedShareConsumer)
+                                                _acquisitionLost = true;
+                                            else if (_renewalConfirmed && !_acquisitionLost)
+                                                _lastRenewal = renewalStarted;
                                             LogStaleAcquisition(exception, record.Topic, record.Partition);
                                         }
                                         catch (Exception exception)
                                         {
                                             renewalFailure ??= exception;
                                             CancelProcessing();
+                                        }
+                                        finally
+                                        {
+                                            _renewingRecord = null;
                                         }
                                     }
                                 }
@@ -386,10 +402,16 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
         foreach (ref readonly var result in results)
         {
             if (result.Exception is not { } exception)
+            {
+                if (IsRenewing(result.TopicPartition))
+                    _renewalConfirmed = true;
                 continue;
+            }
             if (IsStaleAcquisitionFailure(exception))
             {
                 // Rejected acquisitions are redelivered by the broker, so at-least-once still holds.
+                if (IsRenewing(result.TopicPartition))
+                    _acquisitionLost = true;
                 LogStaleAcquisition(exception, result.TopicPartition.Topic, result.TopicPartition.Partition);
                 continue;
             }
@@ -397,6 +419,10 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
             _pollCancellation.Cancel();
         }
     }
+
+    private bool IsRenewing(TopicPartition topicPartition) =>
+        _renewingRecord is { } renewing && renewing.Partition == topicPartition.Partition &&
+        string.Equals(renewing.Topic, topicPartition.Topic, StringComparison.Ordinal);
 
     private bool IsAcquisitionLockExpired() =>
         _acquisitionLost ||

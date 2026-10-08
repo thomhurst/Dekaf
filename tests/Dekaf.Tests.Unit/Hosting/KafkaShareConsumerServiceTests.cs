@@ -684,7 +684,7 @@ public sealed class KafkaShareConsumerServiceTests
     public async Task StaleRenewalBeforeLocalDeadline_SkipsRetriesRoutingAndAcknowledgement()
     {
         var stale = new KafkaException(ErrorCode.InvalidRecordState, "acquisition expired");
-        var consumer = new TestConsumer(Record(0), Record(1)) { CommitFailure = stale };
+        var consumer = new TestConsumer(Record(0), Record(1)) { CommitFailure = stale, CommitFailurePartitions = [0] };
         var retry = Substitute.For<IRetryPolicy>();
         retry.GetNextDelay(Arg.Any<int>(), Arg.Any<Exception>()).Returns(TimeSpan.Zero);
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
@@ -712,7 +712,7 @@ public sealed class KafkaShareConsumerServiceTests
     public async Task AcquisitionLostDuringRetryTopicRouting_DoesNotStartDeadLetterRouting()
     {
         var stale = new KafkaException(ErrorCode.InvalidRecordState, "acquisition expired");
-        var consumer = new TestConsumer(Record(0)) { CommitFailure = stale };
+        var consumer = new TestConsumer(Record(0)) { CommitFailure = stale, CommitFailurePartitions = [0] };
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
         var topics = new List<string>();
         producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
@@ -737,6 +737,32 @@ public sealed class KafkaShareConsumerServiceTests
         await Assert.That(service.FailureContext).IsNull();
         await Assert.That(consumer.Abandoned).IsEquivalentTo([0L]);
         await Assert.That(service.ExecuteTask!.IsCompletedSuccessfully).IsTrue();
+    }
+
+    [Test]
+    public async Task StaleCommitForAnotherPartition_DoesNotLoseCurrentAcquisition()
+    {
+        // The renewal commit flushes another partition's rejected acknowledgements while this
+        // record's renewal succeeds: the record keeps its lock and is accepted.
+        var stale = new KafkaException(ErrorCode.InvalidRecordState, "another partition expired");
+        var consumer = new TestConsumer(Record(0), Record(1))
+        {
+            CommitFailure = stale,
+            CommitFailurePartitions = [5],
+            CommitSuccessPartitions = [0]
+        };
+        await using var service = new TestService(consumer, async (record, token) =>
+        {
+            if (record.Offset == 0)
+            {
+                await consumer.Renewed.Task.WaitAsync(token);
+                await Task.Delay(TimeSpan.FromMilliseconds(50), token);
+            }
+        }, options: new KafkaShareConsumerServiceOptions { RenewalInterval = TimeSpan.FromMilliseconds(5) });
+        await RunAsync(service);
+        await Assert.That(consumer.Abandoned).IsEmpty();
+        await Assert.That(consumer.Acknowledgements.Where(x => x.Type != AcknowledgeType.Renew).Select(x => (x.Record.Offset, x.Type)))
+            .IsEquivalentTo([(0L, AcknowledgeType.Accept), (1L, AcknowledgeType.Accept)]);
     }
 
     [Test]
@@ -922,6 +948,10 @@ public sealed class KafkaShareConsumerServiceTests
         public ShareAcknowledgementMode AcknowledgementMode { get; init; } = ShareAcknowledgementMode.Explicit;
         public bool FailCommit { get; init; }
         public Exception? CommitFailure { get; init; }
+        // Reports CommitFailure for these partitions through the acknowledgement observer, as the
+        // built-in consumer does before CommitAsync throws; other partitions report success.
+        public int[]? CommitFailurePartitions { get; init; }
+        public int[] CommitSuccessPartitions { get; init; } = [];
         public Exception? FinalCommitFailure { get; init; }
         public bool ReportCommitFailure { get; init; }
         public bool ThrowCommitFailure { get; init; }
@@ -996,7 +1026,18 @@ public sealed class KafkaShareConsumerServiceTests
                 if (ThrowCommitFailure) return ValueTask.FromException(failure);
             }
             if (CommitFailure is not null)
+            {
+                if (CommitFailurePartitions is { } failed)
+                {
+                    var results = new List<ShareAcknowledgementCommitResult>();
+                    foreach (var partition in failed)
+                        results.Add(new ShareAcknowledgementCommitResult(new TopicPartition("orders", partition), default, CommitFailure));
+                    foreach (var partition in CommitSuccessPartitions)
+                        results.Add(new ShareAcknowledgementCommitResult(new TopicPartition("orders", partition), default, null));
+                    _observer?.Invoke(results.ToArray());
+                }
                 return ValueTask.FromException(CommitFailure);
+            }
             return FailCommit ? ValueTask.FromException(new InvalidOperationException("acknowledgement failed")) : ValueTask.CompletedTask;
         }
         public ValueTask CloseAsync(CancellationToken cancellationToken = default) { Events.Add("close"); return ValueTask.CompletedTask; }
