@@ -120,7 +120,7 @@ The service subscribes to `Topics` itself — do not call `SubscribeTo` on the c
 | `Topics` | Yes | Topics to subscribe to. |
 | `ProcessAsync` | Yes | Handle one record. Throwing signals a processing failure. |
 | `OnErrorAsync` | No | Called on every processing failure before any retry or routing decision. Default logs. |
-| `GetFailureDispositionAsync` | No | Makes the terminal retry/discard decision when no retry or routing path succeeds. Default: `Retry`. |
+| `GetFailureDispositionAsync` | No | Makes the terminal redeliver/retry/discard decision when no retry or routing path succeeds. Default: `Redeliver` (the service keeps running and redelivers the record with backoff). |
 | `OnDeadLetterRoutingFailedAsync` | No | Called when a DLQ produce itself fails. Default logs. |
 | `OnRetryTopicRoutingFailedAsync` | No | Called when a retry-topic produce fails. Default logs. |
 
@@ -270,7 +270,7 @@ A failure outside `ProcessAsync` does not leave a record in doubt, so the servic
 
 Initialization repeats until it succeeds, and the service then subscribes once. A polling failure restarts only the consume loop and keeps the existing subscription. Shutdown cancels a pending restart delay.
 
-Every other failure still faults the service, for example misconfiguration, authentication errors, non-retriable Kafka errors such as an unsupported broker version, and deserialization errors. A processing failure whose terminal disposition is `Retry` also faults the service, because a new consume loop would mark the failed record processed (see [Failure Handling](#failure-handling)).
+Every other failure still faults the service, for example misconfiguration, authentication errors, non-retriable Kafka errors such as an unsupported broker version, and deserialization errors. A processing failure whose terminal disposition is `Retry` also faults the service, because a new consume loop would mark the failed record processed. The default `Redeliver` disposition does not fault the service: it rewinds and pauses only the failed record's partition (see [Failure Handling](#failure-handling)).
 
 ## Shutdown Behavior
 

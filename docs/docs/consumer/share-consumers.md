@@ -402,9 +402,11 @@ failure through `OnErrorAsync`, then tries again after `PollRetryBackoff` (one s
 default). Consecutive failures double the delay up to `MaxPollRetryBackoff` (30 seconds by
 default), and a delivered record resets it. Configure both through
 `KafkaShareConsumerServiceOptions`; `PollRetryBackoff` must be at least 1 millisecond. Shutdown
-cancels the delay. Processing and acknowledgement failures retain their existing failure
-behavior. Every other failure, such as misconfiguration, authentication errors, or a
-non-retriable Kafka error, stops the service.
+cancels the delay. Processing failures are not retried by this policy; they follow the terminal
+disposition, which defaults to `Redeliver` (release the record and keep polling). A lapsed
+acquisition lock, or an acknowledgement the broker rejects with `INVALID_RECORD_STATE`, leaves the
+record for broker redelivery without stopping the service. Every other failure, such as
+misconfiguration, authentication errors, or a non-retriable Kafka error, stops the service.
 
 Repeated join timeouts need investigation. On a single-broker development cluster, verify
 that `share.coordinator.state.topic.replication.factor` and
