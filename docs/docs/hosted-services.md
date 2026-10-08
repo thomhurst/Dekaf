@@ -426,7 +426,7 @@ routing exception.
 
 | Terminal decision | Acknowledgement | Service behavior |
 | --- | --- | --- |
-| `MessageFailureDisposition.Redeliver` (default) | `Release` | Continues polling; the broker's delivery count limit archives a record that always fails |
+| `MessageFailureDisposition.Redeliver` (default) | `Release` | Continues polling; the broker's delivery count limit (`group.share.delivery.count.limit`) archives a record that always fails, so configure a DLQ or retry topics to keep a copy |
 | `MessageFailureDisposition.Retry` | `Release` | Stops with the processing or routing exception; host exception policy applies |
 | `MessageFailureDisposition.Discard` | `Reject` | Continues polling |
 

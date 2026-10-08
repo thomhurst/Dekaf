@@ -518,6 +518,11 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
             {
                 if (retryTopics.TryGetRetryTopic(sourceTopic, checked(previousFailures + 1), out var topic, out var retryDelay))
                 {
+                    // Each routing write and the disposition start only while the lock is held. A write
+                    // already in flight is not cancelled: a cancelled produce may still be delivered, so
+                    // cancellation cannot remove the duplicate, only hide whether it happened.
+                    if (IsAcquisitionLockExpired())
+                        return;
                     stage = MessageFailureStage.RetryTopicRouting;
                     try
                     {
@@ -533,6 +538,8 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                 }
                 else exhausted = true;
             }
+            if (IsAcquisitionLockExpired())
+                return;
             if (_deadLetterPolicy is not null && (exhausted || _deadLetterPolicy.ShouldDeadLetter(converted, exception, failureCount)))
             {
                 stage = MessageFailureStage.DeadLetterRouting;
@@ -548,6 +555,8 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                     routingException = failure;
                     await OnDeadLetterRoutingFailedAsync(failure, record, cancellationToken).ConfigureAwait(false);
                 }
+                if (IsAcquisitionLockExpired())
+                    return;
             }
             var disposition = await GetFailureDispositionAsync(new ShareMessageFailureContext<TKey, TValue>(record,
                 exception, attempt, failureCount, stage, routingException), cancellationToken).ConfigureAwait(false);

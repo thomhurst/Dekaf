@@ -709,6 +709,37 @@ public sealed class KafkaShareConsumerServiceTests
     }
 
     [Test]
+    public async Task AcquisitionLostDuringRetryTopicRouting_DoesNotStartDeadLetterRouting()
+    {
+        var stale = new KafkaException(ErrorCode.InvalidRecordState, "acquisition expired");
+        var consumer = new TestConsumer(Record(0)) { CommitFailure = stale };
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        var topics = new List<string>();
+        producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                topics.Add(call.ArgAt<ProducerMessage<byte[]?, byte[]?>>(0).Topic!);
+                return new ValueTask<RecordMetadata>(FailAfterRenewalAsync());
+            });
+        async Task<RecordMetadata> FailAfterRenewalAsync()
+        {
+            // The renewal during this write is rejected, so the broker is redelivering the record.
+            await consumer.Renewed.Task;
+            await Task.Delay(50);
+            throw new InvalidOperationException("retry topic unavailable");
+        }
+        await using var service = new TestService(consumer, (_, _) => throw new InvalidOperationException("failed"),
+            options: new KafkaShareConsumerServiceOptions { RenewalInterval = TimeSpan.FromMilliseconds(5) },
+            deadLetterOptions: new DeadLetterOptions { RetryTopics = new RetryTopicOptions { Delays = [TimeSpan.FromSeconds(1)] } })
+        { Producer = producer };
+        await RunAsync(service);
+        await Assert.That(topics).IsEquivalentTo(["orders-retry-1s"]);
+        await Assert.That(service.FailureContext).IsNull();
+        await Assert.That(consumer.Abandoned).IsEquivalentTo([0L]);
+        await Assert.That(service.ExecuteTask!.IsCompletedSuccessfully).IsTrue();
+    }
+
+    [Test]
     public async Task DecoratedConsumer_LapsedRenewedAcquisition_IsReleasedToClearReplayState()
     {
         var stale = new KafkaException(ErrorCode.InvalidRecordState, "acquisition expired");
