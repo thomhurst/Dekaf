@@ -409,7 +409,7 @@ public sealed partial class KafkaConsumerServiceTests
     }
 
     [Test]
-    public async Task ExecuteAsync_RetryTopicMessageWithLaterOffset_DoesNotOverwritePendingSeek()
+    public async Task ExecuteAsync_RetryTopicMessageWithLaterOffset_RewindsToPendingRecord()
     {
         var consumer = CreateConsumerSubstitute();
         var positions = Substitute.For<IConsumerPositions>();
@@ -455,7 +455,9 @@ public sealed partial class KafkaConsumerServiceTests
         await service.StopAsync(CancellationToken.None);
 
         await Assert.That(service.ProcessedMessages).IsEmpty();
-        positions.Received(1).Seek(Arg.Is<TopicPartitionOffset>(offset =>
+        // The later record never moves the position past the pending one: both deliveries
+        // rewind the partition to offset 99.
+        positions.Received(2).Seek(Arg.Is<TopicPartitionOffset>(offset =>
             offset.Topic == "orders-retry-5s" &&
             offset.Partition == 3 &&
             offset.Offset == 99));
@@ -463,7 +465,7 @@ public sealed partial class KafkaConsumerServiceTests
             offset.Topic == "orders-retry-5s" &&
             offset.Partition == 3 &&
             offset.Offset == 100));
-        partitions.Received(1).Pause(Arg.Is<TopicPartition[]>(items =>
+        partitions.Received(2).Pause(Arg.Is<TopicPartition[]>(items =>
             items != null && items.Length == 1 &&
             items[0].Topic == "orders-retry-5s" &&
             items[0].Partition == 3));

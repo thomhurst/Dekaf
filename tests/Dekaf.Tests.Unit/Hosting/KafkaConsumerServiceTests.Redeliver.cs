@@ -68,6 +68,43 @@ public sealed partial class KafkaConsumerServiceTests
         await consumer.Received(1).CommitAsync(Arg.Any<CancellationToken>());
     }
 
+    [Test]
+    public async Task ProcessWithRetriesAsync_RedeliveryAfterUnobservedRebalance_RewindsAgain()
+    {
+        // A decorated consumer cannot forward rebalance events, so a revoked partition's
+        // postponement survives. When the reassigned partition redelivers the same failing
+        // record, it must be rewound again rather than treated as covered and moved past.
+        var consumer = CreateConsumerSubstitute();
+        var positions = Substitute.For<IConsumerPositions>();
+        var partitions = Substitute.For<IConsumerPartitions>();
+        consumer.Positions.Returns(positions);
+        consumer.Partitions.Returns(partitions);
+        var service = new FailingConsumerService(
+            consumer,
+            ["orders"],
+            serviceOptions: new KafkaConsumerServiceOptions
+            {
+                PollRetryBackoff = TimeSpan.FromHours(1),
+                MaxPollRetryBackoff = TimeSpan.FromHours(1)
+            });
+        using var stopping = new CancellationTokenSource();
+        try
+        {
+            await ProcessWithRetriesAsync(service, CreateResult("orders", partition: 1, offset: 42), stopping.Token);
+            await ProcessWithRetriesAsync(service, CreateResult("orders", partition: 1, offset: 42), stopping.Token);
+            await ProcessWithRetriesAsync(service, CreateResult("orders", partition: 1, offset: 43), stopping.Token);
+        }
+        finally
+        {
+            await stopping.CancelAsync();
+        }
+
+        positions.Received(3).Seek(Arg.Is<TopicPartitionOffset>(offset =>
+            offset.Topic == "orders" && offset.Partition == 1 && offset.Offset == 42));
+        positions.DidNotReceive().Seek(Arg.Is<TopicPartitionOffset>(offset => offset.Offset == 43));
+        partitions.Received(3).Pause(Arg.Any<TopicPartition[]>());
+    }
+
     private static async Task WaitForResumeAsync(IConsumerPartitions partitions)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));

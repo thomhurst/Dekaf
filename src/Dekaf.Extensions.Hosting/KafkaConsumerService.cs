@@ -794,7 +794,8 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
     /// <summary>
     /// Pauses the record's partition and seeks it back to the record, resuming after
-    /// <paramref name="delay"/>. Returns false when an earlier postponement already covers it.
+    /// <paramref name="delay"/>. Returns false when an earlier postponement already covers it;
+    /// the partition is then rewound to that postponement's record instead.
     /// </summary>
     private bool PostponePartition(
         ConsumeResult<TKey, TValue> result,
@@ -806,23 +807,33 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         PartitionPostponement postponement;
         lock (_postponementsLock)
         {
-            postponement = new PartitionPostponement(result.Offset, dueAt, delay, _assignmentEpoch);
+            postponement = new PartitionPostponement(
+                result.Offset, result.LeaderEpoch ?? -1, dueAt, delay, _assignmentEpoch);
             if (_postponements.TryGetValue(partition, out var pending)
                 && !IsEarlierPartitionPostponement(postponement, pending))
             {
+                // A live postponement keeps its partition paused, so this delivery means the
+                // partition was resumed elsewhere or a rebalance went unobserved (a decorated
+                // consumer cannot forward rebalance events). Returning without a seek would let
+                // the loop move past both records; rewind to the earlier one and keep its schedule.
+                PauseAndSeek(partition, pending.Offset, pending.LeaderEpoch);
                 return false;
             }
 
             _postponements[partition] = postponement;
             // Serialize the pause/seek with revocation and delayed resume. None of this runs
             // for ordinary records or retry records whose due time has already passed.
-            _consumer.Partitions.Pause(partition);
-            _consumer.Positions.Seek(new TopicPartitionOffset(
-                result.Topic, result.Partition, result.Offset, result.LeaderEpoch ?? -1));
+            PauseAndSeek(partition, result.Offset, result.LeaderEpoch ?? -1);
         }
 
         _ = ResumePartitionAfterDelayAsync(partition, postponement, cancellationToken);
         return true;
+    }
+
+    private void PauseAndSeek(TopicPartition partition, long offset, int leaderEpoch)
+    {
+        _consumer.Partitions.Pause(partition);
+        _consumer.Positions.Seek(new TopicPartitionOffset(partition.Topic, partition.Partition, offset, leaderEpoch));
     }
 
     private void InvalidatePostponements(IEnumerable<TopicPartition> partitions)
@@ -929,6 +940,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
     private readonly record struct PartitionPostponement(
         long Offset,
+        int LeaderEpoch,
         DateTimeOffset DueAt,
         TimeSpan Delay,
         long AssignmentEpoch);
