@@ -781,15 +781,54 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
             attempt = _redeliveries.TryGetValue(partition, out var previous) && previous.Offset == result.Offset
                 ? previous.Attempt == int.MaxValue ? int.MaxValue : previous.Attempt + 1
                 : 1;
-            _redeliveries[partition] = new Redelivery(result.Offset, attempt);
         }
 
         var delay = ServiceRestartPolicy.GetDelay(
             _serviceOptions.PollRetryBackoff,
             _serviceOptions.MaxPollRetryBackoff,
             attempt);
-        if (PostponePartition(result, DateTimeOffset.UtcNow + delay, delay, cancellationToken))
-            LogMessageRedelivering(result.Topic, result.Partition, result.Offset, stage, attempt, delay);
+        // An earlier postponement already covers the partition: this attempt was not scheduled,
+        // so it neither counts toward the backoff nor is logged as a redelivery.
+        if (!PostponePartition(result, DateTimeOffset.UtcNow + delay, delay, cancellationToken))
+            return;
+
+        lock (_postponementsLock)
+        {
+            PruneUnassignedRedeliveries(partition);
+            _redeliveries[partition] = new Redelivery(result.Offset, attempt);
+        }
+
+        LogMessageRedelivering(result.Topic, result.Partition, result.Offset, stage, attempt, delay);
+    }
+
+    /// <summary>
+    /// Revocation normally removes redelivery counts, but a decorated consumer cannot forward
+    /// rebalance events. Drop counts for partitions no longer assigned. Failure path only.
+    /// </summary>
+    private void PruneUnassignedRedeliveries(TopicPartition current)
+    {
+        if (_redeliveries.Count == 0 || _redeliveries.Count == 1 && _redeliveries.ContainsKey(current))
+            return;
+
+        var assignment = _consumer.Assignment;
+        if (assignment is null)
+            return;
+
+        IReadOnlySet<TopicPartition> assigned = assignment as IReadOnlySet<TopicPartition>
+            ?? new HashSet<TopicPartition>(assignment);
+        List<TopicPartition>? unassigned = null;
+        foreach (var partition in _redeliveries.Keys)
+        {
+            // The current record was just delivered, so its partition is assigned.
+            if (partition != current && !assigned.Contains(partition))
+                (unassigned ??= []).Add(partition);
+        }
+
+        if (unassigned is null)
+            return;
+
+        foreach (var partition in unassigned)
+            _redeliveries.Remove(partition);
     }
 
     /// <summary>

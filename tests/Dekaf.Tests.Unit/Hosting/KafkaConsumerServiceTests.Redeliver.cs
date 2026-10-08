@@ -105,6 +105,77 @@ public sealed partial class KafkaConsumerServiceTests
         partitions.Received(3).Pause(Arg.Any<TopicPartition[]>());
     }
 
+    [Test]
+    public async Task ProcessWithRetriesAsync_CoveredRedelivery_DoesNotCountAttempt()
+    {
+        var consumer = CreateConsumerSubstitute();
+        consumer.Positions.Returns(Substitute.For<IConsumerPositions>());
+        consumer.Partitions.Returns(Substitute.For<IConsumerPartitions>());
+        var service = CreateLongBackoffRedeliveryService(consumer);
+        using var stopping = new CancellationTokenSource();
+        try
+        {
+            await ProcessWithRetriesAsync(service, CreateResult("orders", partition: 1, offset: 42), stopping.Token);
+            // Offset 42 is still postponed, so this failure only rewinds to it.
+            await ProcessWithRetriesAsync(service, CreateResult("orders", partition: 1, offset: 43), stopping.Token);
+        }
+        finally
+        {
+            await stopping.CancelAsync();
+        }
+
+        await Assert.That(GetRedeliveries(service)).IsEquivalentTo([(new TopicPartition("orders", 1), 42L, 1)]);
+    }
+
+    [Test]
+    public async Task ProcessWithRetriesAsync_Redeliver_PrunesCountsForUnassignedPartitions()
+    {
+        // Without forwarded rebalance events, counts for partitions that moved away are pruned
+        // the next time a redelivery is scheduled.
+        var consumer = CreateConsumerSubstitute();
+        consumer.Positions.Returns(Substitute.For<IConsumerPositions>());
+        consumer.Partitions.Returns(Substitute.For<IConsumerPartitions>());
+        var assignment = new HashSet<TopicPartition> { new("orders", 1), new("orders", 2) };
+        consumer.Assignment.Returns(_ => assignment);
+        var service = CreateLongBackoffRedeliveryService(consumer);
+        using var stopping = new CancellationTokenSource();
+        try
+        {
+            await ProcessWithRetriesAsync(service, CreateResult("orders", partition: 1, offset: 42), stopping.Token);
+            assignment.Remove(new TopicPartition("orders", 1));
+            await ProcessWithRetriesAsync(service, CreateResult("orders", partition: 2, offset: 7), stopping.Token);
+        }
+        finally
+        {
+            await stopping.CancelAsync();
+        }
+
+        await Assert.That(GetRedeliveries(service)).IsEquivalentTo([(new TopicPartition("orders", 2), 7L, 1)]);
+    }
+
+    private static FailingConsumerService CreateLongBackoffRedeliveryService(IKafkaConsumer<string, string> consumer)
+        => new(consumer, ["orders"], serviceOptions: new KafkaConsumerServiceOptions
+        {
+            PollRetryBackoff = TimeSpan.FromHours(1),
+            MaxPollRetryBackoff = TimeSpan.FromHours(1)
+        });
+
+    private static List<(TopicPartition Partition, long Offset, int Attempt)> GetRedeliveries(FailingConsumerService service)
+    {
+        var redeliveries = (System.Collections.IDictionary)typeof(Dekaf.Extensions.Hosting.KafkaConsumerService<string, string>)
+            .GetField("_redeliveries", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(service)!;
+        var entries = new List<(TopicPartition, long, int)>();
+        foreach (System.Collections.DictionaryEntry entry in redeliveries)
+        {
+            var value = entry.Value!;
+            entries.Add(((TopicPartition)entry.Key,
+                (long)value.GetType().GetProperty("Offset")!.GetValue(value)!,
+                (int)value.GetType().GetProperty("Attempt")!.GetValue(value)!));
+        }
+        return entries;
+    }
+
     private static async Task WaitForResumeAsync(IConsumerPartitions partitions)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
