@@ -125,10 +125,11 @@ public sealed partial class KafkaConsumerServiceTests
     }
 
     [Test]
-    public async Task ProcessWithRetriesAsync_UnhandledFailure_DefaultDispositionPreservesForRetry()
+    public async Task ProcessWithRetriesAsync_UnhandledFailure_RetryDispositionPreservesForRetry()
     {
         var consumer = CreateConsumerSubstitute();
-        var service = new FailingConsumerService(consumer, ["orders"]);
+        var service = new FailingConsumerService(consumer, ["orders"],
+            failureDisposition: MessageFailureDisposition.Retry);
         var result = CreateResult("orders", partition: 1, offset: 42);
 
         InvalidOperationException? caught = null;
@@ -225,7 +226,7 @@ public sealed partial class KafkaConsumerServiceTests
     }
 
     [Test]
-    public async Task ProcessWithRetriesAsync_DeadLetterRoutingFails_DefaultDispositionPreservesForRetry()
+    public async Task ProcessWithRetriesAsync_DeadLetterRoutingFails_RetryDispositionPreservesForRetry()
     {
         var consumer = CreateConsumerSubstitute();
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
@@ -236,7 +237,8 @@ public sealed partial class KafkaConsumerServiceTests
         var service = new FailingConsumerService(
             consumer,
             ["orders"],
-            deadLetterOptions: new DeadLetterOptions());
+            deadLetterOptions: new DeadLetterOptions(),
+            failureDisposition: MessageFailureDisposition.Retry);
         SetDlqProducer(service, producer);
 
         InvalidOperationException? caught = null;
@@ -262,7 +264,7 @@ public sealed partial class KafkaConsumerServiceTests
     }
 
     [Test]
-    public async Task ProcessWithRetriesAsync_RetryTopicRoutingFails_DefaultDispositionPreservesForRetry()
+    public async Task ProcessWithRetriesAsync_RetryTopicRoutingFails_RetryDispositionPreservesForRetry()
     {
         var consumer = CreateConsumerSubstitute();
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
@@ -280,7 +282,8 @@ public sealed partial class KafkaConsumerServiceTests
                 {
                     Delays = [TimeSpan.FromSeconds(5)]
                 }
-            });
+            },
+            failureDisposition: MessageFailureDisposition.Retry);
         SetDlqProducer(service, producer);
 
         InvalidOperationException? caught = null;
@@ -472,7 +475,7 @@ public sealed partial class KafkaConsumerServiceTests
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
-        var waitTask = DelayUntilRetryTopicDueAsync(
+        var waitTask = DelayUntilDueAsync(
             DateTimeOffset.UtcNow.AddDays(30),
             cts.Token);
 
@@ -1174,14 +1177,14 @@ public sealed partial class KafkaConsumerServiceTests
         await Task.CompletedTask;
     }
 
-    private static Task DelayUntilRetryTopicDueAsync(
+    private static Task DelayUntilDueAsync(
         DateTimeOffset dueAt,
         CancellationToken cancellationToken)
     {
         var method = typeof(Dekaf.Extensions.Hosting.KafkaConsumerService<string, string>).GetMethod(
-            "DelayUntilRetryTopicDueAsync",
+            "DelayUntilDueAsync",
             BindingFlags.NonPublic | BindingFlags.Static)
-            ?? throw new InvalidOperationException("DelayUntilRetryTopicDueAsync method not found.");
+            ?? throw new InvalidOperationException("DelayUntilDueAsync method not found.");
 
         return (Task)method.Invoke(null, [dueAt, cancellationToken])!;
     }

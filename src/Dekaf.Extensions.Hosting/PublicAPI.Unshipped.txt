@@ -12,6 +12,7 @@ Dekaf.Extensions.Hosting.MessageFailureContext<TKey, TValue>.RoutingException.ge
 Dekaf.Extensions.Hosting.MessageFailureContext<TKey, TValue>.Stage.get -> Dekaf.Extensions.Hosting.MessageFailureStage
 Dekaf.Extensions.Hosting.MessageFailureDisposition
 Dekaf.Extensions.Hosting.MessageFailureDisposition.Discard = 1 -> Dekaf.Extensions.Hosting.MessageFailureDisposition
+Dekaf.Extensions.Hosting.MessageFailureDisposition.Redeliver = 2 -> Dekaf.Extensions.Hosting.MessageFailureDisposition
 Dekaf.Extensions.Hosting.MessageFailureDisposition.Retry = 0 -> Dekaf.Extensions.Hosting.MessageFailureDisposition
 Dekaf.Extensions.Hosting.MessageFailureStage
 Dekaf.Extensions.Hosting.MessageFailureStage.DeadLetterRouting = 2 -> Dekaf.Extensions.Hosting.MessageFailureStage

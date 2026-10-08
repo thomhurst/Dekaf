@@ -261,6 +261,9 @@ public class HostedShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrati
             if (throwProcessingError) throw new ProcessingException();
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         }
+        protected override ValueTask<MessageFailureDisposition> GetFailureDispositionAsync(
+            ShareMessageFailureContext<string, string> context, CancellationToken cancellationToken)
+            => new(MessageFailureDisposition.Retry);
     }
 
     private sealed class RenewedWorker(IKafkaShareConsumer<string, string> consumer, string topic, Task renewed)

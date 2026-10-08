@@ -24,14 +24,15 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     private readonly IRetryPolicy? _retryPolicy;
     private readonly RetryTopicOptions? _retryTopicOptions;
     private readonly KafkaConsumerServiceOptions _serviceOptions;
-    private readonly object _retryTopicPostponementsLock = new();
-    private readonly Dictionary<TopicPartition, RetryTopicPostponement> _retryTopicPostponements = [];
-    private long _retryTopicAssignmentEpoch;
+    private readonly object _postponementsLock = new();
+    private readonly Dictionary<TopicPartition, PartitionPostponement> _postponements = [];
+    private readonly Dictionary<TopicPartition, Redelivery> _redeliveries = [];
+    private long _assignmentEpoch;
     private IKafkaProducer<byte[]?, byte[]?>? _dlqProducer;
     private int _disposeStarted;
     private volatile bool _hasInDoubtFailedRecord;
     private volatile bool _consumerInitialized;
-    private static readonly TimeSpan MaxRetryTopicDelayChunk = TimeSpan.FromMilliseconds(int.MaxValue - 1);
+    private static readonly TimeSpan MaxPostponementDelayChunk = TimeSpan.FromMilliseconds(int.MaxValue - 1);
 
     /// <summary>
     /// Initializes a new instance of the <see cref="KafkaConsumerService{TKey, TValue}"/> class.
@@ -120,23 +121,29 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     }
 
     /// <summary>
-    /// Determines whether an unhandled failed message is preserved for retry or explicitly discarded.
-    /// Called after configured in-place retries and durable retry-topic or dead-letter routing cannot
-    /// handle the message. The default preserves at-least-once delivery by returning
-    /// <see cref="MessageFailureDisposition.Retry"/>.
+    /// Determines whether an unhandled failed message is redelivered, preserved for a later service
+    /// instance, or explicitly discarded. Called after configured in-place retries and durable
+    /// retry-topic or dead-letter routing cannot handle the message. The default preserves
+    /// at-least-once delivery without stopping the service by returning
+    /// <see cref="MessageFailureDisposition.Redeliver"/>.
     /// </summary>
     /// <remarks>
+    /// Returning <see cref="MessageFailureDisposition.Redeliver"/> keeps the service running: the
+    /// record's partition is sought back to the failed offset and paused for
+    /// <see cref="KafkaConsumerServiceOptions.PollRetryBackoff"/>, doubled for each consecutive
+    /// redelivery of the same offset up to <see cref="KafkaConsumerServiceOptions.MaxPollRetryBackoff"/>,
+    /// while other partitions continue. The offset stays uncommitted until processing succeeds, so a
+    /// record that always fails holds its partition until it is routed, discarded, or fixed.
     /// Returning <see cref="MessageFailureDisposition.Retry"/> exits the consume loop, faults the
-    /// service, and leaves the record uncommitted for redelivery after restart or rebalance. It is
-    /// not restarted by <see cref="KafkaConsumerServiceOptions.PollRetryBackoff"/>, because a new
-    /// consume loop would mark the failed record processed. Returning
+    /// service, and leaves the record uncommitted for redelivery after restart or rebalance; under the
+    /// generic host's default exception behavior this stops the host. Returning
     /// <see cref="MessageFailureDisposition.Discard"/> acknowledges the failed record and allows the
     /// service to continue.
     /// </remarks>
     protected virtual ValueTask<MessageFailureDisposition> GetFailureDispositionAsync(
         MessageFailureContext<TKey, TValue> context,
         CancellationToken cancellationToken)
-        => new(MessageFailureDisposition.Retry);
+        => new(MessageFailureDisposition.Redeliver);
 
     /// <summary>
     /// Called when routing a message to the dead letter queue fails.
@@ -177,10 +184,10 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
             LogDeadLetterRoutingUnavailable(_consumer.GetType().Name);
         }
 
-        using var retryRebalanceRegistration = _retryTopicOptions?.IsEnabled == true
-            && _consumer is IConsumerRebalanceEventSource eventSource
-                ? eventSource.RegisterRuntimeRebalanceListener(new RetryTopicRebalanceListener(this))
-                : null;
+        // Retry-topic delays and Redeliver dispositions pause partitions; revocation cancels them.
+        using var postponementRebalanceRegistration = _consumer is IConsumerRebalanceEventSource eventSource
+            ? eventSource.RegisterRuntimeRebalanceListener(new PostponementRebalanceListener(this))
+            : null;
 
         // Failures outside record processing leave no record in doubt, so restarting them cannot
         // commit away unprocessed work. A transient failure (see ServiceRestartPolicy), such as a
@@ -322,7 +329,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                 throw new InvalidOperationException(
                     $"{nameof(KafkaConsumerService<TKey, TValue>)} requires " +
                     $"{nameof(OffsetStoreTiming)}.{nameof(OffsetStoreTiming.AfterProcessing)} because its default " +
-                    $"{nameof(MessageFailureDisposition)}.{nameof(MessageFailureDisposition.Retry)} must leave failed " +
+                    $"{nameof(MessageFailureDisposition)}.{nameof(MessageFailureDisposition.Redeliver)} must leave failed " +
                     "records uncommitted. Remove WithAtMostOnceProcessing() or use a custom hosted service that " +
                     "explicitly accepts at-most-once failure semantics.");
             }
@@ -341,8 +348,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         throw new InvalidOperationException(
             $"{nameof(KafkaConsumerService<TKey, TValue>)} cannot verify retry-safe offset staging because the " +
             $"consumer does not implement {nameof(IConsumerOffsetStoreTimingConfiguration)}. Consumer wrappers " +
-            "must expose this capability so on-delivery staging cannot bypass " +
-            $"{nameof(MessageFailureDisposition)}.{nameof(MessageFailureDisposition.Retry)}.");
+            "must expose this capability so on-delivery staging cannot commit failed records away.");
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
@@ -659,6 +665,12 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
             return;
         }
 
+        if (disposition == MessageFailureDisposition.Redeliver)
+        {
+            RedeliverAfterBackoff(result, stage, cancellationToken);
+            return;
+        }
+
         if (disposition != MessageFailureDisposition.Retry)
         {
             throw new InvalidOperationException($"Unsupported message failure disposition: {disposition}.");
@@ -747,18 +759,61 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         if (delay <= TimeSpan.Zero)
             return false;
 
+        if (PostponePartition(result, dueAt, delay, cancellationToken))
+            LogRetryTopicDelay(result.Topic, result.Partition, result.Offset, delay);
+        return true;
+    }
+
+    /// <summary>
+    /// Rewinds the failed record's partition and pauses it for an exponential backoff. The consume
+    /// loop keeps running, and the uncommitted offset makes the record the partition's next delivery.
+    /// </summary>
+    private void RedeliverAfterBackoff(
+        ConsumeResult<TKey, TValue> result,
+        MessageFailureStage stage,
+        CancellationToken cancellationToken)
+    {
         var partition = new TopicPartition(result.Topic, result.Partition);
-        RetryTopicPostponement postponement;
-        lock (_retryTopicPostponementsLock)
+        int attempt;
+        lock (_postponementsLock)
         {
-            postponement = new RetryTopicPostponement(result.Offset, dueAt, delay, _retryTopicAssignmentEpoch);
-            if (_retryTopicPostponements.TryGetValue(partition, out var pending)
-                && !IsEarlierRetryTopicPostponement(postponement, pending))
+            // One entry per partition: a failure at another offset starts a new backoff sequence.
+            attempt = _redeliveries.TryGetValue(partition, out var previous) && previous.Offset == result.Offset
+                ? previous.Attempt == int.MaxValue ? int.MaxValue : previous.Attempt + 1
+                : 1;
+            _redeliveries[partition] = new Redelivery(result.Offset, attempt);
+        }
+
+        var delay = ServiceRestartPolicy.GetDelay(
+            _serviceOptions.PollRetryBackoff,
+            _serviceOptions.MaxPollRetryBackoff,
+            attempt);
+        if (PostponePartition(result, DateTimeOffset.UtcNow + delay, delay, cancellationToken))
+            LogMessageRedelivering(result.Topic, result.Partition, result.Offset, stage, attempt, delay);
+    }
+
+    /// <summary>
+    /// Pauses the record's partition and seeks it back to the record, resuming after
+    /// <paramref name="delay"/>. Returns false when an earlier postponement already covers it.
+    /// </summary>
+    private bool PostponePartition(
+        ConsumeResult<TKey, TValue> result,
+        DateTimeOffset dueAt,
+        TimeSpan delay,
+        CancellationToken cancellationToken)
+    {
+        var partition = new TopicPartition(result.Topic, result.Partition);
+        PartitionPostponement postponement;
+        lock (_postponementsLock)
+        {
+            postponement = new PartitionPostponement(result.Offset, dueAt, delay, _assignmentEpoch);
+            if (_postponements.TryGetValue(partition, out var pending)
+                && !IsEarlierPartitionPostponement(postponement, pending))
             {
-                return true;
+                return false;
             }
 
-            _retryTopicPostponements[partition] = postponement;
+            _postponements[partition] = postponement;
             // Serialize the pause/seek with revocation and delayed resume. None of this runs
             // for ordinary records or retry records whose due time has already passed.
             _consumer.Partitions.Pause(partition);
@@ -766,62 +821,64 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                 result.Topic, result.Partition, result.Offset, result.LeaderEpoch ?? -1));
         }
 
-        LogRetryTopicDelay(result.Topic, result.Partition, result.Offset, delay);
-        _ = ResumeRetryTopicPartitionAfterDelayAsync(partition, postponement, cancellationToken);
+        _ = ResumePartitionAfterDelayAsync(partition, postponement, cancellationToken);
         return true;
     }
 
-    private void InvalidateRetryTopicPostponements(IEnumerable<TopicPartition> partitions)
+    private void InvalidatePostponements(IEnumerable<TopicPartition> partitions)
     {
-        lock (_retryTopicPostponementsLock)
+        lock (_postponementsLock)
         {
             // The epoch also distinguishes an identical offset/due time replay after reassignment.
-            _retryTopicAssignmentEpoch++;
+            _assignmentEpoch++;
             foreach (var partition in partitions)
-                _retryTopicPostponements.Remove(partition);
+            {
+                _postponements.Remove(partition);
+                _redeliveries.Remove(partition);
+            }
         }
     }
 
-    private sealed class RetryTopicRebalanceListener(KafkaConsumerService<TKey, TValue> service) : IRebalanceListener
+    private sealed class PostponementRebalanceListener(KafkaConsumerService<TKey, TValue> service) : IRebalanceListener
     {
         public ValueTask OnPartitionsAssignedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)
             => default;
 
         public ValueTask OnPartitionsRevokedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)
         {
-            service.InvalidateRetryTopicPostponements(partitions);
+            service.InvalidatePostponements(partitions);
             return default;
         }
 
         public ValueTask OnPartitionsLostAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)
         {
-            service.InvalidateRetryTopicPostponements(partitions);
+            service.InvalidatePostponements(partitions);
             return default;
         }
     }
 
-    private bool TryCompleteRetryTopicPostponement(
+    private bool TryCompletePartitionPostponement(
         TopicPartition partition,
-        RetryTopicPostponement postponement)
+        PartitionPostponement postponement)
     {
-        lock (_retryTopicPostponementsLock)
+        lock (_postponementsLock)
         {
-            if (!_retryTopicPostponements.TryGetValue(partition, out var pending) ||
+            if (!_postponements.TryGetValue(partition, out var pending) ||
                 pending != postponement)
             {
                 return false;
             }
 
-            _retryTopicPostponements.Remove(partition);
+            _postponements.Remove(partition);
             // Revocation must not run between validating ownership and resuming the partition.
             _consumer.Partitions.Resume(partition);
             return true;
         }
     }
 
-    private static bool IsEarlierRetryTopicPostponement(
-        RetryTopicPostponement candidate,
-        RetryTopicPostponement pending)
+    private static bool IsEarlierPartitionPostponement(
+        PartitionPostponement candidate,
+        PartitionPostponement pending)
     {
         // Partition order wins over due time; seeking to a later offset can skip an earlier postponed record.
         if (candidate.Offset != pending.Offset)
@@ -830,29 +887,29 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         return candidate.DueAt < pending.DueAt;
     }
 
-    private async Task ResumeRetryTopicPartitionAfterDelayAsync(
+    private async Task ResumePartitionAfterDelayAsync(
         TopicPartition partition,
-        RetryTopicPostponement postponement,
+        PartitionPostponement postponement,
         CancellationToken cancellationToken)
     {
         try
         {
-            await DelayUntilRetryTopicDueAsync(postponement.DueAt, cancellationToken).ConfigureAwait(false);
-            if (!TryCompleteRetryTopicPostponement(partition, postponement))
+            await DelayUntilDueAsync(postponement.DueAt, cancellationToken).ConfigureAwait(false);
+            if (!TryCompletePartitionPostponement(partition, postponement))
                 return;
 
-            LogRetryTopicPartitionResumed(partition.Topic, partition.Partition, postponement.Delay);
+            LogPartitionResumed(partition.Topic, partition.Partition, postponement.Delay);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
         catch (Exception ex)
         {
-            LogRetryTopicPartitionResumeFailed(ex, partition.Topic, partition.Partition);
+            LogPartitionResumeFailed(ex, partition.Topic, partition.Partition);
         }
     }
 
-    private static async Task DelayUntilRetryTopicDueAsync(
+    private static async Task DelayUntilDueAsync(
         DateTimeOffset dueAt,
         CancellationToken cancellationToken)
     {
@@ -862,19 +919,21 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
             if (remaining <= TimeSpan.Zero)
                 return;
 
-            var delay = remaining <= MaxRetryTopicDelayChunk
+            var delay = remaining <= MaxPostponementDelayChunk
                 ? remaining
-                : MaxRetryTopicDelayChunk;
+                : MaxPostponementDelayChunk;
 
             await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
         }
     }
 
-    private readonly record struct RetryTopicPostponement(
+    private readonly record struct PartitionPostponement(
         long Offset,
         DateTimeOffset DueAt,
         TimeSpan Delay,
         long AssignmentEpoch);
+
+    private readonly record struct Redelivery(long Offset, int Attempt);
 
     private void CaptureRawBytesOnFirstFailure(int attempt, ref byte[]? rawKey, ref byte[]? rawValue)
     {
@@ -1089,11 +1148,20 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     [LoggerMessage(Level = LogLevel.Debug, Message = "Delaying retry topic message {Topic}[{Partition}]@{Offset} for {Delay}")]
     private partial void LogRetryTopicDelay(string topic, int partition, long offset, TimeSpan delay);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Resumed retry topic partition {Topic}[{Partition}] after {Delay}")]
-    private partial void LogRetryTopicPartitionResumed(string topic, int partition, TimeSpan delay);
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Resumed partition {Topic}[{Partition}] after {Delay}")]
+    private partial void LogPartitionResumed(string topic, int partition, TimeSpan delay);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to resume retry topic partition {Topic}[{Partition}]")]
-    private partial void LogRetryTopicPartitionResumeFailed(Exception ex, string topic, int partition);
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Message from {Topic}[{Partition}]@{Offset} failed at {FailureStage}; redelivery {Attempt} in {Delay}")]
+    private partial void LogMessageRedelivering(
+        string topic,
+        int partition,
+        long offset,
+        MessageFailureStage failureStage,
+        int attempt,
+        TimeSpan delay);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to resume partition {Topic}[{Partition}]")]
+    private partial void LogPartitionResumeFailed(Exception ex, string topic, int partition);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Failed to route message from {Topic}[{Partition}]@{Offset} to dead letter queue")]
     private partial void LogDeadLetterRoutingFailed(Exception ex, string topic, int partition, long offset);

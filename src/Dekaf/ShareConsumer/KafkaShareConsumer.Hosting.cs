@@ -31,6 +31,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         };
     }
 
+    void IHostedShareConsumer.AbandonAcquisition(string topic, int partition, long offset)
+    {
+        ThrowIfDisposed();
+        // Explicit mode tracks only acknowledged records, so stopping renewal replay is enough.
+        RemoveRenewedRecord(topic, partition, offset);
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private KafkaRequestWriteContext? GetHostedRequestContext(int brokerId)
     {

@@ -557,12 +557,12 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
     }
 
     [Test]
-    public async Task UnhandledFailure_DefaultDisposition_RedeliveredOnRestart()
+    public async Task UnhandledFailure_RetryDisposition_RedeliveredOnRestart()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
         var groupId = $"hosted-failure-retry-{Guid.NewGuid():N}";
         var processed = new ConcurrentBag<string>();
-        var failure = new FailureDispositionHolder(failOnce: true);
+        var failure = new FailureDispositionHolder(failOnce: true, disposition: MessageFailureDisposition.Retry);
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

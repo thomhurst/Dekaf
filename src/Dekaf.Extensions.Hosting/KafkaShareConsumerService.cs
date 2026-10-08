@@ -4,6 +4,7 @@ using Dekaf.Consumer;
 using Dekaf.Consumer.DeadLetter;
 using Dekaf.Errors;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 using Dekaf.Internal;
 using Dekaf.Retry;
 using Dekaf.ShareConsumer;
@@ -14,9 +15,11 @@ namespace Dekaf.Extensions.Hosting;
 
 /// <summary>
 /// Processes acquired share records serially. Successful processing or durable routing accepts
-/// a record; terminal Retry releases it and stops the service; Discard rejects it and continues.
-/// Overrides must not call the consumer or start unobserved work. Long synchronous handlers must
-/// yield to allow renewal. Processing must honor cancellation for prompt asynchronous disposal.
+/// a record; Redeliver (the default) releases it and continues; Retry releases it and stops the
+/// service; Discard rejects it and continues. A record whose acquisition lock expires is not acknowledged:
+/// the broker redelivers it and the service continues. Overrides must not call the consumer or
+/// start unobserved work. Long synchronous handlers must yield to allow renewal. Processing must
+/// honor cancellation for prompt asynchronous disposal.
 /// </summary>
 public abstract partial class KafkaShareConsumerService<TKey, TValue> : BackgroundService, IAsyncDisposable
 {
@@ -83,10 +86,13 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
         return ValueTask.CompletedTask;
     }
 
-    /// <summary>Returns Retry (Release and stop) or Discard (Reject and continue). The default is Retry.</summary>
+    /// <summary>
+    /// Returns Redeliver (Release and continue), Retry (Release and stop), or Discard (Reject and continue).
+    /// The default is Redeliver: the broker's delivery count limit eventually archives a record that always fails.
+    /// </summary>
     protected virtual ValueTask<MessageFailureDisposition> GetFailureDispositionAsync(
         ShareMessageFailureContext<TKey, TValue> context, CancellationToken cancellationToken)
-        => new(MessageFailureDisposition.Retry);
+        => new(MessageFailureDisposition.Redeliver);
 
     /// <summary>Observes a failed durable retry-topic write.</summary>
     protected virtual ValueTask OnRetryTopicRoutingFailedAsync(Exception exception, ShareConsumeResult<TKey, TValue> result, CancellationToken cancellationToken)
@@ -176,9 +182,17 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                             break;
                         _lastRenewal = _consumer is IHostedShareConsumer acquisition
                             ? acquisition.AcquisitionStartedTimestamp : Stopwatch.GetTimestamp();
-                        CheckAcquisitionDeadline();
+                        if (IsAcquisitionLockExpired())
+                        {
+                            // A serially processed batch can outlive its lock. The broker
+                            // already redelivers this record; never process it without a lock.
+                            AbandonExpiredAcquisition(record);
+                            current = null;
+                            continue;
+                        }
                         var processingToken = _processingCancellation.Token;
                         _recordDisposition = AcknowledgeType.Accept;
+                        var acquisitionExpired = false;
                         Exception? processingFailure = null;
                         while (true)
                         {
@@ -197,11 +211,12 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                                     {
                                         try
                                         {
-                                            if (processingToken.IsCancellationRequested)
+                                            if (processingToken.IsCancellationRequested || acquisitionExpired)
                                             {
                                                 // A ValueTask backed by IValueTaskSource permits only one
                                                 // completion registration. Keep waiting on our reusable signal
                                                 // until the original operation completes; never await it twice.
+                                                // A lapsed lock stops renewal; the record is abandoned afterwards.
                                                 await _operationCompleted.WaitAsync(Timeout.Infinite).ConfigureAwait(false);
                                                 continue;
                                             }
@@ -209,10 +224,21 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                                                 continue;
                                             if (operation.IsCompleted)
                                                 break;
-                                            CheckAcquisitionDeadline();
+                                            if (IsAcquisitionLockExpired())
+                                            {
+                                                acquisitionExpired = true;
+                                                continue;
+                                            }
+                                            var renewalStarted = Stopwatch.GetTimestamp();
                                             _consumer.Acknowledge(record, AcknowledgeType.Renew);
-                                            _lastRenewal = Stopwatch.GetTimestamp();
                                             await _consumer.CommitAsync(processingToken).ConfigureAwait(false);
+                                            _lastRenewal = renewalStarted;
+                                        }
+                                        catch (Exception exception) when (IsStaleAcquisitionFailure(exception))
+                                        {
+                                            // The broker rejected this partition's acquisitions, so the renewal
+                                            // did not extend the lock. The deadline decides whether it lapsed.
+                                            LogStaleAcquisition(exception, record.Topic, record.Partition);
                                         }
                                         catch (Exception exception)
                                         {
@@ -241,8 +267,10 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                             }
                         }
                         processingToken.ThrowIfCancellationRequested();
-                        CheckAcquisitionDeadline();
-                        _consumer.Acknowledge(record, _recordDisposition);
+                        if (acquisitionExpired || IsAcquisitionLockExpired())
+                            AbandonExpiredAcquisition(record);
+                        else
+                            _consumer.Acknowledge(record, _recordDisposition);
                         current = null;
                         if (Volatile.Read(ref _shutdownStarted) != 0)
                             break;
@@ -299,6 +327,10 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                 {
                     await _consumer.CommitAsync(_shutdownCancellation.Token).ConfigureAwait(false);
                 }
+                catch (Exception exception) when (IsStaleAcquisitionFailure(exception))
+                {
+                    LogStaleAcquisition(exception, null, null);
+                }
                 catch (Exception exception)
                 {
                     _acknowledgementFailure ??= exception;
@@ -345,20 +377,37 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
     {
         foreach (ref readonly var result in results)
         {
-            if (result.Exception is { } exception)
+            if (result.Exception is not { } exception)
+                continue;
+            if (IsStaleAcquisitionFailure(exception))
             {
-                _acknowledgementFailure ??= exception;
-                _pollCancellation.Cancel();
+                // Rejected acquisitions are redelivered by the broker, so at-least-once still holds.
+                LogStaleAcquisition(exception, result.TopicPartition.Topic, result.TopicPartition.Partition);
+                continue;
             }
+            _acknowledgementFailure ??= exception;
+            _pollCancellation.Cancel();
         }
     }
 
-    private void CheckAcquisitionDeadline()
+    private bool IsAcquisitionLockExpired() =>
+        _consumer.AcquisitionLockTimeoutMs is > 0 and var timeout &&
+        Stopwatch.GetElapsedTime(_lastRenewal).TotalMilliseconds >= timeout;
+
+    private void AbandonExpiredAcquisition(ShareConsumeResult<TKey, TValue> record)
     {
-        if (_consumer.AcquisitionLockTimeoutMs is > 0 and var timeout &&
-            Stopwatch.GetElapsedTime(_lastRenewal).TotalMilliseconds >= timeout)
-            throw new KafkaException("The acquisition lock may have expired. The record will not be accepted.");
+        // Any acknowledgement would be rejected with INVALID_RECORD_STATE and fail the other
+        // acknowledgements for the partition, so send none. The broker redelivers the record.
+        if (_consumer is IHostedShareConsumer hostedConsumer)
+            hostedConsumer.AbandonAcquisition(record.Topic, record.Partition, record.Offset);
+        LogAcquisitionLockExpired(record.Topic, record.Partition, record.Offset);
     }
+
+    // INVALID_RECORD_STATE: the broker no longer holds the acquisition for this member, usually
+    // because its lock expired. CommitAsync reports a partition failure as the inner exception.
+    private static bool IsStaleAcquisitionFailure(Exception exception) =>
+        exception is KafkaException { ErrorCode: ErrorCode.InvalidRecordState } or
+            KafkaException { ErrorCode: null, InnerException: KafkaException { ErrorCode: ErrorCode.InvalidRecordState } };
 
     private ValueTask BeginProcessingAsync(ShareConsumeResult<TKey, TValue> record, CancellationToken cancellationToken)
     {
@@ -382,7 +431,6 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
 
     private int GetRenewalDelayMs()
     {
-        CheckAcquisitionDeadline();
         var intervalMs = _options.RenewalInterval.TotalMilliseconds;
         if (_consumer.AcquisitionLockTimeoutMs is > 0 and var timeout)
         {
@@ -484,6 +532,11 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
             if (disposition == MessageFailureDisposition.Discard)
             {
                 _recordDisposition = AcknowledgeType.Reject;
+                return;
+            }
+            if (disposition == MessageFailureDisposition.Redeliver)
+            {
+                _recordDisposition = AcknowledgeType.Release;
                 return;
             }
             if (disposition != MessageFailureDisposition.Retry)
@@ -631,4 +684,10 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Share consumer service operation failed for {Topic}")]
     private partial void LogFailure(Exception exception, string? topic);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Acquisition lock for {Topic}[{Partition}]@{Offset} expired; the record was not acknowledged and will be redelivered")]
+    private partial void LogAcquisitionLockExpired(string topic, int partition, long offset);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "The broker rejected acknowledgements for {Topic}[{Partition}] because it no longer holds their acquisitions; the records will be redelivered")]
+    private partial void LogStaleAcquisition(Exception exception, string? topic, int? partition);
 }

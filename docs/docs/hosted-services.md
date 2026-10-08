@@ -171,11 +171,19 @@ When `ProcessAsync` throws, the service works through these layers:
 1. **In-place retries** — if an `IRetryPolicy` was passed to the base constructor, the message is retried in place with the policy's delays until the policy is exhausted.
 2. **Retry topics** — if `DeadLetterOptions.RetryTopics` is configured, the message is produced to the next retry tier and the offset moves on. See [Dead Letter Queues](consumer/dead-letter-queues.md#tiered-retry-topics).
 3. **Dead letter queue** — if `DeadLetterOptions` is configured and the failure count reaches `MaxFailures` (or all retry tiers are exhausted), the original bytes are produced to the DLQ topic.
-4. **Terminal disposition** — if no configured retry or durable routing operation succeeds, `GetFailureDispositionAsync` decides whether to preserve or discard the record.
+4. **Terminal disposition** — if no configured retry or durable routing operation succeeds, `GetFailureDispositionAsync` decides whether to redeliver, preserve, or discard the record.
 
-The terminal disposition defaults to `MessageFailureDisposition.Retry`. The exception exits the consume loop, the failed record stays uncommitted, and it is redelivered after restart or rebalance. Under the generic host's default `BackgroundServiceExceptionBehavior`, the failure also stops the host. If that behavior is configured to ignore background-service exceptions, this consumer service still stops; the record remains available for a later service instance.
+The terminal disposition defaults to `MessageFailureDisposition.Redeliver`. The service keeps running: it seeks the record's partition back to the failed offset and pauses that partition for `PollRetryBackoff` (one second by default), doubling the pause for each consecutive redelivery of the same offset up to `MaxPollRetryBackoff` (30 seconds by default). Other partitions keep consuming. The failed offset stays uncommitted until processing succeeds, so a record that always fails holds its partition. Configure retry topics or a DLQ, or return `Discard`, to move past records that cannot succeed.
 
-This guarantee requires after-processing offset staging. `KafkaConsumerService` rejects consumers configured with `WithAtMostOnceProcessing()` at startup because `OffsetStoreTiming.OnDelivery` can commit a record before `ProcessAsync` reports failure. Consumer decorators must forward `IConsumerOffsetStoreTimingConfiguration`; the service fails closed when automatic grouped commits are enabled but timing is hidden. Use the default `WithAtLeastOnceProcessing()` semantics with hosted consumer services.
+| Terminal decision | Offset | Service behavior |
+| --- | --- | --- |
+| `MessageFailureDisposition.Redeliver` (default) | Uncommitted; partition rewound and paused with backoff | Continues consuming |
+| `MessageFailureDisposition.Retry` | Uncommitted | Stops with the processing or routing exception; host exception policy applies |
+| `MessageFailureDisposition.Discard` | Committed | Continues consuming |
+
+`Retry` exits the consume loop and leaves the record for a later service instance, after restart or rebalance. Under the generic host's default `BackgroundServiceExceptionBehavior`, the failure also stops the host.
+
+Keeping failed records uncommitted requires after-processing offset staging. `KafkaConsumerService` rejects consumers configured with `WithAtMostOnceProcessing()` at startup because `OffsetStoreTiming.OnDelivery` can commit a record before `ProcessAsync` reports failure. Consumer decorators must forward `IConsumerOffsetStoreTimingConfiguration`; the service fails closed when automatic grouped commits are enabled but timing is hidden. Use the default `WithAtLeastOnceProcessing()` semantics with hosted consumer services.
 
 Override `GetFailureDispositionAsync` to explicitly discard failures your application considers non-retryable. Returning `Discard` allows the loop to continue and acknowledges the record when the next message is pulled, so use it only when losing that record's work is intentional:
 
@@ -418,7 +426,8 @@ routing exception.
 
 | Terminal decision | Acknowledgement | Service behavior |
 | --- | --- | --- |
-| `MessageFailureDisposition.Retry` (default) | `Release` | Stops with the processing or routing exception; host exception policy applies |
+| `MessageFailureDisposition.Redeliver` (default) | `Release` | Continues polling; the broker's delivery count limit archives a record that always fails |
+| `MessageFailureDisposition.Retry` | `Release` | Stops with the processing or routing exception; host exception policy applies |
 | `MessageFailureDisposition.Discard` | `Reject` | Continues polling |
 
 Processing cancellation, interrupted routing, failed renewal, or a hook exception never stages
@@ -441,8 +450,12 @@ renewal fails, cancels processing, and leaves the record for redelivery. Long sy
 must yield to permit renewal. The built-in consumer timestamps each broker response when received,
 so fetch waiting does not consume a newly delivered record's local processing budget. Records retain
 that timestamp while waiting for other brokers, deserialization, or earlier handlers. If the local
-acquisition deadline has elapsed, the service refuses to process or accept that record. The broker
-remains authoritative: response transit time and process pauses can make a lock expire sooner.
+acquisition deadline has elapsed, the service does not process or acknowledge that record and keeps
+polling; the broker redelivers it. A record whose lock lapses during processing is likewise left
+unacknowledged once the handler finishes. The broker remains authoritative: response transit time
+and process pauses can make a lock expire sooner. When the broker rejects acknowledgements with
+`INVALID_RECORD_STATE` because it no longer holds those acquisitions, the service logs a warning
+and continues; the records are redelivered.
 Renewal extends only the current record's lock. Other records acquired in the same batch may expire
 while a slow record is processed. Broker failures, lock expiry, and process pauses can all cause
 redelivery; make application effects idempotent. For tightly limited acquisition on v2 brokers,

@@ -87,7 +87,7 @@ By default (`AwaitDelivery = true`), the service awaits the broker's acknowledgm
 
 Call `FireAndForget()` (or set `AwaitDelivery = false`) to trade that guarantee for lower per-failure latency: DLQ writes become fire-and-forget, and a crash after the offset commits but before the DLQ write lands can lose the dead-letter copy. This is only worth considering when failures are frequent enough that the extra round-trip matters — for the typical case where dead-lettering is rare, keep the default.
 
-If the DLQ produce itself fails (DLQ topic missing, cluster unreachable), the service invokes `OnDeadLetterRoutingFailedAsync`, which logs by default. If no other durable routing path succeeds, `GetFailureDispositionAsync` then applies its default `Retry` disposition: the exception exits the consume loop and the source record remains uncommitted for redelivery. Override the routing hook for metrics or alerts; override the disposition hook only if discarding the original record is intentional:
+If the DLQ produce itself fails (DLQ topic missing, cluster unreachable), the service invokes `OnDeadLetterRoutingFailedAsync`, which logs by default. If no other durable routing path succeeds, `GetFailureDispositionAsync` then applies its default `Redeliver` disposition: the source record stays uncommitted, and its partition is rewound and paused with backoff before the record is redelivered. Override the routing hook for metrics or alerts; override the disposition hook only if discarding the original record is intentional:
 
 ```csharp
 public sealed class OrderProcessorService : KafkaConsumerService<string, Order>

@@ -704,7 +704,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     out var failedAcknowledgements);
                 RecordAcknowledgementFailureMetrics(failedAcknowledgements);
                 ApplySuccessfulAcknowledgements(successfulAcknowledgements, fetchResult.ReceivedTimestamp);
-                RequeueAcknowledgements(failedAcknowledgements);
+                RequeueRecoverableAcknowledgements(failedAcknowledgements, acknowledgementFailures.Errors);
                 AddAcknowledgementErrors(
                     ref acknowledgementErrors,
                     acknowledgementFailures.Errors);
@@ -806,7 +806,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         foreach (var result in results)
         {
             ApplySuccessfulAcknowledgements(result.SuccessfulAcknowledgements);
-            RequeueAcknowledgements(result.FailedAcknowledgements);
+            RequeueRecoverableAcknowledgements(result.FailedAcknowledgements, result.Errors);
             if (result.WasNotSent)
             {
                 foreach (var partition in result.FailedAcknowledgements!.Keys)
@@ -2278,6 +2278,45 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         throw new BrokerVersionException(
             ErrorCode.UnsupportedVersion,
             $"Broker does not support {apiKey} v2 required for Renew acknowledgements.");
+    }
+
+    // INVALID_RECORD_STATE rejects a partition's acknowledgements because the broker no longer
+    // holds those acquisitions for this member, for example after an acquisition lock expired.
+    // Resending them can never succeed and would fail every later acknowledgement for the
+    // partition, so drop them and let the broker redeliver the records. The failure is still reported.
+    private void RequeueRecoverableAcknowledgements<TException>(
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? acknowledgements,
+        Dictionary<TopicPartition, TException>? errors)
+        where TException : Exception
+    {
+        if (acknowledgements is not null && errors is not null && HasStaleAcquisition(acknowledgements, errors))
+        {
+            Dictionary<TopicPartition, List<AcknowledgementBatchData>>? recoverable = null;
+            foreach (var (topicPartition, batches) in acknowledgements)
+            {
+                if (!IsStaleAcquisition(errors, topicPartition))
+                    (recoverable ??= [])[topicPartition] = batches;
+            }
+            acknowledgements = recoverable;
+        }
+
+        RequeueAcknowledgements(acknowledgements);
+
+        static bool HasStaleAcquisition(
+            Dictionary<TopicPartition, List<AcknowledgementBatchData>> acknowledgements,
+            Dictionary<TopicPartition, TException> errors)
+        {
+            foreach (var topicPartition in acknowledgements.Keys)
+            {
+                if (IsStaleAcquisition(errors, topicPartition))
+                    return true;
+            }
+            return false;
+        }
+
+        static bool IsStaleAcquisition(Dictionary<TopicPartition, TException> errors, TopicPartition topicPartition)
+            => errors.TryGetValue(topicPartition, out var error)
+               && error is KafkaException { ErrorCode: ErrorCode.InvalidRecordState };
     }
 
     private void RequeueAcknowledgements(
