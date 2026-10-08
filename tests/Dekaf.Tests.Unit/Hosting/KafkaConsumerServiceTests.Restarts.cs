@@ -20,7 +20,7 @@ public sealed partial class KafkaConsumerServiceTests
     {
         var consumer = CreateConsumerSubstitute();
         consumer.InitializeAsync(Arg.Any<CancellationToken>()).Returns(
-            ValueTask.FromException(new KafkaException("Broker unreachable")),
+            ValueTask.FromException(new KafkaTimeoutException("Broker unreachable")),
             ValueTask.FromException(new TimeoutException("Metadata timed out")),
             ValueTask.CompletedTask);
         consumer.ConsumeAsync(Arg.Any<CancellationToken>())
@@ -106,28 +106,60 @@ public sealed partial class KafkaConsumerServiceTests
     }
 
     [Test]
-    public async Task ExecuteAsync_ObjectDisposedDuringPoll_FaultsWithoutRestart()
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    [Arguments(3)]
+    [Arguments(4)]
+    public async Task ExecuteAsync_NonTransientPollFailure_FaultsWithoutRestart(int kind)
     {
+        Exception failure = kind switch
+        {
+            0 => new ObjectDisposedException("consumer"),
+            1 => new InvalidOperationException("misconfigured"),
+            2 => new KafkaException(Dekaf.Protocol.ErrorCode.UnsupportedVersion, "unsupported"),
+            3 => new AuthenticationException("bad credentials"),
+            _ => new SerializationException("poison record"),
+        };
         var consumer = CreateConsumerSubstitute();
         consumer.ConsumeAsync(Arg.Any<CancellationToken>())
-            .Returns(_ => ThrowAfterResults(new ObjectDisposedException("consumer")));
+            .Returns(_ => ThrowAfterResults(failure));
 
         var service = new TestConsumerService(consumer, ["orders"], FastRestartOptions);
 
         await service.StartAsync(CancellationToken.None);
 
-        ObjectDisposedException? caught = null;
+        Exception? caught = null;
         try
         {
             await service.ExecuteTask!.WaitAsync(TimeSpan.FromSeconds(30));
         }
-        catch (ObjectDisposedException ex)
+        catch (Exception ex)
         {
             caught = ex;
         }
 
-        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught).IsSameReferenceAs(failure);
         consumer.Received(1).ConsumeAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ExecuteAsync_ConcurrentInitializationFailures_RestartOnlyWhenAllAreTransient()
+    {
+        await Assert.That(ServiceRestartPolicy.CanRestartAfter(new AggregateException(
+            new KafkaTimeoutException("consumer"), new IOException("producer")))).IsTrue();
+        await Assert.That(ServiceRestartPolicy.CanRestartAfter(new AggregateException(
+            new KafkaTimeoutException("consumer"), new InvalidOperationException("producer")))).IsFalse();
+    }
+
+    [Test]
+    public async Task CanRestartAfter_AuthorizationErrorCode_IsTransient()
+    {
+        await Assert.That(ServiceRestartPolicy.CanRestartAfter(new KafkaException(
+            Dekaf.Protocol.ErrorCode.GroupAuthorizationFailed, "denied"))).IsTrue();
+        await Assert.That(ServiceRestartPolicy.CanRestartAfter(new KafkaException(
+            Dekaf.Protocol.ErrorCode.CoordinatorLoadInProgress, "loading"))).IsTrue();
+        await Assert.That(ServiceRestartPolicy.CanRestartAfter(new KafkaException("unclassified"))).IsFalse();
     }
 
     [Test]
@@ -138,7 +170,7 @@ public sealed partial class KafkaConsumerServiceTests
         consumer.InitializeAsync(Arg.Any<CancellationToken>()).Returns(_ =>
         {
             initializeAttempted.TrySetResult();
-            return ValueTask.FromException(new KafkaException("Broker unreachable"));
+            return ValueTask.FromException(new KafkaTimeoutException("Broker unreachable"));
         });
 
         var service = new TestConsumerService(
@@ -166,6 +198,7 @@ public sealed partial class KafkaConsumerServiceTests
     [Arguments(2, 200)]
     [Arguments(3, 400)]
     [Arguments(5, 1000)]
+    [Arguments(64, 1000)]
     [Arguments(int.MaxValue, 1000)]
     public async Task GetRestartDelay_DoublesUpToMaximum(int restartAttempt, int expectedMilliseconds)
     {

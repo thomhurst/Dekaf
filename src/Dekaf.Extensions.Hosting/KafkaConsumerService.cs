@@ -183,8 +183,8 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                 : null;
 
         // Failures outside record processing leave no record in doubt, so restarting them cannot
-        // commit away unprocessed work. A broker, topic, or ACL that is not ready yet then delays
-        // this consumer instead of faulting the host.
+        // commit away unprocessed work. A transient failure (see ServiceRestartPolicy), such as a
+        // broker, topic, or ACL that is not ready yet, delays this consumer instead of faulting the host.
         var subscriptionTopics = BuildSubscriptionTopics();
         var restartAttempt = 0;
         while (true)

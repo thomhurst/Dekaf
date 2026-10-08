@@ -141,7 +141,7 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                 _producer = CreateDeadLetterProducer();
             }
             var topics = BuildTopics();
-            // No record is acquired yet, so a broker, topic, or ACL that is not ready yet delays
+            // No record is acquired yet, so a transient failure (see ServiceRestartPolicy) delays
             // this consumer instead of faulting the host. Both clients return immediately once
             // initialized, so a restart repeats only the failed work.
             while (true)
@@ -156,7 +156,8 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                     break;
                 }
                 catch (Exception exception) when (
-                    !_pollCancellation.IsCancellationRequested && ServiceRestartPolicy.CanRestartAfter(exception))
+                    !_pollCancellation.IsCancellationRequested && !_processingCancellation.IsCancellationRequested &&
+                    ServiceRestartPolicy.CanRestartAfter(exception))
                 {
                     await DelayBeforeRestartAsync(exception, ++restartAttempt).ConfigureAwait(false);
                 }

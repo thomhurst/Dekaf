@@ -83,12 +83,16 @@ public sealed class KafkaShareConsumerServiceTests
     [Arguments(0)]
     [Arguments(1)]
     [Arguments(2)]
-    public async Task NonHealingPollFailure_RemainsTerminal(int kind)
+    [Arguments(3)]
+    [Arguments(4)]
+    public async Task NonTransientPollFailure_RemainsTerminal(int kind)
     {
         Exception error = kind switch
         {
             0 => new ObjectDisposedException("consumer"),
-            1 => new ArgumentException("invalid"),
+            1 => new InvalidOperationException("misconfigured"),
+            2 => new KafkaException(ErrorCode.UnsupportedVersion, "unsupported"),
+            3 => new AuthenticationException("bad credentials"),
             _ => new SerializationException("poison record"),
         };
         var consumer = new TestConsumer { PollFailure = error };
@@ -102,7 +106,7 @@ public sealed class KafkaShareConsumerServiceTests
     [Test]
     public async Task InitializationFailure_RestartsUntilInitializedThenSubscribesOnce()
     {
-        var first = new KafkaException("broker unreachable");
+        var first = new KafkaTimeoutException("broker unreachable");
         var second = new TimeoutException("metadata timed out");
         var consumer = new TestConsumer(Record(0)) { InitializeFailures = new([first, second]) };
         await using var service = new TestService(consumer,
@@ -119,7 +123,7 @@ public sealed class KafkaShareConsumerServiceTests
     [Test]
     public async Task ShutdownDuringInitializationBackoff_SkipsCommitAndClose()
     {
-        var consumer = new TestConsumer { InitializeFailures = new([new KafkaException("broker unreachable")]) };
+        var consumer = new TestConsumer { InitializeFailures = new([new KafkaTimeoutException("broker unreachable")]) };
         await using var service = new TestService(consumer,
             options: new KafkaShareConsumerServiceOptions
             {

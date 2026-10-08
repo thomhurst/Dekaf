@@ -393,16 +393,18 @@ The in-memory share consumer follows the same provisional-delivery shutdown rule
 
 ## Hosted polling retries
 
-`KafkaShareConsumerService` restarts after failures that occur while no record is in hand:
-consumer and routing producer initialization, subscription, and polling (including share-group
-join timeouts and authorization errors from an ACL that is not yet granted). It reports each
+`KafkaShareConsumerService` restarts after transient failures that occur while no record is in
+hand: consumer and routing producer initialization, subscription, and polling. Transient failures
+are retriable Kafka errors, timeouts (including share-group join timeouts and an unreachable
+broker at startup), transport errors, and authorization errors from an ACL that is not yet
+granted. It reports each
 failure through `OnErrorAsync`, then tries again after `PollRetryBackoff` (one second by
 default). Consecutive failures double the delay up to `MaxPollRetryBackoff` (30 seconds by
 default), and a delivered record resets it. Configure both through
 `KafkaShareConsumerServiceOptions`; `PollRetryBackoff` must be at least 1 millisecond. Shutdown
 cancels the delay. Processing and acknowledgement failures retain their existing failure
-behavior. Disposed consumers, `ArgumentException`, and deserialization errors also stop the
-service.
+behavior. Every other failure, such as misconfiguration, authentication errors, or a
+non-retriable Kafka error, stops the service.
 
 Repeated join timeouts need investigation. On a single-broker development cluster, verify
 that `share.coordinator.state.topic.replication.factor` and

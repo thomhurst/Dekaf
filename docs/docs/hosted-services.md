@@ -253,7 +253,7 @@ greater than `MaxAttempts` return `null` to stop retrying.
 
 ## Startup and Polling Failures
 
-A failure outside `ProcessAsync` does not leave a record in doubt, so the service restarts instead of faulting the host. This covers consumer and DLQ producer initialization (for example, a broker that is unreachable at startup), topic subscription, and polling errors such as a topic that is not yet provisioned or a consumer group ACL that is not yet granted. Each failure is logged as a warning, and the service waits before it tries again. `KafkaConsumerServiceOptions` (fifth constructor parameter) sets the delay:
+A failure outside `ProcessAsync` does not leave a record in doubt, so the service restarts after a transient failure instead of faulting the host. This covers consumer and DLQ producer initialization, topic subscription, and polling. Transient failures are retriable Kafka errors (`KafkaException.IsRetriable`, for example a topic that is not yet provisioned), timeouts (for example, a broker that is unreachable at startup), transport errors, and authorization errors (a consumer group or topic ACL that is not yet granted). Each failure is logged as a warning, and the service waits before it tries again. `KafkaConsumerServiceOptions` (fifth constructor parameter) sets the delay:
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -262,7 +262,7 @@ A failure outside `ProcessAsync` does not leave a record in doubt, so the servic
 
 Initialization repeats until it succeeds, and the service then subscribes once. A polling failure restarts only the consume loop and keeps the existing subscription. Shutdown cancels a pending restart delay.
 
-These failures still fault the service: disposed consumers, `ArgumentException` (for example, an invalid topic name), deserialization errors, and configuration errors detected at startup. A processing failure whose terminal disposition is `Retry` also faults the service, because a new consume loop would mark the failed record processed (see [Failure Handling](#failure-handling)).
+Every other failure still faults the service, for example misconfiguration, authentication errors, non-retriable Kafka errors such as an unsupported broker version, and deserialization errors. A processing failure whose terminal disposition is `Retry` also faults the service, because a new consume loop would mark the failed record processed (see [Failure Handling](#failure-handling)).
 
 ## Shutdown Behavior
 

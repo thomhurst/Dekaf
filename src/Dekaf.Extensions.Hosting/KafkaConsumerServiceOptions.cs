@@ -20,14 +20,17 @@ public sealed class KafkaConsumerServiceOptions
     public bool DrainOnShutdown { get; init; } = true;
 
     /// <summary>
-    /// Delay before the first restart after consumer initialization, subscription, or polling fails.
+    /// Delay before the first restart after consumer initialization, subscription, or polling fails
+    /// with a transient error: a retriable Kafka error, a timeout, a transport error, or an
+    /// authorization error.
     /// Consecutive failures double the delay up to <see cref="MaxPollRetryBackoff"/>; a delivered
     /// record resets it. Shutdown cancels the delay. Must be at least 1 millisecond. Default: 1 second.
     /// </summary>
     /// <remarks>
     /// Message processing failures are not retried by this policy: they follow the configured
-    /// retry policy, retry topics, dead-letter routing, and failure disposition. Disposed consumers,
-    /// argument errors, and deserialization errors also fault the service.
+    /// retry policy, retry topics, dead-letter routing, and failure disposition. Other failures,
+    /// such as misconfiguration, authentication errors, non-retriable Kafka errors, and
+    /// deserialization errors, fault the service.
     /// </remarks>
     public TimeSpan PollRetryBackoff { get; init; } = TimeSpan.FromSeconds(1);
 
