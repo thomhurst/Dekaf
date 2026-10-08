@@ -39,6 +39,10 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
     private Dictionary<string, string>? _retrySourceTopics;
     private AcknowledgeType _recordDisposition;
     private long _lastRenewal;
+    // Per-record state: the broker rejected the acquisition before the local deadline, and
+    // whether this service renewed the record (a decorated consumer keeps renewal replay state).
+    private bool _acquisitionLost;
+    private bool _acquisitionRenewed;
     private Exception? _acknowledgementFailure;
     private int _shutdownStarted;
     private int _disposeStarted;
@@ -182,6 +186,8 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                             break;
                         _lastRenewal = _consumer is IHostedShareConsumer acquisition
                             ? acquisition.AcquisitionStartedTimestamp : Stopwatch.GetTimestamp();
+                        _acquisitionLost = false;
+                        _acquisitionRenewed = false;
                         if (IsAcquisitionLockExpired())
                         {
                             // A serially processed batch can outlive its lock. The broker
@@ -192,7 +198,6 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                         }
                         var processingToken = _processingCancellation.Token;
                         _recordDisposition = AcknowledgeType.Accept;
-                        var acquisitionExpired = false;
                         Exception? processingFailure = null;
                         while (true)
                         {
@@ -211,7 +216,7 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                                     {
                                         try
                                         {
-                                            if (processingToken.IsCancellationRequested || acquisitionExpired)
+                                            if (processingToken.IsCancellationRequested || _acquisitionLost)
                                             {
                                                 // A ValueTask backed by IValueTaskSource permits only one
                                                 // completion registration. Keep waiting on our reusable signal
@@ -226,10 +231,11 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                                                 break;
                                             if (IsAcquisitionLockExpired())
                                             {
-                                                acquisitionExpired = true;
+                                                _acquisitionLost = true;
                                                 continue;
                                             }
                                             var renewalStarted = Stopwatch.GetTimestamp();
+                                            _acquisitionRenewed = true;
                                             _consumer.Acknowledge(record, AcknowledgeType.Renew);
                                             await _consumer.CommitAsync(processingToken).ConfigureAwait(false);
                                             _lastRenewal = renewalStarted;
@@ -237,7 +243,9 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                                         catch (Exception exception) when (IsStaleAcquisitionFailure(exception))
                                         {
                                             // The broker rejected this partition's acquisitions, so the renewal
-                                            // did not extend the lock. The deadline decides whether it lapsed.
+                                            // did not extend the lock and the broker may already be redelivering
+                                            // the record. Treat it as lost even before the local deadline.
+                                            _acquisitionLost = true;
                                             LogStaleAcquisition(exception, record.Topic, record.Partition);
                                         }
                                         catch (Exception exception)
@@ -267,7 +275,7 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                             }
                         }
                         processingToken.ThrowIfCancellationRequested();
-                        if (acquisitionExpired || IsAcquisitionLockExpired())
+                        if (IsAcquisitionLockExpired())
                             AbandonExpiredAcquisition(record);
                         else
                             _consumer.Acknowledge(record, _recordDisposition);
@@ -391,6 +399,7 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
     }
 
     private bool IsAcquisitionLockExpired() =>
+        _acquisitionLost ||
         _consumer.AcquisitionLockTimeoutMs is > 0 and var timeout &&
         Stopwatch.GetElapsedTime(_lastRenewal).TotalMilliseconds >= timeout;
 
@@ -400,6 +409,11 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
         // acknowledgements for the partition, so send none. The broker redelivers the record.
         if (_consumer is IHostedShareConsumer hostedConsumer)
             hostedConsumer.AbandonAcquisition(record.Topic, record.Partition, record.Offset);
+        else if (_acquisitionRenewed)
+            // A decorated consumer cannot forward abandonment. Without a terminal outcome the
+            // wrapped consumer would replay its renewed copy locally; Release clears that state
+            // whether the broker accepts it or rejects it as stale.
+            _consumer.Acknowledge(record, AcknowledgeType.Release);
         LogAcquisitionLockExpired(record.Topic, record.Partition, record.Offset);
     }
 
