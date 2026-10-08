@@ -60,6 +60,49 @@ public sealed class HostedRedeliveryTests(KafkaTestContainer kafka) : KafkaInteg
 
     [Test]
     [Timeout(90_000)]
+    public async Task Consumer_StopDuringRedeliveryBackoff_OnDeliveryManualCommit_DoesNotCommitPastFailedRecord(
+        CancellationToken cancellationToken)
+    {
+        // On-delivery staging stores offset + 1 before processing. The redelivery seek must replace it,
+        // so the final explicit commit during shutdown publishes the failed offset, not the next one.
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var group = $"hosted-redeliver-ondelivery-{Guid.NewGuid():N}";
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync(cancellationToken);
+        for (var index = 0; index < 3; index++)
+            await producer.ProduceAsync(topic, "key", $"value-{index}", cancellationToken);
+
+        var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(group)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithOffsetStoreTiming(OffsetStoreTiming.OnDelivery)
+            .BuildAsync(cancellationToken);
+        var service = new RedeliveringConsumerService(consumer, topic, failuresBeforeSuccess: int.MaxValue, expected: int.MaxValue,
+            pollRetryBackoff: TimeSpan.FromHours(1));
+        await service.StartAsync(cancellationToken);
+        try
+        {
+            await service.FirstFailure.Task.WaitAsync(cancellationToken);
+        }
+        finally
+        {
+            await service.StopAsync(cancellationToken);
+            await service.DisposeAsync();
+        }
+
+        await Assert.That(service.Successes).IsEquivalentTo(["value-0"]);
+        await using var offsetProbe = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(group)
+            .BuildAsync(cancellationToken);
+        var committed = await offsetProbe.GetCommittedOffsetAsync(new TopicPartition(topic, 0), cancellationToken);
+        await Assert.That(committed).IsEqualTo(1);
+    }
+
+    [Test]
+    [Timeout(90_000)]
     [Category("ShareConsumer")]
     [SupportsKafka(420)]
     [NotInParallel("ShareConsumerKafka42")]
@@ -100,15 +143,18 @@ public sealed class HostedRedeliveryTests(KafkaTestContainer kafka) : KafkaInteg
     }
 
     private sealed class RedeliveringConsumerService(
-        IKafkaConsumer<string, string> consumer, string topic, int failuresBeforeSuccess, int expected)
+        IKafkaConsumer<string, string> consumer, string topic, int failuresBeforeSuccess, int expected,
+        TimeSpan? pollRetryBackoff = null)
         : KafkaConsumerService<string, string>(consumer, NullLogger.Instance,
             serviceOptions: new KafkaConsumerServiceOptions
             {
                 DrainOnShutdown = false,
-                PollRetryBackoff = TimeSpan.FromMilliseconds(50)
+                PollRetryBackoff = pollRetryBackoff ?? TimeSpan.FromMilliseconds(50),
+                MaxPollRetryBackoff = pollRetryBackoff ?? TimeSpan.FromSeconds(30)
             })
     {
         public ConcurrentDictionary<string, int> Attempts { get; } = new();
+        public TaskCompletionSource FirstFailure { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public ConcurrentQueue<string> Successes { get; } = new();
         public TaskCompletionSource Completed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         protected override IEnumerable<string> Topics => [topic];
@@ -117,7 +163,10 @@ public sealed class HostedRedeliveryTests(KafkaTestContainer kafka) : KafkaInteg
         {
             var attempt = Attempts.AddOrUpdate(result.Value!, 1, static (_, count) => count + 1);
             if (result.Value == "value-1" && attempt <= failuresBeforeSuccess)
+            {
+                FirstFailure.TrySetResult();
                 throw new InvalidOperationException("Transient handler failure.");
+            }
             Successes.Enqueue(result.Value!);
             if (Successes.Count == expected)
                 Completed.TrySetResult();
