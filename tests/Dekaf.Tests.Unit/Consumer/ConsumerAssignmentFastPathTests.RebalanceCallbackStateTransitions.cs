@@ -498,6 +498,115 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await Assert.That(consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
     }
 
+    public enum AbandonAfterReassign
+    {
+        Assign,
+        IncrementalAssign,
+        Unsubscribe,
+        Close
+    }
+
+    /// <summary>
+    /// The partition's ownership was acknowledged, then revoked and assigned straight back; the new
+    /// ownership's callback pauses and seeks it, and the consumer abandons the assignment before
+    /// synchronizing it. The acknowledged assignment still names the partition, but the pause and
+    /// seek belong to the newer, never-synchronized ownership: neither survives.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    [Arguments(AbandonAfterReassign.Assign)]
+    [Arguments(AbandonAfterReassign.IncrementalAssign)]
+    [Arguments(AbandonAfterReassign.Unsubscribe)]
+    [Arguments(AbandonAfterReassign.Close)]
+    public async Task RebalanceCallbackStateTransitions_AbandonAfterReassignOfAcknowledgedPartition_DropsNewOwnershipState(
+        AbandonAfterReassign abandon,
+        CancellationToken testTimeout)
+    {
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessAsync(
+            listener,
+            AssignedResponse(1, 0, 1),
+            AssignedResponse(2, 0),
+            AssignedResponse(3, 0, 1));
+        var consumer = harness.Consumer;
+        listener.OnAssigned = partitions =>
+        {
+            if (!partitions.Contains(Partition1))
+                return;
+
+            consumer.Pause(Partition1);
+            consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
+        };
+
+        await harness.HeartbeatAsync();
+        await harness.HeartbeatAsync();
+
+        switch (abandon)
+        {
+            case AbandonAfterReassign.Assign:
+                consumer.Assign(new TopicPartition("test-topic", 0), Partition1);
+                break;
+            case AbandonAfterReassign.IncrementalAssign:
+                consumer.IncrementalAssign([new TopicPartitionOffset("test-topic", 0, 5)]);
+                break;
+            case AbandonAfterReassign.Unsubscribe:
+                consumer.Unsubscribe();
+                break;
+            default:
+                await consumer.CloseAsync(testTimeout);
+                break;
+        }
+
+        await Assert.That(consumer.Paused).DoesNotContain(Partition1);
+        await Assert.That(consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
+        await Assert.That(consumer.RebalancePausedPartitionCountForTest).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// A consumer-aware callback abandons the group assignment through the captured consumer, then
+    /// keeps using its <see cref="IRebalanceConsumer"/> view: the view's seek, position, pause and
+    /// resume act on the consumer directly, as the captured consumer's do.
+    /// </summary>
+    [Test]
+    public async Task RebalanceCallbackStateTransitions_ConsumerAwareViewAfterAbandonInsideCallback_ActsDirectly()
+    {
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessAsync(
+            consumerAwareListener: listener,
+            AssignedResponse(1, 0),
+            AssignedResponse(2, 0, 1));
+        var consumer = harness.Consumer;
+        long? positionAfterSeek = null;
+        var pausedAfterResume = true;
+        var acted = false;
+        listener.OnAssignedConsumer = (view, partitions) =>
+        {
+            if (acted || !partitions.Contains(Partition1))
+                return;
+
+            acted = true;
+            consumer.Assign(new TopicPartition("test-topic", 0), Partition1);
+            view.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
+            positionAfterSeek = view.GetPosition(Partition1);
+            view.Pause(Partition1);
+            view.Resume(Partition1);
+            pausedAfterResume = consumer.Paused.Contains(Partition1);
+            view.Pause(Partition1);
+        };
+
+        await harness.HeartbeatAsync();
+
+        await Assert.That(acted).IsTrue();
+        await Assert.That(positionAfterSeek).IsEqualTo(42L);
+        await Assert.That(pausedAfterResume).IsFalse();
+        await Assert.That(consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
+        await Assert.That(consumer.RebalancePausedPartitionCountForTest).IsEqualTo(0);
+
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+        await Assert.That(consumer.GetPosition(Partition1)).IsEqualTo(42L);
+        await Assert.That(consumer.Paused).Contains(Partition1);
+    }
+
     [Test]
     public async Task EnsureAssignmentAsync_RepeatedlySupersededSync_TracksOneAppliedSeekPerPartition()
     {
