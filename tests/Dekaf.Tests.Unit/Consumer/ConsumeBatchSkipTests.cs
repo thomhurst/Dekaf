@@ -648,6 +648,76 @@ public sealed class ConsumeBatchSkipTests
         }
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ManyHeldSkips_SetAsideOnceEach_RedeliveredInOrderAfterOthers(bool raw)
+    {
+        const int partitionCount = 24;
+        var fetches = new List<PendingFetchData>();
+        for (var round = 0; round < 2; round++)
+        {
+            for (var i = 0; i < partitionCount; i++)
+                fetches.Add(CreatePendingFetch(new TopicPartition(Topic, i), 100L * i + round, 1));
+        }
+
+        await using var consumer = CreateConsumer([.. fetches]);
+        var snapshotActive = GetField("_snapshotOperationActive");
+        snapshotActive.SetValue(consumer, 1);
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await using var batches = Open(consumer, raw, cts.Token);
+            static bool Holds(int partition) => partition % 2 == 0;
+
+            // First pass: even partitions are skipped once (held), odd ones processed in order.
+            var processed = new List<long>();
+            var heldYields = new List<int>();
+            for (var i = 0; i < partitionCount / 2 + partitionCount; i++)
+            {
+                await Assert.That(await batches.MoveNextAsync()).IsTrue();
+                var partition = batches.Current.Partition.Partition;
+                if (Holds(partition))
+                    heldYields.Add(partition);
+                else
+                    processed.AddRange(batches.Current.Offsets());
+            }
+
+            var odd = Enumerable.Range(0, partitionCount).Where(static p => !Holds(p)).ToArray();
+            var even = Enumerable.Range(0, partitionCount).Where(Holds).ToArray();
+            await Assert.That(heldYields.SequenceEqual(even)).IsTrue();
+            await Assert.That(processed.SequenceEqual(
+                odd.Select(static p => 100L * p).Concat(odd.Select(static p => 100L * p + 1)))).IsTrue();
+
+            // The batch loop exits and restores the held fetches once, in their original
+            // queue order (no per-skip rotation), then waits before re-offering them.
+            var next = batches.MoveNextAsync().AsTask();
+            var queued = GetPendingFetches(consumer)
+                .Select(static f => f.GetBatches()[0].BaseOffset)
+                .ToArray();
+            await Assert.That(queued.SequenceEqual(
+                even.Select(static p => 100L * p).Concat(even.Select(static p => 100L * p + 1)))).IsTrue();
+            await Assert.That(((Queue<PendingFetchData>)GetField("_heldSkippedFetches").GetValue(consumer)!).Count)
+                .IsEqualTo(0);
+
+            // After the wait each held partition is redelivered once, in per-partition order.
+            var redelivered = new List<long>();
+            await Assert.That(await next).IsTrue();
+            redelivered.AddRange(batches.Current.Offsets());
+            for (var i = 1; i < partitionCount; i++)
+            {
+                await Assert.That(await batches.MoveNextAsync()).IsTrue();
+                redelivered.AddRange(batches.Current.Offsets());
+            }
+
+            await Assert.That(redelivered.SequenceEqual(queued)).IsTrue();
+        }
+        finally
+        {
+            snapshotActive.SetValue(consumer, 0);
+        }
+    }
+
     private sealed class TypedEnumerator(IAsyncEnumerator<ConsumeBatch<string, string>> inner)
         : IAsyncEnumerator<BatchView>
     {

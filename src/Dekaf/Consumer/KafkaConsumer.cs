@@ -223,13 +223,6 @@ internal sealed class PendingFetchData : IDisposable
     internal bool IsExhausted { get; private set; }
 
     /// <summary>
-    /// Set by the consume loop when a caller skipped this fetch and it could not be released
-    /// for refetch. A held fetch at the queue head means nothing deliverable remains, so the
-    /// loop waits before offering it again. Only the consume loop reads or writes it.
-    /// </summary>
-    internal bool IsSkipHeld { get; set; }
-
-    /// <summary>
     /// Where record iteration currently stands. The consume loop compares it across one batch
     /// yield: unchanged means the caller never read a record, so it skipped the batch. Creating
     /// an enumerator without calling MoveNext does not count. Read once per batch, never per record.
@@ -986,7 +979,6 @@ internal sealed class PendingFetchData : IDisposable
         _fallbackCurrentRecord = default;
         _eagerParsed = false;
         _hasBufferedCurrent = false;
-        IsSkipHeld = false;
         _error = null;
         unchecked
         {
@@ -1461,6 +1453,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly Queue<PendingFetchData> _pendingFetchScratch = new();
     // Reused by the consume loop to rewind a skipped batch without allocating a set.
     private readonly HashSet<TopicPartition> _skippedBatchPartitions = [];
+    // Partitions whose skipped batch could not be released. Their fetches wait in
+    // _heldSkippedFetches during a batch loop and are offered again after a bounded wait.
+    private readonly HashSet<TopicPartition> _heldSkippedPartitions = [];
+    private readonly Queue<PendingFetchData> _heldSkippedFetches = new();
     // Partitions with a queued fetch, built only when an EOF drain starts with fetches queued.
     private readonly HashSet<TopicPartition> _eofHoldPartitions = [];
     private int _observedPausedSnapshotVersion;
@@ -3637,7 +3633,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             PreparePendingFetchesForDelivery();
 
             // Get pending data - either from prefetch channel or direct fetch
-            if (_pendingFetches.Count > 0 && _pendingFetches.Peek().IsSkipHeld)
+            if (_heldSkippedPartitions.Count > 0
+                && _pendingFetches.Count > 0
+                && _heldSkippedPartitions.Contains(_pendingFetches.Peek().TopicPartition))
             {
                 // Only skipped fetches that could not be released remain at the head.
                 await WaitForSkippedFetchRetryAsync(prefetchEnabled, cancellationToken).ConfigureAwait(false);
@@ -3703,14 +3701,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     if (ClearFetchBufferForPendingCoordinatorRevocations())
                         continue;
 
-                    if (TryDiscardExhaustedPendingFetch() || TryDiscardReleasedPendingFetch())
+                    if (TryDiscardExhaustedPendingFetch()
+                        || TryDiscardReleasedPendingFetch()
+                        || TrySetAsideHeldPendingFetch())
+                    {
                         continue;
+                    }
 
                     PendingFetchData pending = _pendingFetches.Peek();
-
-                    // Only held skipped fetches remain: let the outer loop wait before re-offering.
-                    if (pending.IsSkipHeld)
-                        break;
 
                     pending.MarkYieldedProcessed();
                     int pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
@@ -3780,6 +3778,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             finally
             {
                 ReleaseSkippedPartitions();
+                RestoreHeldSkippedFetches();
             }
 
             var eofEventsToCheck = PrepareEofDelivery();
@@ -3838,7 +3837,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             PreparePendingFetchesForDelivery();
 
             // Get pending data - either from prefetch channel or direct fetch
-            if (_pendingFetches.Count > 0 && _pendingFetches.Peek().IsSkipHeld)
+            if (_heldSkippedPartitions.Count > 0
+                && _pendingFetches.Count > 0
+                && _heldSkippedPartitions.Contains(_pendingFetches.Peek().TopicPartition))
             {
                 // Only skipped fetches that could not be released remain at the head.
                 await WaitForSkippedFetchRetryAsync(prefetchEnabled, cancellationToken).ConfigureAwait(false);
@@ -3904,14 +3905,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     if (ClearFetchBufferForPendingCoordinatorRevocations())
                         continue;
 
-                    if (TryDiscardExhaustedPendingFetch() || TryDiscardReleasedPendingFetch())
+                    if (TryDiscardExhaustedPendingFetch()
+                        || TryDiscardReleasedPendingFetch()
+                        || TrySetAsideHeldPendingFetch())
+                    {
                         continue;
+                    }
 
                     PendingFetchData pending = _pendingFetches.Peek();
-
-                    // Only held skipped fetches remain: let the outer loop wait before re-offering.
-                    if (pending.IsSkipHeld)
-                        break;
 
                     pending.MarkYieldedProcessed();
                     int pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
@@ -3969,6 +3970,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             finally
             {
                 ReleaseSkippedPartitions();
+                RestoreHeldSkippedFetches();
             }
 
             var eofEventsToCheck = PrepareEofDelivery();
@@ -3985,10 +3987,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     /// <returns>
-    /// <see langword="true"/> when the caller skipped this batch and it could not be released
-    /// (paused, owned by a staged seek or revocation, or held). The batch loop must then return
-    /// to its outer poll loop before delivering again. A released skip returns false, and the
-    /// loop keeps delivering other partitions.
+    /// <see langword="true"/> when the caller skipped this batch and it can be neither released
+    /// nor held (paused, or owned by a staged seek or revocation). The batch loop must then
+    /// return to its outer poll loop before delivering again. A released or held skip returns
+    /// false, and the loop keeps delivering other partitions.
     /// </returns>
     private bool CompleteBatchPoll(
         PendingFetchData pending,
@@ -4069,8 +4071,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Snapshot reads own their bounded positions, and Seek rejects changes during them.
         if (pending.IsSnapshotEnd || Volatile.Read(ref _snapshotOperationActive) != 0)
         {
-            HoldSkippedFetch(pending);
-            return false;
+            HoldSkippedFetch();
+            return true;
         }
 
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
@@ -4084,8 +4086,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (_prefetchEnabled
                 && (!_positions.TryGetValue(partition, out var position) || position < 0))
             {
-                HoldSkippedFetch(pending);
-                return false;
+                HoldSkippedFetch();
+                return true;
             }
         }
 
@@ -4199,26 +4201,60 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     /// <summary>
-    /// Keeps a skipped fetch that cannot be refetched, but moves its partition's queued
-    /// fetches behind every other partition's, preserving their relative order, and marks it
-    /// held. Other partitions are delivered first; once a held fetch reaches the head again
-    /// the poll loop waits before re-offering it. Skip path only: one pass over the queue.
+    /// Keeps a skipped fetch at the queue head that cannot be refetched. Its partition is
+    /// recorded as held and the fetch is set aside. Later fetches of the partition are set
+    /// aside as they reach the head, so other partitions are delivered first. When the batch
+    /// loop exits, <see cref="RestoreHeldSkippedFetches"/> queues them again behind everything
+    /// else, in order, and the poll loop waits before re-offering them. O(1) per skip.
     /// </summary>
-    private void HoldSkippedFetch(PendingFetchData pending)
+    private void HoldSkippedFetch()
     {
-        pending.IsSkipHeld = true;
-        var partition = pending.TopicPartition;
-        var count = _pendingFetches.Count;
-        for (var i = 0; i < count; i++)
+        _heldSkippedPartitions.Add(_pendingFetches.Peek().TopicPartition);
+        _heldSkippedFetches.Enqueue(_pendingFetches.Dequeue());
+    }
+
+    /// <summary>
+    /// Sets aside a queued fetch of a held partition. One count check per batch on the normal
+    /// path; one set lookup per batch while a hold is active.
+    /// </summary>
+    private bool TrySetAsideHeldPendingFetch()
+    {
+        if (_heldSkippedPartitions.Count == 0
+            || _pendingFetches.Count == 0
+            || !_heldSkippedPartitions.Contains(_pendingFetches.Peek().TopicPartition))
         {
-            var queued = _pendingFetches.Dequeue();
-            if (queued.TopicPartition == partition)
-                _pendingFetchScratch.Enqueue(queued);
-            else
-                _pendingFetches.Enqueue(queued);
+            return false;
         }
 
-        while (_pendingFetchScratch.TryDequeue(out var held))
+        _heldSkippedFetches.Enqueue(_pendingFetches.Dequeue());
+        return true;
+    }
+
+    /// <summary>
+    /// Queues set-aside held fetches again when the batch loop exits, behind every other queued
+    /// fetch. If the loop exited early, later fetches of held partitions may still be queued.
+    /// One stable pass moves them behind the set-aside ones so per-partition order holds. Uses
+    /// only reused queues. With no held fetch it is one count check.
+    /// </summary>
+    private void RestoreHeldSkippedFetches()
+    {
+        if (_heldSkippedFetches.Count == 0)
+            return;
+
+        if (_pendingFetches.Count > 0)
+        {
+            var count = _pendingFetches.Count;
+            for (var i = 0; i < count; i++)
+            {
+                var queued = _pendingFetches.Dequeue();
+                if (_heldSkippedPartitions.Contains(queued.TopicPartition))
+                    _heldSkippedFetches.Enqueue(queued);
+                else
+                    _pendingFetches.Enqueue(queued);
+            }
+        }
+
+        while (_heldSkippedFetches.TryDequeue(out var held))
             _pendingFetches.Enqueue(held);
     }
 
@@ -4239,10 +4275,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (prefetchEnabled)
             DrainPrefetchBuffer();
 
-        foreach (var queued in _pendingFetches)
-            queued.IsSkipHeld = false;
-        foreach (var parked in _pausedPendingFetches)
-            parked.IsSkipHeld = false;
+        _heldSkippedPartitions.Clear();
     }
 
     private bool TryDiscardExhaustedPendingFetch()
@@ -8309,6 +8342,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             _pendingFetchScratch.Enqueue(activePending);
 
         var count = _pausedPendingFetches.Count;
+        // Fetches set aside by a held skip during this batch loop are older than any of their
+        // partition's fetches still queued, so they rejoin ahead of the active queue. Held
+        // partitions stay held, and the loop sets them aside again when they reach the head.
+        var heldCount = _heldSkippedFetches.Count;
         for (var i = 0; i < count; i++)
         {
             var pending = _pausedPendingFetches.Dequeue();
@@ -8317,6 +8354,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             else
                 _pendingFetches.Enqueue(pending);
         }
+
+        for (var i = 0; i < heldCount; i++)
+            _pendingFetches.Enqueue(_heldSkippedFetches.Dequeue());
 
         while (_pendingFetchScratch.TryDequeue(out var retainedPending))
             _pendingFetches.Enqueue(retainedPending);
@@ -8487,6 +8527,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             StagePendingFetchClear(pausedPending.TopicPartition);
             DisposeQueuedFetch(pausedPending);
         }
+        while (_heldSkippedFetches.TryDequeue(out var heldPending))
+        {
+            Interlocked.Decrement(ref _pendingFetchDepth);
+            StagePendingFetchClear(heldPending.TopicPartition);
+            DisposeQueuedFetch(heldPending);
+        }
+        _heldSkippedPartitions.Clear();
         // Also drain prefetched items that haven't been moved to _pendingFetches yet.
         // Without this, stale data from old partitions would surface after reassignment.
         while (_prefetchBuffer.TryRead(out var prefetched))
@@ -8521,6 +8568,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             ClearActiveConsumedPosition(partition);
             _stuckFetchPositionTracker.Reset(partition);
+            // The partition's held data is dropped below; a reassignment must not inherit the hold.
+            _heldSkippedPartitions.Remove(partition);
         }
 
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
@@ -8555,6 +8604,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             else
             {
                 // Dispose removed items to release pooled memory
+                if (stagePendingClear)
+                    StagePendingFetchClear(pending.TopicPartition);
+                DisposeQueuedFetch(pending);
+            }
+        }
+
+        count = _heldSkippedFetches.Count;
+        for (var i = 0; i < count; i++)
+        {
+            var pending = _heldSkippedFetches.Dequeue();
+            if (!removeSet.Contains(pending.TopicPartition))
+            {
+                _heldSkippedFetches.Enqueue(pending);
+            }
+            else
+            {
+                Interlocked.Decrement(ref _pendingFetchDepth);
                 if (stagePendingClear)
                     StagePendingFetchClear(pending.TopicPartition);
                 DisposeQueuedFetch(pending);
@@ -13696,6 +13762,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             Interlocked.Decrement(ref _pendingFetchDepth);
             pausedPending.Dispose();
         }
+        while (_heldSkippedFetches.TryDequeue(out var heldPending))
+        {
+            Interlocked.Decrement(ref _pendingFetchDepth);
+            heldPending.Dispose();
+        }
         while (_prefetchBuffer.TryRead(out var prefetched))
         {
             TrackPrefetchedBytes(prefetched, release: true);
@@ -14088,6 +14159,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             Interlocked.Decrement(ref _pendingFetchDepth);
             pausedPending.Dispose();
+        }
+        while (_heldSkippedFetches.TryDequeue(out var heldPending))
+        {
+            Interlocked.Decrement(ref _pendingFetchDepth);
+            heldPending.Dispose();
         }
 
         // Drain and dispose prefetch buffer items
