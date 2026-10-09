@@ -415,6 +415,53 @@ public sealed class ConsumeBatchSkipTests
             .IsEqualTo(0);
     }
 
+    [Test]
+    public async Task StaleEmptyResponseAfterSeek_DoesNotQueuePartitionEof()
+    {
+        await using var consumer = CreateConsumer(
+            500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true,
+            CreatePendingFetch(Partition0, 10, 2));
+        // A response captured its fetch epoch and passed the stale check, then the seek ran.
+        var staleEpoch = GetFetchBufferEpoch(consumer);
+        consumer.Seek(new TopicPartitionOffset(Topic, 0, 100));
+
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 50, staleEpoch);
+        await Assert.That(GetEofEvents(consumer)).IsEmpty();
+
+        // Once the consume loop applies the seek, a response fetched afterwards reports EOF.
+        typeof(KafkaConsumer<string, string>)
+            .GetMethod("RecoverAndClearFetchBufferForPendingCoordinatorRevocations", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(consumer, null);
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 50, GetFetchBufferEpoch(consumer));
+        await Assert.That(GetEofEvents(consumer).Single()).IsEqualTo((Partition0, 100L));
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task StaleEmptyResponseAfterRelease_DoesNotQueuePartitionEofAheadOfRefetch(bool raw)
+    {
+        await using var consumer = CreateConsumer(
+            500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true,
+            CreatePendingFetch(Partition0, 10, 2),
+            CreatePendingFetch(Partition1, 20, 1));
+        await using var batches = Open(consumer, raw);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        var staleEpoch = GetFetchBufferEpoch(consumer);
+        // Simulate the prefetch position having already reached the end before the skip.
+        GetDictionary(consumer, "_fetchPositions")[Partition0] = 12;
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
+        await Assert.That(GetDictionary(consumer, "_fetchPositions")[Partition0]).IsEqualTo(10L);
+
+        // The old response's EOF lands after the release: it must be dropped, not delivered
+        // ahead of offsets 10 and 11, which still have to be refetched.
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, staleEpoch);
+        await Assert.That(GetEofEvents(consumer)).IsEmpty();
+    }
+
     private sealed class TypedEnumerator(IAsyncEnumerator<ConsumeBatch<string, string>> inner)
         : IAsyncEnumerator<BatchView>
     {
@@ -483,6 +530,14 @@ public sealed class ConsumeBatchSkipTests
         params PendingFetchData[] fetches) =>
         CreateConsumer(maxPollRecords, interceptors, prefetch: false, unknownPosition: null, fetches);
 
+    private static KafkaConsumer<string, string> CreateConsumer(
+        int maxPollRecords,
+        IConsumerInterceptor<string, string>[]? interceptors,
+        bool prefetch,
+        TopicPartition? unknownPosition,
+        params PendingFetchData[] fetches) =>
+        CreateConsumer(maxPollRecords, interceptors, prefetch, unknownPosition, enablePartitionEof: false, fetches);
+
     /// <summary>
     /// With <paramref name="prefetch"/>, the prefetch loop is marked started without running,
     /// so only the seeded fetches exist. <paramref name="unknownPosition"/> has no consumer
@@ -493,6 +548,7 @@ public sealed class ConsumeBatchSkipTests
         IConsumerInterceptor<string, string>[]? interceptors,
         bool prefetch,
         TopicPartition? unknownPosition,
+        bool enablePartitionEof,
         params PendingFetchData[] fetches)
     {
         var options = new ConsumerOptions
@@ -501,7 +557,8 @@ public sealed class ConsumeBatchSkipTests
             QueuedMinMessages = prefetch ? 100 : 1,
             FetchMaxWaitMs = 50,
             MaxPollRecords = maxPollRecords,
-            Interceptors = interceptors
+            Interceptors = interceptors,
+            EnablePartitionEof = enablePartitionEof
         };
 
         var consumer = new KafkaConsumer<string, string>(options, Serializers.String, Serializers.String);
@@ -556,6 +613,9 @@ public sealed class ConsumeBatchSkipTests
     private static ConcurrentQueue<(TopicPartition Partition, long Offset)> GetEofEvents(
         KafkaConsumer<string, string> consumer) =>
         (ConcurrentQueue<(TopicPartition Partition, long Offset)>)GetField("_pendingEofEvents").GetValue(consumer)!;
+
+    private static int GetFetchBufferEpoch(KafkaConsumer<string, string> consumer) =>
+        (int)GetField("_fetchBufferEpoch").GetValue(consumer)!;
 
     private static Queue<PendingFetchData> GetPendingFetches(KafkaConsumer<string, string> consumer) =>
         (Queue<PendingFetchData>)GetField("_pendingFetches").GetValue(consumer)!;

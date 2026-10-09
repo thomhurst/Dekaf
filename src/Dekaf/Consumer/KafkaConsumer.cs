@@ -4913,7 +4913,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         }
                         else
                         {
-                            var stuckError = HandleEmptyFetchResponse(tp, records, partitionResponse.HighWatermark);
+                            var stuckError = HandleEmptyFetchResponse(tp, records, partitionResponse.HighWatermark, fetchBufferEpoch);
                             if (stuckError is not null)
                             {
                                 DisposePendingFetches(pendingItems);
@@ -5529,10 +5529,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    private Errors.ConsumeException? HandleEmptyFetchResponse(
+    internal Errors.ConsumeException? HandleEmptyFetchResponse(
         TopicPartition partition,
         IReadOnlyList<RecordBatch>? records,
-        long highWatermark)
+        long highWatermark,
+        int fetchBufferEpoch)
     {
         // FetchResponsePartition creates Records only when record bytes were present.
         // A non-null empty list therefore means parsing produced no complete batches.
@@ -5550,14 +5551,34 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             return stuckError;
         }
 
-        if (_options.EnablePartitionEof
-            && fetchPosition >= highWatermark
-            && _eofEmitted.TryAdd(partition, 0))
-        {
-            _pendingEofEvents.Enqueue((partition, fetchPosition));
-        }
+        if (_options.EnablePartitionEof && fetchPosition >= highWatermark)
+            TryQueuePartitionEof(partition, highWatermark, fetchBufferEpoch);
 
         return null;
+    }
+
+    /// <summary>
+    /// Queues a partition EOF from a fetch response. Seek, revocation and skipped-batch release
+    /// invalidate the partition's fetch epoch and drop its queued EOF under this lock. An EOF
+    /// from a response that passed its stale check before that invalidation must not be queued
+    /// afterwards, ahead of the records the new position refetches. Revalidating here, and
+    /// reading the position here, closes that window as prefetched record publication does.
+    /// Runs only when a response reaches the high watermark, never per record.
+    /// </summary>
+    private void TryQueuePartitionEof(TopicPartition partition, long highWatermark, int fetchBufferEpoch)
+    {
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            var fetchPosition = _fetchPositions.GetValueOrDefault(partition, 0);
+            if (ShouldDropStaleFetchPartition(partition, fetchBufferEpoch)
+                || fetchPosition < highWatermark
+                || !_eofEmitted.TryAdd(partition, 0))
+            {
+                return;
+            }
+
+            _pendingEofEvents.Enqueue((partition, fetchPosition));
+        }
     }
 
     private PendingFetchData? TryCreateSnapshotEndMarker(
@@ -11523,7 +11544,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     }
                     else
                     {
-                        var stuckError = HandleEmptyFetchResponse(tp, records, partitionResponse.HighWatermark);
+                        var stuckError = HandleEmptyFetchResponse(tp, records, partitionResponse.HighWatermark, fetchBufferEpoch);
                         if (stuckError is not null)
                         {
                             if (pendingItems is not null)
