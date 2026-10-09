@@ -766,6 +766,102 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await Assert.That(consumer.Paused).Contains(Partition1);
     }
 
+    public enum AbandonAfterPublish
+    {
+        Assign,
+        Unsubscribe
+    }
+
+    /// <summary>
+    /// A heartbeat publishes an assignment and the application abandons the group assignment before
+    /// the heartbeat queues the assignment's callbacks. The callback belongs to the abandoned
+    /// assignment: its seek and pause act on the consumer directly.
+    /// </summary>
+    [Test]
+    [Arguments(AbandonAfterPublish.Assign)]
+    [Arguments(AbandonAfterPublish.Unsubscribe)]
+    public async Task RebalanceCallbackStateTransitions_AbandonBetweenPublishAndQueue_EndsStaging(
+        AbandonAfterPublish abandon)
+    {
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessAsync(
+            listener,
+            AssignedResponse(1, 0),
+            AssignedResponse(2, 0, 1));
+        var consumer = harness.Consumer;
+        var coordinator = GetCoordinator(consumer);
+        bool? staging = null;
+        listener.OnAssigned = partitions =>
+        {
+            if (!partitions.Contains(Partition1))
+                return;
+
+            staging = coordinator.TryGetAssignedCallbackRevocationSequence(Partition1, out _);
+            consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
+            consumer.Pause(Partition1);
+        };
+
+        var abandoned = false;
+        coordinator.AfterAssignmentPublishedForTest = () =>
+        {
+            if (abandoned)
+                return;
+            abandoned = true;
+            if (abandon == AbandonAfterPublish.Assign)
+                consumer.Assign(new TopicPartition("test-topic", 0), Partition1);
+            else
+                consumer.Unsubscribe();
+        };
+        try
+        {
+            await harness.HeartbeatAsync();
+        }
+        finally
+        {
+            coordinator.AfterAssignmentPublishedForTest = null;
+        }
+
+        await Assert.That(abandoned).IsTrue();
+        await Assert.That(staging).IsNotNull();
+        await Assert.That(staging!.Value).IsFalse();
+        await Assert.That(consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
+        await Assert.That(consumer.RebalancePausedPartitionCountForTest).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// Revocation bookkeeping is pruned once an acknowledged sync covers it: churning many distinct
+    /// partitions through revoke and acknowledgement leaves it bounded by outstanding revocations,
+    /// not by every partition ever revoked.
+    /// </summary>
+    [Test]
+    [Timeout(120_000)]
+    public async Task RebalanceCallbackStateTransitions_RevocationChurn_TrackingStaysBounded(CancellationToken testTimeout)
+    {
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessAsync(listener, AssignedResponse(1, 0));
+        var consumer = harness.Consumer;
+        var coordinator = GetCoordinator(consumer);
+
+        const int churned = 10_000;
+        const int perSync = 500;
+        for (var start = 0; start < churned; start += perSync)
+        {
+            for (var partition = start; partition < start + perSync; partition++)
+                coordinator.RevokeAndReassignForTest(new TopicPartition("churn-topic", partition));
+            await consumer.EnsureAssignmentAsync(testTimeout);
+        }
+
+        await Assert.That(coordinator.RevocationSequenceTrackingCountForTest).IsEqualTo(0);
+        await Assert.That(consumer.RevocationSequenceTrackingCountForTest).IsEqualTo(0);
+
+        // A revocation not yet covered by an acknowledged sync is still tracked.
+        coordinator.RevokeAndReassignForTest(Partition1);
+        await Assert.That(consumer.IsRevokedSinceAcknowledgedForTest(Partition1)).IsTrue();
+        await consumer.EnsureAssignmentAsync(testTimeout);
+        await Assert.That(consumer.IsRevokedSinceAcknowledgedForTest(Partition1)).IsFalse();
+        await Assert.That(coordinator.RevocationSequenceTrackingCountForTest).IsEqualTo(0);
+    }
+
     [Test]
     public async Task EnsureAssignmentAsync_RepeatedlySupersededSync_TracksOneAppliedSeekPerPartition()
     {

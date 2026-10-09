@@ -1487,7 +1487,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // since the last acknowledged one, and covered by acknowledged passes. A partition was revoked
     // since its acknowledged ownership when the coordinator's latest revocation sequence for it is
     // newer than the acknowledged one. A superseded pass's drained sequences are covered by the
-    // next acknowledged pass, whichever path acknowledges it. Guarded by _assignmentLock.
+    // next acknowledged pass, whichever path acknowledges it. Entries covered with no newer
+    // revocation are pruned on both sides at acknowledgement. Guarded by _assignmentLock.
     private readonly Dictionary<TopicPartition, long> _drainedRevocationSequences = [];
     private readonly Dictionary<TopicPartition, long> _acknowledgedRevocationSequences = [];
     // Serializes each Pause/Resume with assignment cleanup's clear-then-restore of a partition's
@@ -1710,6 +1711,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     internal int PendingRebalanceSeekCountForTest => _pendingRebalanceSeeks.Count;
 
     internal int RebalancePausedPartitionCountForTest => _rebalancePausedPartitions.Count;
+
+    internal int RevocationSequenceTrackingCountForTest =>
+        _acknowledgedRevocationSequences.Count + _drainedRevocationSequences.Count;
 
     internal bool IsRevokedSinceAcknowledgedForTest(TopicPartition partition) =>
         IsRevokedSinceAcknowledged(partition);
@@ -10295,11 +10299,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Every revocation drained so far is synchronized now (an acknowledgement requires the
         // queue to be empty): the acknowledged assignment is the ownership that followed it. A
         // revocation recorded since carries a newer sequence and stays uncovered.
+        // Covered revocations are forgotten on both sides (absent reads as 0, which answers the
+        // same), so this bookkeeping stays bounded by revocations not yet acknowledged.
+        var coordinator = _coordinator;
         foreach (var drained in _drainedRevocationSequences)
         {
-            if (!_acknowledgedRevocationSequences.TryGetValue(drained.Key, out var acknowledged)
+            if (coordinator is not null && coordinator.GetLastRevocationSequence(drained.Key) <= drained.Value)
+            {
+                coordinator.PruneRevocationSequence(drained.Key, drained.Value);
+                _acknowledgedRevocationSequences.Remove(drained.Key);
+            }
+            else if (!_acknowledgedRevocationSequences.TryGetValue(drained.Key, out var acknowledged)
                 || acknowledged < drained.Value)
             {
+                // Revoked again since: keep what was covered until a later sync covers the rest.
                 _acknowledgedRevocationSequences[drained.Key] = drained.Value;
             }
         }
