@@ -350,7 +350,8 @@ public sealed partial class ConsumerAssignmentFastPathTests
     {
         Pause,
         Seek,
-        PauseThenResume
+        PauseThenResume,
+        Resume
     }
 
     public enum StaleCallbackEnd
@@ -398,6 +399,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
                 case StaleCallbackAction.Seek:
                     consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
                     break;
+                case StaleCallbackAction.Resume:
+                    consumer.Resume(Partition1);
+                    break;
                 default:
                     consumer.Pause(Partition1);
                     consumer.Resume(Partition1);
@@ -428,6 +432,70 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await Assert.That(consumer.Paused).DoesNotContain(Partition1);
         await Assert.That(consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
         await Assert.That(consumer.RebalancePausedPartitionCountForTest).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// The callback polls, which synchronizes a newer revoke-and-reassign of its partition (so the
+    /// callback's ownership has ended and the new one is acknowledged), then pauses, resumes or seeks
+    /// it. A stale callback's call is a no-op: it neither pauses nor resumes the new ownership, nor
+    /// moves its position.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    [Arguments(StaleCallbackAction.Pause)]
+    [Arguments(StaleCallbackAction.Seek)]
+    [Arguments(StaleCallbackAction.Resume)]
+    public async Task RebalanceCallbackStateTransitions_StaleCallbackActsAfterNewerSync_IsNoOp(
+        StaleCallbackAction action,
+        CancellationToken testTimeout)
+    {
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessAsync(
+            listener,
+            AssignedResponse(1, 0),
+            AssignedResponse(2, 0, 1));
+        var consumer = harness.Consumer;
+        var coordinator = GetCoordinator(consumer);
+        var acted = false;
+        listener.OnAssignedAsync = async partitions =>
+        {
+            if (acted || !partitions.Contains(Partition1))
+                return;
+
+            acted = true;
+            coordinator.RevokeAndReassignForTest(Partition1);
+            await consumer.EnsureAssignmentAsync(testTimeout);
+            if (action == StaleCallbackAction.Resume)
+            {
+                // The new ownership is paused by the application, outside any callback.
+                Task pause;
+                using (ExecutionContext.SuppressFlow())
+                    pause = Task.Run(() => consumer.Pause(Partition1), testTimeout);
+                await pause;
+            }
+
+            switch (action)
+            {
+                case StaleCallbackAction.Pause:
+                    consumer.Pause(Partition1);
+                    break;
+                case StaleCallbackAction.Seek:
+                    consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
+                    break;
+                default:
+                    consumer.Resume(Partition1);
+                    break;
+            }
+        };
+
+        await harness.HeartbeatAsync();
+        await consumer.EnsureAssignmentAsync(testTimeout);
+
+        await Assert.That(acted).IsTrue();
+        await Assert.That(consumer.Assignment).Contains(Partition1);
+        await Assert.That(consumer.Paused.Contains(Partition1)).IsEqualTo(action == StaleCallbackAction.Resume);
+        await Assert.That(consumer.GetPosition(Partition1)).IsEqualTo(20L);
+        await Assert.That(consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
     }
 
     [Test]
