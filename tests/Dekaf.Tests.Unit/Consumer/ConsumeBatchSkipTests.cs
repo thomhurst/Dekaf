@@ -1115,6 +1115,112 @@ public sealed class ConsumeBatchSkipTests
         return consumer;
     }
 
+    public enum EofApi
+    {
+        Batch,
+        RawBatch,
+        ConsumeAsync,
+        ConsumeOne
+    }
+
+    /// <summary>
+    /// An EOF at offset X means the next offset to fetch is X. It is superseded only when the
+    /// consumed position is past X: records 10..19 leave the position at 20, so EOF 20 is real;
+    /// records 10..20 leave it at 21, so EOF 20 is stale.
+    /// </summary>
+    [Test]
+    [Arguments(EofApi.Batch, 10)]
+    [Arguments(EofApi.Batch, 11)]
+    [Arguments(EofApi.RawBatch, 10)]
+    [Arguments(EofApi.RawBatch, 11)]
+    [Arguments(EofApi.ConsumeAsync, 10)]
+    [Arguments(EofApi.ConsumeAsync, 11)]
+    [Arguments(EofApi.ConsumeOne, 10)]
+    [Arguments(EofApi.ConsumeOne, 11)]
+    public async Task EofAtConsumedPositionIsDelivered_EofBelowItIsDropped(EofApi api, int recordCount)
+    {
+        await using var consumer = CreateConsumer(
+            500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true,
+            CreatePendingFetch(Partition0, 10, recordCount));
+        GetEofEvents(consumer).Enqueue((Partition0, 20L));
+        var expectEof = recordCount == 10;
+
+        var offsets = new List<long>();
+        long? eofOffset = null;
+        using var cts = new CancellationTokenSource();
+        switch (api)
+        {
+            case EofApi.Batch:
+            case EofApi.RawBatch:
+            {
+                await using var batches = Open(consumer, api == EofApi.RawBatch, cts.Token);
+                await Assert.That(await batches.MoveNextAsync()).IsTrue();
+                offsets.AddRange(batches.Current.Offsets());
+                cts.CancelAfter(TimeSpan.FromMilliseconds(300));
+                try
+                {
+                    if (await batches.MoveNextAsync() && batches.Current.IsEof)
+                        eofOffset = batches.Current.EofOffset;
+                }
+                catch (OperationCanceledException)
+                {
+                }
+
+                break;
+            }
+            case EofApi.ConsumeAsync:
+            {
+                await using var records = consumer.ConsumeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+                try
+                {
+                    while (await records.MoveNextAsync())
+                    {
+                        if (records.Current.IsPartitionEof)
+                        {
+                            eofOffset = records.Current.Offset;
+                            break;
+                        }
+
+                        offsets.Add(records.Current.Offset);
+                        if (offsets.Count == recordCount)
+                            cts.CancelAfter(TimeSpan.FromMilliseconds(300));
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                }
+
+                break;
+            }
+            case EofApi.ConsumeOne:
+            {
+                while (true)
+                {
+                    var result = await consumer.ConsumeOneAsync(TimeSpan.FromMilliseconds(300), CancellationToken.None);
+                    if (result is null)
+                        break;
+                    if (result.Value.IsPartitionEof)
+                    {
+                        eofOffset = result.Value.Offset;
+                        break;
+                    }
+
+                    offsets.Add(result.Value.Offset);
+                }
+
+                break;
+            }
+        }
+
+        await Assert.That(offsets.SequenceEqual(Enumerable.Range(10, recordCount).Select(static o => (long)o))).IsTrue();
+        await Assert.That(GetDictionary(consumer, "_positions")[Partition0]).IsEqualTo(10L + recordCount);
+        if (expectEof)
+            await Assert.That(eofOffset).IsEqualTo(20L);
+        else
+            await Assert.That(eofOffset).IsNull();
+        await Assert.That(GetEofEvents(consumer)).IsEmpty();
+    }
+
     private sealed class TypedEnumerator(IAsyncEnumerator<ConsumeBatch<string, string>> inner)
         : IAsyncEnumerator<BatchView>
     {
