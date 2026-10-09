@@ -269,6 +269,41 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     }
 
     [Test]
+    [Timeout(10_000)]
+    public async Task RequestLeaveGroup_CoveredByRunningLeave_KeepsThatLeavesSnapshot(
+        CancellationToken cancellationToken)
+    {
+        var script = new HeartbeatScript(this);
+        SetupFindCoordinator();
+        object? delivered = null;
+        ConsumerCoordinator? coordinator = null;
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsRevokedAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                coordinator!.TryGetLeaveCommitState(out delivered);
+                return ValueTask.CompletedTask;
+            });
+        script.Respond = (_, request) => RespondRecordingLeave([], request, CreateAssignment(TestTopicId, 0));
+        coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(rebalanceListener: listener), _connectionPool, _metadataManager);
+        await using var disposeCoordinator = coordinator;
+        await coordinator.EnsureActiveGroupAsync(LeaveTestTopics, cancellationToken);
+
+        // Hold the state lock so the first leave cannot take its snapshot yet.
+        var stateLock = GetPrivateField<SemaphoreSlim>(coordinator, "_lock");
+        await stateLock.WaitAsync(cancellationToken);
+        var first = new object();
+        coordinator.RequestLeaveGroup(first);
+        // A second switch to manual assignment, covered by the leave already running.
+        coordinator.RequestLeaveGroup(new object());
+        stateLock.Release();
+        await GetPrivateField<Task>(coordinator, "_pendingLeave").WaitAsync(cancellationToken);
+
+        await Assert.That(ReferenceEquals(delivered, first)).IsTrue();
+    }
+
+    [Test]
     public async Task RequestLeaveGroup_NoLeaveToRun_DoesNotKeepCommitSnapshot()
     {
         await using var coordinator = new ConsumerCoordinator(

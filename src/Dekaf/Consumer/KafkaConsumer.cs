@@ -2595,10 +2595,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// </remarks>
     private LeaveCommitSnapshot? CaptureLeaveCommitSnapshot(TopicPartitionSet owned)
     {
-        var proven = SnapshotStoredOffsets(owned);
-        Dictionary<TopicPartition, TopicPartitionOffset>? vouched = null;
-        foreach (var offset in proven)
-            (vouched ??= [])[new TopicPartition(offset.Topic, offset.Partition)] = offset;
+        var stored = SnapshotStoredOffsets(owned);
+        Dictionary<TopicPartition, TopicPartitionOffset>? proven = null;
+        foreach (var offset in stored)
+            (proven ??= [])[new TopicPartition(offset.Topic, offset.Partition)] = offset;
+
+        // Records the application has processed whose offsets are not staged yet: stored offsets
+        // advance only at fetch boundaries, and the fetches are discarded right after this, so
+        // the processed range is read from them, as the close commit flushes the head fetch.
+        if (_options.EnableAutoOffsetStore)
+        {
+            if (_pendingFetches.Count > 0)
+                AddProvenPosition(ref proven, owned, _pendingFetches.Peek());
+
+            foreach (var pending in _pausedPendingFetches)
+                AddProvenPosition(ref proven, owned, pending);
+        }
+
+        Dictionary<TopicPartition, TopicPartitionOffset>? vouched = proven is null ? null : new(proven);
 
         // What a parameterless CommitAsync would stage (StageExplicitCommitOffsets): everything
         // yielded, including a record still being processed.
@@ -2617,9 +2631,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 AddVouchedPosition(ref vouched, owned, pending);
         }
 
-        return proven.Length == 0 && vouched is null
+        return vouched is null
             ? null
-            : new LeaveCommitSnapshot(proven, vouched?.Values.ToArray() ?? []);
+            : new LeaveCommitSnapshot(proven?.Values.ToArray() ?? [], vouched.Values.ToArray());
+    }
+
+    private static void AddProvenPosition(
+        ref Dictionary<TopicPartition, TopicPartitionOffset>? proven,
+        TopicPartitionSet owned,
+        PendingFetchData pending)
+    {
+        if (pending.ProvenOffset >= 0 && owned.Contains(pending.TopicPartition))
+        {
+            AddVouchedPosition(
+                ref proven,
+                pending.TopicPartition,
+                pending.ProvenOffset + 1,
+                pending.ProvenLeaderEpoch);
+        }
     }
 
     private void AddVouchedPosition(

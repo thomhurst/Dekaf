@@ -304,6 +304,43 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await Assert.That(proven).IsEmpty();
     }
 
+    [Test]
+    public async Task LeaveCommitSnapshot_IncludesProcessedRecordsOfUnflushedFetch()
+    {
+        // Unsubscribe from inside a consume loop: records the application processed in the head
+        // fetch are not staged yet (stored offsets advance at fetch boundaries), and Unsubscribe
+        // discards that fetch, so the leave's processed snapshot must read them from it.
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        SetupOffsetFetch(connection);
+
+        await using var consumer = CreateGroupConsumer(
+            connectionPool, metadataManager, offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        // Record 10 was processed (the loop asked for the next one), record 11 is in doubt.
+        var pending = CreateFetch(partition: 0, baseOffset: 10, value: "v");
+        pending.TrackConsumed(10, 1);
+        pending.MarkYieldedProcessed();
+        pending.TrackConsumed(11, 1);
+        GetPendingFetches(consumer).Enqueue(pending);
+
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var snapshot = typeof(KafkaConsumer<string, string>).GetMethod("CaptureLeaveCommitSnapshot", flags)!
+            .Invoke(consumer, [GetCoordinator(consumer).Assignment]);
+
+        var proven = (TopicPartitionOffset[])snapshot!.GetType().GetProperty("Proven")!.GetValue(snapshot)!;
+        await Assert.That(proven.Single().Offset).IsEqualTo(11L);
+        var vouched = (TopicPartitionOffset[])snapshot.GetType().GetProperty("Explicit")!.GetValue(snapshot)!;
+        await Assert.That(vouched.Single().Offset).IsEqualTo(12L);
+    }
+
     private static long GetCoordinatorRevocationSequence(ConsumerCoordinator coordinator) =>
         (long)typeof(ConsumerCoordinator)
             .GetField("_revocationSequence", BindingFlags.NonPublic | BindingFlags.Instance)!

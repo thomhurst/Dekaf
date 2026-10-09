@@ -120,14 +120,15 @@ public sealed class ConsumerUnsubscribeTests(KafkaTestContainer kafka) : KafkaIn
     }
 
     [Test]
-    public async Task Unsubscribe_AutoCommit_CommitsStoredOffsetsOnRevoke()
+    public async Task Unsubscribe_AutoCommitFromConsumeLoop_CommitsProcessedRecordsOnRevoke()
     {
-        // As for a cooperative revoke, an auto-commit consumer commits the offsets it stored for
-        // the partitions it gives up before OnPartitionsRevoked, although Unsubscribe clears the
-        // consumer's own state for them at once.
+        // As for a cooperative revoke, an auto-commit consumer commits the offsets of the records
+        // it processed for the partitions it gives up, although Unsubscribe clears the consumer's
+        // state for them (and discards the fetch still being iterated) at once. The record being
+        // processed when Unsubscribe is called is in doubt and is not committed (at-least-once).
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
         var groupId = $"unsubscribe-autocommit-{Guid.NewGuid():N}";
-        await ProduceToPartitionsAsync(topic, [0, 0, 0, 0], "record");
+        await ProduceToPartitionsAsync(topic, [0, 0, 0, 0, 0], "record");
 
         await using var memberA = await CreateGroupConsumerAsync(
             groupId,
@@ -136,15 +137,15 @@ public sealed class ConsumerUnsubscribeTests(KafkaTestContainer kafka) : KafkaIn
         memberA.Subscribe(topic);
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-        for (var i = 0; i < 3; i++)
+        await foreach (var record in memberA.ConsumeAsync(timeout.Token))
         {
-            var record = await memberA.ConsumeOneAsync(TimeSpan.FromSeconds(30), timeout.Token);
-            await Assert.That(record).IsNotNull();
-            await Assert.That(record!.Value.Offset).IsEqualTo(i);
+            // Records 0-2 were processed; record 3 is being processed when the consumer leaves.
+            if (record.Offset == 3)
+            {
+                memberA.Unsubscribe();
+                break;
+            }
         }
-
-        memberA.StoreOffset(new TopicPartitionOffset(topic, 0, 3));
-        memberA.Unsubscribe();
 
         await using var memberB = await CreateGroupConsumerAsync(groupId, new RecordingListener());
         memberB.Subscribe(topic);

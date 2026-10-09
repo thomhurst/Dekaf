@@ -841,11 +841,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             return;
         }
 
-        // Only for a leave that can run: a state stored without one would be committed by an
-        // unrelated later leave. Taken (and cleared) by that leave's ReleaseAssignmentForLeave.
-        if (commitState is not null)
-            Volatile.Write(ref _leaveCommitState, commitState);
-
         // Stops a heartbeat response in flight from publishing (it is validated under the state
         // lock); the leave sets it again under that lock, after any join in flight completes.
         if (_state == CoordinatorState.Stable)
@@ -855,8 +850,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             // A leave still running covers this request: no join can start a new membership
             // until it has completed (see WaitForPendingLeaveAsync).
+            // Its snapshot too: a later request's would hold offsets taken after the first
+            // switch (for partitions now owned manually) and must not replace it.
             if (!_pendingLeave.IsCompleted)
                 return;
+
+            // Installed only for the leave started here, which takes (and clears) it in
+            // ReleaseAssignmentForLeave; one stored without a leave would be committed by an
+            // unrelated later one.
+            Volatile.Write(ref _leaveCommitState, commitState);
 
             // A leave started from inside a rebalance callback must not inherit the callback's
             // drain scope, or it would skip the callbacks it has to deliver.
