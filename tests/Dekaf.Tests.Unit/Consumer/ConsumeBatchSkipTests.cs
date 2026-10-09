@@ -545,28 +545,84 @@ public sealed class ConsumeBatchSkipTests
     }
 
     [Test]
-    public async Task OverlappingResponses_EofReportedBeforeRecordsArePublished_IsReportedAgainAfterThem()
+    [Arguments(false, 1)]
+    [Arguments(true, 1)]
+    [Arguments(false, 64)]
+    [Arguments(true, 64)]
+    public async Task OverlappingResponses_SupersededEofsSkippedInO1_OneEofPerPartitionAtRealEnd(
+        bool raw,
+        int partitionCount)
     {
+        var fetches = new PendingFetchData[partitionCount];
+        for (var i = 0; i < partitionCount; i++)
+            fetches[i] = CreatePendingFetch(new TopicPartition(Topic, i), 10, 1);
         await using var consumer = CreateConsumer(
-            500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true,
-            CreatePendingFetch(Partition0, 10, 1));
+            500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true, fetches);
         GetPendingFetches(consumer).Clear();
         var fetchPositions = GetDictionary(consumer, "_fetchPositions");
-        fetchPositions[Partition0] = 10;
         var epoch = GetFetchBufferEpoch(consumer);
+        var eofEvents = GetEofEvents(consumer);
+        var supersededBelow = GetDictionary(consumer, "_eofSupersededBelow");
 
-        // A response routed to a lagging replica reports EOF at 10 while a records response
-        // for offsets 10..11 from the leader is still being parsed.
-        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, epoch);
-        await Assert.That(GetEofEvents(consumer).Count).IsEqualTo(1);
+        // Responses routed to a lagging replica report EOF at 10 for every idle partition while
+        // records 10..11 from the leader are still being parsed.
+        for (var i = 0; i < partitionCount; i++)
+        {
+            var partition = new TopicPartition(Topic, i);
+            fetchPositions[partition] = 10;
+            _ = consumer.HandleEmptyFetchResponse(partition, null, highWatermark: 10, epoch);
+        }
 
-        // The records response publishes after that EOF. Publication supersedes the queued
-        // EOF and re-arms the marker, so exactly one EOF is left: the real end after the records.
-        await PublishPrefetchedAsync(consumer, CreatePendingFetch(Partition0, 10, 2), epoch);
-        await Assert.That(fetchPositions[Partition0]).IsEqualTo(12L);
-        await Assert.That(GetEofEvents(consumer)).IsEmpty();
-        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 12, epoch);
-        await Assert.That(GetEofEvents(consumer).Single()).IsEqualTo((Partition0, 12L));
+        // The records publish after those EOFs. Each publication supersedes its partition's
+        // queued EOF in O(1) by recording a bound; the EOF queue is never searched or rotated.
+        for (var i = 0; i < partitionCount; i++)
+        {
+            var partition = new TopicPartition(Topic, i);
+            await PublishPrefetchedAsync(consumer, CreatePendingFetch(partition, 10, 2), epoch);
+            await Assert.That(eofEvents.Count).IsEqualTo(partitionCount);
+            await Assert.That(supersededBelow[partition]).IsEqualTo(12L);
+            await Assert.That(fetchPositions[partition]).IsEqualTo(12L);
+        }
+
+        // The real end after the records is reported once per partition.
+        for (var i = 0; i < partitionCount; i++)
+            _ = consumer.HandleEmptyFetchResponse(new TopicPartition(Topic, i), null, highWatermark: 12, epoch);
+        await Assert.That(eofEvents.Count).IsEqualTo(2 * partitionCount);
+
+        using var cts = new CancellationTokenSource();
+        await using var batches = Open(consumer, raw, cts.Token);
+        var records = new Dictionary<int, List<long>>();
+        var eofs = new Dictionary<int, List<long>>();
+        for (var i = 0; i < 2 * partitionCount; i++)
+        {
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            var partition = batches.Current.Partition.Partition;
+            if (batches.Current.IsEof)
+            {
+                (eofs.TryGetValue(partition, out var list) ? list : eofs[partition] = []).Add(batches.Current.EofOffset!.Value);
+                await Assert.That(records.ContainsKey(partition)).IsTrue();
+            }
+            else
+            {
+                (records.TryGetValue(partition, out var list) ? list : records[partition] = []).AddRange(batches.Current.Offsets());
+            }
+        }
+
+        var waiting = LeaveBatchLoop(batches);
+        try
+        {
+            for (var i = 0; i < partitionCount; i++)
+            {
+                await Assert.That(records[i].SequenceEqual([10L, 11L])).IsTrue();
+                await Assert.That(eofs[i].SequenceEqual([12L])).IsTrue();
+            }
+
+            await Assert.That(eofEvents).IsEmpty();
+        }
+        finally
+        {
+            await StopWaitingAsync(cts, waiting);
+        }
     }
 
     private static void ApplyStagedClears(KafkaConsumer<string, string> consumer) =>
@@ -1004,7 +1060,8 @@ public sealed class ConsumeBatchSkipTests
             inner.Current.TopicPartition,
             () => inner.Current.Select(static r => r.Offset).ToArray(),
             () => _ = inner.Current.GetEnumerator(),
-            inner.Current.IsPartitionEof);
+            inner.Current.IsPartitionEof,
+            inner.Current.PartitionEofOffset);
         public ValueTask<bool> MoveNextAsync() => inner.MoveNextAsync();
         public ValueTask DisposeAsync() => inner.DisposeAsync();
     }
@@ -1016,7 +1073,8 @@ public sealed class ConsumeBatchSkipTests
             inner.Current.TopicPartition,
             () => inner.Current.Select(static r => r.Offset).ToArray(),
             () => _ = inner.Current.GetEnumerator(),
-            inner.Current.IsPartitionEof);
+            inner.Current.IsPartitionEof,
+            inner.Current.PartitionEofOffset);
         public ValueTask<bool> MoveNextAsync() => inner.MoveNextAsync();
         public ValueTask DisposeAsync() => inner.DisposeAsync();
     }
@@ -1025,10 +1083,12 @@ public sealed class ConsumeBatchSkipTests
         TopicPartition partition,
         Func<long[]> offsets,
         Action createEnumerator,
-        bool isEof)
+        bool isEof,
+        long? eofOffset)
     {
         public TopicPartition Partition { get; } = partition;
         public bool IsEof { get; } = isEof;
+        public long? EofOffset { get; } = eofOffset;
         public long[] Offsets() => offsets();
         public void CreateEnumeratorOnly() => createEnumerator();
     }

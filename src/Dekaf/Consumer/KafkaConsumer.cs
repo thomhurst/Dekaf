@@ -1487,6 +1487,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // Batch-loop state kept on the consumer, not hoisted into the async iterators, so the
     // per-stream iterator allocation does not grow. Only the consume loop touches them.
     private int _eofDrainRemaining;
+    // Per partition: queued EOFs below this offset were superseded by records published after
+    // them. Written under the invalidation lock (or on the consumer thread for direct fetches).
+    private readonly ConcurrentDictionary<TopicPartition, long> _eofSupersededBelow = new();
     private bool _batchLoopExitRequested;
     private int _observedPausedSnapshotVersion;
     private int _recordIterationEpochSeed;
@@ -4211,18 +4214,25 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// delivered. Released partitions already had their EOF dropped and re-derive it after
     /// the refetch.
     /// </summary>
+    /// <summary>
+    /// One or two dictionary lookups per delivered EOF. Both dictionaries are empty unless a
+    /// partition has been consumed or records superseded a queued EOF.
+    /// </summary>
+    private bool IsSupersededEof(TopicPartition partition, long offset) =>
+        (!_eofSupersededBelow.IsEmpty
+            && _eofSupersededBelow.TryGetValue(partition, out var below)
+            && offset < below)
+        || (_positions.TryGetValue(partition, out var position) && offset < position);
+
     private bool TryDequeueDeliverableEof(out (TopicPartition Partition, long Offset) eofEvent)
     {
         while (_eofDrainRemaining-- > 0 && _pendingEofEvents.TryDequeue(out eofEvent))
         {
             if (_eofHoldPartitions.Count == 0 || !_eofHoldPartitions.Contains(eofEvent.Partition))
             {
-                // Records past this EOF were already consumed: it was superseded while queued.
-                if (_positions.TryGetValue(eofEvent.Partition, out var position)
-                    && eofEvent.Offset < position)
-                {
+                // Superseded while queued: records past this EOF were published or consumed.
+                if (IsSupersededEof(eofEvent.Partition, eofEvent.Offset))
                     continue;
-                }
 
                 return true;
             }
@@ -5708,28 +5718,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// never clear a current marker. Once per published partition response, never per record;
     /// with EOF disabled it is one field read.
     /// </summary>
-    private void RearmPartitionEofForPublishedRecords(TopicPartition partition, bool hasRecords)
+    private void RearmPartitionEofForPublishedRecords(
+        TopicPartition partition,
+        bool hasRecords,
+        long publishedEndExclusive)
     {
-        // An EOF reported before these records is superseded by them. Drop it if still queued,
-        // so callers never see an EOF below records they consume or a second EOF for the same
-        // end. Only runs when a marker existed and an EOF is queued; otherwise one remove.
-        if (hasRecords
-            && _options.EnablePartitionEof
-            && _eofEmitted.TryRemove(partition, out _)
-            && !_pendingEofEvents.IsEmpty)
+        // An EOF reported before these records is superseded by them: its offset is at most the
+        // publication floor, below the records' end. Record that bound instead of searching the
+        // EOF queue; the drain skips queued EOFs below it. O(1), and only when a marker existed.
+        if (!hasRecords
+            || !_options.EnablePartitionEof
+            || !_eofEmitted.TryRemove(partition, out _)
+            || publishedEndExclusive < 0)
         {
-            DropQueuedEofForPartition(partition);
+            return;
         }
-    }
 
-    private void DropQueuedEofForPartition(TopicPartition partition)
-    {
-        var count = _pendingEofEvents.Count;
-        for (var i = 0; i < count && _pendingEofEvents.TryDequeue(out var eofEvent); i++)
-        {
-            if (eofEvent.Partition != partition)
-                _pendingEofEvents.Enqueue(eofEvent);
-        }
+        if (!_eofSupersededBelow.TryGetValue(partition, out var below) || below < publishedEndExclusive)
+            _eofSupersededBelow[partition] = publishedEndExclusive;
     }
 
     /// <summary>
@@ -8614,6 +8620,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
         // Clear pending EOF events as they are stale after buffer clear
         _pendingEofEvents.Clear();
+        _eofSupersededBelow.Clear();
     }
 
     private void ClearFetchBufferForPartitions(
@@ -8726,8 +8733,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private void ClearPendingEofEventsForPartitions(HashSet<TopicPartition> partitionsToRemove)
     {
-        // Seek, revocation and every skipped-batch release land here. With no queued EOF this
-        // is one read; otherwise rotate the queue once in place instead of copying it out.
+        // A replaced position (seek, revocation, release) starts a new EOF history.
+        if (!_eofSupersededBelow.IsEmpty)
+        {
+            foreach (var partition in partitionsToRemove)
+                _eofSupersededBelow.TryRemove(partition, out _);
+        }
+
+        // Seek, revocation and every skipped-batch release land here: once per control operation
+        // or batch loop, never per publication. With no queued EOF this is one read; otherwise
+        // rotate the queue once in place instead of copying it out.
         if (_pendingEofEvents.IsEmpty)
             return;
 
@@ -9201,7 +9216,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         var hasRecords = pending.GetBatches().Count > 0;
                         if (_prefetchBuffer.TryWrite(pending))
                         {
-                            RearmPartitionEofForPublishedRecords(partition, hasRecords);
+                            RearmPartitionEofForPublishedRecords(partition, hasRecords, nextOffset);
                             // The reader can dispose pending immediately after TryWrite.
                             // Use captured values, and never advance for an unpublished item.
                             UpdateFetchPositionsFromPrefetch(
@@ -10695,7 +10710,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 // interleave with this publication on the consumer thread.
                                 RearmPartitionEofForPublishedRecords(
                                     pending.TopicPartition,
-                                    pending.GetBatches().Count > 0);
+                                    pending.GetBatches().Count > 0,
+                                    pending.FetchEndOffsetExclusive);
                                 EnqueuePendingFetch(pending);
                             }
                         }
