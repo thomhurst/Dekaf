@@ -1027,7 +1027,7 @@ public sealed partial class ConsumerAssignmentFastPathTests
         var staleInFlightFetch = CreateFetch(partition: 0, baseOffset: 102, value: "stale-in-flight");
         await WritePrefetchedItemsAsync(consumer, [staleInFlightFetch], staleFetchBufferEpoch);
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
-        var (_, _, _, pendingClassifications) =
+        var (_, _, _, pendingClassifications, _) =
             await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
 
         await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(0L);
@@ -1083,7 +1083,7 @@ public sealed partial class ConsumerAssignmentFastPathTests
         var coordinator = GetCoordinator(consumer);
         ProcessCoordinatorAssignment(coordinator, CreateAssignmentWithNewPartitions([0], [0]));
         await consumer.EnsureAssignmentAsync(CancellationToken.None);
-        var (_, _, _, pendingClassifications) =
+        var (_, _, _, pendingClassifications, _) =
             await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
 
         await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(100L);
@@ -1133,7 +1133,7 @@ public sealed partial class ConsumerAssignmentFastPathTests
             .Throws<KafkaException>();
 
         var coordinator = GetCoordinator(consumer);
-        var (_, _, _, pendingClassifications) =
+        var (_, _, _, pendingClassifications, _) =
             await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
 
         await Assert.That(GetFetchPositions(consumer)[new TopicPartition("test-topic", 0)]).IsEqualTo(10L);

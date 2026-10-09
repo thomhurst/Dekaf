@@ -56,6 +56,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // per revocation, never per message.
     private long _revocationSequence;
     private readonly ConcurrentDictionary<TopicPartition, long> _partitionRevocationSequences = new();
+    // The latest revocation sequence of each partition ever revoked or lost; never pruned (one entry
+    // per partition). The owner compares it with the sequences its acknowledged syncs covered.
+    private readonly ConcurrentDictionary<TopicPartition, long> _lastPartitionRevocationSequences = new();
+    // The revocation sequence each queued revocation was published with. Guarded by
+    // _assignmentStateLock, like _revokedPartitionsSinceLastSync.
+    private readonly Dictionary<TopicPartition, long> _enqueuedRevocationSequences = [];
+    // Incremented each time the owner abandons the assignment (EndAssignedCallbackStaging). A queued
+    // OnPartitionsAssigned notification captures it, so its callback starts with staging ended when
+    // the assignment it announces was abandoned before it ran.
+    private int _assignmentAbandonEpoch;
     private Task _pendingRevocationCommit = Task.CompletedTask;
     // Completes once the callbacks of the latest published assignment change with newly assigned
     // partitions have been delivered. The consumer does not synchronize that assignment before
@@ -456,7 +466,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         TopicPartitionSet Assignment,
         int Version,
         HashSet<TopicPartition>? Revocations,
-        HashSet<TopicPartition> NewlyExpandedPartitions)>
+        HashSet<TopicPartition> NewlyExpandedPartitions,
+        Dictionary<TopicPartition, long>? RevocationSequences)>
         GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken cancellationToken)
     {
         while (true)
@@ -468,16 +479,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 if (pendingRevocationCommit.IsCompleted)
                 {
                     HashSet<TopicPartition>? revoked = null;
+                    Dictionary<TopicPartition, long>? sequences = null;
                     while (_revokedPartitionsSinceLastSync.TryDequeue(out var partition))
                     {
                         (revoked ??= []).Add(partition);
+                        if (_enqueuedRevocationSequences.TryGetValue(partition, out var sequence))
+                            (sequences ??= [])[partition] = sequence;
                     }
 
                     return (
                         _assignedPartitions,
                         Volatile.Read(ref _assignmentVersion),
                         revoked,
-                        _newlyExpandedPartitions);
+                        _newlyExpandedPartitions,
+                        sequences);
                 }
             }
 
@@ -605,11 +620,29 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         return true;
     }
 
-    private void EnqueueRevokedPartitions(IEnumerable<TopicPartition> revoked)
+    /// <param name="revocationSequence">
+    /// The sequence <see cref="NotifyRevoking"/> recorded for these revocations; 0 when re-queueing
+    /// revocations already published. Caller holds <c>_assignmentStateLock</c>.
+    /// </param>
+    private void EnqueueRevokedPartitions(IEnumerable<TopicPartition> revoked, long revocationSequence = 0)
     {
         foreach (var partition in revoked)
+        {
+            if (revocationSequence > 0)
+            {
+                _enqueuedRevocationSequences[partition] =
+                    _enqueuedRevocationSequences.TryGetValue(partition, out var current)
+                        ? Math.Max(current, revocationSequence)
+                        : revocationSequence;
+            }
+
             _revokedPartitionsSinceLastSync.Enqueue(partition);
+        }
     }
+
+    /// <summary>The latest revocation sequence of <paramref name="partition"/>, 0 if never revoked.</summary>
+    internal long GetLastRevocationSequence(TopicPartition partition) =>
+        _lastPartitionRevocationSequences.TryGetValue(partition, out var sequence) ? sequence : 0;
 
     internal IDisposable RegisterRuntimeRebalanceListener(IRebalanceListener listener)
     {
@@ -1235,6 +1268,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // _pendingPublishLock, which also orders it against PruneRevocationSequences.
         public long RevocationSequence;
 
+        // _assignmentAbandonEpoch when this notification was queued.
+        public int AbandonEpoch;
+
         public bool RevokedDelivered;
 
         // Set when the internal revocation commit starts, so it runs once whichever drain
@@ -1272,6 +1308,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         lock (_pendingPublishLock)
         {
             callback.RevocationSequence = Volatile.Read(ref _revocationSequence);
+            callback.AbandonEpoch = Volatile.Read(ref _assignmentAbandonEpoch);
             if (!reserved)
             {
                 Interlocked.Increment(ref _pendingRebalanceCallbackCount);
@@ -1986,7 +2023,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     {
         var revoked = _assignedPartitions.Count != 0 ? _assignedPartitions.ToList() : null;
 
-        NotifyRevoking(revoked);
+        var revocationSequence = NotifyRevoking(revoked);
 
         lock (_assignmentStateLock)
         {
@@ -1997,7 +2034,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             if (revoked is not null)
             {
                 Interlocked.Increment(ref _assignmentVersion);
-                EnqueueRevokedPartitions(revoked);
+                EnqueueRevokedPartitions(revoked, revocationSequence);
             }
         }
 
@@ -2674,7 +2711,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             ? new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)
             : null;
 
-        NotifyRevoking(revoked);
+        var revocationSequence = NotifyRevoking(revoked);
 
         var classificationChanged = false;
         lock (_assignmentStateLock)
@@ -2703,7 +2740,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 Interlocked.Increment(ref _assignmentVersion);
 
                 if (revoked is not null)
-                    EnqueueRevokedPartitions(revoked);
+                    EnqueueRevokedPartitions(revoked, revocationSequence);
                 if (revocationCommitCompletion is not null)
                     _pendingRevocationCommit = revocationCommitCompletion.Task;
                 if (assignmentCallbacksCompletion is not null)
@@ -2737,10 +2774,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         return result;
     }
 
-    private void NotifyRevoking(IReadOnlyList<TopicPartition>? revoked)
+    /// <returns>The revocation sequence recorded, or 0 when nothing was revoked.</returns>
+    private long NotifyRevoking(IReadOnlyList<TopicPartition>? revoked)
     {
         if (revoked is null)
-            return;
+            return 0;
 
         // Recorded before the owner drops its pending seeks, so a callback that predates this
         // revocation can never stage a seek the owner keeps (see WasRevokedSince).
@@ -2752,10 +2790,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 static (_, sequence) => sequence,
                 static (_, current, sequence) => Math.Max(current, sequence),
                 sequence);
+            _lastPartitionRevocationSequences.AddOrUpdate(
+                revoked[i],
+                static (_, sequence) => sequence,
+                static (_, current, sequence) => Math.Max(current, sequence),
+                sequence);
         }
 
         PruneRevocationSequences();
         _onPartitionsRevoking?.Invoke(revoked);
+        return sequence;
     }
 
     /// <summary>
@@ -2806,11 +2850,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     internal void RevokeAndReassignForTest(TopicPartition partition)
     {
-        NotifyRevoking([partition]);
+        var revocationSequence = NotifyRevoking([partition]);
         lock (_assignmentStateLock)
         {
             Interlocked.Increment(ref _assignmentVersion);
-            EnqueueRevokedPartitions([partition]);
+            EnqueueRevokedPartitions([partition], revocationSequence);
         }
     }
 
@@ -2818,6 +2862,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// Queues one OnPartitionsAssigned notification per entry and delivers them all in one drain.
     /// </summary>
     internal async ValueTask DeliverAssignedCallbacksForTestAsync(params IReadOnlyList<TopicPartition>[] assignedSets)
+    {
+        QueueAssignedCallbacksForTest(assignedSets);
+        await DeliverQueuedCallbacksForTestAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>Queues one OnPartitionsAssigned notification per entry without delivering it.</summary>
+    internal void QueueAssignedCallbacksForTest(params IReadOnlyList<TopicPartition>[] assignedSets)
     {
         foreach (var assigned in assignedSets)
         {
@@ -2827,9 +2878,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 Assignment = _assignedPartitions
             });
         }
-
-        await InvokePendingRebalanceCallbacksAsync(CancellationToken.None).ConfigureAwait(false);
     }
+
+    internal ValueTask DeliverQueuedCallbacksForTestAsync() =>
+        InvokePendingRebalanceCallbacksAsync(CancellationToken.None);
 
     /// <summary>
     /// True when <paramref name="partition"/> was revoked or lost after a rebalance notification
@@ -3458,7 +3510,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             new HashSet<TopicPartition>(assigned),
                             pending.RevocationSequence);
                         s_assignedCallback.Value = assignedCallback;
-                        Volatile.Write(ref _currentAssignedCallback, assignedCallback);
+                        // Published before the epoch is read, as EndAssignedCallbackStaging bumps the
+                        // epoch before it reads the context: an abandon either sees this context or
+                        // is seen here. One abandoned after the notification was queued starts the
+                        // callback with staging ended.
+                        Interlocked.Exchange(ref _currentAssignedCallback, assignedCallback);
+                        if (Volatile.Read(ref _assignmentAbandonEpoch) != pending.AbandonEpoch)
+                            assignedCallback.Deactivate();
                         Interlocked.Increment(ref _assignedCallbacksRunning);
                         try
                         {
@@ -3524,7 +3582,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// further seeks and pauses apply to the consumer directly instead of being staged for a sync
     /// that will not come.
     /// </summary>
-    internal void EndAssignedCallbackStaging() => Volatile.Read(ref _currentAssignedCallback)?.Deactivate();
+    internal void EndAssignedCallbackStaging()
+    {
+        Interlocked.Increment(ref _assignmentAbandonEpoch);
+        Volatile.Read(ref _currentAssignedCallback)?.Deactivate();
+    }
 
     /// <summary>True while any OnPartitionsAssigned delivery runs; a cheap gate for the owner.</summary>
     internal bool IsDeliveringAssignedCallback => Volatile.Read(ref _assignedCallbacksRunning) != 0;

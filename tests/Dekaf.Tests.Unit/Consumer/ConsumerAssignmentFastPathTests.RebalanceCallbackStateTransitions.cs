@@ -607,6 +607,165 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await Assert.That(consumer.Paused).Contains(Partition1);
     }
 
+    public enum AbandonBeforeCallbackStart
+    {
+        Assign,
+        Unsubscribe
+    }
+
+    /// <summary>
+    /// The assigned notification is queued, the application abandons the assignment, and only then
+    /// does the callback run: it belongs to the abandoned assignment, so its seek and pause act on
+    /// the consumer directly instead of being staged.
+    /// </summary>
+    [Test]
+    [Arguments(AbandonBeforeCallbackStart.Assign)]
+    [Arguments(AbandonBeforeCallbackStart.Unsubscribe)]
+    public async Task RebalanceCallbackStateTransitions_AbandonBetweenQueueAndCallback_EndsStaging(
+        AbandonBeforeCallbackStart abandon)
+    {
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessAsync(listener, AssignedResponse(1, 0));
+        var consumer = harness.Consumer;
+        var coordinator = GetCoordinator(consumer);
+        bool? staging = null;
+        listener.OnAssigned = partitions =>
+        {
+            if (!partitions.Contains(Partition1))
+                return;
+
+            staging = coordinator.TryGetAssignedCallbackRevocationSequence(Partition1, out _);
+            consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
+            consumer.Pause(Partition1);
+        };
+
+        coordinator.QueueAssignedCallbacksForTest([Partition1]);
+        if (abandon == AbandonBeforeCallbackStart.Assign)
+            consumer.Assign(new TopicPartition("test-topic", 0), Partition1);
+        else
+            consumer.Unsubscribe();
+        await coordinator.DeliverQueuedCallbacksForTestAsync();
+
+        await Assert.That(staging).IsNotNull();
+        await Assert.That(staging!.Value).IsFalse();
+        await Assert.That(consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
+        await Assert.That(consumer.RebalancePausedPartitionCountForTest).IsEqualTo(0);
+        await Assert.That(consumer.GetPosition(Partition1)).IsEqualTo(42L);
+    }
+
+    /// <summary>
+    /// The partition is revoked again after the coordinator confirmed a sync pass but before the
+    /// consumer recorded it, then a newer callback pauses it. The acknowledged pass must not cover
+    /// that newer revocation, so abandoning the assignment drops the newer ownership's pause.
+    /// </summary>
+    [Test]
+    public async Task RebalanceCallbackStateTransitions_RevokedBetweenAckAndCompletion_NewerPauseDoesNotSurviveAbandon()
+    {
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessAsync(
+            listener,
+            AssignedResponse(1, 0, 1),
+            AssignedResponse(2, 0),
+            AssignedResponse(3, 0, 1));
+        var consumer = harness.Consumer;
+        var coordinator = GetCoordinator(consumer);
+
+        await harness.HeartbeatAsync();
+        await harness.HeartbeatAsync();
+
+        var revoked = false;
+        consumer.AfterAssignmentSyncAcknowledgedForTest = () =>
+        {
+            if (revoked)
+                return;
+            revoked = true;
+            coordinator.RevokeAndReassignForTest(Partition1);
+        };
+        try
+        {
+            await consumer.EnsureAssignmentAsync(CancellationToken.None);
+        }
+        finally
+        {
+            consumer.AfterAssignmentSyncAcknowledgedForTest = null;
+        }
+
+        await Assert.That(revoked).IsTrue();
+
+        // The newer ownership's callback pauses the partition; the consumer then switches to manual
+        // assignment before synchronizing it.
+        listener.OnAssigned = partitions =>
+        {
+            if (partitions.Contains(Partition1))
+                consumer.Pause(Partition1);
+        };
+        await coordinator.DeliverAssignedCallbacksForTestAsync([Partition1]);
+        consumer.Assign(new TopicPartition("test-topic", 0), Partition1);
+
+        await Assert.That(consumer.Paused).DoesNotContain(Partition1);
+    }
+
+    /// <summary>
+    /// A sync pass drains a revocation and is superseded before its acknowledgement; a later pass
+    /// is acknowledged without draining anything (unchanged or reclassification path). That later
+    /// acknowledgement covers the earlier drained revocation, so a pause the reassigning callback
+    /// made under the now-acknowledged ownership survives a manual assignment keeping it.
+    /// </summary>
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task RebalanceCallbackStateTransitions_SupersededAckThenLaterAck_CoversDrainedRevocation(bool reclassify)
+    {
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessCoreAsync(
+            listener,
+            consumerAwareListener: null,
+            [AssignedResponse(1, 0, 1), AssignedResponse(2, 0), AssignedResponse(3, 0, 1)],
+            newPartitionsReset: reclassify ? AutoOffsetReset.Earliest : null);
+        var consumer = harness.Consumer;
+        var coordinator = GetCoordinator(consumer);
+        listener.OnAssigned = partitions =>
+        {
+            if (partitions.Contains(Partition1))
+                consumer.Pause(Partition1);
+        };
+
+        await harness.HeartbeatAsync();
+        await harness.HeartbeatAsync();
+
+        var superseded = false;
+        consumer.BeforeAssignmentSyncAcknowledgedForTest = () =>
+        {
+            if (superseded)
+                return;
+            superseded = true;
+            if (reclassify)
+                coordinator.MarkNewlyExpandedForTest(Partition1);
+            else
+                coordinator.BumpAssignmentVersionForTest();
+        };
+        try
+        {
+            await consumer.EnsureAssignmentAsync(CancellationToken.None);
+            await consumer.EnsureAssignmentAsync(CancellationToken.None);
+        }
+        finally
+        {
+            consumer.BeforeAssignmentSyncAcknowledgedForTest = null;
+        }
+
+        await Assert.That(superseded).IsTrue();
+        await Assert.That(consumer.Paused).Contains(Partition1);
+        await Assert.That(consumer.IsRevokedSinceAcknowledgedForTest(Partition1)).IsFalse();
+
+        if (reclassify)
+            return; // A new-partition reset policy rules out manual assignment.
+
+        consumer.Assign(new TopicPartition("test-topic", 0), Partition1);
+
+        await Assert.That(consumer.Paused).Contains(Partition1);
+    }
+
     [Test]
     public async Task EnsureAssignmentAsync_RepeatedlySupersededSync_TracksOneAppliedSeekPerPartition()
     {

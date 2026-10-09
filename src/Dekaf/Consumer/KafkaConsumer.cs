@@ -1426,8 +1426,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     //                 later cancelled, failed or superseded before its acknowledgement
     //   acknowledged  _acknowledgedCoordinatorAssignment: the last pass the coordinator confirmed
     //                 was still the published version (AcknowledgeAssignmentSync returned true).
-    //                 It names partitions, so _revokedSinceAcknowledged records which of them have
-    //                 since been revoked: the ownership it acknowledged has ended for those
+    //                 It names partitions; ownership identity is the coordinator's monotonic
+    //                 revocation sequence: P's acknowledged ownership has ended when P's latest
+    //                 revocation sequence is newer than the ones acknowledged passes covered
     // Callback state is completed only by an acknowledged pass, and abandon decides which pauses
     // survive from the acknowledged assignment, never from a merely synchronized one.
     //
@@ -1464,6 +1465,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     //                         or Resume removes them)
     //   reclassified       -> (newly expanded, reinitialized) staged seek and marker kept: same
     //                         ownership
+    //   queued callback    -> an abandon after its notification was queued starts it with staging
+    //                         ended (abandon epoch), like an abandon during it
     //   abandon            -> Unsubscribe, Subscribe (topics, filter or pattern), Assign, Unassign,
     //                         IncrementalAssign before sync: every staged seek and marker dropped,
     //                         the pause of a marked partition removed unless the marker is current
@@ -1480,11 +1483,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // The group assignment of the last sync pass the coordinator confirmed as current (see the
     // states above); empty after an abandon. Replaced, never mutated. Written under _assignmentLock.
     private volatile HashSet<TopicPartition> _acknowledgedCoordinatorAssignment = [];
-    // Partitions revoked or lost since the acknowledged pass, so the acknowledged assignment names
-    // an ownership that has ended (the partition may be assigned straight back under a new one).
-    // A revocation the coordinator records before it publishes the change stays here until the pass
-    // that drains it is acknowledged. Guarded by _coordinatorRevokedPartitionsPendingFetchClearLock.
-    private readonly HashSet<TopicPartition> _revokedSinceAcknowledged = [];
+    // Revocation sequences (the coordinator's, monotonic) by partition: drained by sync passes
+    // since the last acknowledged one, and covered by acknowledged passes. A partition was revoked
+    // since its acknowledged ownership when the coordinator's latest revocation sequence for it is
+    // newer than the acknowledged one. A superseded pass's drained sequences are covered by the
+    // next acknowledged pass, whichever path acknowledges it. Guarded by _assignmentLock.
+    private readonly Dictionary<TopicPartition, long> _drainedRevocationSequences = [];
+    private readonly Dictionary<TopicPartition, long> _acknowledgedRevocationSequences = [];
     // Serializes each Pause/Resume with assignment cleanup's clear-then-restore of a partition's
     // pause, so neither interleaves inside the other's check-then-act. Taken before
     // _coordinatorRevokedPartitionsPendingFetchClearLock, never while holding it. Not per message.
@@ -1688,6 +1693,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     // Runs after a sync pass's last version check, just before it acknowledges the sync.
     internal Action? BeforeAssignmentSyncAcknowledgedForTest { get; set; }
+
+    // Runs once the coordinator confirmed a sync pass, before the consumer completes it.
+    internal Action? AfterAssignmentSyncAcknowledgedForTest { get; set; }
     // Deterministic test seam: runs in assignment sync after the partitions assigned again are
     // identified and before revoked-partition state is cleaned up. It receives the consumer, so
     // a static keeps the instance layout unchanged and parallel tests can filter by it.
@@ -1702,6 +1710,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     internal int PendingRebalanceSeekCountForTest => _pendingRebalanceSeeks.Count;
 
     internal int RebalancePausedPartitionCountForTest => _rebalancePausedPartitions.Count;
+
+    internal bool IsRevokedSinceAcknowledgedForTest(TopicPartition partition) =>
+        IsRevokedSinceAcknowledged(partition);
+
+    /// <summary>
+    /// Whether the partition was revoked or lost after the revocations the acknowledged passes
+    /// covered: the acknowledged assignment then names an ownership that has ended. Caller holds
+    /// <c>_assignmentLock</c>.
+    /// </summary>
+    private bool IsRevokedSinceAcknowledged(TopicPartition partition) =>
+        _coordinator is { } coordinator
+        && coordinator.GetLastRevocationSequence(partition)
+            > (_acknowledgedRevocationSequences.TryGetValue(partition, out var acknowledged) ? acknowledged : 0);
     // Thread-local storage keeps the production consumer's instance layout unchanged.
     [ThreadStatic]
     internal static Action? BeforeOffsetResetCommitForTest;
@@ -8036,13 +8057,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // still current, and the partition not revoked since that acknowledgement.
                     if (!entry.Value
                         || !synchronizedAssignment.Contains(entry.Key)
-                        || _revokedSinceAcknowledged.Contains(entry.Key))
+                        || IsRevokedSinceAcknowledged(entry.Key))
                     {
                         hadPaused |= _paused.TryRemove(entry.Key, out _);
                     }
                 }
-
-                _revokedSinceAcknowledged.Clear();
             }
         }
 
@@ -8541,7 +8560,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     /// <summary>The coordinator's revocation hook: a revocation or loss has just been recorded.</summary>
     private void QueueCoordinatorRevokedPartitionsForFetchClear(IReadOnlyList<TopicPartition> partitions) =>
-        QueueCoordinatorRevokedPartitionsForFetchClear(partitions, retainSeeks: null, ownershipEnded: true);
+        QueueCoordinatorRevokedPartitionsForFetchClear(partitions, retainSeeks: null);
 
     /// <param name="partitions">The partitions whose fetches and buffered records are invalidated.</param>
     /// <param name="retainSeeks">
@@ -8550,8 +8569,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// </param>
     private void QueueCoordinatorRevokedPartitionsForFetchClear(
         IReadOnlyList<TopicPartition> partitions,
-        HashSet<TopicPartition>? retainSeeks,
-        bool ownershipEnded = false)
+        HashSet<TopicPartition>? retainSeeks)
     {
         Volatile.Read(ref _activeSnapshot)?.InvalidateConsumerState();
 
@@ -8569,9 +8587,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     _rebalancePausedPartitions.TryUpdate(partition, false, true);
                 }
 
-                // The acknowledged ownership of this partition, if any, has ended too.
-                if (ownershipEnded)
-                    _revokedSinceAcknowledged.Add(partition);
                 _pendingDivergingEpochResets.TryRemove(partition, out _);
                 SetPendingFetchClearMarkerLocked(
                     partition,
@@ -9904,9 +9919,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         coordinatorAssignment,
                         coordinatorAssignmentVersion,
                         coordinatorRevocations,
-                        newlyExpandedPartitions) =
+                        newlyExpandedPartitions,
+                        coordinatorRevocationSequences) =
                         await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(cancellationToken)
                             .ConfigureAwait(false);
+                    if (coordinatorRevocationSequences is not null)
+                    {
+                        foreach (var drained in coordinatorRevocationSequences)
+                        {
+                            if (!_drainedRevocationSequences.TryGetValue(drained.Key, out var current)
+                                || current < drained.Value)
+                            {
+                                _drainedRevocationSequences[drained.Key] = drained.Value;
+                            }
+                        }
+                    }
                     if (coordinatorRevocations is not null)
                     {
                         unacknowledgedCoordinatorRevocations = (coordinator, coordinatorRevocations);
@@ -9936,7 +9963,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                         Volatile.Write(ref _lastCoordinatorAssignmentVersion, coordinatorAssignmentVersion);
                         if (coordinator.AcknowledgeAssignmentSync(coordinatorAssignmentVersion))
-                            CompleteAcknowledgedSync(drainedRevocations: null);
+                            CompleteAcknowledgedSync();
                         return;
                     }
 
@@ -10078,7 +10105,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // A newer version published after the check above supersedes this pass: its
                     // callback state stays pending for the pass that synchronizes that version.
                     if (coordinator.AcknowledgeAssignmentSync(coordinatorAssignmentVersion))
-                        CompleteAcknowledgedSync(coordinatorRevocations);
+                    {
+                        AfterAssignmentSyncAcknowledgedForTest?.Invoke();
+                        CompleteAcknowledgedSync();
+                    }
                     unacknowledgedCoordinatorRevocations = null;
                 }
                 else
@@ -10258,16 +10288,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// while unchanged, so a seek a later callback staged for the same partition is kept. Caller
     /// holds <c>_assignmentLock</c>. Runs per acknowledged sync, never per message.
     /// </summary>
-    private void CompleteAcknowledgedSync(HashSet<TopicPartition>? drainedRevocations)
+    private void CompleteAcknowledgedSync()
     {
         _acknowledgedCoordinatorAssignment = _assignmentSnapshot;
-        if (drainedRevocations is not null)
+
+        // Every revocation drained so far is synchronized now (an acknowledgement requires the
+        // queue to be empty): the acknowledged assignment is the ownership that followed it. A
+        // revocation recorded since carries a newer sequence and stays uncovered.
+        foreach (var drained in _drainedRevocationSequences)
         {
-            // These revocations are now synchronized: the acknowledged assignment is the newer
-            // ownership. A revocation recorded but not yet drained stays.
-            lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
-                _revokedSinceAcknowledged.ExceptWith(drainedRevocations);
+            if (!_acknowledgedRevocationSequences.TryGetValue(drained.Key, out var acknowledged)
+                || acknowledged < drained.Value)
+            {
+                _acknowledgedRevocationSequences[drained.Key] = drained.Value;
+            }
         }
+
+        _drainedRevocationSequences.Clear();
         if (_unacknowledgedAppliedRebalanceSeeks.Count == 0)
             return;
 
