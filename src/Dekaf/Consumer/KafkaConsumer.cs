@@ -2672,51 +2672,70 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     /// <summary>
-    /// Takes the captured departing offsets of <paramref name="partitions"/> (all when null):
-    /// the processed ones, or with <paramref name="vouched"/> the ones a parameterless commit
-    /// vouches for. Each is taken once. None once the membership they belong to has changed.
+    /// Reads the captured departing offsets of <paramref name="partitions"/> (all when null): the
+    /// processed ones, or with <paramref name="vouched"/> the ones a parameterless commit vouches
+    /// for. A copy: entries leave the capture only once a commit of them has succeeded
+    /// (<see cref="CommitDepartingOffsetsAsync"/>), so a cancelled or failed attempt is retried
+    /// with the same offsets. None once the membership they belong to has changed.
     /// </summary>
-    private TopicPartitionOffset[]? TakeDepartingOffsets(
+    private TopicPartitionOffset[]? PeekDepartingOffsets(
         bool vouched,
         IReadOnlyList<TopicPartition>? partitions,
-        out int membershipVersion)
+        out LeaveCommitSnapshot? state)
     {
-        membershipVersion = 0;
-        var state = Volatile.Read(ref _departingOffsets);
+        state = Volatile.Read(ref _departingOffsets);
         if (state is null || _coordinator is not { } coordinator)
             return null;
 
         if (state.MembershipVersion != coordinator.MembershipVersion)
         {
             Interlocked.CompareExchange(ref _departingOffsets, null, state);
+            state = null;
             return null;
         }
 
-        membershipVersion = state.MembershipVersion;
         var source = vouched ? state.Explicit : state.Proven;
-        List<TopicPartitionOffset>? taken = null;
+        List<TopicPartitionOffset>? offsets = null;
         if (partitions is null)
         {
-            foreach (var partition in source.Keys)
-                Take(partition);
+            foreach (var entry in source)
+                (offsets ??= []).Add(entry.Value);
         }
         else
         {
             for (var i = 0; i < partitions.Count; i++)
-                Take(partitions[i]);
+            {
+                if (source.TryGetValue(partitions[i], out var offset))
+                    (offsets ??= []).Add(offset);
+            }
         }
 
-        return taken?.ToArray();
+        return offsets?.ToArray();
+    }
 
-        void Take(TopicPartition partition)
+    /// <summary>
+    /// Removes committed departing offsets, each only if unchanged since it was read. A vouched
+    /// offset also covers the processed one at or below it.
+    /// </summary>
+    private static void RemoveCommittedDepartingOffsets(
+        LeaveCommitSnapshot state,
+        TopicPartitionOffset[] offsets,
+        bool vouched)
+    {
+        var source = vouched ? state.Explicit : state.Proven;
+        foreach (var offset in offsets)
         {
-            if (!source.TryRemove(partition, out var offset))
-                return;
+            var partition = new TopicPartition(offset.Topic, offset.Partition);
+            ((ICollection<KeyValuePair<TopicPartition, TopicPartitionOffset>>)source)
+                .Remove(new KeyValuePair<TopicPartition, TopicPartitionOffset>(partition, offset));
 
-            (taken ??= []).Add(offset);
-            // A vouched offset is at least the processed one.
-            if (vouched)
-                state.Proven.TryRemove(partition, out _);
+            if (vouched
+                && state.Proven.TryGetValue(partition, out var proven)
+                && proven.Offset <= offset.Offset)
+            {
+                ((ICollection<KeyValuePair<TopicPartition, TopicPartitionOffset>>)state.Proven)
+                    .Remove(new KeyValuePair<TopicPartition, TopicPartitionOffset>(partition, proven));
+            }
         }
     }
 
@@ -2787,7 +2806,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// </summary>
     private async ValueTask<bool> CommitDepartingOffsetsAsync(
         TopicPartitionOffset[] offsets,
-        int membershipVersion,
+        LeaveCommitSnapshot state,
+        bool vouched,
         bool retryUntilApiTimeout,
         CancellationToken cancellationToken)
     {
@@ -2795,8 +2815,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             return false;
 
         await GetCommitCoordinator()
-            .CommitOffsetsAsync(offsets, retryUntilApiTimeout, membershipVersion, cancellationToken)
+            .CommitOffsetsAsync(offsets, retryUntilApiTimeout, state.MembershipVersion, cancellationToken)
             .ConfigureAwait(false);
+
+        // Only now: a commit cancelled or failed above leaves them for the retry.
+        RemoveCommittedDepartingOffsets(state, offsets, vouched);
         InvokeOnCommitInterceptors(offsets);
         return true;
     }
@@ -7693,9 +7716,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // The partitions the consumer gave up when it ended its group membership (cleared at
             // once, e.g. from OnPartitionsRevoked of the leave): commit what they held then,
             // under the membership that is leaving.
-            if (TakeDepartingOffsets(vouched: true, partitions: null, out var departingVersion) is { } departing)
+            if (PeekDepartingOffsets(vouched: true, partitions: null, out var departingState) is { } departing)
             {
-                await CommitDepartingOffsetsAsync(departing, departingVersion, retryUntilApiTimeout: true, apiTimeout.Token)
+                await CommitDepartingOffsetsAsync(
+                        departing,
+                        departingState!,
+                        vouched: true,
+                        retryUntilApiTimeout: true,
+                        apiTimeout.Token)
                     .ConfigureAwait(false);
             }
 
@@ -7839,8 +7867,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // Partitions the consumer cleared when the application ended its group membership
             // (this is the leave's revocation, or one a heartbeat published before it): commit
             // the processed offsets they held then.
-            var committed = TakeDepartingOffsets(vouched: false, partitions, out var departingVersion) is { } departing
-                && await CommitDepartingOffsetsAsync(departing, departingVersion, retryUntilApiTimeout: false, commitCancellationToken)
+            var committed = PeekDepartingOffsets(vouched: false, partitions, out var departingState) is { } departing
+                && await CommitDepartingOffsetsAsync(
+                        departing,
+                        departingState!,
+                        vouched: false,
+                        retryUntilApiTimeout: false,
+                        commitCancellationToken)
                     .ConfigureAwait(false);
 
             // The revoked membership's own commit: it never waits for a leave (the version is

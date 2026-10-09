@@ -485,6 +485,121 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await Assert.That(request.Topics.Single().Partitions.Single().CommittedOffset).IsEqualTo(3L);
     }
 
+    [Test]
+    [Timeout(30_000)]
+    public async Task DepartingOffsets_CancelledRevocationCommit_RetryCommitsThem(CancellationToken testTimeout)
+    {
+        // Unsubscribe overlapping a heartbeat revocation: its revoked-offset commit is cancelled
+        // (the leave stops the heartbeat) and the coordinator delivers it again. The retry must
+        // still send the departing offsets; the consumer's own state for them is already gone.
+        var (connectionPool, connection, commits) = CreateCommitCapturingConnection();
+        await using var metadataManager = CreateCommitMetadataManager(connectionPool);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0, 1));
+        await using var consumer = CreateGroupConsumer(
+            connectionPool, metadataManager, offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(testTimeout);
+        var coordinator = GetCoordinator(consumer);
+        var revoked = new TopicPartition("test-topic", 1);
+        consumer.StoreOffset(new TopicPartitionOffset(revoked.Topic, revoked.Partition, 7));
+        SetCoordinatorField(coordinator, "_assignedPartitions", new HashSet<TopicPartition> { new("test-topic", 0) });
+
+        var stateLock = GetCoordinatorField<SemaphoreSlim>(coordinator, "_lock");
+        await stateLock.WaitAsync(testTimeout);
+        try
+        {
+            consumer.Unsubscribe();
+            using var cancelled = new CancellationTokenSource();
+            await cancelled.CancelAsync();
+            await Assert.That(async () => await InvokeCommitRevokedOffsetsAsync(consumer, [revoked], cancelled.Token))
+                .Throws<OperationCanceledException>();
+            await Assert.That(commits).IsEmpty();
+
+            await InvokeCommitRevokedOffsetsAsync(consumer, [revoked], testTimeout);
+        }
+        finally
+        {
+            stateLock.Release();
+        }
+
+        await Assert.That(commits.Single().Topics.Single().Partitions.Single().CommittedOffset).IsEqualTo(7L);
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task DepartingOffsets_FailedCommitAsync_UserRetryResendsThem(CancellationToken testTimeout)
+    {
+        // A CommitAsync() from the leave's revoke callback fails; the application retries it. The
+        // retry must send the departing offsets again rather than report success with nothing.
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+        SetupFindCoordinator(connection);
+        SetupOffsetFetch(connection);
+        var commits = new List<OffsetCommitRequest>();
+        connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var request = call.ArgAt<OffsetCommitRequest>(0);
+                int count;
+                lock (commits)
+                {
+                    commits.Add(request);
+                    count = commits.Count;
+                }
+
+                var error = count == 1 ? ErrorCode.OffsetMetadataTooLarge : ErrorCode.None;
+                return ValueTask.FromResult(new OffsetCommitResponse
+                {
+                    Topics = request.Topics.Select(topic => new OffsetCommitResponseTopic
+                    {
+                        Name = topic.Name,
+                        TopicId = topic.TopicId,
+                        Partitions = topic.Partitions.Select(partition => new OffsetCommitResponsePartition
+                        {
+                            PartitionIndex = partition.PartitionIndex,
+                            ErrorCode = error
+                        }).ToList()
+                    }).ToList()
+                });
+            });
+        await using var metadataManager = CreateCommitMetadataManager(connectionPool);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(testTimeout);
+        var coordinator = GetCoordinator(consumer);
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.StoreOffset(new TopicPartitionOffset(partition.Topic, partition.Partition, 5));
+
+        // The leave is held before it resets the membership, as while its callbacks run.
+        var stateLock = GetCoordinatorField<SemaphoreSlim>(coordinator, "_lock");
+        await stateLock.WaitAsync(testTimeout);
+        Task retry;
+        try
+        {
+            consumer.Unsubscribe();
+            await Assert.That(async () => await consumer.CommitAsync(testTimeout)).Throws<KafkaException>();
+
+            // The retry sends the departing offsets under the departing member, then waits for
+            // the leave before committing the consumer's own offsets.
+            retry = consumer.CommitAsync(testTimeout).AsTask();
+            await Assert.That(() => Volatile.Read(ref commits).Count)
+                .Eventually(count => count.IsEqualTo(2), TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            stateLock.Release();
+        }
+
+        await retry;
+        await Assert.That(commits.Count).IsEqualTo(2);
+        await Assert.That(commits[1].Topics.Single().Partitions.Single().CommittedOffset).IsEqualTo(5L);
+    }
+
     private static (IConnectionPool Pool, IKafkaConnection Connection, List<OffsetCommitRequest> Commits)
         CreateCommitCapturingConnection()
     {
