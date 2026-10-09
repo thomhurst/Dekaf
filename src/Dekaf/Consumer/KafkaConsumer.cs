@@ -10341,11 +10341,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     /// <summary>
-    /// The sync that applied staged seeks is acknowledged: they are no longer pending. Removed only
-    /// while unchanged, so a seek a later callback staged for the same partition is kept. Caller
-    /// holds <c>_assignmentLock</c>. Runs per acknowledged sync, never per message.
-    /// </summary>
-    /// <summary>
     /// Drops the revocation bookkeeping on abandon: entries a sync drained are pruned on the
     /// coordinator too (unless revoked again since). Caller holds <c>_assignmentLock</c>. Runs per
     /// abandon, never per message.
@@ -10365,6 +10360,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _acknowledgedRevocationSequences.Clear();
     }
 
+    /// <summary>
+    /// The coordinator confirmed this sync pass: the acknowledged assignment and revocation
+    /// sequences advance, and the staged seeks it applied are no longer pending. Removed only
+    /// while unchanged, so a seek a later callback staged for the same partition is kept. Caller
+    /// holds <c>_assignmentLock</c>. Runs per acknowledged sync, never per message.
+    /// </summary>
     private void CompleteAcknowledgedSync()
     {
         _acknowledgedCoordinatorAssignment = _assignmentSnapshot;

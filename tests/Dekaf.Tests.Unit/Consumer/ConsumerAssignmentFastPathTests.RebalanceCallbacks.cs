@@ -801,6 +801,8 @@ public sealed partial class ConsumerAssignmentFastPathTests
 
         public IKafkaConnection Connection { get; } = connection;
 
+        public Dekaf.Metadata.MetadataManager MetadataManager { get; } = metadataManager;
+
         /// <summary>Runs one heartbeat round trip and delivers its rebalance callbacks.</summary>
         public async Task HeartbeatAsync()
         {
@@ -812,7 +814,7 @@ public sealed partial class ConsumerAssignmentFastPathTests
         public async ValueTask DisposeAsync()
         {
             await Consumer.DisposeAsync();
-            await metadataManager.DisposeAsync();
+            await MetadataManager.DisposeAsync();
         }
     }
 

@@ -1205,6 +1205,101 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await Assert.That(consumer.GetPosition(Partition1)).IsEqualTo(seekToBeginning ? 0L : 42L);
     }
 
+    /// <summary>
+    /// An assignment names a topic this client's metadata does not know yet, so part of it stays
+    /// pending; the application then abandons and re-subscribes before metadata resolves it. When a
+    /// later heartbeat publishes the rest, it is still the abandoned subscription's assignment: its
+    /// callback must not stage.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task RebalanceCallbackStateTransitions_UnresolvedAssignmentReplayedAfterResubscribe_DoesNotStage(
+        CancellationToken testTimeout)
+    {
+        var otherTopicId = Guid.Parse("00000000-0000-0000-0000-000000000002");
+        var otherPartition = new TopicPartition("other-topic", 0);
+        var withUnknownTopic = new ConsumerGroupHeartbeatAssignment
+        {
+            AssignedTopicPartitions =
+            [
+                new ConsumerGroupHeartbeatTopicPartitions { TopicId = TestTopicId, Partitions = [0] },
+                new ConsumerGroupHeartbeatTopicPartitions { TopicId = otherTopicId, Partitions = [0] }
+            ],
+            PendingTopicPartitions = []
+        };
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessAsync(
+            listener,
+            AssignedResponse(1, 0),
+            CreateHeartbeatResponse(withUnknownTopic, 2),
+            new ConsumerGroupHeartbeatResponse
+            {
+                ErrorCode = Dekaf.Protocol.ErrorCode.None,
+                MemberId = "member-1",
+                MemberEpoch = 3,
+                HeartbeatIntervalMs = 60000
+            });
+        var consumer = harness.Consumer;
+        var coordinator = GetCoordinator(consumer);
+        bool? staging = null;
+        listener.OnAssigned = partitions =>
+        {
+            if (!partitions.Contains(otherPartition))
+                return;
+
+            staging = coordinator.TryGetAssignedCallbackRevocationSequence(otherPartition, out _);
+            consumer.Seek(new TopicPartitionOffset(otherPartition.Topic, otherPartition.Partition, 42));
+        };
+
+        // The assignment arrives; "other-topic" is unknown, so it stays pending.
+        await harness.HeartbeatAsync();
+        await Assert.That(coordinator.HasUnresolvedAssignment).IsTrue();
+
+        consumer.Unsubscribe();
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(testTimeout);
+
+        // Metadata now knows the topic; the next heartbeat publishes the pending part.
+        harness.MetadataManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers = [new BrokerMetadata { NodeId = 0, Host = "localhost", Port = 9092 }],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    Name = "test-topic",
+                    TopicId = TestTopicId,
+                    ErrorCode = Dekaf.Protocol.ErrorCode.None,
+                    Partitions = CreatePartitionMetadata(2)
+                },
+                new TopicMetadata
+                {
+                    Name = "other-topic",
+                    TopicId = otherTopicId,
+                    ErrorCode = Dekaf.Protocol.ErrorCode.None,
+                    Partitions = CreatePartitionMetadata(1)
+                }
+            ]
+        });
+        await harness.HeartbeatAsync();
+
+        await Assert.That(staging).IsNotNull();
+        await Assert.That(staging!.Value).IsFalse();
+        await Assert.That(consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
+    }
+
+    private static PartitionMetadata[] CreatePartitionMetadata(int count) =>
+        Enumerable.Range(0, count)
+            .Select(static partition => new PartitionMetadata
+            {
+                PartitionIndex = partition,
+                LeaderId = 0,
+                ErrorCode = Dekaf.Protocol.ErrorCode.None,
+                ReplicaNodes = [0],
+                IsrNodes = [0]
+            })
+            .ToArray();
+
     /// <summary>A fresh subscription after an abandon reactivates staging for the new assignment.</summary>
     [Test]
     public async Task RebalanceCallbackStateTransitions_SubscribeAfterAbandon_Reactivates()

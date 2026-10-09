@@ -98,6 +98,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // The latest broker assignment while it names topic IDs that metadata cannot resolve yet;
     // null otherwise, so a steady heartbeat pays one field read.
     private volatile ConsumerGroupHeartbeatAssignment? _unresolvedAssignment;
+    // The subscription generation the request that delivered _unresolvedAssignment was stamped
+    // with. A later heartbeat that publishes more of it publishes that request's answer, so it
+    // stages callback work only if that subscription is still current. Written with it.
+    private int _unresolvedAssignmentSubscriptionGeneration;
     // The metadata snapshot _unresolvedAssignment was last resolved against. Every metadata update
     // swaps the snapshot, so a heartbeat processes the assignment again only after metadata
     // changed, whichever topic IDs it resolved or lost.
@@ -2876,6 +2880,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         var newAssignment = new HashSet<TopicPartition>();
         var newlyExpandedPartitions = new HashSet<TopicPartition>();
         var retry = ReferenceEquals(assignment, _unresolvedAssignment);
+        // A pending assignment answers the request that delivered it, not the one now replaying it.
+        if (retry)
+            requestSubscriptionGeneration = Volatile.Read(ref _unresolvedAssignmentSubscriptionGeneration);
         // Resolve against one snapshot, recorded below: an update during processing makes the next
         // heartbeat process the assignment again.
         var snapshot = _metadataManager.Metadata.CaptureSnapshot();
@@ -2955,6 +2962,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 ? CollectResolvedNames(snapshot, resolvedNames, assignment.AssignedTopicPartitions)
                 : null;
             Volatile.Write(ref _unresolvedSnapshot, unknownTopics > 0 ? snapshot : null);
+            if (unknownTopics > 0 && !retry)
+                Volatile.Write(ref _unresolvedAssignmentSubscriptionGeneration, requestSubscriptionGeneration);
             _unresolvedAssignment = unknownTopics > 0 ? assignment : null;
 
             // The heartbeat loop can acknowledge ownership before the poll loop initializes
