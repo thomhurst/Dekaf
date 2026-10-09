@@ -483,6 +483,268 @@ public sealed class PartitionedConsumerRuntimeTests
     }
 
     [Test]
+    public async Task RunPartitionedAsync_AssignedCallbackAheadOfPublishedAssignment_KeepsLaneAndProcesses()
+    {
+        var existingPartition = new TopicPartition("topic-a", 0);
+        var handedOffPartition = new TopicPartition("topic-a", 1);
+        var consumer = new TestConsumer { RedeliverUnenumeratedBatches = true };
+        consumer.SetAssignment(existingPartition);
+
+        var handedOffStarts = 0;
+        var handedOffStops = 0;
+        var handedOffStarted = NewCompletionSource();
+        var processed = new ConcurrentQueue<long>();
+        var processedHandedOff = NewCompletionSource();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, cancellationToken) =>
+            {
+                if (context.TopicPartition != handedOffPartition)
+                {
+                    await foreach (var _ in context.Messages.WithCancellation(cancellationToken))
+                    {
+                    }
+
+                    return;
+                }
+
+                Interlocked.Increment(ref handedOffStarts);
+                handedOffStarted.TrySetResult();
+                try
+                {
+                    await foreach (var message in context.Messages.WithCancellation(cancellationToken))
+                    {
+                        processed.Enqueue(message.Offset);
+                        context.MarkProcessed(message);
+                        processedHandedOff.TrySetResult();
+                    }
+                }
+                finally
+                {
+                    Interlocked.Increment(ref handedOffStops);
+                }
+            },
+            new PartitionedProcessingOptions(),
+            cts.Token).AsTask();
+
+        await Assert.That(() => consumer.AssignmentReads)
+            .Eventually(reads => reads.IsGreaterThanOrEqualTo(1), TimeSpan.FromSeconds(5));
+
+        // A heartbeat hands the partition over: the callback runs before the consumer
+        // publishes the partition in Partitions.Assignment.
+        consumer.FireAssignedBeforePublication(handedOffPartition);
+        await handedOffStarted.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+
+        // Let idle assignment syncs read the stale snapshot.
+        var readsAfterCallback = consumer.AssignmentReads;
+        await Assert.That(() => consumer.AssignmentReads)
+            .Eventually(reads => reads.IsGreaterThanOrEqualTo(readsAfterCallback + 3), TimeSpan.FromSeconds(5));
+        await Assert.That(Volatile.Read(ref handedOffStops)).IsEqualTo(0);
+
+        consumer.SetAssignment(existingPartition, handedOffPartition);
+        consumer.Enqueue(CreateResult(handedOffPartition, 0), CreateResult(handedOffPartition, 1));
+
+        await processedHandedOff.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        await Assert.That(() => processed.ToArray())
+            .Eventually(offsets => offsets.IsEquivalentTo(new long[] { 0, 1 }), TimeSpan.FromSeconds(5));
+        await Assert.That(Volatile.Read(ref handedOffStarts)).IsEqualTo(1);
+        await Assert.That(Volatile.Read(ref handedOffStops)).IsEqualTo(0);
+
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+    }
+
+    [Test]
+    public async Task RunPartitionedAsync_AssignedCallbackAheadOfPublication_ThenRevoked_StopsLane()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer { RedeliverUnenumeratedBatches = true };
+
+        var starts = 0;
+        var stops = 0;
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, cancellationToken) =>
+            {
+                Interlocked.Increment(ref starts);
+                try
+                {
+                    await foreach (var _ in context.Messages.WithCancellation(cancellationToken))
+                    {
+                    }
+                }
+                finally
+                {
+                    Interlocked.Increment(ref stops);
+                }
+            },
+            new PartitionedProcessingOptions(),
+            cts.Token).AsTask();
+
+        await Assert.That(() => consumer.AssignmentReads)
+            .Eventually(reads => reads.IsGreaterThanOrEqualTo(1), TimeSpan.FromSeconds(5));
+
+        // The assignment is superseded before the consumer ever publishes it.
+        consumer.FireAssignedBeforePublication(partition);
+        await Assert.That(() => Volatile.Read(ref starts))
+            .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
+
+        consumer.FireRevokedBeforePublication(partition);
+        await Assert.That(() => Volatile.Read(ref stops))
+            .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
+
+        var readsAfterRevoke = consumer.AssignmentReads;
+        await Assert.That(() => consumer.AssignmentReads)
+            .Eventually(reads => reads.IsGreaterThanOrEqualTo(readsAfterRevoke + 3), TimeSpan.FromSeconds(5));
+        await Assert.That(Volatile.Read(ref starts)).IsEqualTo(1);
+
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+    }
+
+    [Test]
+    public async Task RunPartitionedAsync_RevokedCallbackAheadOfPublishedAssignment_DoesNotRestartLane()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.SetAssignment(partition);
+
+        var starts = 0;
+        var stops = 0;
+        var processedAfterReassign = NewCompletionSource();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, cancellationToken) =>
+            {
+                Interlocked.Increment(ref starts);
+                try
+                {
+                    await foreach (var message in context.Messages.WithCancellation(cancellationToken))
+                    {
+                        context.MarkProcessed(message);
+                        processedAfterReassign.TrySetResult();
+                    }
+                }
+                finally
+                {
+                    Interlocked.Increment(ref stops);
+                }
+            },
+            new PartitionedProcessingOptions(),
+            cts.Token).AsTask();
+
+        await Assert.That(() => Volatile.Read(ref starts))
+            .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
+
+        // OnPartitionsRevoked runs while Partitions.Assignment still holds the partition.
+        consumer.FireRevokedBeforePublication(partition);
+        await Assert.That(() => Volatile.Read(ref stops))
+            .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
+
+        var readsAfterRevoke = consumer.AssignmentReads;
+        await Assert.That(() => consumer.AssignmentReads)
+            .Eventually(reads => reads.IsGreaterThanOrEqualTo(readsAfterRevoke + 3), TimeSpan.FromSeconds(5));
+        await Assert.That(Volatile.Read(ref starts)).IsEqualTo(1);
+
+        consumer.SetAssignment();
+        consumer.AssignFromCoordinator(partition);
+        consumer.Enqueue(CreateResult(partition, 0));
+
+        await processedAfterReassign.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        await Assert.That(Volatile.Read(ref starts)).IsEqualTo(2);
+
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+    }
+
+    [Test]
+    public async Task RunPartitionedAsync_BatchForAssignedPartitionWithoutLane_StartsLane()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer { RedeliverUnenumeratedBatches = true };
+
+        var processed = new ConcurrentQueue<long>();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, cancellationToken) =>
+            {
+                await foreach (var message in context.Messages.WithCancellation(cancellationToken))
+                {
+                    processed.Enqueue(message.Offset);
+                    context.MarkProcessed(message);
+                }
+            },
+            new PartitionedProcessingOptions(),
+            cts.Token).AsTask();
+
+        await Assert.That(() => consumer.AssignmentReads)
+            .Eventually(reads => reads.IsGreaterThanOrEqualTo(1), TimeSpan.FromSeconds(5));
+
+        // No callback reaches the runtime (it ran before registration), and records are
+        // ready the moment the assignment is published, so the runtime is never idle.
+        consumer.SetAssignmentAndEnqueue(
+            [partition],
+            CreateResult(partition, 0),
+            CreateResult(partition, 1));
+
+        await Assert.That(() => processed.ToArray())
+            .Eventually(offsets => offsets.IsEquivalentTo(new long[] { 0, 1 }), TimeSpan.FromSeconds(5));
+
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+    }
+
+    [Test]
+    public async Task RunPartitionedAsync_IgnoreBackoffPausesFailedPartitionSoHealthyPartitionsAreDelivered()
+    {
+        var failingPartition = new TopicPartition("topic-a", 0);
+        var healthyPartition = new TopicPartition("topic-a", 1);
+        var consumer = new TestConsumer { RedeliverUnenumeratedBatches = true };
+        consumer.SetAssignment(failingPartition, healthyPartition);
+
+        var failingAttempts = 0;
+        var healthyProcessed = NewCompletionSource();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, cancellationToken) =>
+            {
+                if (context.TopicPartition == failingPartition)
+                {
+                    Interlocked.Increment(ref failingAttempts);
+                    throw new InvalidOperationException("still failing");
+                }
+
+                await foreach (var message in context.Messages.WithCancellation(cancellationToken))
+                {
+                    context.MarkProcessed(message);
+                    healthyProcessed.TrySetResult();
+                }
+            },
+            new PartitionedProcessingOptions
+            {
+                ErrorPolicy = PartitionWorkerErrorPolicy.Ignore,
+                IgnoreRestartBackoff = TimeSpan.FromSeconds(30),
+                IgnoreRestartBackoffMax = TimeSpan.FromSeconds(30)
+            },
+            cts.Token).AsTask();
+
+        await Assert.That(() => consumer.Paused.Contains(failingPartition))
+            .Eventually(paused => paused.IsTrue(), TimeSpan.FromSeconds(5));
+
+        // The failed partition's batch is queued first. Without a lane it is never
+        // enumerated, so it would be re-yielded ahead of the healthy partition.
+        consumer.Enqueue(CreateResult(failingPartition, 0), CreateResult(healthyPartition, 0));
+
+        await healthyProcessed.Task.WaitAsync(TimeSpan.FromSeconds(5), cts.Token).ConfigureAwait(false);
+        await Assert.That(Volatile.Read(ref failingAttempts)).IsEqualTo(1);
+        await Assert.That(consumer.Paused.Contains(failingPartition)).IsTrue();
+
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+        await Assert.That(consumer.Paused).IsEmpty();
+    }
+
+    [Test]
     public async Task RunPartitionedAsync_StopPartitionPausesUntilPartitionLeavesAssignment()
     {
         var partition = new TopicPartition("topic-a", 0);
@@ -559,7 +821,9 @@ public sealed class PartitionedConsumerRuntimeTests
         consumer.Enqueue(CreateResult(partition, 0));
 
         await processed.Task.WaitAsync(cts.Token).ConfigureAwait(false);
-        await Assert.That(consumer.PauseCalls).IsEmpty();
+        // The partition is held paused only for the restart backoff.
+        await Assert.That(consumer.Paused.Contains(partition)).IsFalse();
+        await Assert.That(consumer.ResumeCalls.Any(calls => calls.Contains(partition))).IsTrue();
 
         await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
     }
@@ -1346,6 +1610,7 @@ public sealed class PartitionedConsumerRuntimeTests
         private readonly SemaphoreSlim _changed = new(0);
         private int _consumeOneCalls;
         private int _consumeBatchCalls;
+        private int _assignmentReads;
 
         public IReadOnlySet<string> Subscription => _subscription;
 
@@ -1355,10 +1620,19 @@ public sealed class PartitionedConsumerRuntimeTests
         {
             get
             {
+                Interlocked.Increment(ref _assignmentReads);
                 lock (_gate)
                     return _assignment.ToHashSet();
             }
         }
+
+        public int AssignmentReads => Volatile.Read(ref _assignmentReads);
+
+        /// <summary>
+        /// Mirrors KafkaConsumer.ConsumeBatchAsync: a batch the caller resumes past without
+        /// enumerating stays at the head of the queue and is yielded again immediately.
+        /// </summary>
+        public bool RedeliverUnenumeratedBatches { get; init; }
 
         public IReadOnlySet<TopicPartition> Paused
         {
@@ -1521,6 +1795,9 @@ public sealed class PartitionedConsumerRuntimeTests
                         partition => IsAssigned(partition)
                             ? BatchIterationStatus.Continue
                             : BatchIterationStatus.Stopped));
+
+                if (RedeliverUnenumeratedBatches && !pending.IsExhausted)
+                    RequeueAtFront(results);
             }
         }
 
@@ -1700,6 +1977,34 @@ public sealed class PartitionedConsumerRuntimeTests
             _changed.Release();
         }
 
+        /// <summary>
+        /// Fires OnPartitionsAssigned without publishing the assignment, as KafkaConsumer does
+        /// until its consume loop next synchronizes. Fetching starts only after publication.
+        /// </summary>
+        public void FireAssignedBeforePublication(params TopicPartition[] partitions)
+            => FireRebalanceListener(listener => listener.OnPartitionsAssignedAsync(partitions, CancellationToken.None));
+
+        /// <summary>Fires OnPartitionsRevoked while the published assignment still holds the partitions.</summary>
+        public void FireRevokedBeforePublication(params TopicPartition[] partitions)
+            => FireRebalanceListener(listener => listener.OnPartitionsRevokedAsync(partitions, CancellationToken.None));
+
+        /// <summary>Publishes an assignment and queues records for it in one step, without a callback.</summary>
+        public void SetAssignmentAndEnqueue(
+            TopicPartition[] partitions,
+            params ConsumeResult<string, string>[] results)
+        {
+            lock (_gate)
+            {
+                _assignment.Clear();
+                foreach (var partition in partitions)
+                    _assignment.Add(partition);
+                foreach (var result in results)
+                    _records.Enqueue(result);
+            }
+
+            _changed.Release(results.Length + 1);
+        }
+
         public void AssignFromCoordinator(params TopicPartition[] partitions)
         {
             SetAssignment(partitions);
@@ -1784,6 +2089,20 @@ public sealed class PartitionedConsumerRuntimeTests
 
                 return results.Count != 0;
             }
+        }
+
+        private void RequeueAtFront(List<ConsumeResult<string, string>> results)
+        {
+            lock (_gate)
+            {
+                var queued = _records.Count;
+                foreach (var result in results)
+                    _records.Enqueue(result);
+                for (var i = 0; i < queued; i++)
+                    _records.Enqueue(_records.Dequeue());
+            }
+
+            _changed.Release();
         }
 
         private bool IsAssigned(TopicPartition partition)

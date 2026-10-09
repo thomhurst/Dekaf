@@ -7,7 +7,10 @@ using Dekaf.Serialization;
 
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
-/// <summary>Routes warmed parsed batches, including filters that deliver no records.</summary>
+/// <summary>
+/// Routes warmed parsed batches, including filters that deliver no records. The lane lookup
+/// hits on every batch; a miss is the cold path that starts a lane for an assigned partition.
+/// </summary>
 [MemoryDiagnoser]
 public class PartitionedBatchRoutingBenchmarks
 {

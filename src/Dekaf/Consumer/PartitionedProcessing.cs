@@ -728,6 +728,12 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     private readonly Dictionary<TopicPartition, int> _ignoreRestartFailures = [];
     private readonly ConcurrentDictionary<Task, byte> _ignoreRestartTasks = [];
     private readonly List<TopicPartition> _partitionsToStop = [];
+    // Rebalance callbacks run before the consumer publishes Partitions.Assignment, often tens of
+    // milliseconds earlier. These hold callback transitions the published snapshot has not caught
+    // up with, so a stale snapshot neither stops a newly assigned lane nor restarts a revoked one.
+    private readonly HashSet<TopicPartition> _assignedAheadOfSnapshot = [];
+    private readonly HashSet<TopicPartition> _revokedAheadOfSnapshot = [];
+    private readonly List<TopicPartition> _reconciledTransitions = [];
     private readonly Channel<RuntimeCommand<TKey, TValue>> _commands;
     private AsyncAutoResetSignal? _capacitySignal;
     private AsyncAutoResetSignal? _stopSignal;
@@ -988,15 +994,15 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
 
     private async ValueTask SyncAssignmentAsync(CancellationToken cancellationToken)
     {
-        var assignment = _consumer.Partitions.Assignment;
+        var assignment = ReadAssignment();
 
         RemoveUnassigned(_stoppedByFailure, assignment, removePause: true);
-        RemoveUnassigned(_pendingIgnoreRestarts, assignment, removePause: false);
+        RemoveUnassigned(_pendingIgnoreRestarts, assignment, removePause: true);
 
         _partitionsToStop.Clear();
         foreach (var partition in _lanes.Keys)
         {
-            if (!assignment.Contains(partition))
+            if (!IsAssigned(partition, assignment))
                 _partitionsToStop.Add(partition);
         }
 
@@ -1012,6 +1018,60 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         StartAssignedPartitions(assignment);
     }
 
+    /// <summary>
+    /// Reads the consumer's published assignment and forgets callback transitions it now reflects.
+    /// Use <see cref="IsAssigned"/> to combine the result with transitions it does not reflect yet.
+    /// </summary>
+    private TopicPartitionSet ReadAssignment()
+    {
+        var assignment = _consumer.Partitions.Assignment;
+        ForgetReconciledTransitions(_assignedAheadOfSnapshot, assignment, reconciledWhenAssigned: true);
+        ForgetReconciledTransitions(_revokedAheadOfSnapshot, assignment, reconciledWhenAssigned: false);
+        return assignment;
+    }
+
+    private void ForgetReconciledTransitions(
+        HashSet<TopicPartition> transitions,
+        TopicPartitionSet assignment,
+        bool reconciledWhenAssigned)
+    {
+        if (transitions.Count == 0)
+            return;
+
+        _reconciledTransitions.Clear();
+        foreach (var partition in transitions)
+        {
+            if (assignment.Contains(partition) == reconciledWhenAssigned)
+                _reconciledTransitions.Add(partition);
+        }
+
+        for (var i = 0; i < _reconciledTransitions.Count; i++)
+            transitions.Remove(_reconciledTransitions[i]);
+        _reconciledTransitions.Clear();
+    }
+
+    private bool IsAssigned(TopicPartition partition, TopicPartitionSet assignment)
+        => _assignedAheadOfSnapshot.Contains(partition)
+            || (assignment.Contains(partition) && !_revokedAheadOfSnapshot.Contains(partition));
+
+    private void RecordCallbackAssignment(TopicPartition[] partitions)
+    {
+        foreach (var partition in partitions)
+        {
+            _revokedAheadOfSnapshot.Remove(partition);
+            _assignedAheadOfSnapshot.Add(partition);
+        }
+    }
+
+    private void RecordCallbackRevocation(TopicPartition[] partitions)
+    {
+        foreach (var partition in partitions)
+        {
+            _assignedAheadOfSnapshot.Remove(partition);
+            _revokedAheadOfSnapshot.Add(partition);
+        }
+    }
+
     private void RemoveUnassigned(
         HashSet<TopicPartition> partitions,
         TopicPartitionSet assignment,
@@ -1020,7 +1080,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         _partitionsToStop.Clear();
         foreach (var partition in partitions)
         {
-            if (!assignment.Contains(partition))
+            if (!IsAssigned(partition, assignment))
                 _partitionsToStop.Add(partition);
         }
 
@@ -1044,7 +1104,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             return default;
 
         var partition = batch.TopicPartition;
-        if (!_lanes.TryGetValue(partition, out var lane))
+        if (!_lanes.TryGetValue(partition, out var lane) && !TryStartLaneForUnroutedBatch(partition, out lane))
             return default;
 
         var records = batch.GetEnumerator();
@@ -1082,6 +1142,30 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             if (!publicationContinuesAsync)
                 lane.EndBatch(completionBatch, published);
         }
+    }
+
+    /// <summary>
+    /// The consumer re-yields a batch the runtime leaves unenumerated, ahead of every other
+    /// partition and without an idle gap for <see cref="SyncAssignmentAsync"/>. A batch for an
+    /// assigned partition without a lane therefore starts its lane here instead of being dropped.
+    /// Partitions the runtime holds back are paused, so their batches are not re-yielded.
+    /// </summary>
+    private bool TryStartLaneForUnroutedBatch(
+        TopicPartition partition,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out PartitionLane<TKey, TValue>? lane)
+    {
+        lane = null;
+        if (_shutdownCancellation.IsCancellationRequested
+            || _stoppedByFailure.Contains(partition)
+            || _pendingIgnoreRestarts.Contains(partition)
+            || !IsAssigned(partition, ReadAssignment()))
+        {
+            return false;
+        }
+
+        LogStartingLaneForUnroutedBatch(partition);
+        lane = StartLane(partition);
+        return true;
     }
 
     private async ValueTask RouteBackpressuredBatchAsync(
@@ -1148,7 +1232,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         published = 0;
     }
 
-    private void StartLane(TopicPartition partition)
+    private PartitionLane<TKey, TValue> StartLane(TopicPartition partition)
     {
         var lane = new PartitionLane<TKey, TValue>(
             partition,
@@ -1159,20 +1243,37 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
 
         _lanes.Add(partition, lane);
         lane.Start(_processor);
+        return lane;
     }
 
-    private void StartAssignedPartitions(IEnumerable<TopicPartition> partitions)
+    private void StartAssignedPartitions(TopicPartitionSet assignment)
+    {
+        foreach (var partition in assignment)
+        {
+            if (!_revokedAheadOfSnapshot.Contains(partition))
+                StartLaneIfIdle(partition);
+        }
+
+        foreach (var partition in _assignedAheadOfSnapshot)
+            StartLaneIfIdle(partition);
+    }
+
+    private void StartAssignedPartitions(TopicPartition[] partitions)
     {
         foreach (var partition in partitions)
+            StartLaneIfIdle(partition);
+    }
+
+    private void StartLaneIfIdle(TopicPartition partition)
+    {
+        if (_lanes.ContainsKey(partition)
+            || _stoppedByFailure.Contains(partition)
+            || _pendingIgnoreRestarts.Contains(partition))
         {
-            if (_lanes.ContainsKey(partition) || _stoppedByFailure.Contains(partition))
-                continue;
-
-            if (_pendingIgnoreRestarts.Contains(partition))
-                continue;
-
-            StartLane(partition);
+            return;
         }
+
+        StartLane(partition);
     }
 
     private void PauseIfNeeded(PartitionLane<TKey, TValue> lane)
@@ -1262,6 +1363,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                     break;
 
                 case RuntimeCommandKind.AssignPartitions:
+                    RecordCallbackAssignment(command.Partitions!);
                     StartAssignedPartitions(command.Partitions!);
                     break;
 
@@ -1328,10 +1430,6 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                 lane.TopicPartition,
                 exception);
         }
-        else if (_pausedByRuntime.Remove(lane.TopicPartition))
-        {
-            _consumer.Partitions.Resume(lane.TopicPartition);
-        }
 
         await StopLaneAsync(
             lane,
@@ -1339,9 +1437,11 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             commitProcessed: false,
             cancellationToken).ConfigureAwait(false);
 
-        if (_options.ErrorPolicy == PartitionWorkerErrorPolicy.Ignore
-            && !_shutdownCancellation.IsCancellationRequested
-            && _consumer.Partitions.Assignment.Contains(lane.TopicPartition)
+        if (_options.ErrorPolicy != PartitionWorkerErrorPolicy.Ignore)
+            return;
+
+        if (!_shutdownCancellation.IsCancellationRequested
+            && IsAssigned(lane.TopicPartition, ReadAssignment())
             && !_lanes.ContainsKey(lane.TopicPartition))
         {
             if (lane.LastProcessedOffset.HasValue)
@@ -1355,22 +1455,35 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                 restartDelay,
                 exception);
 
+            // Without a lane the runtime cannot enumerate this partition's batches, and the
+            // consumer re-yields an unenumerated batch ahead of every other partition. Hold the
+            // partition paused until its lane restarts so the backoff neither spins nor stalls
+            // healthy partitions.
+            if (_pausedByRuntime.Add(lane.TopicPartition))
+                _consumer.Partitions.Pause(lane.TopicPartition);
+
             _pendingIgnoreRestarts.Add(lane.TopicPartition);
             ScheduleIgnoreRestart(lane.TopicPartition, restartDelay);
+        }
+        else if (!_lanes.ContainsKey(lane.TopicPartition) && _pausedByRuntime.Remove(lane.TopicPartition))
+        {
+            _consumer.Partitions.Resume(lane.TopicPartition);
         }
     }
 
     private void RestartLaneIfStillAssigned(TopicPartition partition)
     {
-        _pendingIgnoreRestarts.Remove(partition);
-
-        if (_shutdownCancellation.IsCancellationRequested
-            || !_consumer.Partitions.Assignment.Contains(partition)
+        if (!_pendingIgnoreRestarts.Remove(partition)
+            || _shutdownCancellation.IsCancellationRequested
+            || !IsAssigned(partition, ReadAssignment())
             || _stoppedByFailure.Contains(partition)
             || _lanes.ContainsKey(partition))
         {
             return;
         }
+
+        if (_pausedByRuntime.Remove(partition))
+            _consumer.Partitions.Resume(partition);
 
         StartLane(partition);
     }
@@ -1492,6 +1605,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         PartitionStopReason reason,
         CancellationToken cancellationToken)
     {
+        RecordCallbackRevocation(partitions);
         foreach (var partition in partitions)
         {
             _stoppedByFailure.Remove(partition);
@@ -1500,7 +1614,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             await StopPartitionAsync(partition, reason, cancellationToken).ConfigureAwait(false);
         }
 
-        StartAssignedPartitions(_consumer.Partitions.Assignment);
+        StartAssignedPartitions(ReadAssignment());
     }
 
     private async ValueTask StopPartitionAsync(
@@ -1694,6 +1808,17 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         _logger.LogWarning(
             exception,
             "Partition processor for {Topic}-{Partition} failed under StopPartition; pausing partition.",
+            partition.Topic,
+            partition.Partition);
+    }
+
+    private void LogStartingLaneForUnroutedBatch(TopicPartition partition)
+    {
+        if (!_logger.IsEnabled(LogLevel.Debug))
+            return;
+
+        _logger.LogDebug(
+            "Starting partition processor for {Topic}-{Partition} on its first batch; no rebalance callback or assignment sync started it.",
             partition.Topic,
             partition.Partition);
     }
