@@ -159,6 +159,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // Non-zero while an OnPartitionsAssigned delivery runs, so the owner's seek, pause and position
     // calls read s_assignedCallback only then.
     private int _assignedCallbacksRunning;
+    // The OnPartitionsAssigned delivery in progress, so the owner can end its staging from any thread.
+    private AssignedCallbackContext? _currentAssignedCallback;
     // Changes under _lock each time a join publishes a new membership and each time a fence ends
     // one. A fence observed by a request sent under an earlier membership must not clear the
     // assignment of a newer one, and a commit must not send offsets taken under an earlier one.
@@ -3424,6 +3426,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             new HashSet<TopicPartition>(assigned),
                             pending.RevocationSequence);
                         s_assignedCallback.Value = assignedCallback;
+                        Volatile.Write(ref _currentAssignedCallback, assignedCallback);
                         Interlocked.Increment(ref _assignedCallbacksRunning);
                         try
                         {
@@ -3433,6 +3436,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         finally
                         {
                             assignedCallback.Deactivate();
+                            Interlocked.CompareExchange(ref _currentAssignedCallback, null, assignedCallback);
                             Interlocked.Decrement(ref _assignedCallbacksRunning);
                             s_assignedCallback.Value = null;
                         }
@@ -3481,6 +3485,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         revocationSequence = 0;
         return false;
     }
+
+    /// <summary>
+    /// The owner abandoned the assignment the running OnPartitionsAssigned callback announced (manual
+    /// assignment or a subscription change, possibly from inside that callback): the callback's
+    /// further seeks and pauses apply to the consumer directly instead of being staged for a sync
+    /// that will not come.
+    /// </summary>
+    internal void EndAssignedCallbackStaging() => Volatile.Read(ref _currentAssignedCallback)?.Deactivate();
 
     /// <summary>True while any OnPartitionsAssigned delivery runs; a cheap gate for the owner.</summary>
     internal bool IsDeliveringAssignedCallback => Volatile.Read(ref _assignedCallbacksRunning) != 0;

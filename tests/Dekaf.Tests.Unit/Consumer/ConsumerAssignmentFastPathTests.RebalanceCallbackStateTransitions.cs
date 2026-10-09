@@ -155,6 +155,95 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await Assert.That(consumer.UnacknowledgedAppliedRebalanceSeekCountForTest).IsEqualTo(0);
     }
 
+    public enum AbandonInCallback
+    {
+        Assign,
+        Unassign,
+        IncrementalAssign,
+        Unsubscribe,
+        SubscribeTopics,
+        SubscribePattern
+    }
+
+    /// <summary>
+    /// A callback that abandons the group assignment it announced (switches to manual assignment or
+    /// changes the subscription) ends its staging: later seeks, pauses, resumes and position reads in
+    /// that callback act on the consumer directly.
+    /// </summary>
+    [Test]
+    [Arguments(AbandonInCallback.Assign)]
+    [Arguments(AbandonInCallback.Unassign)]
+    [Arguments(AbandonInCallback.IncrementalAssign)]
+    [Arguments(AbandonInCallback.Unsubscribe)]
+    [Arguments(AbandonInCallback.SubscribeTopics)]
+    [Arguments(AbandonInCallback.SubscribePattern)]
+    public async Task RebalanceCallbackStateTransitions_AbandonInsideCallback_EndsStaging(AbandonInCallback abandon)
+    {
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessAsync(
+            listener,
+            AssignedResponse(1, 0),
+            AssignedResponse(2, 0, 1));
+        var consumer = harness.Consumer;
+        var coordinator = GetCoordinator(consumer);
+        var partition0 = new TopicPartition("test-topic", 0);
+
+        bool? stagingAfterAbandon = null;
+        long? positionAfterSeek = null;
+        var pausedAfterResume = true;
+        listener.OnAssigned = partitions =>
+        {
+            if (!partitions.Contains(Partition1) || stagingAfterAbandon is not null)
+                return;
+
+            switch (abandon)
+            {
+                case AbandonInCallback.Assign:
+                    consumer.Assign(partition0, Partition1);
+                    break;
+                case AbandonInCallback.Unassign:
+                    consumer.Unassign();
+                    break;
+                case AbandonInCallback.IncrementalAssign:
+                    consumer.IncrementalAssign([new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 5)]);
+                    break;
+                case AbandonInCallback.Unsubscribe:
+                    consumer.Unsubscribe();
+                    break;
+                case AbandonInCallback.SubscribeTopics:
+                    consumer.Subscribe("test-topic");
+                    break;
+                default:
+                    consumer.SubscribePattern("test-.*");
+                    break;
+            }
+
+            stagingAfterAbandon = coordinator.TryGetAssignedCallbackRevocationSequence(Partition1, out _);
+            consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
+            positionAfterSeek = consumer.GetPosition(Partition1);
+            consumer.Pause(Partition1);
+            consumer.Resume(Partition1);
+            pausedAfterResume = consumer.Paused.Contains(Partition1);
+            consumer.Pause(Partition1);
+        };
+
+        await harness.HeartbeatAsync();
+
+        await Assert.That(stagingAfterAbandon).IsNotNull();
+        await Assert.That(stagingAfterAbandon!.Value).IsFalse();
+        await Assert.That(positionAfterSeek).IsEqualTo(42L);
+        await Assert.That(pausedAfterResume).IsFalse();
+        await Assert.That(consumer.Paused).Contains(Partition1);
+        await Assert.That(consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
+        if (abandon == AbandonInCallback.Assign)
+        {
+            // Manual assignment initializes only partitions without a position; the seek is it.
+            await consumer.EnsureAssignmentAsync(CancellationToken.None);
+            await Assert.That(consumer.GetPosition(Partition1)).IsEqualTo(42L);
+            await Assert.That(consumer.Paused).Contains(Partition1);
+        }
+    }
+
     [Test]
     public async Task EnsureAssignmentAsync_RepeatedlySupersededSync_TracksOneAppliedSeekPerPartition()
     {

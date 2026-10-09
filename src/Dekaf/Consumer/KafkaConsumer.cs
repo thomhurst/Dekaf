@@ -1441,9 +1441,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     //                         repeats cleanup and initialization with the same marker and seek
     //   sync ack           -> applied seeks removed if unchanged; markers left are inert (the next
     //                         revocation flips them false, cleanup or Resume removes them)
-    //   abandon            -> Unsubscribe, Subscribe(pattern), Assign, Unassign, IncrementalAssign
-    //                         before sync: every staged seek and marker dropped, and the pause of a
-    //                         marked partition not in the synchronized assignment removed
+    //   abandon            -> Unsubscribe, Subscribe (topics, filter or pattern), Assign, Unassign,
+    //                         IncrementalAssign before sync: every staged seek and marker dropped,
+    //                         the pause of a marked partition not in the synchronized assignment
+    //                         removed, and a running assigned callback's staging ended (its later
+    //                         seeks, pauses and position reads act on the consumer directly)
     //   close              -> as abandon, after the synchronized partitions are removed
     private readonly ConcurrentDictionary<TopicPartition, TopicPartitionOffset> _pendingRebalanceSeeks = new();
     private readonly ConcurrentDictionary<TopicPartition, bool> _rebalancePausedPartitions = new();
@@ -7976,6 +7978,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// </summary>
     private bool DiscardUnsynchronizedRebalanceState(HashSet<TopicPartition> synchronizedAssignment)
     {
+        // A callback still running (this may be its own call) must not stage anything further.
+        _coordinator?.EndAssignedCallbackStaging();
         var hadPaused = false;
         lock (_pauseStateLock)
         {
