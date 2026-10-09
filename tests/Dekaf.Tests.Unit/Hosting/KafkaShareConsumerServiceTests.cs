@@ -222,6 +222,30 @@ public sealed class KafkaShareConsumerServiceTests
     }
 
     [Test]
+    public async Task DefaultDisposition_ReleasesAndContinues()
+    {
+        var consumer = new TestConsumer(Record(0), Record(1));
+        await using var service = new TestService(consumer, (record, _) => record.Offset == 0
+            ? ValueTask.FromException(new InvalidOperationException()) : ValueTask.CompletedTask)
+        { Disposition = null };
+        await RunAsync(service);
+        await Assert.That(consumer.Acknowledgements.Select(x => x.Type)).IsEquivalentTo([AcknowledgeType.Release, AcknowledgeType.Accept]);
+        await Assert.That(service.ExecuteTask!.IsCompletedSuccessfully).IsTrue();
+    }
+
+    [Test]
+    public async Task Redeliver_ReleasesAndContinues()
+    {
+        var consumer = new TestConsumer(Record(0), Record(1));
+        await using var service = new TestService(consumer, (record, _) => record.Offset == 0
+            ? ValueTask.FromException(new InvalidOperationException()) : ValueTask.CompletedTask)
+        { Disposition = MessageFailureDisposition.Redeliver };
+        await RunAsync(service);
+        await Assert.That(consumer.Acknowledgements.Select(x => x.Type)).IsEquivalentTo([AcknowledgeType.Release, AcknowledgeType.Accept]);
+        await Assert.That(service.ExecuteTask!.IsCompletedSuccessfully).IsTrue();
+    }
+
+    [Test]
     public async Task RetryPolicy_RetriesSameRecordBeforeAcceptance()
     {
         var consumer = new TestConsumer(Record(0));
@@ -587,18 +611,199 @@ public sealed class KafkaShareConsumerServiceTests
     }
 
     [Test]
-    public async Task ExpiredAcquisition_IsReleasedBeforeProcessing()
+    public async Task ExpiredAcquisition_IsAbandonedBeforeProcessingAndServiceContinues()
     {
-        var consumer = new TestConsumer(Record(0))
+        var consumer = new TestConsumer(Record(0), Record(1))
         {
             AcquisitionTimestamp = System.Diagnostics.Stopwatch.GetTimestamp() - System.Diagnostics.Stopwatch.Frequency * 2,
             AcquisitionLockTimeoutMs = 100
         };
         var processed = false;
         await using var service = new TestService(consumer, (_, _) => { processed = true; return ValueTask.CompletedTask; });
-        await Assert.That(async () => await RunAsync(service)).Throws<Dekaf.Errors.KafkaException>();
+        await RunAsync(service);
         await Assert.That(processed).IsFalse();
-        await Assert.That(consumer.Acknowledgements.Single().Type).IsEqualTo(AcknowledgeType.Release);
+        // Any acknowledgement would be rejected by the broker, which already redelivers the records.
+        await Assert.That(consumer.Acknowledgements).IsEmpty();
+        await Assert.That(consumer.Abandoned).IsEquivalentTo([0L, 1L]);
+        await Assert.That(service.ExecuteTask!.IsCompletedSuccessfully).IsTrue();
+    }
+
+    [Test]
+    public async Task AcquisitionExpiringDuringProcessing_IsAbandonedAndServiceContinues()
+    {
+        var stale = new KafkaException(ErrorCode.InvalidRecordState, "acquisition expired");
+        var consumer = new TestConsumer(Record(0), Record(1))
+        {
+            AcquisitionLockTimeoutMs = 100,
+            CommitFailure = stale
+        };
+        await using var service = new TestService(consumer, async (record, token) =>
+        {
+            if (record.Offset == 0)
+                await Task.Delay(TimeSpan.FromMilliseconds(500), token);
+        }, options: new KafkaShareConsumerServiceOptions { RenewalInterval = TimeSpan.FromMilliseconds(5) });
+        await RunAsync(service);
+        await Assert.That(consumer.Abandoned).IsEquivalentTo([0L]);
+        await Assert.That(consumer.Acknowledgements.Where(x => x.Type != AcknowledgeType.Renew).Select(x => (x.Record.Offset, x.Type)))
+            .IsEquivalentTo([(1L, AcknowledgeType.Accept)]);
+        await Assert.That(service.ExecuteTask!.IsCompletedSuccessfully).IsTrue();
+    }
+
+    [Test]
+    public async Task AcquisitionExpiringBeforeProcessingFails_SkipsRetriesAndRouting()
+    {
+        var stale = new KafkaException(ErrorCode.InvalidRecordState, "acquisition expired");
+        var consumer = new TestConsumer(Record(0), Record(1))
+        {
+            AcquisitionLockTimeoutMs = 100,
+            CommitFailure = stale
+        };
+        var retry = Substitute.For<IRetryPolicy>();
+        retry.GetNextDelay(Arg.Any<int>(), Arg.Any<Exception>()).Returns(TimeSpan.Zero);
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        var calls = 0;
+        await using var service = new TestService(consumer, async (record, token) =>
+        {
+            if (record.Offset != 0) return;
+            calls++;
+            await Task.Delay(TimeSpan.FromMilliseconds(500), token);
+            throw new InvalidOperationException("failed after the lock lapsed");
+        }, options: new KafkaShareConsumerServiceOptions { RenewalInterval = TimeSpan.FromMilliseconds(5) },
+            retryPolicy: retry, deadLetterOptions: new DeadLetterOptions()) { Producer = producer };
+        await RunAsync(service);
+        // The broker already redelivers the record: no in-place retry, no routed copy, no disposition.
+        await Assert.That(calls).IsEqualTo(1);
+        await producer.DidNotReceive().ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>());
+        await Assert.That(service.FailureContext).IsNull();
+        await Assert.That(consumer.Abandoned).IsEquivalentTo([0L]);
+        await Assert.That(consumer.Acknowledgements.Where(x => x.Type != AcknowledgeType.Renew).Select(x => (x.Record.Offset, x.Type)))
+            .IsEquivalentTo([(1L, AcknowledgeType.Accept)]);
+    }
+
+    [Test]
+    public async Task StaleRenewalBeforeLocalDeadline_SkipsRetriesRoutingAndAcknowledgement()
+    {
+        var stale = new KafkaException(ErrorCode.InvalidRecordState, "acquisition expired");
+        var consumer = new TestConsumer(Record(0), Record(1)) { CommitFailure = stale, CommitFailurePartitions = [0] };
+        var retry = Substitute.For<IRetryPolicy>();
+        retry.GetNextDelay(Arg.Any<int>(), Arg.Any<Exception>()).Returns(TimeSpan.Zero);
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        var calls = 0;
+        await using var service = new TestService(consumer, async (record, token) =>
+        {
+            if (record.Offset != 0) return;
+            calls++;
+            // The 30 second local deadline is far away; only the broker's rejection marks the lock lost.
+            await consumer.Renewed.Task.WaitAsync(token);
+            await Task.Delay(TimeSpan.FromMilliseconds(50), token);
+            throw new InvalidOperationException("failed after the broker rejected the renewal");
+        }, options: new KafkaShareConsumerServiceOptions { RenewalInterval = TimeSpan.FromMilliseconds(5) },
+            retryPolicy: retry, deadLetterOptions: new DeadLetterOptions()) { Producer = producer };
+        await RunAsync(service);
+        await Assert.That(calls).IsEqualTo(1);
+        await producer.DidNotReceive().ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>());
+        await Assert.That(service.FailureContext).IsNull();
+        await Assert.That(consumer.Abandoned).IsEquivalentTo([0L]);
+        await Assert.That(consumer.Acknowledgements.Where(x => x.Type != AcknowledgeType.Renew).Select(x => (x.Record.Offset, x.Type)))
+            .IsEquivalentTo([(1L, AcknowledgeType.Accept)]);
+    }
+
+    [Test]
+    public async Task AcquisitionLostDuringRetryTopicRouting_DoesNotStartDeadLetterRouting()
+    {
+        var stale = new KafkaException(ErrorCode.InvalidRecordState, "acquisition expired");
+        var consumer = new TestConsumer(Record(0)) { CommitFailure = stale, CommitFailurePartitions = [0] };
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        var topics = new List<string>();
+        producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                topics.Add(call.ArgAt<ProducerMessage<byte[]?, byte[]?>>(0).Topic!);
+                return new ValueTask<RecordMetadata>(FailAfterRenewalAsync());
+            });
+        async Task<RecordMetadata> FailAfterRenewalAsync()
+        {
+            // The renewal during this write is rejected, so the broker is redelivering the record.
+            await consumer.Renewed.Task;
+            await Task.Delay(50);
+            throw new InvalidOperationException("retry topic unavailable");
+        }
+        await using var service = new TestService(consumer, (_, _) => throw new InvalidOperationException("failed"),
+            options: new KafkaShareConsumerServiceOptions { RenewalInterval = TimeSpan.FromMilliseconds(5) },
+            deadLetterOptions: new DeadLetterOptions { RetryTopics = new RetryTopicOptions { Delays = [TimeSpan.FromSeconds(1)] } })
+        { Producer = producer };
+        await RunAsync(service);
+        await Assert.That(topics).IsEquivalentTo(["orders-retry-1s"]);
+        await Assert.That(service.FailureContext).IsNull();
+        await Assert.That(consumer.Abandoned).IsEquivalentTo([0L]);
+        await Assert.That(service.ExecuteTask!.IsCompletedSuccessfully).IsTrue();
+    }
+
+    [Test]
+    public async Task StaleCommitForAnotherPartition_DoesNotLoseCurrentAcquisition()
+    {
+        // The renewal commit flushes another partition's rejected acknowledgements while this
+        // record's renewal succeeds: the record keeps its lock and is accepted.
+        var stale = new KafkaException(ErrorCode.InvalidRecordState, "another partition expired");
+        var consumer = new TestConsumer(Record(0), Record(1))
+        {
+            CommitFailure = stale,
+            CommitFailurePartitions = [5],
+            CommitSuccessPartitions = [0]
+        };
+        await using var service = new TestService(consumer, async (record, token) =>
+        {
+            if (record.Offset == 0)
+            {
+                await consumer.Renewed.Task.WaitAsync(token);
+                await Task.Delay(TimeSpan.FromMilliseconds(50), token);
+            }
+        }, options: new KafkaShareConsumerServiceOptions { RenewalInterval = TimeSpan.FromMilliseconds(5) });
+        await RunAsync(service);
+        await Assert.That(consumer.Abandoned).IsEmpty();
+        await Assert.That(consumer.Acknowledgements.Where(x => x.Type != AcknowledgeType.Renew).Select(x => (x.Record.Offset, x.Type)))
+            .IsEquivalentTo([(0L, AcknowledgeType.Accept), (1L, AcknowledgeType.Accept)]);
+    }
+
+    [Test]
+    public async Task DecoratedConsumer_LapsedRenewedAcquisition_IsReleasedToClearReplayState()
+    {
+        var stale = new KafkaException(ErrorCode.InvalidRecordState, "acquisition expired");
+        var inner = new TestConsumer(Record(0), Record(1)) { CommitFailure = stale };
+        await using var service = new TestService(new DecoratedConsumer(inner), async (record, token) =>
+        {
+            if (record.Offset == 0)
+            {
+                await inner.Renewed.Task.WaitAsync(token);
+                await Task.Delay(TimeSpan.FromMilliseconds(50), token);
+            }
+        }, options: new KafkaShareConsumerServiceOptions { RenewalInterval = TimeSpan.FromMilliseconds(5) });
+        await RunAsync(service);
+        // A decorator cannot forward abandonment, so the renewed record gets a terminal Release.
+        await Assert.That(inner.Abandoned).IsEmpty();
+        await Assert.That(inner.Acknowledgements.Where(x => x.Type != AcknowledgeType.Renew).Select(x => (x.Record.Offset, x.Type)))
+            .IsEquivalentTo([(0L, AcknowledgeType.Release), (1L, AcknowledgeType.Accept)]);
+        await Assert.That(service.ExecuteTask!.IsCompletedSuccessfully).IsTrue();
+    }
+
+    [Test]
+    public async Task StaleAcquisitionAcknowledgementFailure_DoesNotStopService()
+    {
+        var stale = new KafkaException(ErrorCode.InvalidRecordState, "acquisition expired");
+        var consumer = new TestConsumer(Record(0))
+        {
+            InlineFailure = stale,
+            FinalCommitFailure = new KafkaException("CommitAsync partially failed", stale),
+            ReportCommitFailure = true,
+            ThrowCommitFailure = true
+        };
+        var processed = false;
+        await using var service = new TestService(consumer, (_, _) => { processed = true; return ValueTask.CompletedTask; });
+        await RunAsync(service);
+        await Assert.That(processed).IsTrue();
+        await Assert.That(consumer.Acknowledgements.Single().Type).IsEqualTo(AcknowledgeType.Accept);
+        await Assert.That(service.ExecuteTask!.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(service.Errors).IsEmpty();
     }
 
     [Test]
@@ -737,10 +942,16 @@ public sealed class KafkaShareConsumerServiceTests
     {
         public readonly List<string> Events = [];
         public readonly List<(ShareConsumeResult<string, string> Record, AcknowledgeType Type)> Acknowledgements = [];
+        public readonly List<long> Abandoned = [];
         public readonly TaskCompletionSource Renewed = Signal();
         public TaskCompletionSource? DisposalGate { get; init; }
         public ShareAcknowledgementMode AcknowledgementMode { get; init; } = ShareAcknowledgementMode.Explicit;
         public bool FailCommit { get; init; }
+        public Exception? CommitFailure { get; init; }
+        // Reports CommitFailure for these partitions through the acknowledgement observer, as the
+        // built-in consumer does before CommitAsync throws; other partitions report success.
+        public int[]? CommitFailurePartitions { get; init; }
+        public int[] CommitSuccessPartitions { get; init; } = [];
         public Exception? FinalCommitFailure { get; init; }
         public bool ReportCommitFailure { get; init; }
         public bool ThrowCommitFailure { get; init; }
@@ -805,6 +1016,7 @@ public sealed class KafkaShareConsumerServiceTests
             Acknowledgements.Add((record, type));
             if (type == AcknowledgeType.Renew) Renewed.TrySetResult();
         }
+        public void AbandonAcquisition(string topic, int partition, long offset) => Abandoned.Add(offset);
         public ValueTask CommitAsync(CancellationToken cancellationToken = default)
         {
             Events.Add("commit");
@@ -812,6 +1024,19 @@ public sealed class KafkaShareConsumerServiceTests
             {
                 if (ReportCommitFailure) ReportAcknowledgementFailure(failure);
                 if (ThrowCommitFailure) return ValueTask.FromException(failure);
+            }
+            if (CommitFailure is not null)
+            {
+                if (CommitFailurePartitions is { } failed)
+                {
+                    var results = new List<ShareAcknowledgementCommitResult>();
+                    foreach (var partition in failed)
+                        results.Add(new ShareAcknowledgementCommitResult(new TopicPartition("orders", partition), default, CommitFailure));
+                    foreach (var partition in CommitSuccessPartitions)
+                        results.Add(new ShareAcknowledgementCommitResult(new TopicPartition("orders", partition), default, null));
+                    _observer?.Invoke(results.ToArray());
+                }
+                return ValueTask.FromException(CommitFailure);
             }
             return FailCommit ? ValueTask.FromException(new InvalidOperationException("acknowledgement failed")) : ValueTask.CompletedTask;
         }
@@ -821,6 +1046,26 @@ public sealed class KafkaShareConsumerServiceTests
         public bool TryGetRawRecord(TopicPartitionOffset record, out byte[]? key, out byte[]? value) { key = []; value = RawValue; return true; }
     }
 
+    // Exposes only public capabilities, like an application decorator outside the Dekaf assembly.
+    private sealed class DecoratedConsumer(TestConsumer inner) : IKafkaShareConsumer<string, string>, IShareConsumerConfiguration
+    {
+        public ShareAcknowledgementMode AcknowledgementMode => inner.AcknowledgementMode;
+        public StringSet Subscription => inner.Subscription;
+        public PartitionSet Assignment => inner.Assignment;
+        public string? MemberId => inner.MemberId;
+        public int? AcquisitionLockTimeoutMs => inner.AcquisitionLockTimeoutMs;
+        public ValueTask InitializeAsync(CancellationToken cancellationToken = default) => inner.InitializeAsync(cancellationToken);
+        public IKafkaShareConsumer<string, string> Subscribe(params string[] topics) { inner.Subscribe(topics); return this; }
+        public IKafkaShareConsumer<string, string> Unsubscribe() { inner.Unsubscribe(); return this; }
+        public IAsyncEnumerable<ShareConsumeResult<string, string>> PollAsync(CancellationToken cancellationToken = default)
+            => inner.PollAsync(cancellationToken);
+        public void Acknowledge(ShareConsumeResult<string, string> record, AcknowledgeType type = AcknowledgeType.Accept)
+            => inner.Acknowledge(record, type);
+        public ValueTask CommitAsync(CancellationToken cancellationToken = default) => inner.CommitAsync(cancellationToken);
+        public ValueTask CloseAsync(CancellationToken cancellationToken = default) => inner.CloseAsync(cancellationToken);
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
+    }
+
     internal sealed class TestService(
         IKafkaShareConsumer<string, string> consumer,
         Func<ShareConsumeResult<string, string>, CancellationToken, ValueTask>? process = null,
@@ -828,7 +1073,7 @@ public sealed class KafkaShareConsumerServiceTests
         DeadLetterOptions? deadLetterOptions = null) : KafkaShareConsumerService<string, string>(consumer,
             NullLogger.Instance, deadLetterOptions, retryPolicy, options)
     {
-        public MessageFailureDisposition Disposition { get; init; } = MessageFailureDisposition.Retry;
+        public MessageFailureDisposition? Disposition { get; init; } = MessageFailureDisposition.Retry;
         public ShareMessageFailureContext<string, string>? FailureContext { get; private set; }
         public int RoutingFailures { get; private set; }
         public List<Exception> Errors { get; } = [];
@@ -841,7 +1086,10 @@ public sealed class KafkaShareConsumerServiceTests
         protected override ValueTask ProcessAsync(ShareConsumeResult<string, string> result, CancellationToken token)
             => process?.Invoke(result, token) ?? ValueTask.CompletedTask;
         protected override ValueTask<MessageFailureDisposition> GetFailureDispositionAsync(ShareMessageFailureContext<string, string> context, CancellationToken token)
-        { FailureContext = context; return new(Disposition); }
+        {
+            FailureContext = context;
+            return Disposition is { } disposition ? new(disposition) : base.GetFailureDispositionAsync(context, token);
+        }
         protected override ValueTask OnDeadLetterRoutingFailedAsync(Exception exception, ShareConsumeResult<string, string> result, CancellationToken token)
         { RoutingFailures++; return ValueTask.CompletedTask; }
         protected override IKafkaProducer<byte[]?, byte[]?> CreateDeadLetterProducer() => Producer!;

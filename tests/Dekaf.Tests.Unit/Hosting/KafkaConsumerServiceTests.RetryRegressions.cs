@@ -45,7 +45,7 @@ public sealed partial class KafkaConsumerServiceTests
             await ProcessWithRetriesAsync(service, CreateResult(retained.Topic, retained.Partition, 42, headers), stopping.Token);
 
             var serviceType = typeof(Dekaf.Extensions.Hosting.KafkaConsumerService<string, string>);
-            var pending = (System.Collections.IDictionary)serviceType.GetField("_retryTopicPostponements",
+            var pending = (System.Collections.IDictionary)serviceType.GetField("_postponements",
                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(service)!;
             var oldPostponement = pending[revoked]!;
             var retainedPostponement = pending[retained]!;
@@ -56,7 +56,7 @@ public sealed partial class KafkaConsumerServiceTests
             await listener.OnPartitionsAssignedAsync([revoked], CancellationToken.None);
             await ProcessWithRetriesAsync(service, result, stopping.Token);
 
-            var complete = serviceType.GetMethod("TryCompleteRetryTopicPostponement",
+            var complete = serviceType.GetMethod("TryCompletePartitionPostponement",
                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
             await Assert.That((bool)complete.Invoke(service, [revoked, oldPostponement])!).IsFalse();
             consumer.Partitions.DidNotReceive().Resume(Arg.Any<TopicPartition[]>());

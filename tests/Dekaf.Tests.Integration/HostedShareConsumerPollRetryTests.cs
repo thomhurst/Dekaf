@@ -82,6 +82,8 @@ public class HostedShareConsumerPollRetryTests(KafkaTestContainer kafka) : Kafka
             => ((IHostedShareConsumer)inner).ObserveAcknowledgements(observer);
         public void ObserveAcknowledgements(ShareAcknowledgementCommitCallback observer, CancellationToken requestCancellationToken)
             => ((IHostedShareConsumer)inner).ObserveAcknowledgements(observer, requestCancellationToken);
+        public void AbandonAcquisition(string topic, int partition, long offset)
+            => ((IHostedShareConsumer)inner).AbandonAcquisition(topic, partition, offset);
         public ShareAcknowledgementMode AcknowledgementMode => ShareAcknowledgementMode.Explicit;
         public StringSet Subscription => inner.Subscription;
         public PartitionSet Assignment => inner.Assignment;

@@ -61,7 +61,8 @@ public sealed partial class KafkaConsumerServiceTests
         consumer.ConsumeAsync(Arg.Any<CancellationToken>())
             .Returns(_ => CreateResults(("orders", 0, 0)));
 
-        var service = new FailingConsumerService(consumer, ["orders"], serviceOptions: FastRestartOptions);
+        var service = new FailingConsumerService(consumer, ["orders"], serviceOptions: FastRestartOptions,
+            failureDisposition: MessageFailureDisposition.Retry);
 
         await service.StartAsync(CancellationToken.None);
 

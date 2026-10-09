@@ -25,4 +25,7 @@ internal interface IHostedShareConsumer
     // host's shutdown budget, after which acknowledgement outcomes remain unconfirmed.
     void ObserveAcknowledgements(ShareAcknowledgementCommitCallback observer,
         CancellationToken requestCancellationToken);
+    // Forgets a record whose acquisition lock expired without queueing an acknowledgement:
+    // the broker already redelivers it and rejects any acknowledgement for it.
+    void AbandonAcquisition(string topic, int partition, long offset);
 }

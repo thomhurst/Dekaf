@@ -103,7 +103,10 @@ public class HostedShareConsumerProcessingBenchmarks
     // counts and measurement. The batch size amortizes caller/service signaling; it does not
     // fix BDN invocation counts or bypass steady-state calibration. Existing share result/string
     // allocation, network I/O, raw capture, actual renewal requests and shutdown are excluded.
-    private sealed class BenchmarkConsumer : IKafkaShareConsumer<string, string>, IShareConsumerConfiguration, IRawShareRecordAccessor
+    // Like the built-in consumer, it exposes hosted acquisition timestamps, so every record runs
+    // the per-record acquisition deadline check on the production path.
+    private sealed class BenchmarkConsumer : IKafkaShareConsumer<string, string>, IShareConsumerConfiguration,
+        IRawShareRecordAccessor, IHostedShareConsumer
     {
         private readonly ShareConsumeResult<string, string> _record = new()
         { Topic = "orders", Partition = 0, Offset = 42, Key = "key", Value = "value", DeliveryCount = 1 };
@@ -140,6 +143,12 @@ public class HostedShareConsumerProcessingBenchmarks
         public ValueTask CommitAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
         public ValueTask CloseAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
         public ValueTask DisposeAsync() { Available.Dispose(); Completed.Dispose(); return ValueTask.CompletedTask; }
+        public long AcquisitionStartedTimestamp => System.Diagnostics.Stopwatch.GetTimestamp();
+        public void ObserveAcknowledgements(ShareAcknowledgementCommitCallback observer) { }
+        public void ObserveAcknowledgements(ShareAcknowledgementCommitCallback observer, CancellationToken requestCancellationToken) { }
+        // Public rather than an interface-only member, so the fixture also compiles against the baseline.
+        public void AbandonAcquisition(string topic, int partition, long offset)
+            => throw new InvalidOperationException("The success fixture never lets an acquisition lapse.");
         public void EnableRawRecordTracking() { }
         public bool TryGetRawRecord(TopicPartitionOffset record, out byte[]? key, out byte[]? value)
         { key = null; value = null; return false; }

@@ -503,7 +503,7 @@ public sealed partial class ShareConsumerRenewalTests
                             new ShareFetchResponsePartition
                             {
                                 PartitionIndex = 0,
-                                AcknowledgeErrorCode = ErrorCode.InvalidRecordState,
+                                AcknowledgeErrorCode = ErrorCode.TopicAuthorizationFailed,
                                 CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
                                 AcquiredRecords = []
                             }
@@ -554,7 +554,7 @@ public sealed partial class ShareConsumerRenewalTests
                             new ShareFetchResponsePartition
                             {
                                 PartitionIndex = 1,
-                                AcknowledgeErrorCode = ErrorCode.InvalidRecordState,
+                                AcknowledgeErrorCode = ErrorCode.TopicAuthorizationFailed,
                                 CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
                                 AcquiredRecords = []
                             }
@@ -606,7 +606,7 @@ public sealed partial class ShareConsumerRenewalTests
                             new ShareAcknowledgeResponsePartition
                             {
                                 PartitionIndex = 1,
-                                ErrorCode = ErrorCode.InvalidRecordState,
+                                ErrorCode = ErrorCode.TopicAuthorizationFailed,
                                 CurrentLeader = new ShareAcknowledgeLeaderIdAndEpoch()
                             }
                         ]
@@ -725,7 +725,7 @@ public sealed partial class ShareConsumerRenewalTests
         {
             ShareAcknowledgeResponse = CreateAcknowledgeResponse(
                 (0, ErrorCode.None),
-                (1, ErrorCode.InvalidRecordState))
+                (1, ErrorCode.TopicAuthorizationFailed))
         };
         await using var fixture = CreateFixture(
             connection,
@@ -746,7 +746,7 @@ public sealed partial class ShareConsumerRenewalTests
         await Assert.That(outcomes![0].Succeeded).IsTrue();
         await Assert.That(outcomes[1].Exception).IsTypeOf<KafkaException>();
         await Assert.That(((KafkaException)outcomes[1].Exception!).ErrorCode)
-            .IsEqualTo(ErrorCode.InvalidRecordState);
+            .IsEqualTo(ErrorCode.TopicAuthorizationFailed);
         await Assert.That(pendingDuringCallback).IsTrue();
     }
 

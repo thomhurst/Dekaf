@@ -8,14 +8,24 @@ namespace Dekaf.Extensions.Hosting;
 public enum MessageFailureDisposition
 {
     /// <summary>
-    /// Preserves the message for redelivery by leaving its offset uncommitted, or releasing its share acquisition.
+    /// Preserves the message for redelivery by leaving its offset uncommitted, or releasing its share
+    /// acquisition, and stops the service. Under the default host behavior, this stops the host.
     /// </summary>
     Retry,
 
     /// <summary>
     /// Discards the failed message and allows consumption to continue. Share consumers use Reject.
     /// </summary>
-    Discard
+    Discard,
+
+    /// <summary>
+    /// Redelivers the failed message without stopping the service. This is the default. Consumers seek
+    /// the partition back to the failed offset and pause it for the poll retry backoff, which doubles for
+    /// each consecutive redelivery of the same offset; other partitions keep consuming. Share consumers
+    /// release the acquisition and continue; the broker's delivery count limit eventually archives a
+    /// record that always fails.
+    /// </summary>
+    Redeliver
 }
 
 /// <summary>
