@@ -803,9 +803,6 @@ public sealed partial class ConsumerAssignmentFastPathTests
         public async Task HeartbeatAsync()
         {
             var coordinator = GetCoordinator(Consumer);
-            // As the consumer's own sync does when it acts on its current subscription.
-            if (Consumer.Subscription.Count != 0)
-                coordinator.ReactivateAssignmentCallbacks(coordinator.SubscriptionGeneration);
             coordinator.RequestRejoin();
             await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
         }

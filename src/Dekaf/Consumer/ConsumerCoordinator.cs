@@ -63,21 +63,19 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // The revocation sequence each queued revocation was published with, until a drain hands it to
     // the owner. Guarded by _assignmentStateLock, like _revokedPartitionsSinceLastSync.
     private readonly Dictionary<TopicPartition, long> _enqueuedRevocationSequences = [];
-    // Incremented each time the owner abandons the assignment (EndAssignedCallbackStaging). A queued
-    // OnPartitionsAssigned notification captures it, so its callback starts with staging ended when
-    // the assignment it announces was abandoned before it ran.
-    private int _assignmentAbandonEpoch;
-    // Incremented by each change of the owner's subscription or assignment mode (every abandon,
-    // including the one a Subscribe performs); control plane only. The owner captures it before it
-    // reads its subscription, so a call that acts on that subscription can tell it is still current.
+    // Subscription generations tie each heartbeat response to the owner subscription it answers.
+    // _subscriptionGeneration is incremented by every change of the owner's subscription or
+    // assignment mode (every abandon, including the one a Subscribe performs); control plane only.
+    // _subscribedGeneration is the generation of the subscription this coordinator sends, adopted
+    // when the owner ensures the group with a subscription it read at that generation; it never
+    // goes back. Each heartbeat request is stamped with it, and an assignment its response
+    // publishes stages callback work only if no change happened since (stamp == current). The
+    // membership and heartbeat loop outlive an abandon, so responses for the abandoned subscription
+    // (in flight or later) keep arriving; they never stage.
     private int _subscriptionGeneration;
-    // The generation of the latest abandon, or 0 once the owner, subscribed at that generation,
-    // reactivated (ReactivateAssignmentCallbacks). The membership and heartbeat loop outlive an
-    // abandon, so a heartbeat (in flight or later) can still publish an assignment and deliver its
-    // callbacks; one published while this is set belongs to the abandoned assignment and never stages.
-    private int _abandonedAtGeneration;
-    // AbandonEpoch of a notification published while the group assignment was abandoned.
-    private const int AbandonedAtPublication = -2;
+    private int _subscribedGeneration;
+    // SubscriptionGeneration of a notification whose assignment answered an outdated subscription.
+    private const int OutdatedSubscriptionGeneration = -2;
     private Task _pendingRevocationCommit = Task.CompletedTask;
     // Completes once the callbacks of the latest published assignment change with newly assigned
     // partitions have been delivered. The consumer does not synchronize that assignment before
@@ -770,9 +768,24 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         CancellationToken cancellationToken)
         => EnsureActiveGroupAsync(topics, null, cancellationToken);
 
-    public async ValueTask EnsureActiveGroupAsync(
+    public ValueTask EnsureActiveGroupAsync(
         StringSet topics,
         string? subscribedTopicRegex,
+        CancellationToken cancellationToken)
+        => EnsureActiveGroupAsync(
+            topics,
+            subscribedTopicRegex,
+            Volatile.Read(ref _subscriptionGeneration),
+            cancellationToken);
+
+    /// <param name="subscriptionGeneration">
+    /// <see cref="SubscriptionGeneration"/> read before the owner read <paramref name="topics"/>
+    /// and <paramref name="subscribedTopicRegex"/>.
+    /// </param>
+    internal async ValueTask EnsureActiveGroupAsync(
+        StringSet topics,
+        string? subscribedTopicRegex,
+        int subscriptionGeneration,
         CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _disposed) != 0)
@@ -796,14 +809,21 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 // through to recovery instead of carrying on as a member.
                 if (_state != CoordinatorState.Stable)
                 {
-                    await EnsureActiveGroupConsumerProtocolAsync(topics, subscribedTopicRegex, cancellationToken)
+                    await EnsureActiveGroupConsumerProtocolAsync(
+                            topics,
+                            subscribedTopicRegex,
+                            subscriptionGeneration,
+                            cancellationToken)
                         .ConfigureAwait(false);
                     return;
                 }
             }
 
             if (SubscriptionMatches(topics, subscribedTopicRegex))
+            {
+                AdoptSubscriptionGeneration(subscriptionGeneration);
                 return;
+            }
 
             if (subscribedTopicRegex is not null)
             {
@@ -813,7 +833,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             }
         }
 
-        await EnsureActiveGroupConsumerProtocolAsync(topics, subscribedTopicRegex, cancellationToken).ConfigureAwait(false);
+        await EnsureActiveGroupConsumerProtocolAsync(
+                topics,
+                subscribedTopicRegex,
+                subscriptionGeneration,
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -904,14 +929,37 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         => string.Equals(_subscribedTopicRegex, subscribedTopicRegex, StringComparison.Ordinal) &&
            SetEquals(_subscribedTopics, topics);
 
-    private void UpdateSubscription(StringSet topics, string? subscribedTopicRegex)
+    private void UpdateSubscription(StringSet topics, string? subscribedTopicRegex, int subscriptionGeneration)
     {
-        if (SubscriptionMatches(topics, subscribedTopicRegex))
+        // An owner call that read an older subscription than the one already sent is stale.
+        if (subscriptionGeneration < Volatile.Read(ref _subscribedGeneration))
             return;
 
-        _subscribedTopics = topics;
-        _subscribedTopicRegex = subscribedTopicRegex;
-        Interlocked.Exchange(ref _subscriptionChanged, 1);
+        if (!SubscriptionMatches(topics, subscribedTopicRegex))
+        {
+            _subscribedTopics = topics;
+            _subscribedTopicRegex = subscribedTopicRegex;
+            Interlocked.Exchange(ref _subscriptionChanged, 1);
+        }
+
+        // After the topics: a request that reads this generation also reads those topics.
+        AdoptSubscriptionGeneration(subscriptionGeneration);
+    }
+
+    /// <summary>
+    /// Requests built from here on answer the owner subscription read at
+    /// <paramref name="subscriptionGeneration"/>. Monotonic, so a stale call never moves it back.
+    /// </summary>
+    private void AdoptSubscriptionGeneration(int subscriptionGeneration)
+    {
+        var current = Volatile.Read(ref _subscribedGeneration);
+        while (subscriptionGeneration > current)
+        {
+            var observed = Interlocked.CompareExchange(ref _subscribedGeneration, subscriptionGeneration, current);
+            if (observed == current)
+                return;
+            current = observed;
+        }
     }
 
     private async ValueTask FindCoordinatorAsync(CancellationToken cancellationToken)
@@ -1300,10 +1348,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // _pendingPublishLock, which also orders it against PruneRevocationSequences.
         public long RevocationSequence;
 
-        // _assignmentAbandonEpoch when the assignment this notification announces was published
-        // (or when it was queued, if the publisher did not capture it); -1 until set;
-        // AbandonedAtPublication when published while the group assignment was abandoned.
-        public int AbandonEpoch = -1;
+        // The owner subscription generation the announced assignment answers, captured when it was
+        // published (or when queued, if the publisher did not capture it); -1 until set;
+        // OutdatedSubscriptionGeneration when it answered a subscription already changed. Its
+        // assigned callback stages only while this is still the current generation.
+        public int SubscriptionGeneration = -1;
 
         public bool RevokedDelivered;
 
@@ -1343,8 +1392,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             callback.RevocationSequence = Volatile.Read(ref _revocationSequence);
             // Kept when the publisher captured it with the assignment it published.
-            if (callback.AbandonEpoch == -1)
-                callback.AbandonEpoch = Volatile.Read(ref _assignmentAbandonEpoch);
+            if (callback.SubscriptionGeneration == -1)
+                callback.SubscriptionGeneration = CurrentPublicationSubscriptionGeneration();
             if (!reserved)
             {
                 Interlocked.Increment(ref _pendingRebalanceCallbackCount);
@@ -2120,7 +2169,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private void ReserveRebalanceCallbacks(
         ConsumerHeartbeatResult result,
         HashSet<TopicPartition> published,
-        int publishedAbandonEpoch)
+        int publishedSubscriptionGeneration)
     {
         if (result.Revoked is { Count: > 0 } || result.Assigned is { Count: > 0 })
         {
@@ -2129,7 +2178,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 {
                     Deferred = result,
                     Assignment = published,
-                    AbandonEpoch = publishedAbandonEpoch
+                    SubscriptionGeneration = publishedSubscriptionGeneration
                 },
                 reserved: true);
         }
@@ -2226,6 +2275,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         int assignmentVersion;
         IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? ownedTopicPartitions;
         string? subscribedTopicRegex;
+        int requestSubscriptionGeneration;
         using (var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
                    coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
                    .ConfigureAwait(false))
@@ -2306,6 +2356,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // but this heartbeat clears the flag after sending the old topics.
             // Always send topics on initial/re-join — KIP-848 requires SubscribedTopicNames to be
             // non-null when joining. The flag must still be cleared to avoid a stale re-send later.
+            // Read before the subscription (UpdateSubscription writes it after), so the stamp never
+            // claims a newer subscription than the request carries.
+            requestSubscriptionGeneration = Volatile.Read(ref _subscribedGeneration);
             var subscriptionChanged = Interlocked.Exchange(ref _subscriptionChanged, 0) == 1;
             var subscriptionShouldBeSent = isInitial || subscriptionChanged;
             var currentSubscribedTopicRegex = _subscribedTopicRegex;
@@ -2375,7 +2428,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         isInitial,
                         ownedTopicPartitions,
                         assignmentVersion,
-                        subscribedTopicRegex);
+                        subscribedTopicRegex,
+                        requestSubscriptionGeneration);
                 }
             }
             finally
@@ -2422,7 +2476,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         isInitial,
                         ownedTopicPartitions,
                         assignmentVersion,
-                        subscribedTopicRegex);
+                        subscribedTopicRegex,
+                        requestSubscriptionGeneration);
                 }
                 finally
                 {
@@ -2479,7 +2534,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         bool isInitial,
         IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? ownedTopicPartitions,
         int assignmentVersion,
-        string? subscribedTopicRegex)
+        string? subscribedTopicRegex,
+        int requestSubscriptionGeneration)
     {
 
         if (response.ErrorCode != ErrorCode.None)
@@ -2507,7 +2563,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         if (response.Assignment is not null)
         {
-            return ProcessConsumerGroupAssignment(response.Assignment);
+            return ProcessConsumerGroupAssignment(response.Assignment, requestSubscriptionGeneration);
         }
 
         return default;
@@ -2678,7 +2734,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// Processes a ConsumerGroupHeartbeat assignment response, resolving topic UUIDs to names
     /// and computing the partition diff (revoked/assigned) against the current assignment.
     /// </summary>
-    private ConsumerHeartbeatResult ProcessConsumerGroupAssignment(ConsumerGroupHeartbeatAssignment assignment)
+    /// <param name="requestSubscriptionGeneration">The subscription generation the request was stamped with.</param>
+    private ConsumerHeartbeatResult ProcessConsumerGroupAssignment(
+        ConsumerGroupHeartbeatAssignment assignment,
+        int requestSubscriptionGeneration)
     {
         var newAssignment = new HashSet<TopicPartition>();
         var newlyExpandedPartitions = new HashSet<TopicPartition>();
@@ -2754,7 +2813,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         var revocationSequence = NotifyRevoking(revoked);
 
         var classificationChanged = false;
-        var publishedAbandonEpoch = 0;
+        var publishedSubscriptionGeneration = OutdatedSubscriptionGeneration;
         lock (_assignmentStateLock)
         {
             // Names and snapshot first: the volatile write of the assignment publishes them.
@@ -2780,11 +2839,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 _newlyExpandedPartitions = newlyExpandedPartitions;
                 Interlocked.Increment(ref _assignmentVersion);
 
-                // With the publication: an abandon from here on (even before the callbacks are
-                // queued below) abandons this assignment, so its callback starts with staging ended.
-                publishedAbandonEpoch = Volatile.Read(ref _abandonedAtGeneration) != 0
-                    ? AbandonedAtPublication
-                    : Volatile.Read(ref _assignmentAbandonEpoch);
+                // With the publication: this assignment stages callback work only while the owner
+                // subscription the request answered is still current; any change from here on
+                // (even before the callbacks are queued below) ends that.
+                if (requestSubscriptionGeneration == Volatile.Read(ref _subscriptionGeneration))
+                    publishedSubscriptionGeneration = requestSubscriptionGeneration;
 
                 if (revoked is not null)
                     EnqueueRevokedPartitions(revoked, revocationSequence);
@@ -2817,7 +2876,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             assignmentCallbacksCompletion);
         AfterAssignmentPublishedForTest?.Invoke();
         if (changed)
-            ReserveRebalanceCallbacks(result, newAssignment, publishedAbandonEpoch);
+            ReserveRebalanceCallbacks(result, newAssignment, publishedSubscriptionGeneration);
 
         return result;
     }
@@ -2937,14 +2996,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 Deferred = new ConsumerHeartbeatResult(true, null, assigned),
                 Assignment = _assignedPartitions,
                 // As a heartbeat publishing this assignment now would capture it.
-                AbandonEpoch = IsAssignmentAbandonedForTest
-                    ? AbandonedAtPublication
-                    : Volatile.Read(ref _assignmentAbandonEpoch)
+                SubscriptionGeneration = CurrentPublicationSubscriptionGeneration()
             });
         }
     }
 
-    internal bool IsAssignmentAbandonedForTest => Volatile.Read(ref _abandonedAtGeneration) != 0;
+    internal bool IsAssignmentAbandonedForTest =>
+        Volatile.Read(ref _subscribedGeneration) != Volatile.Read(ref _subscriptionGeneration);
 
     internal ValueTask DeliverQueuedCallbacksForTestAsync() =>
         InvokePendingRebalanceCallbacksAsync(CancellationToken.None);
@@ -2964,6 +3022,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private async ValueTask EnsureActiveGroupConsumerProtocolAsync(
         StringSet topics,
         string? subscribedTopicRegex,
+        int subscriptionGeneration,
         CancellationToken cancellationToken)
     {
         // A rebalance listener's callback cannot join the group: the join's own callbacks would
@@ -2983,7 +3042,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 "The consumer is closing; it does not rejoin its group.");
         }
 
-        UpdateSubscription(topics, subscribedTopicRegex);
+        UpdateSubscription(topics, subscribedTopicRegex, subscriptionGeneration);
 
         ConsumerHeartbeatResult heartbeatResult = default;
         long rebalanceStarted = -1;
@@ -3581,11 +3640,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         // is seen here. One abandoned after the notification was queued starts the
                         // callback with staging ended.
                         Interlocked.Exchange(ref _currentAssignedCallback, assignedCallback);
-                        if (pending.AbandonEpoch == AbandonedAtPublication
-                            || Volatile.Read(ref _assignmentAbandonEpoch) != pending.AbandonEpoch)
-                        {
+                        if (pending.SubscriptionGeneration != Volatile.Read(ref _subscriptionGeneration))
                             assignedCallback.Deactivate();
-                        }
                         Interlocked.Increment(ref _assignedCallbacksRunning);
                         try
                         {
@@ -3653,28 +3709,24 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     internal void EndAssignedCallbackStaging()
     {
-        var generation = Interlocked.Increment(ref _subscriptionGeneration);
-        Volatile.Write(ref _abandonedAtGeneration, generation);
-        Interlocked.Increment(ref _assignmentAbandonEpoch);
+        Interlocked.Increment(ref _subscriptionGeneration);
         Volatile.Read(ref _currentAssignedCallback)?.Deactivate();
     }
 
     /// <summary>
-    /// The owner's current subscription generation. Read before the subscription itself, and passed
-    /// to <see cref="ReactivateAssignmentCallbacks"/> by a call acting on that subscription.
+    /// The owner's current subscription generation, incremented by each subscription or
+    /// assignment-mode change. Read it before reading the subscription and pass it to
+    /// <see cref="EnsureActiveGroupAsync(StringSet, string?, int, CancellationToken)"/>.
     /// </summary>
     internal int SubscriptionGeneration => Volatile.Read(ref _subscriptionGeneration);
 
-    /// <summary>
-    /// The owner is subscribed at <paramref name="subscriptionGeneration"/>: assignments published
-    /// from here on are its own and their callbacks stage again. A no-op when the subscription or
-    /// assignment mode changed since that generation was read (a stale call), and a single volatile
-    /// read when nothing is abandoned.
-    /// </summary>
-    internal void ReactivateAssignmentCallbacks(int subscriptionGeneration)
+    /// <summary>The generation a notification published now would carry.</summary>
+    private int CurrentPublicationSubscriptionGeneration()
     {
-        if (subscriptionGeneration != 0 && Volatile.Read(ref _abandonedAtGeneration) == subscriptionGeneration)
-            Interlocked.CompareExchange(ref _abandonedAtGeneration, 0, subscriptionGeneration);
+        var subscribed = Volatile.Read(ref _subscribedGeneration);
+        return subscribed == Volatile.Read(ref _subscriptionGeneration)
+            ? subscribed
+            : OutdatedSubscriptionGeneration;
     }
 
     /// <summary>True while any OnPartitionsAssigned delivery runs; a cheap gate for the owner.</summary>

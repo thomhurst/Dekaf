@@ -854,6 +854,38 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await Assert.That(coordinator.RevocationSequenceTrackingCountForTest).IsEqualTo(0);
         await Assert.That(consumer.RevocationSequenceTrackingCountForTest).IsEqualTo(0);
 
+        // Cycles whose sync drains revocations but is never acknowledged, then switches to manual
+        // assignment (which never acknowledges a group sync) before subscribing again.
+        for (var cycle = 0; cycle < 20; cycle++)
+        {
+            for (var partition = 0; partition < perSync; partition++)
+                coordinator.RevokeAndReassignForTest(new TopicPartition("abandon-topic", (cycle * perSync) + partition));
+
+            var superseded = false;
+            consumer.BeforeAssignmentSyncAcknowledgedForTest = () =>
+            {
+                if (superseded)
+                    return;
+                superseded = true;
+                coordinator.BumpAssignmentVersionForTest();
+            };
+            try
+            {
+                await consumer.EnsureAssignmentAsync(testTimeout);
+            }
+            finally
+            {
+                consumer.BeforeAssignmentSyncAcknowledgedForTest = null;
+            }
+
+            consumer.Assign(new TopicPartition("test-topic", 0));
+            consumer.Subscribe("test-topic");
+        }
+
+        await Assert.That(coordinator.RevocationSequenceTrackingCountForTest).IsEqualTo(0);
+        await Assert.That(consumer.RevocationSequenceTrackingCountForTest).IsEqualTo(0);
+        await consumer.EnsureAssignmentAsync(testTimeout);
+
         // A revocation not yet covered by an acknowledged sync is still tracked.
         coordinator.RevokeAndReassignForTest(Partition1);
         await Assert.That(consumer.IsRevokedSinceAcknowledgedForTest(Partition1)).IsTrue();
@@ -870,10 +902,13 @@ public sealed partial class ConsumerAssignmentFastPathTests
     /// </summary>
     [Test]
     [Timeout(60_000)]
-    [Arguments(AbandonAfterPublish.Assign)]
-    [Arguments(AbandonAfterPublish.Unsubscribe)]
+    [Arguments(AbandonAfterPublish.Assign, false)]
+    [Arguments(AbandonAfterPublish.Unsubscribe, false)]
+    [Arguments(AbandonAfterPublish.Assign, true)]
+    [Arguments(AbandonAfterPublish.Unsubscribe, true)]
     public async Task RebalanceCallbackStateTransitions_InFlightHeartbeatAfterAbandon_DoesNotStage(
         AbandonAfterPublish abandon,
+        bool resubscribeBeforeResponse,
         CancellationToken testTimeout)
     {
         var listener = new CallbackListener();
@@ -926,6 +961,14 @@ public sealed partial class ConsumerAssignmentFastPathTests
             consumer.Assign(new TopicPartition("test-topic", 0));
         else
             consumer.Unsubscribe();
+        if (resubscribeBeforeResponse)
+        {
+            // The new subscription is synchronized while the previous subscription's heartbeat is
+            // still in flight; that heartbeat's response is still the abandoned assignment's.
+            consumer.Subscribe("test-topic");
+            await consumer.EnsureAssignmentAsync(testTimeout);
+        }
+
         releaseHeartbeat.TrySetResult();
 
         var stagingInCallback = await callbackRan.Task.WaitAsync(testTimeout);

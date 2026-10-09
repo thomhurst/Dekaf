@@ -3217,7 +3217,8 @@ public sealed partial class ConsumerAssignmentFastPathTests
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("ProcessConsumerGroupAssignment method not found.");
 
-        return method.Invoke(coordinator, [assignment])
+        // As a response to a request stamped with the current subscription generation.
+        return method.Invoke(coordinator, [assignment, coordinator.SubscriptionGeneration])
             ?? throw new InvalidOperationException("ProcessConsumerGroupAssignment returned null.");
     }
 

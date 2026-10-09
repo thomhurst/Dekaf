@@ -1465,11 +1465,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     //                         or Resume removes them)
     //   reclassified       -> (newly expanded, reinitialized) staged seek and marker kept: same
     //                         ownership
-    //   queued callback    -> an abandon after its assignment was published starts it with staging
-    //                         ended (abandon epoch), like an abandon during it; so does any
-    //                         assignment published while abandoned (the membership and heartbeat
-    //                         loop outlive an abandon) until a sync acting on a subscription read
-    //                         at the current subscription generation reactivates it
+    //   queued callback    -> stages only if the heartbeat whose response published its assignment
+    //                         was stamped with the current subscription generation: any abandon
+    //                         after that request was built (before or after publication, or during
+    //                         the callback) ends its staging. The membership and heartbeat loop
+    //                         outlive an abandon; their responses answer the abandoned subscription
+    //                         until the consumer ensures the group with a newer one
     //   abandon            -> Unsubscribe, Subscribe (topics, filter or pattern), Assign, Unassign,
     //                         IncrementalAssign before sync: every staged seek and marker dropped,
     //                         the pause of a marked partition removed unless the marker is current
@@ -1479,6 +1480,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     //                         callback's staging ended (its later seeks, pauses and position reads
     //                         act on the consumer directly)
     //   close              -> as abandon, after the synchronized partitions are removed
+    //   abandon also drops the revocation-sequence bookkeeping (pruned on the coordinator too):
+    //                         manual assignment never acknowledges a group sync
     private readonly ConcurrentDictionary<TopicPartition, TopicPartitionOffset> _pendingRebalanceSeeks = new();
     private readonly ConcurrentDictionary<TopicPartition, bool> _rebalancePausedPartitions = new();
     // Guarded by _assignmentLock. At most one entry per partition, so retries do not accumulate.
@@ -8075,6 +8078,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
         }
 
+        // The pause decisions above were the last use of the revocation bookkeeping for the
+        // abandoned group assignment; a manual assignment never acknowledges a group sync, so drop
+        // it here or it would only grow. Everything a sync drained is covered on both sides.
+        ForgetRevocationSequences();
+
         return hadPaused;
     }
 
@@ -9874,8 +9882,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if ((subscriptionSnapshot.Count != 0 || topicPattern is not null) && coordinator is not null)
         {
             BeforeEnsureActiveGroupForTest?.Invoke();
-            coordinator.ReactivateAssignmentCallbacks(subscriptionGeneration);
-            await coordinator.EnsureActiveGroupAsync(subscriptionSnapshot, topicPattern, cancellationToken).ConfigureAwait(false);
+            await coordinator.EnsureActiveGroupAsync(
+                    subscriptionSnapshot,
+                    topicPattern,
+                    subscriptionGeneration,
+                    cancellationToken)
+                .ConfigureAwait(false);
 
             if (IsCoordinatorAssignmentSyncCurrent(coordinator, out var coordinatorAssignmentVersion))
             {
@@ -9906,8 +9918,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 topicPattern = _topicPattern;
                 if (subscriptionSnapshot.Count != 0 || topicPattern is not null)
                 {
-                    coordinator.ReactivateAssignmentCallbacks(subscriptionGeneration);
-                    await coordinator.EnsureActiveGroupAsync(subscriptionSnapshot, topicPattern, cancellationToken)
+                    await coordinator.EnsureActiveGroupAsync(
+                            subscriptionSnapshot,
+                            topicPattern,
+                            subscriptionGeneration,
+                            cancellationToken)
                         .ConfigureAwait(false);
                 }
             }
@@ -10304,6 +10319,25 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// while unchanged, so a seek a later callback staged for the same partition is kept. Caller
     /// holds <c>_assignmentLock</c>. Runs per acknowledged sync, never per message.
     /// </summary>
+    /// <summary>
+    /// Drops the revocation bookkeeping on abandon: entries a sync drained are pruned on the
+    /// coordinator too (unless revoked again since). Caller holds <c>_assignmentLock</c>. Runs per
+    /// abandon, never per message.
+    /// </summary>
+    private void ForgetRevocationSequences()
+    {
+        if (_coordinator is { } coordinator)
+        {
+            foreach (var drained in _drainedRevocationSequences)
+                coordinator.PruneRevocationSequence(drained.Key, drained.Value);
+            foreach (var acknowledged in _acknowledgedRevocationSequences)
+                coordinator.PruneRevocationSequence(acknowledged.Key, acknowledged.Value);
+        }
+
+        _drainedRevocationSequences.Clear();
+        _acknowledgedRevocationSequences.Clear();
+    }
+
     private void CompleteAcknowledgedSync()
     {
         _acknowledgedCoordinatorAssignment = _assignmentSnapshot;
