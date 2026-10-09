@@ -560,14 +560,13 @@ public sealed class ConsumeBatchSkipTests
         _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, epoch);
         await Assert.That(GetEofEvents(consumer).Count).IsEqualTo(1);
 
-        // The records response publishes after that EOF. Publication re-arms EOF, so the real
-        // end after these records is reported instead of being suppressed by the old marker.
+        // The records response publishes after that EOF. Publication supersedes the queued
+        // EOF and re-arms the marker, so exactly one EOF is left: the real end after the records.
         await PublishPrefetchedAsync(consumer, CreatePendingFetch(Partition0, 10, 2), epoch);
         await Assert.That(fetchPositions[Partition0]).IsEqualTo(12L);
+        await Assert.That(GetEofEvents(consumer)).IsEmpty();
         _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 12, epoch);
-        var eofs = GetEofEvents(consumer).ToArray();
-        await Assert.That(eofs.Length).IsEqualTo(2);
-        await Assert.That(eofs[1]).IsEqualTo((Partition0, 12L));
+        await Assert.That(GetEofEvents(consumer).Single()).IsEqualTo((Partition0, 12L));
     }
 
     private static void ApplyStagedClears(KafkaConsumer<string, string> consumer) =>
@@ -812,6 +811,190 @@ public sealed class ConsumeBatchSkipTests
             .Invoke(consumer, null);
         _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 11, GetFetchBufferEpoch(consumer));
         await Assert.That(GetEofEvents(consumer).Single()).IsEqualTo((Partition0, 11L));
+    }
+
+    public enum StreamExit
+    {
+        Break,
+        Throw,
+        Cancel
+    }
+
+    [Test]
+    [Arguments(false, StreamExit.Break)]
+    [Arguments(true, StreamExit.Break)]
+    [Arguments(false, StreamExit.Throw)]
+    [Arguments(true, StreamExit.Throw)]
+    [Arguments(false, StreamExit.Cancel)]
+    [Arguments(true, StreamExit.Cancel)]
+    public async Task StreamEndedAfterReleasedSkip_CompletesReleaseAndLeavesNoState(bool raw, StreamExit exit)
+    {
+        await using var consumer = CreateConsumer(
+            CreatePendingFetch(Partition0, 10, 2),
+            CreatePendingFetch(Partition1, 20, 1),
+            CreatePendingFetch(Partition0, 12, 1));
+        await EndStreamAfterSkipAsync(consumer, raw, exit);
+
+        // The release sweep ran in the batch loop's finally: partition 0's later fetch is
+        // gone, its position is rewound, and no release state is left behind.
+        await Assert.That(GetPendingFetches(consumer).Any(static f => f.TopicPartition == Partition0)).IsFalse();
+        await Assert.That(GetDictionary(consumer, "_fetchPositions")[Partition0]).IsEqualTo(10L);
+        await AssertNoSkipStateAsync(consumer);
+
+        if (exit == StreamExit.Cancel)
+        {
+            await Assert.That(GetPendingFetches(consumer)).IsEmpty();
+            return;
+        }
+
+        // A record-at-a-time consumer on the same instance continues with partition 1.
+        var next = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+        await Assert.That(next).IsNotNull();
+        await Assert.That(next!.Value.Partition).IsEqualTo(Partition1.Partition);
+        await Assert.That(next.Value.Offset).IsEqualTo(20L);
+    }
+
+    [Test]
+    [Arguments(false, StreamExit.Break)]
+    [Arguments(true, StreamExit.Break)]
+    [Arguments(false, StreamExit.Throw)]
+    [Arguments(true, StreamExit.Throw)]
+    [Arguments(false, StreamExit.Cancel)]
+    [Arguments(true, StreamExit.Cancel)]
+    public async Task StreamEndedAfterHeldSkip_NextStreamDeliversHeldRecordsOnceInOrder(bool raw, StreamExit exit)
+    {
+        await using var consumer = CreateConsumer(
+            CreatePendingFetch(Partition0, 10, 2),
+            CreatePendingFetch(Partition1, 20, 1),
+            CreatePendingFetch(Partition0, 12, 1));
+        var snapshotActive = GetField("_snapshotOperationActive");
+        snapshotActive.SetValue(consumer, 1);
+        try
+        {
+            await EndStreamAfterSkipAsync(consumer, raw, exit);
+
+            // Set-aside fetches were restored in order by the loop's finally.
+            await Assert.That(((Queue<PendingFetchData>)GetField("_heldSkippedFetches").GetValue(consumer)!).Count)
+                .IsEqualTo(0);
+            await Assert.That(GetPendingFetches(consumer)
+                .Where(static f => f.TopicPartition == Partition0)
+                .Select(static f => f.GetBatches()[0].BaseOffset)
+                .SequenceEqual([10L, 12L])).IsTrue();
+
+            // A new stream does not inherit the hold: it delivers partition 1 (still queued
+            // from the ended stream) and then partition 0's records exactly once, in order.
+            var offsets = new List<long>();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await using var batches = Open(consumer, raw, timeout.Token);
+            var partition1Pending = exit != StreamExit.Cancel;
+            for (var i = 0; i < (partition1Pending ? 3 : 2); i++)
+            {
+                await Assert.That(await batches.MoveNextAsync()).IsTrue();
+                offsets.AddRange(batches.Current.Offsets());
+            }
+
+            await Assert.That(offsets.Where(static o => o < 20).SequenceEqual([10L, 11L, 12L])).IsTrue();
+            await Assert.That(offsets.Count(static o => o == 20)).IsEqualTo(partition1Pending ? 1 : 0);
+            await Assert.That(((HashSet<TopicPartition>)GetField("_heldSkippedPartitions").GetValue(consumer)!).Count)
+                .IsEqualTo(0);
+        }
+        finally
+        {
+            snapshotActive.SetValue(consumer, 0);
+        }
+    }
+
+    [Test]
+    public async Task PooledFetch_YieldCursorIsResetWhenReturnedToThePool()
+    {
+        var pending = CreatePendingFetch(Partition0, 10, 2);
+        _ = pending.MoveNext();
+        pending.CaptureYieldCursor();
+        await Assert.That((int)typeof(PendingFetchData)
+            .GetField("_yieldBatchIndex", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(pending)!).IsEqualTo(0);
+        pending.Dispose();
+
+        static object Field(PendingFetchData p, string name) =>
+            typeof(PendingFetchData).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(p)!;
+
+        await Assert.That((int)Field(pending, "_yieldBatchIndex")).IsEqualTo(-1);
+        await Assert.That((int)Field(pending, "_yieldRecordIndex")).IsEqualTo(-1);
+        await Assert.That((bool)Field(pending, "_yieldBuffered")).IsFalse();
+        await Assert.That((bool)Field(pending, "_yieldExhausted")).IsFalse();
+    }
+
+    /// <summary>
+    /// Yields partition 0 and skips it, yields partition 1, then ends the stream by breaking,
+    /// throwing out of the loop body, or cancelling the next request.
+    /// </summary>
+    private static async Task EndStreamAfterSkipAsync(KafkaConsumer<string, string> consumer, bool raw, StreamExit exit)
+    {
+        using var cts = new CancellationTokenSource();
+        var batches = Open(consumer, raw, cts.Token);
+        try
+        {
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            await Assert.That(batches.Current.Partition).IsEqualTo(Partition0);
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
+
+            switch (exit)
+            {
+                case StreamExit.Throw:
+                    throw new InvalidOperationException("processing failed");
+                case StreamExit.Cancel:
+                    // Partition 1 is processed, so the cancelled request ends the stream
+                    // instead of counting as a skip of partition 1.
+                    _ = batches.Current.Offsets();
+                    await cts.CancelAsync();
+                    try
+                    {
+                        _ = await batches.MoveNextAsync();
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+
+                    break;
+            }
+        }
+        catch (InvalidOperationException) when (exit == StreamExit.Throw)
+        {
+        }
+        finally
+        {
+            await batches.DisposeAsync();
+        }
+    }
+
+    private static async Task AssertNoSkipStateAsync(KafkaConsumer<string, string> consumer)
+    {
+        await Assert.That(((HashSet<TopicPartition>)GetField("_skippedBatchPartitions").GetValue(consumer)!).Count)
+            .IsEqualTo(0);
+        await Assert.That(((Queue<PendingFetchData>)GetField("_heldSkippedFetches").GetValue(consumer)!).Count)
+            .IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task SupersededEofStillQueued_IsNotDeliveredAfterLaterRecords(bool raw)
+    {
+        // An EOF at 10 slipped into the queue after the drain removed nothing (for example it
+        // was dequeued concurrently), and records 10..11 were then consumed.
+        await using var consumer = CreateConsumer(CreatePendingFetch(Partition0, 10, 2));
+        GetEofEvents(consumer).Enqueue((Partition0, 10L));
+        GetEofEvents(consumer).Enqueue((Partition0, 12L));
+        await using var batches = Open(consumer, raw);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Offsets()).IsEquivalentTo([10L, 11L]);
+
+        // Offsets never go backwards: the EOF at 10 is dropped, the real end at 12 delivered.
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.IsEof).IsTrue();
+        await Assert.That(GetEofEvents(consumer)).IsEmpty();
     }
 
     private sealed class TypedEnumerator(IAsyncEnumerator<ConsumeBatch<string, string>> inner)

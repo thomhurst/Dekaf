@@ -1000,6 +1000,10 @@ internal sealed class PendingFetchData : IDisposable
         _fallbackCurrentRecord = default;
         _eagerParsed = false;
         _hasBufferedCurrent = false;
+        _yieldBatchIndex = -1;
+        _yieldRecordIndex = -1;
+        _yieldBuffered = false;
+        _yieldExhausted = false;
         _error = null;
         unchecked
         {
@@ -3634,6 +3638,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             await StartAutoCommitAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        BeginBatchStream();
+
         // Start background prefetch if enabled (QueuedMinMessages > 1)
         bool prefetchEnabled = _options.QueuedMinMessages > 1;
         _prefetchEnabled = prefetchEnabled;
@@ -3834,6 +3840,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             await StartAutoCommitAsync(cancellationToken).ConfigureAwait(false);
         }
+
+        BeginBatchStream();
 
         // Start background prefetch if enabled (QueuedMinMessages > 1)
         bool prefetchEnabled = _options.QueuedMinMessages > 1;
@@ -4208,7 +4216,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         while (_eofDrainRemaining-- > 0 && _pendingEofEvents.TryDequeue(out eofEvent))
         {
             if (_eofHoldPartitions.Count == 0 || !_eofHoldPartitions.Contains(eofEvent.Partition))
+            {
+                // Records past this EOF were already consumed: it was superseded while queued.
+                if (_positions.TryGetValue(eofEvent.Partition, out var position)
+                    && eofEvent.Offset < position)
+                {
+                    continue;
+                }
+
                 return true;
+            }
 
             _pendingEofEvents.Enqueue(eofEvent);
         }
@@ -4295,6 +4312,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             DrainPrefetchBuffer();
 
         _heldSkippedPartitions.Clear();
+    }
+
+    /// <summary>
+    /// Resets batch-loop state when a batch stream starts. Releases and set-aside held fetches
+    /// are always completed by the batch loop's <c>finally</c>, including on break, exception or
+    /// cancellation. Only the hold marks outlive a stream, until the next retry wait. A new
+    /// stream offers held fetches again immediately instead of inheriting that wait.
+    /// </summary>
+    private void BeginBatchStream()
+    {
+        _heldSkippedPartitions.Clear();
+        _batchLoopExitRequested = false;
+        _eofDrainRemaining = 0;
     }
 
     private bool TryDiscardExhaustedPendingFetch()
@@ -5680,8 +5710,26 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// </summary>
     private void RearmPartitionEofForPublishedRecords(TopicPartition partition, bool hasRecords)
     {
-        if (hasRecords && _options.EnablePartitionEof)
-            _eofEmitted.TryRemove(partition, out _);
+        // An EOF reported before these records is superseded by them. Drop it if still queued,
+        // so callers never see an EOF below records they consume or a second EOF for the same
+        // end. Only runs when a marker existed and an EOF is queued; otherwise one remove.
+        if (hasRecords
+            && _options.EnablePartitionEof
+            && _eofEmitted.TryRemove(partition, out _)
+            && !_pendingEofEvents.IsEmpty)
+        {
+            DropQueuedEofForPartition(partition);
+        }
+    }
+
+    private void DropQueuedEofForPartition(TopicPartition partition)
+    {
+        var count = _pendingEofEvents.Count;
+        for (var i = 0; i < count && _pendingEofEvents.TryDequeue(out var eofEvent); i++)
+        {
+            if (eofEvent.Partition != partition)
+                _pendingEofEvents.Enqueue(eofEvent);
+        }
     }
 
     /// <summary>
