@@ -445,7 +445,9 @@ public interface IConsumerPartitions
     /// </summary>
     /// <remarks>
     /// Replaces any subscription. A consumer that has joined its group leaves it, as
-    /// <see cref="IKafkaConsumer{TKey, TValue}.Unsubscribe"/> does.
+    /// <see cref="IKafkaConsumer{TKey, TValue}.Unsubscribe"/> does. Commits of the manually
+    /// assigned partitions wait for that leave and are then sent without a member identity, as
+    /// for any consumer that does not use group management.
     /// </remarks>
     void Assign(params TopicPartition[] partitions);
 

@@ -293,14 +293,14 @@ public sealed partial class ConsumerAssignmentFastPathTests
         type.GetMethod("PublishActiveConsumedPosition", flags)!.Invoke(consumer, [partition, 5L, -1]);
 
         var snapshot = type.GetMethod("CaptureLeaveCommitSnapshot", flags)!
-            .Invoke(consumer, [GetCoordinator(consumer).Assignment]);
+            .Invoke(consumer, [GetCoordinator(consumer).Assignment, 0]);
 
         var dirty = (System.Collections.Concurrent.ConcurrentDictionary<TopicPartition, long>)
             type.GetField("_dirtyStoredOffsets", flags)!.GetValue(consumer)!;
         await Assert.That(dirty.ContainsKey(partition)).IsFalse();
-        var vouched = (TopicPartitionOffset[])snapshot!.GetType().GetProperty("Explicit")!.GetValue(snapshot)!;
+        var vouched = ((ConcurrentDictionary<TopicPartition, TopicPartitionOffset>)snapshot!.GetType().GetProperty("Explicit")!.GetValue(snapshot)!).Values.ToArray();
         await Assert.That(vouched.Single().Offset).IsEqualTo(5L);
-        var proven = (TopicPartitionOffset[])snapshot.GetType().GetProperty("Proven")!.GetValue(snapshot)!;
+        var proven = ((ConcurrentDictionary<TopicPartition, TopicPartitionOffset>)snapshot.GetType().GetProperty("Proven")!.GetValue(snapshot)!).Values.ToArray();
         await Assert.That(proven).IsEmpty();
     }
 
@@ -333,13 +333,216 @@ public sealed partial class ConsumerAssignmentFastPathTests
 
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
         var snapshot = typeof(KafkaConsumer<string, string>).GetMethod("CaptureLeaveCommitSnapshot", flags)!
-            .Invoke(consumer, [GetCoordinator(consumer).Assignment]);
+            .Invoke(consumer, [GetCoordinator(consumer).Assignment, 0]);
 
-        var proven = (TopicPartitionOffset[])snapshot!.GetType().GetProperty("Proven")!.GetValue(snapshot)!;
+        var proven = ((ConcurrentDictionary<TopicPartition, TopicPartitionOffset>)snapshot!.GetType().GetProperty("Proven")!.GetValue(snapshot)!).Values.ToArray();
         await Assert.That(proven.Single().Offset).IsEqualTo(11L);
-        var vouched = (TopicPartitionOffset[])snapshot.GetType().GetProperty("Explicit")!.GetValue(snapshot)!;
+        var vouched = ((ConcurrentDictionary<TopicPartition, TopicPartitionOffset>)snapshot.GetType().GetProperty("Explicit")!.GetValue(snapshot)!).Values.ToArray();
         await Assert.That(vouched.Single().Offset).IsEqualTo(12L);
     }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task Unsubscribe_RevocationQueuedBeforeLeave_CommitsHeldOffsets(CancellationToken testTimeout)
+    {
+        // A heartbeat already revoked partition 1 (the coordinator no longer lists it) but its
+        // callback, with the automatic revoked-offset commit, has not run when the application
+        // unsubscribes. The consumer still held the partition's stored offset; that commit must
+        // still send it, although Unsubscribe cleared the consumer's state.
+        var (connectionPool, connection, commits) = CreateCommitCapturingConnection();
+        await using var metadataManager = CreateCommitMetadataManager(connectionPool);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0, 1));
+        await using var consumer = CreateGroupConsumer(
+            connectionPool, metadataManager, offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(testTimeout);
+        var coordinator = GetCoordinator(consumer);
+        var revoked = new TopicPartition("test-topic", 1);
+        consumer.StoreOffset(new TopicPartitionOffset(revoked.Topic, revoked.Partition, 7));
+        SetCoordinatorField(coordinator, "_assignedPartitions", new HashSet<TopicPartition> { new("test-topic", 0) });
+
+        // Hold the leave before it resets the membership, as a revocation queued ahead of it does.
+        var stateLock = GetCoordinatorField<SemaphoreSlim>(coordinator, "_lock");
+        await stateLock.WaitAsync(testTimeout);
+        try
+        {
+            consumer.Unsubscribe();
+            await InvokeCommitRevokedOffsetsAsync(consumer, [revoked], testTimeout);
+        }
+        finally
+        {
+            stateLock.Release();
+        }
+
+        var commit = commits.Single();
+        await Assert.That(commit.MemberId).IsEqualTo("member-1");
+        await Assert.That(commit.Topics.Single().Partitions.Single().PartitionIndex).IsEqualTo(1);
+        await Assert.That(commit.Topics.Single().Partitions.Single().CommittedOffset).IsEqualTo(7L);
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task Assign_SecondSwitchCoveredByLeave_KeepsFirstCapture(CancellationToken testTimeout)
+    {
+        var (connectionPool, connection, _) = CreateCommitCapturingConnection();
+        await using var metadataManager = CreateCommitMetadataManager(connectionPool);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        await using var consumer = CreateGroupConsumer(
+            connectionPool, metadataManager, offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(testTimeout);
+        var coordinator = GetCoordinator(consumer);
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.StoreOffset(new TopicPartitionOffset(partition.Topic, partition.Partition, 5));
+
+        var stateLock = GetCoordinatorField<SemaphoreSlim>(coordinator, "_lock");
+        await stateLock.WaitAsync(testTimeout);
+        try
+        {
+            consumer.Assign(partition);
+            // Offsets of the manual assignment, then a second switch before the leave ran.
+            consumer.StoreOffset(new TopicPartitionOffset(partition.Topic, partition.Partition, 9));
+            consumer.Assign(partition);
+
+            var proven = GetDepartingOffsets(consumer, "Proven");
+            await Assert.That(proven[partition].Offset).IsEqualTo(5L);
+        }
+        finally
+        {
+            stateLock.Release();
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task DepartingOffsets_AfterLeaveCompleted_AreNotCommitted(CancellationToken testTimeout)
+    {
+        var (connectionPool, connection, commits) = CreateCommitCapturingConnection();
+        await using var metadataManager = CreateCommitMetadataManager(connectionPool);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        await using var consumer = CreateGroupConsumer(
+            connectionPool, metadataManager, offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(testTimeout);
+        var coordinator = GetCoordinator(consumer);
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.StoreOffset(new TopicPartitionOffset(partition.Topic, partition.Partition, 5));
+
+        // The membership's own revocation is held off; the leave resets the membership first.
+        var stateLock = GetCoordinatorField<SemaphoreSlim>(coordinator, "_lock");
+        await stateLock.WaitAsync(testTimeout);
+        consumer.Unsubscribe();
+        SetCoordinatorField(coordinator, "_assignedPartitions", new HashSet<TopicPartition>());
+        stateLock.Release();
+        await GetCoordinatorField<Task>(coordinator, "_pendingLeave").WaitAsync(testTimeout);
+        commits.Clear();
+
+        // A revocation of a later membership must not send the old membership's offsets.
+        await InvokeCommitRevokedOffsetsAsync(consumer, [partition], testTimeout);
+
+        await Assert.That(commits).IsEmpty();
+        await Assert.That(typeof(KafkaConsumer<string, string>)
+            .GetField("_departingOffsets", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(consumer) is null).IsTrue();
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task Assign_ThenCommitAsync_WaitsForLeaveAndCommitsWithoutMemberIdentity(
+        CancellationToken testTimeout)
+    {
+        var (connectionPool, connection, commits) = CreateCommitCapturingConnection();
+        await using var metadataManager = CreateCommitMetadataManager(connectionPool);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(testTimeout);
+        var coordinator = GetCoordinator(consumer);
+        var partition = new TopicPartition("test-topic", 0);
+
+        var stateLock = GetCoordinatorField<SemaphoreSlim>(coordinator, "_lock");
+        await stateLock.WaitAsync(testTimeout);
+        ValueTask commit;
+        try
+        {
+            consumer.Assign(partition);
+            commit = consumer.CommitAsync([new TopicPartitionOffset(partition.Topic, partition.Partition, 3)], testTimeout);
+
+            // Not sent under the departing member while its leave is still running.
+            await Assert.That(commit.IsCompleted).IsFalse();
+            await Assert.That(commits).IsEmpty();
+        }
+        finally
+        {
+            stateLock.Release();
+        }
+
+        await commit;
+
+        var request = commits.Single();
+        await Assert.That(string.IsNullOrEmpty(request.MemberId)).IsTrue();
+        await Assert.That(request.GenerationIdOrMemberEpoch).IsEqualTo(-1);
+        await Assert.That(request.Topics.Single().Partitions.Single().CommittedOffset).IsEqualTo(3L);
+    }
+
+    private static (IConnectionPool Pool, IKafkaConnection Connection, List<OffsetCommitRequest> Commits)
+        CreateCommitCapturingConnection()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+        SetupFindCoordinator(connection);
+        SetupOffsetFetch(connection);
+        var commits = new List<OffsetCommitRequest>();
+        connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                lock (commits)
+                    commits.Add(call.ArgAt<OffsetCommitRequest>(0));
+                return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
+            });
+        return (connectionPool, connection, commits);
+    }
+
+    private static MetadataManager CreateCommitMetadataManager(IConnectionPool connectionPool)
+    {
+        var metadataManager = CreateMetadataManager(connectionPool);
+        metadataManager.SetApiVersion(ApiKey.OffsetCommit, OffsetCommitRequest.LowestSupportedVersion, 9);
+        return metadataManager;
+    }
+
+    private static ValueTask InvokeCommitRevokedOffsetsAsync(
+        KafkaConsumer<string, string> consumer,
+        IReadOnlyList<TopicPartition> partitions,
+        CancellationToken cancellationToken) =>
+        (ValueTask)typeof(KafkaConsumer<string, string>)
+            .GetMethod("CommitRevokedOffsetsAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(consumer, [partitions, cancellationToken])!;
+
+    private static ConcurrentDictionary<TopicPartition, TopicPartitionOffset> GetDepartingOffsets(
+        KafkaConsumer<string, string> consumer,
+        string kind)
+    {
+        var state = typeof(KafkaConsumer<string, string>)
+            .GetField("_departingOffsets", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(consumer)!;
+        return (ConcurrentDictionary<TopicPartition, TopicPartitionOffset>)state.GetType()
+            .GetProperty(kind)!
+            .GetValue(state)!;
+    }
+
+    private static T GetCoordinatorField<T>(ConsumerCoordinator coordinator, string name) =>
+        (T)typeof(ConsumerCoordinator)
+            .GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(coordinator)!;
+
+    private static void SetCoordinatorField<T>(ConsumerCoordinator coordinator, string name, T value) =>
+        typeof(ConsumerCoordinator)
+            .GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(coordinator, value);
 
     private static long GetCoordinatorRevocationSequence(ConsumerCoordinator coordinator) =>
         (long)typeof(ConsumerCoordinator)

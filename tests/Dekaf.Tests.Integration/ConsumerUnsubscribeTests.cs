@@ -229,6 +229,39 @@ public sealed class ConsumerUnsubscribeTests(KafkaTestContainer kafka) : KafkaIn
     }
 
     [Test]
+    public async Task Assign_ThenCommitAsync_CommitsManualOffsetsAfterLeaving()
+    {
+        // A switch to manual assignment followed at once by a commit of the manual offsets: the
+        // commit runs after the leave, without the departing member's identity, and is kept.
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        var groupId = $"assign-commit-{Guid.NewGuid():N}";
+        await ProduceToPartitionsAsync(topic, [0, 0], "record");
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        consumer.Subscribe(topic);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var record = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), timeout.Token);
+        await Assert.That(record).IsNotNull();
+
+        var partition = new TopicPartition(topic, 0);
+        consumer.Assign(partition);
+        await consumer.CommitAsync([new TopicPartitionOffset(topic, 0, 2)], timeout.Token);
+
+        await using var reader = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        await Assert.That(await reader.Positions.GetCommittedOffsetAsync(partition, timeout.Token)).IsEqualTo(2L);
+    }
+
+    [Test]
     public async Task Unsubscribe_SoleMember_LeavesGroupEmpty()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);

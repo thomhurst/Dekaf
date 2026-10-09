@@ -1695,6 +1695,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private int _assignmentEnsureVersion;
     private int _lastManualAssignmentEnsureVersion = -1;
     private int _lastCoordinatorAssignmentVersion = -1;
+    // Commit state of the partitions the consumer held when it last ended its group membership
+    // (Unsubscribe or a switch to manual assignment), which cleared them. Consumed per partition
+    // by the revocations of that membership and by CommitAsync; inert once the membership has
+    // changed. Control plane.
+    private LeaveCommitSnapshot? _departingOffsets;
     // Deterministic test seam for assignment/revocation snapshot races.
     internal Action? BeforeCoordinatorAssignmentSnapshotForTest { get; set; }
 
@@ -2572,10 +2577,25 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             return;
 
         // Unsubscribe clears the departing partitions' positions and stored offsets right after
-        // this, before the leave's OnPartitionsRevoked runs; what a commit then would have sent is
-        // captured now for that revocation (see CommitAsync and CommitRevokedOffsetsAsync).
-        var owned = coordinator.Assignment;
-        coordinator.RequestLeaveGroup(owned.Count != 0 ? CaptureLeaveCommitSnapshot(owned) : null);
+        // this, before the revocations still to be delivered for them run: the leave's, and any a
+        // heartbeat published earlier whose callback has not run yet (the coordinator no longer
+        // lists those partitions, but the consumer still holds them). What their commits would
+        // have sent is captured now, for every partition the consumer holds, and they take it
+        // per partition (see CommitAsync and CommitRevokedOffsetsAsync). A later switch covered
+        // by the same membership's leave keeps the first capture: it holds only manual partitions.
+        if (_topicFilter is not null || _topicPattern is not null || _subscriptionSnapshot.Count != 0)
+        {
+            var membershipVersion = coordinator.MembershipVersion;
+            var existing = Volatile.Read(ref _departingOffsets);
+            if (existing is null || existing.MembershipVersion != membershipVersion)
+            {
+                var held = new HashSet<TopicPartition>(_assignmentSnapshot);
+                held.UnionWith(coordinator.Assignment);
+                Volatile.Write(ref _departingOffsets, CaptureLeaveCommitSnapshot(held, membershipVersion));
+            }
+        }
+
+        coordinator.RequestLeaveGroup();
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
             _pendingRebalanceSeeks.Clear();
     }
@@ -2586,14 +2606,25 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// <see cref="Explicit"/>, which also vouches for the last yielded record, as a parameterless
     /// <see cref="CommitAsync(CancellationToken)"/> does.
     /// </summary>
-    private sealed record LeaveCommitSnapshot(TopicPartitionOffset[] Proven, TopicPartitionOffset[] Explicit);
+    private sealed class LeaveCommitSnapshot(
+        int membershipVersion,
+        ConcurrentDictionary<TopicPartition, TopicPartitionOffset> proven,
+        ConcurrentDictionary<TopicPartition, TopicPartitionOffset> vouched)
+    {
+        /// <summary>The membership the offsets belong to; they are never sent under another.</summary>
+        public int MembershipVersion { get; } = membershipVersion;
+
+        public ConcurrentDictionary<TopicPartition, TopicPartitionOffset> Proven { get; } = proven;
+
+        public ConcurrentDictionary<TopicPartition, TopicPartitionOffset> Explicit { get; } = vouched;
+    }
 
     /// <remarks>
     /// Reads only: the vouched offsets are computed from the consumed positions, never staged in
     /// the shared stored-offset map, where a concurrent auto-commit could send an offset past a
     /// record the application is still processing.
     /// </remarks>
-    private LeaveCommitSnapshot? CaptureLeaveCommitSnapshot(TopicPartitionSet owned)
+    private LeaveCommitSnapshot? CaptureLeaveCommitSnapshot(TopicPartitionSet owned, int membershipVersion)
     {
         var stored = SnapshotStoredOffsets(owned);
         Dictionary<TopicPartition, TopicPartitionOffset>? proven = null;
@@ -2633,7 +2664,60 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         return vouched is null
             ? null
-            : new LeaveCommitSnapshot(proven?.Values.ToArray() ?? [], vouched.Values.ToArray());
+            : new LeaveCommitSnapshot(
+                membershipVersion,
+                new ConcurrentDictionary<TopicPartition, TopicPartitionOffset>(
+                    proven ?? new Dictionary<TopicPartition, TopicPartitionOffset>()),
+                new ConcurrentDictionary<TopicPartition, TopicPartitionOffset>(vouched));
+    }
+
+    /// <summary>
+    /// Takes the captured departing offsets of <paramref name="partitions"/> (all when null):
+    /// the processed ones, or with <paramref name="vouched"/> the ones a parameterless commit
+    /// vouches for. Each is taken once. None once the membership they belong to has changed.
+    /// </summary>
+    private TopicPartitionOffset[]? TakeDepartingOffsets(
+        bool vouched,
+        IReadOnlyList<TopicPartition>? partitions,
+        out int membershipVersion)
+    {
+        membershipVersion = 0;
+        var state = Volatile.Read(ref _departingOffsets);
+        if (state is null || _coordinator is not { } coordinator)
+            return null;
+
+        if (state.MembershipVersion != coordinator.MembershipVersion)
+        {
+            Interlocked.CompareExchange(ref _departingOffsets, null, state);
+            return null;
+        }
+
+        membershipVersion = state.MembershipVersion;
+        var source = vouched ? state.Explicit : state.Proven;
+        List<TopicPartitionOffset>? taken = null;
+        if (partitions is null)
+        {
+            foreach (var partition in source.Keys)
+                Take(partition);
+        }
+        else
+        {
+            for (var i = 0; i < partitions.Count; i++)
+                Take(partitions[i]);
+        }
+
+        return taken?.ToArray();
+
+        void Take(TopicPartition partition)
+        {
+            if (!source.TryRemove(partition, out var offset))
+                return;
+
+            (taken ??= []).Add(offset);
+            // A vouched offset is at least the processed one.
+            if (vouched)
+                state.Proven.TryRemove(partition, out _);
+        }
     }
 
     private static void AddProvenPosition(
@@ -2698,19 +2782,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     /// <summary>
-    /// Commits a leave's captured offsets under the membership that is leaving (still current
-    /// while its revocation is delivered).
+    /// Commits departing offsets under the membership they belong to (rejected if it has changed).
+    /// Never waits for the leave: that membership's identity is the one that must commit them.
     /// </summary>
-    private async ValueTask<bool> CommitLeaveOffsetsAsync(
+    private async ValueTask<bool> CommitDepartingOffsetsAsync(
         TopicPartitionOffset[] offsets,
+        int membershipVersion,
         bool retryUntilApiTimeout,
         CancellationToken cancellationToken)
     {
         if (offsets.Length == 0)
             return false;
 
-        var coordinator = GetCommitCoordinator();
-        await coordinator.CommitOffsetsAsync(offsets, retryUntilApiTimeout, coordinator.MembershipVersion, cancellationToken)
+        await GetCommitCoordinator()
+            .CommitOffsetsAsync(offsets, retryUntilApiTimeout, membershipVersion, cancellationToken)
             .ConfigureAwait(false);
         InvokeOnCommitInterceptors(offsets);
         return true;
@@ -7601,36 +7686,28 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
     {
-        // From OnPartitionsRevoked of a leave (Unsubscribe or a switch to manual assignment): the
-        // consumer already cleared the departing partitions, so commit what they held then.
-        if (_coordinator is { } leavingCoordinator
-            && leavingCoordinator.TryGetLeaveCommitState(out var leaveCommitState))
-        {
-            using var leaveTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
-            try
-            {
-                if (leaveCommitState is LeaveCommitSnapshot snapshot)
-                {
-                    await CommitLeaveOffsetsAsync(snapshot.Explicit, retryUntilApiTimeout: true, leaveTimeout.Token)
-                        .ConfigureAwait(false);
-                }
-            }
-            catch (OperationCanceledException ex) when (leaveTimeout.DefaultTimeoutExpired)
-            {
-                throw leaveTimeout.CreateTimeoutException(nameof(CommitAsync), ex);
-            }
-
-            return;
-        }
-
-        // Read before staging: offsets staged under a membership that a fence and rejoin replace
-        // before the send are rejected rather than sent under the new member's identity.
-        var membershipVersion = GetCommitCoordinator().MembershipVersion;
-        StageExplicitCommitOffsets();
-
+        var coordinator = GetCommitCoordinator();
         using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
         try
         {
+            // The partitions the consumer gave up when it ended its group membership (cleared at
+            // once, e.g. from OnPartitionsRevoked of the leave): commit what they held then,
+            // under the membership that is leaving.
+            if (TakeDepartingOffsets(vouched: true, partitions: null, out var departingVersion) is { } departing)
+            {
+                await CommitDepartingOffsetsAsync(departing, departingVersion, retryUntilApiTimeout: true, apiTimeout.Token)
+                    .ConfigureAwait(false);
+            }
+
+            // The consumer's own offsets are committed after a leave in progress, without the
+            // departing member's identity.
+            await coordinator.WaitForLeaveBeforeCommitAsync(apiTimeout.Token).ConfigureAwait(false);
+
+            // Read before staging: offsets staged under a membership that a fence and rejoin
+            // replace before the send are rejected rather than sent under the new member's identity.
+            var membershipVersion = coordinator.MembershipVersion;
+            StageExplicitCommitOffsets();
+
             await CommitStoredOffsetsAsync(
                     partitions: null,
                     apiTimeout.Token,
@@ -7674,6 +7751,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         if (_coordinator is null)
             return false;
+
+        // Auto-commit and close commits of the consumer's own offsets run after a leave in
+        // progress (see WaitForLeaveBeforeCommitAsync); a revocation's commit does not wait.
+        if (membershipVersion is null)
+            await _coordinator.WaitForLeaveBeforeCommitAsync(cancellationToken).ConfigureAwait(false);
 
         TopicPartitionOffset[]? offsetsArray = null;
         int offsetCount;
@@ -7754,22 +7836,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         try
         {
-            // A leave's revocation: the consumer cleared these partitions when the application
-            // unsubscribed, so commit the processed offsets they held then.
-            if (_coordinator is { } coordinator && coordinator.TryGetLeaveCommitState(out var leaveCommitState))
-            {
-                if (leaveCommitState is LeaveCommitSnapshot snapshot
-                    && await CommitLeaveOffsetsAsync(snapshot.Proven, retryUntilApiTimeout: false, commitCancellationToken)
-                        .ConfigureAwait(false))
-                {
-                    LogCommittedRevokedOffsets();
-                }
+            // Partitions the consumer cleared when the application ended its group membership
+            // (this is the leave's revocation, or one a heartbeat published before it): commit
+            // the processed offsets they held then.
+            var committed = TakeDepartingOffsets(vouched: false, partitions, out var departingVersion) is { } departing
+                && await CommitDepartingOffsetsAsync(departing, departingVersion, retryUntilApiTimeout: false, commitCancellationToken)
+                    .ConfigureAwait(false);
 
-                return;
-            }
-
+            // The revoked membership's own commit: it never waits for a leave (the version is
+            // passed), and is rejected if that membership has ended.
             var revoked = partitions.ToHashSet();
-            if (await CommitStoredOffsetsAsync(revoked, commitCancellationToken).ConfigureAwait(false))
+            if (await CommitStoredOffsetsAsync(
+                        revoked,
+                        commitCancellationToken,
+                        membershipVersion: GetCommitCoordinator().MembershipVersion)
+                    .ConfigureAwait(false)
+                || committed)
                 LogCommittedRevokedOffsets();
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -7789,15 +7871,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public async ValueTask CommitAsync(IEnumerable<TopicPartitionOffset> offsets, CancellationToken cancellationToken = default)
     {
         var coordinator = GetCommitCoordinator();
-
-        // Read before the offsets are enumerated: offsets produced under a membership that a
-        // fence and rejoin replace before the send are rejected rather than sent under the new
-        // member's identity.
-        var membershipVersion = coordinator.MembershipVersion;
-
         using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
         try
         {
+            // After a leave in progress (a switch to manual assignment): these offsets are not the
+            // departing member's to commit, and its identity is about to be reset.
+            await coordinator.WaitForLeaveBeforeCommitAsync(apiTimeout.Token).ConfigureAwait(false);
+
+            // Read before the offsets are enumerated: offsets produced under a membership that a
+            // fence and rejoin replace before the send are rejected rather than sent under the new
+            // member's identity.
+            var membershipVersion = coordinator.MembershipVersion;
+
             // Materialize to list to allow iteration for both commit tracking and interceptors
             var offsetsList = offsets as IReadOnlyList<TopicPartitionOffset> ?? offsets.ToArray();
 
