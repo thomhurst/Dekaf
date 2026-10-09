@@ -224,6 +224,54 @@ public sealed partial class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task StageRebalanceSeek_FromCallbackPredatingUnsubscribe_IsDiscarded(bool stagedBeforeUnsubscribe)
+    {
+        // An OnPartitionsAssigned callback queued or running when the application unsubscribes (or
+        // switches to manual assignment) seeks a partition its notification announced. The
+        // membership has ended, so the seek must not survive for a later subscription that is
+        // assigned the same partition, whether it was staged before or after the unsubscribe.
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        SetupOffsetFetch(connection);
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        // The revocation sequence a callback's notification captures when it is published. The
+        // notification announced partition 1, which the consumer has not synchronized yet, so a
+        // seek before the unsubscribe stays staged rather than being applied.
+        var notificationSequence = GetCoordinatorRevocationSequence(GetCoordinator(consumer));
+        var partition = new TopicPartition("test-topic", 1);
+        var seek = new TopicPartitionOffset(partition.Topic, partition.Partition, 42);
+
+        if (stagedBeforeUnsubscribe)
+        {
+            consumer.StageRebalanceSeek(seek, notificationSequence);
+            consumer.Unsubscribe();
+        }
+        else
+        {
+            consumer.Unsubscribe();
+            consumer.StageRebalanceSeek(seek, notificationSequence);
+        }
+
+        await Assert.That(consumer.GetRebalancePosition(partition)).IsNull();
+    }
+
+    private static long GetCoordinatorRevocationSequence(ConsumerCoordinator coordinator) =>
+        (long)typeof(ConsumerCoordinator)
+            .GetField("_revocationSequence", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(coordinator)!;
+
+    [Test]
     public async Task EnsureAssignmentAsync_ChangedCoordinatorAssignment_RequiresAssignmentLock()
     {
         var connectionPool = Substitute.For<IConnectionPool>();

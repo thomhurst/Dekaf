@@ -144,6 +144,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // The leave started by the latest RequestLeaveGroup; a join waits for it, so a later
     // subscription always joins with a fresh membership.
     private Task _pendingLeave = Task.CompletedTask;
+    // 1 from the start of a leave until it has finished; the stable poll path reads only this.
+    private int _leaveInProgress;
+    // _revocationSequence when a leave last ended the membership. Every notification published
+    // before it belongs to that membership, so a seek its callback stages is stale (WasRevokedSince).
+    private long _leaveRevocationSequence;
     private readonly object _leaveGate = new();
     // Cancelled by disposal: bounds a leave still running when the consumer is torn down.
     private readonly CancellationTokenSource _leaveCancellation = new();
@@ -813,6 +818,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         // Before reading _membershipRequested: a join either sees this flag or is seen below.
         Interlocked.Exchange(ref _leaveRequested, 1);
+
+        // Before the owner drops its staged rebalance seeks: a callback whose notification
+        // predates this (queued, or running now) can no longer stage one (WasRevokedSince).
+        RecordLeaveRevocation();
         if (Volatile.Read(ref _membershipRequested) == 0
             || Volatile.Read(ref _closing) != 0
             || Volatile.Read(ref _disposed) != 0)
@@ -840,6 +849,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 flowControl = ExecutionContext.SuppressFlow();
             try
             {
+                Volatile.Write(ref _leaveInProgress, 1);
                 Volatile.Write(ref _pendingLeave, Task.Run(LeaveGroupForUnsubscribeAsync));
             }
             finally
@@ -934,7 +944,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             LogLeaveGroupRequestFailed(ex);
         }
+        finally
+        {
+            Volatile.Write(ref _leaveInProgress, 0);
+        }
     }
+
+    private void RecordLeaveRevocation() =>
+        Volatile.Write(ref _leaveRevocationSequence, Interlocked.Increment(ref _revocationSequence));
 
     /// <summary>
     /// Releases the published assignment for a leave and queues its OnPartitionsRevoked. Caller
@@ -944,6 +961,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     private void ReleaseAssignmentForLeave()
     {
+        // A join that was in flight when the leave was requested published its assignment
+        // after the request; its callbacks' seeks are stale too.
+        RecordLeaveRevocation();
+
         lock (_assignmentStateLock)
         {
             var owned = _assignedPartitions;
@@ -1007,7 +1028,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         ThrowIfFatalHeartbeatException();
 
         // A membership that is being left is not current: the join path waits for the leave.
-        if (_state == CoordinatorState.Stable && Volatile.Read(ref _pendingLeave).IsCompleted)
+        // One volatile int read, and only for a stable member.
+        if (_state == CoordinatorState.Stable && Volatile.Read(ref _leaveInProgress) == 0)
         {
             // Callbacks cancellation deferred after the member became Stable: no rejoin will
             // retry them, so the next poll delivers them before returning.
@@ -3361,9 +3383,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// captured <paramref name="revocationSequence"/>. A seek that notification's callback stages
     /// for the partition belongs to ownership that has already ended.
     /// </summary>
+    /// <remarks>
+    /// A leave (Unsubscribe or a switch to manual assignment) ends every partition's ownership: a
+    /// notification published before it, or while it is requested or running, is stale for all.
+    /// </remarks>
     internal bool WasRevokedSince(TopicPartition partition, long revocationSequence) =>
-        _partitionRevocationSequences.TryGetValue(partition, out var revokedAt)
-        && revokedAt > revocationSequence;
+        Volatile.Read(ref _leaveRequested) != 0
+        || Volatile.Read(ref _leaveInProgress) != 0
+        || Volatile.Read(ref _leaveRevocationSequence) > revocationSequence
+        || (_partitionRevocationSequences.TryGetValue(partition, out var revokedAt)
+            && revokedAt > revocationSequence);
 
     /// <summary>
     /// KIP-848 entry point: ensures the consumer has joined the group using the ConsumerGroupHeartbeat API.

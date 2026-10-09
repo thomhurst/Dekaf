@@ -2552,11 +2552,28 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         // Before the subscription is cleared, so a poll that read it earlier cannot rejoin. The
         // coordinator revokes the owned partitions and leaves the group in the background.
-        _coordinator?.RequestLeaveGroup();
+        EndGroupMembership();
         _topicFilter = null;
         _topicPattern = null;
         _subscription.Clear();
         PublishSubscriptionAndClearAssignment(invalidatePartitionCache: true);
+    }
+
+    /// <summary>
+    /// Asks the coordinator to leave the group, then drops every seek an OnPartitionsAssigned
+    /// callback staged: all of them belong to the membership that is ending, including ones for
+    /// partitions not yet synchronized. The coordinator records the leave first, so a callback
+    /// still queued or running cannot stage another one (WasRevokedSince, checked under the same
+    /// lock). Control plane; runs once per Unsubscribe or manual assignment call.
+    /// </summary>
+    private void EndGroupMembership()
+    {
+        if (_coordinator is not { } coordinator)
+            return;
+
+        coordinator.RequestLeaveGroup();
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+            _pendingRebalanceSeeks.Clear();
     }
 
     private void PublishSubscriptionAndClearAssignment(bool invalidatePartitionCache)
@@ -2601,7 +2618,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         ThrowIfNewPartitionResetUsesManualAssignment();
         // Manual assignment ends group membership, as Unsubscribe does.
-        _coordinator?.RequestLeaveGroup();
+        EndGroupMembership();
         _topicFilter = null;
         _topicPattern = null;
         _subscription.Clear();
@@ -2685,7 +2702,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         ThrowIfNewPartitionResetUsesManualAssignment();
         // Clear subscription since we're doing manual assignment; that ends group membership.
-        _coordinator?.RequestLeaveGroup();
+        EndGroupMembership();
         _topicFilter = null;
         _topicPattern = null;
         _subscription.Clear();
