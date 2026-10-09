@@ -133,6 +133,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private int _disposed;
     // Set by BeginClose; no join starts after it.
     private int _closing;
+    // Set by RequestLeaveGroup (Unsubscribe or a switch to manual assignment) and cleared by
+    // ResumeGroupMembership (Subscribe). While set, no join starts and no heartbeat loop is
+    // installed, so a poll or prefetch that read the subscription before it was cleared cannot
+    // rejoin the group.
+    private int _leaveRequested;
+    // Set once a join was ever attempted. Until then a leave request has nothing to leave, so a
+    // consumer that only ever uses manual assignment never starts a leave task.
+    private int _membershipRequested;
+    // The leave started by the latest RequestLeaveGroup; a join waits for it, so a later
+    // subscription always joins with a fresh membership.
+    private Task _pendingLeave = Task.CompletedTask;
+    private readonly object _leaveGate = new();
+    // Cancelled by disposal: bounds a leave still running when the consumer is torn down.
+    private readonly CancellationTokenSource _leaveCancellation = new();
     // Set when disposal has finished with rebalance callbacks. A drain that outlives it (a
     // listener that ignored the teardown token) invokes no further callbacks.
     private int _callbackDeliveryClosed;
@@ -783,6 +797,179 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     internal void BeginClose() => Volatile.Write(ref _closing, 1);
 
     /// <summary>
+    /// The owner no longer wants group membership (Unsubscribe, or a switch to manual assignment).
+    /// Synchronously, no join starts and no heartbeat is installed from here on, and a heartbeat
+    /// response still in flight is discarded instead of publishing an assignment. A background
+    /// leave then stops the heartbeat, delivers OnPartitionsRevoked for the partitions the member
+    /// owns (no automatic offset commit, as in Java's unsubscribe), sends the KIP-848 leave
+    /// heartbeat (MemberEpoch -1, static members included: the member stops consuming rather than
+    /// restarting) and resets the membership. A later subscription waits for that leave and joins
+    /// with a fresh membership; close and disposal wait for it too. Never blocks the caller.
+    /// </summary>
+    internal void RequestLeaveGroup()
+    {
+        if (string.IsNullOrEmpty(_options.GroupId))
+            return;
+
+        // Before reading _membershipRequested: a join either sees this flag or is seen below.
+        Interlocked.Exchange(ref _leaveRequested, 1);
+        if (Volatile.Read(ref _membershipRequested) == 0
+            || Volatile.Read(ref _closing) != 0
+            || Volatile.Read(ref _disposed) != 0)
+        {
+            return;
+        }
+
+        // Stops a heartbeat response in flight from publishing (it is validated under the state
+        // lock); the leave sets it again under that lock, after any join in flight completes.
+        if (_state == CoordinatorState.Stable)
+            _state = CoordinatorState.Unjoined;
+
+        lock (_leaveGate)
+        {
+            // A leave still running covers this request: no join can start a new membership
+            // until it has completed (see WaitForPendingLeaveAsync).
+            if (!_pendingLeave.IsCompleted)
+                return;
+
+            // A leave started from inside a rebalance callback must not inherit the callback's
+            // drain scope, or it would skip the callbacks it has to deliver.
+            var restoreFlow = !ExecutionContext.IsFlowSuppressed();
+            AsyncFlowControl flowControl = default;
+            if (restoreFlow)
+                flowControl = ExecutionContext.SuppressFlow();
+            try
+            {
+                Volatile.Write(ref _pendingLeave, Task.Run(LeaveGroupForUnsubscribeAsync));
+            }
+            finally
+            {
+                if (restoreFlow)
+                    flowControl.Undo();
+            }
+        }
+    }
+
+    /// <summary>
+    /// The owner subscribes again: joins are allowed once any leave in progress has completed.
+    /// </summary>
+    internal void ResumeGroupMembership() => Interlocked.Exchange(ref _leaveRequested, 0);
+
+    /// <summary>
+    /// Waits for a leave in progress before a join. Returns false when the owner has asked to
+    /// leave, so the caller must not join.
+    /// </summary>
+    private async ValueTask<bool> WaitForPendingLeaveAsync(CancellationToken cancellationToken)
+    {
+        if (Volatile.Read(ref _leaveRequested) != 0)
+            return false;
+
+        var pendingLeave = Volatile.Read(ref _pendingLeave);
+        if (pendingLeave.IsCompleted)
+            return true;
+
+        await pendingLeave.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        // Unsubscribed again while waiting: RequestLeaveGroup saw this leave still running and
+        // started none, so this must not join either.
+        return Volatile.Read(ref _leaveRequested) == 0;
+    }
+
+    private async Task LeaveGroupForUnsubscribeAsync()
+    {
+        try
+        {
+            // Stopped first, without the state lock: the loop may be waiting for that lock, or
+            // be delivering a callback. No heartbeat is installed again while the leave is
+            // requested, and a join already in flight finishes before the lock is taken below.
+            await StopHeartbeatAsyncCore(_leaveCancellation.Token).ConfigureAwait(false);
+
+            await _lock.WaitAsync(_leaveCancellation.Token).ConfigureAwait(false);
+            try
+            {
+                _state = CoordinatorState.Unjoined;
+                ReleaseAssignmentForLeave();
+            }
+            finally
+            {
+                _lock.Release();
+            }
+
+            // Callbacks queued for the membership (an earlier assignment's, a loss) are delivered
+            // in order before the revocation, within the window the broker allows a rebalance.
+            // Ones a listener does not finish in time stay queued for the next drain or disposal.
+            using (var callbacks = CancellationTokenSource.CreateLinkedTokenSource(_leaveCancellation.Token))
+            {
+                callbacks.CancelAfter(_options.RebalanceTimeoutMs);
+                await InvokePendingRebalanceCallbacksUnlessCancelledAsync(callbacks.Token).ConfigureAwait(false);
+            }
+
+            if (CanSendLeaveRequest)
+            {
+                using var leaveTimeout = CancellationTokenSource.CreateLinkedTokenSource(_leaveCancellation.Token);
+                leaveTimeout.CancelAfter(_options.RequestTimeoutMs);
+                await SendConsumerProtocolLeaveRequestAsync(
+                    ConsumerGroupMembershipOperation.LeaveGroup,
+                    leaveTimeout.Token).ConfigureAwait(false);
+            }
+
+            await _lock.WaitAsync(_leaveCancellation.Token).ConfigureAwait(false);
+            try
+            {
+                ResetMemberState();
+            }
+            finally
+            {
+                _lock.Release();
+            }
+        }
+        catch (OperationCanceledException) when (_leaveCancellation.IsCancellationRequested)
+        {
+            // Disposal: the consumer is going away and its own teardown ends the membership.
+        }
+        catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
+        {
+        }
+        catch (Exception ex)
+        {
+            LogLeaveGroupRequestFailed(ex);
+        }
+    }
+
+    /// <summary>
+    /// Releases the published assignment for a leave and queues its OnPartitionsRevoked. Caller
+    /// holds <c>_lock</c>. Unlike a broker revocation it does not notify the consumer's revocation
+    /// hooks: the consumer already dropped its state for these partitions (and may own some of
+    /// them again through manual assignment), and the leave commits nothing.
+    /// </summary>
+    private void ReleaseAssignmentForLeave()
+    {
+        lock (_assignmentStateLock)
+        {
+            var owned = _assignedPartitions;
+            _assignedPartitions = [];
+            _newlyExpandedPartitions = [];
+            _unresolvedAssignment = null;
+            _unresolvedResolvedNames = null;
+            if (owned.Count == 0)
+                return;
+
+            Interlocked.Increment(ref _assignmentVersion);
+            EnqueuePendingRebalanceCallback(
+                new PendingRebalanceCallback
+                {
+                    Deferred = new ConsumerHeartbeatResult(
+                        AssignmentChanged: true,
+                        Revoked: owned.ToList(),
+                        Assigned: null),
+                    Assignment = _assignedPartitions
+                });
+        }
+
+        _unresolvedRefresher.Reset();
+    }
+
+    /// <summary>
     /// Ensures the consumer has joined the group.
     /// </summary>
     public ValueTask EnsureActiveGroupAsync(
@@ -819,7 +1006,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         ThrowIfFatalHeartbeatException();
 
-        if (_state == CoordinatorState.Stable)
+        // A membership that is being left is not current: the join path waits for the leave.
+        if (_state == CoordinatorState.Stable && Volatile.Read(ref _pendingLeave).IsCompleted)
         {
             // Callbacks cancellation deferred after the member became Stable: no rejoin will
             // retry them, so the next poll delivers them before returning.
@@ -1195,7 +1383,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // wait) completes as a member but is never kept alive. The stop in close or disposal
             // takes this lock after setting the flag, so a heartbeat installed just before is
             // stopped there.
-            if (Volatile.Read(ref _closing) != 0 || Volatile.Read(ref _disposed) != 0)
+            // Nor while the owner has asked to leave: a join that was already in flight completes,
+            // but its membership is not kept alive, and the leave ends it.
+            if (Volatile.Read(ref _closing) != 0
+                || Volatile.Read(ref _disposed) != 0
+                || Volatile.Read(ref _leaveRequested) != 0)
                 return;
 
             oldCts = _heartbeatCts;
@@ -1942,8 +2134,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     await _lock.WaitAsync(operationToken).ConfigureAwait(false);
                     try
                     {
-                        memberId = _memberId;
-                        memberEpoch = _generationId;
+                        // A member that is leaving (the owner unsubscribed or switched to manual
+                        // assignment) fetches as a non-member: the broker may already have
+                        // removed it, and its manual partitions need no membership.
+                        var leaving = Volatile.Read(ref _leaveRequested) != 0;
+                        memberId = leaving ? null : _memberId;
+                        memberEpoch = leaving ? -1 : _generationId;
                         membershipVersion = _membershipVersion;
                     }
                     finally
@@ -2128,7 +2324,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private async ValueTask RecoverOffsetFetchAsync(bool rejoinOnMembershipLoss, CancellationToken cancellationToken)
     {
         var subscription = _subscriptionState;
-        if (_state == CoordinatorState.Unjoined && subscription.Topics is { } subscribedTopics)
+        if (_state == CoordinatorState.Unjoined
+            && subscription.Topics is { } subscribedTopics
+            && Volatile.Read(ref _leaveRequested) == 0)
         {
             // A rejoin delivers rebalance callbacks; the caller cannot run them where it is.
             if (!rejoinOnMembershipLoss)
@@ -3193,6 +3391,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 "The consumer is closing; it does not rejoin its group.");
         }
 
+        // Published before the leave flag is read (both interlocked): RequestLeaveGroup either
+        // sees that a join may run and starts a leave, or this sees the request and returns.
+        Interlocked.Exchange(ref _membershipRequested, 1);
+        if (!await WaitForPendingLeaveAsync(cancellationToken).ConfigureAwait(false))
+            return;
+
         UpdateSubscription(topics, subscribedTopicRegex, subscriptionGeneration);
 
         ConsumerHeartbeatResult heartbeatResult = default;
@@ -3246,6 +3450,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
             while (_state != CoordinatorState.Stable)
             {
+                // The owner unsubscribed while this join waited for the lock or retried: stop.
+                if (Volatile.Read(ref _leaveRequested) != 0)
+                    return;
+
                 if (Stopwatch.GetElapsedTime(startedAt) >= rebalanceTimeout)
                     throw CreateJoinTimeoutException(startedAt, rebalanceTimeout, lastJoinFailure);
 
@@ -4162,6 +4370,21 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (Volatile.Read(ref _disposed) != 0)
             return;
 
+        // An unsubscribe's leave still running finishes first, so the member is left once; it
+        // usually leaves nothing for this one to do. Waited for only within this leave's budget.
+        var pendingLeave = Volatile.Read(ref _pendingLeave);
+        if (!pendingLeave.IsCompleted)
+        {
+            try
+            {
+                await pendingLeave.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+        }
+
         // A close's leave (responseCancellationToken set) delivers queued rebalance callbacks
         // only until close is cancelled: after that, what is left of cancellationToken is the
         // grace for getting the leave onto the wire, and a callback delivered again would use it
@@ -4232,6 +4455,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
         LogCoordinatorDisposing();
+
+        // An unsubscribe's leave still running is cut short; it never throws.
+        await _leaveCancellation.CancelAsync().ConfigureAwait(false);
+        await Volatile.Read(ref _pendingLeave).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
 
         await StopHeartbeatAsync().ConfigureAwait(false);
 

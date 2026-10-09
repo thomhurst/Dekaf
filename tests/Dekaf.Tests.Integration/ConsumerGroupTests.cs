@@ -306,15 +306,38 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
-        // Subscribe
+        await using (var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync())
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = "key",
+                Value = "value"
+            }, CancellationToken.None);
+        }
+
+        // Subscribe and join the group
         consumer.Subscribe(topic);
         await Assert.That(consumer.Subscription).Count().IsEqualTo(1);
+        var record = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30));
+        await Assert.That(record).IsNotNull();
+
+        await using var admin = new Dekaf.Admin.AdminClientBuilder()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .Build();
+        await Assert.That(await ConsumerUnsubscribeTests.CountMembersAsync(admin, groupId)).IsEqualTo(1);
 
         // Unsubscribe
         consumer.Unsubscribe();
 
-        // Assert
+        // Assert: the member left the group well before its 10 s session timeout would expire it.
         await Assert.That(consumer.Subscription).Count().IsEqualTo(0);
+        await Assert.That(async () => await ConsumerUnsubscribeTests.CountMembersAsync(admin, groupId))
+            .Eventually(count => count.IsEqualTo(0), TimeSpan.FromSeconds(8));
     }
 
     [Test]

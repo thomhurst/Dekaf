@@ -2503,6 +2503,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public void Subscribe(params string[] topics)
     {
+        _coordinator?.ResumeGroupMembership();
         _topicFilter = null;
         _topicPattern = null;
         _subscription.Clear();
@@ -2518,6 +2519,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         ArgumentNullException.ThrowIfNull(topicFilter);
 
+        _coordinator?.ResumeGroupMembership();
         _topicFilter = topicFilter;
         _topicPattern = null;
         _subscription.Clear();
@@ -2538,6 +2540,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             throw new InvalidOperationException("Server-side regex subscriptions require a consumer group ID.");
         }
 
+        _coordinator?.ResumeGroupMembership();
         _topicFilter = null;
         _topicPattern = pattern;
         _subscription.Clear();
@@ -2547,6 +2550,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public void Unsubscribe()
     {
+        // Before the subscription is cleared, so a poll that read it earlier cannot rejoin. The
+        // coordinator revokes the owned partitions and leaves the group in the background.
+        _coordinator?.RequestLeaveGroup();
         _topicFilter = null;
         _topicPattern = null;
         _subscription.Clear();
@@ -2594,6 +2600,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public void Assign(params TopicPartition[] partitions)
     {
         ThrowIfNewPartitionResetUsesManualAssignment();
+        // Manual assignment ends group membership, as Unsubscribe does.
+        _coordinator?.RequestLeaveGroup();
         _topicFilter = null;
         _topicPattern = null;
         _subscription.Clear();
@@ -2676,7 +2684,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public void IncrementalAssign(IEnumerable<TopicPartitionOffset> partitions)
     {
         ThrowIfNewPartitionResetUsesManualAssignment();
-        // Clear subscription since we're doing manual assignment
+        // Clear subscription since we're doing manual assignment; that ends group membership.
+        _coordinator?.RequestLeaveGroup();
         _topicFilter = null;
         _topicPattern = null;
         _subscription.Clear();

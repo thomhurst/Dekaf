@@ -90,6 +90,15 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <summary>
     /// Unsubscribes from all topics.
     /// </summary>
+    /// <remarks>
+    /// A consumer that has joined its group leaves it: in the background, the rebalance listeners'
+    /// <c>OnPartitionsRevokedAsync</c> runs for the partitions the member owns, then the consumer
+    /// sends the leave heartbeat and stops heartbeating, so the remaining members take over those
+    /// partitions at once. No offsets are committed automatically; commit before unsubscribing or
+    /// from <c>OnPartitionsRevokedAsync</c>. A later subscription joins the group again.
+    /// <see cref="IConsumerPartitions.Assign"/> and <see cref="IConsumerPartitions.IncrementalAssign"/>
+    /// end group membership the same way.
+    /// </remarks>
     void Unsubscribe();
 
     /// <summary>
@@ -431,6 +440,10 @@ public interface IConsumerPartitions
     /// <summary>
     /// Manually assigns partitions.
     /// </summary>
+    /// <remarks>
+    /// Replaces any subscription. A consumer that has joined its group leaves it, as
+    /// <see cref="IKafkaConsumer{TKey, TValue}.Unsubscribe"/> does.
+    /// </remarks>
     void Assign(params TopicPartition[] partitions);
 
     /// <summary>
