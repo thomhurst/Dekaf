@@ -1145,10 +1145,10 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     }
 
     /// <summary>
-    /// The consumer re-yields a batch the runtime leaves unenumerated, ahead of every other
-    /// partition and without an idle gap for <see cref="SyncAssignmentAsync"/>. A batch for an
-    /// assigned partition without a lane therefore starts its lane here instead of being dropped.
-    /// Partitions the runtime holds back are paused, so their batches are not re-yielded.
+    /// The consumer releases a batch the runtime leaves unenumerated and refetches it from the
+    /// partition position. A batch for an assigned partition without a lane therefore starts
+    /// its lane here rather than paying a refetch per skip. Partitions the runtime holds back
+    /// are paused, so their batches stay parked instead of being fetched again and again.
     /// </summary>
     private bool TryStartLaneForUnroutedBatch(
         TopicPartition partition,
@@ -1456,9 +1456,8 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                 exception);
 
             // Without a lane the runtime cannot enumerate this partition's batches, and the
-            // consumer re-yields an unenumerated batch ahead of every other partition. Hold the
-            // partition paused until its lane restarts so the backoff neither spins nor stalls
-            // healthy partitions.
+            // consumer would refetch every unenumerated batch. Hold the partition paused until
+            // its lane restarts so the backoff keeps its fetched data and does no extra I/O.
             if (_pausedByRuntime.Add(lane.TopicPartition))
                 _consumer.Partitions.Pause(lane.TopicPartition);
 

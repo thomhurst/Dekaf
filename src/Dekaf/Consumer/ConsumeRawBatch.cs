@@ -73,9 +73,6 @@ namespace Dekaf.Consumer
         private readonly Action<TopicPartition, long, int>? _storeOffsetOnDelivery;
         private readonly int _maxRecords;
         private long _count;
-        // Set once per batch when the caller starts enumerating. A batch resumed past without
-        // enumeration is released by the consumer for redelivery instead of being re-yielded.
-        private bool _enumerationStarted;
 
         internal ConsumeRawBatch(
             PendingFetchData pendingFetchData,
@@ -111,8 +108,6 @@ namespace Dekaf.Consumer
         /// This value is only accurate after the batch has been fully enumerated.
         /// </summary>
         public long Count => _count;
-
-        internal bool EnumerationStarted => _enumerationStarted;
 
         /// <summary>
         /// Captures the next consumed offset and its leader epoch for this batch window.
@@ -176,7 +171,6 @@ namespace Dekaf.Consumer
 
             internal Enumerator(ConsumeRawBatch batch)
             {
-                batch._enumerationStarted = true;
                 _batch = batch;
                 _observedVersion = batch._iterationGuard.CapturedVersion;
                 _canContinue = batch._iterationGuard.CanStart(

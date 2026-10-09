@@ -255,9 +255,6 @@ namespace Dekaf.Consumer
         private readonly bool _useFastPath;
         private readonly int _maxRecords;
         private long _count;
-        // Set once per batch when the caller starts enumerating. A batch resumed past without
-        // enumeration is released by the consumer for redelivery instead of being re-yielded.
-        private bool _enumerationStarted;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal ConsumeBatch(PendingFetchData pendingFetchData,
@@ -326,8 +323,6 @@ namespace Dekaf.Consumer
         /// This value is only accurate after the batch has been fully enumerated.
         /// </summary>
         public long Count => _count;
-
-        internal bool EnumerationStarted => _enumerationStarted;
 
         internal int MaximumRecordCount => _maxRecords;
 
@@ -422,7 +417,6 @@ namespace Dekaf.Consumer
 
             internal Enumerator(ConsumeBatch<TKey, TValue> batch)
             {
-                batch._enumerationStarted = true;
                 _batch = batch;
                 _observedVersion = batch._iterationGuard.CapturedVersion;
                 _canContinue = batch._iterationGuard.CanStart(
