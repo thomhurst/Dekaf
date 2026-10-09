@@ -294,6 +294,58 @@ public sealed partial class ConsumerAssignmentFastPathTests
         }
     }
 
+    /// <summary>
+    /// The first assignment's callback pauses and/or seeks, then the consumer is closed or disposed
+    /// before it ever synchronizes: nothing the callback staged survives.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    [Arguments(true, false, false)]
+    [Arguments(false, true, false)]
+    [Arguments(true, true, false)]
+    [Arguments(true, false, true)]
+    [Arguments(false, true, true)]
+    [Arguments(true, true, true)]
+    public async Task RebalanceCallbackStateTransitions_EndedBeforeFirstSync_DropsCallbackState(
+        bool pause,
+        bool seek,
+        bool disposeWithoutClose,
+        CancellationToken testTimeout)
+    {
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessCoreAsync(
+            listener,
+            consumerAwareListener: null,
+            [AssignedResponse(1, 0, 1)],
+            initialSync: false);
+        var consumer = harness.Consumer;
+        var acted = false;
+        listener.OnAssigned = partitions =>
+        {
+            if (!partitions.Contains(Partition1))
+                return;
+
+            acted = true;
+            if (pause)
+                consumer.Pause(Partition1);
+            if (seek)
+                consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
+        };
+
+        await harness.HeartbeatAsync();
+        await Assert.That(acted).IsTrue();
+        await Assert.That(consumer.Assignment).IsEmpty();
+
+        if (disposeWithoutClose)
+            await consumer.DisposeAsync();
+        else
+            await consumer.CloseAsync(testTimeout);
+
+        await Assert.That(consumer.Paused).DoesNotContain(Partition1);
+        await Assert.That(consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
+        await Assert.That(consumer.RebalancePausedPartitionCountForTest).IsEqualTo(0);
+    }
+
     [Test]
     public async Task EnsureAssignmentAsync_RepeatedlySupersededSync_TracksOneAppliedSeekPerPartition()
     {

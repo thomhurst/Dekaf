@@ -1686,6 +1686,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     internal int UnacknowledgedAppliedRebalanceSeekCountForTest => _unacknowledgedAppliedRebalanceSeeks.Count;
 
     internal int PendingRebalanceSeekCountForTest => _pendingRebalanceSeeks.Count;
+
+    internal int RebalancePausedPartitionCountForTest => _rebalancePausedPartitions.Count;
     // Thread-local storage keeps the production consumer's instance layout unchanged.
     [ThreadStatic]
     internal static Action? BeforeOffsetResetCommitForTest;
@@ -13773,7 +13775,33 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private void ClearAssignmentAfterClose()
     {
-        RemoveAssignedPartitions(_assignmentSnapshot, clearAll: true);
+        var assignment = _assignmentSnapshot;
+        if (assignment.Count != 0)
+        {
+            RemoveAssignedPartitions(assignment, clearAll: true);
+            return;
+        }
+
+        // Nothing was ever synchronized, but an OnPartitionsAssigned callback may still have staged
+        // seeks or paused partitions for the assignment it announced.
+        var hadPaused = false;
+        SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
+        try
+        {
+            lock (_snapshotStateGate)
+                hadPaused = DiscardUnsynchronizedRebalanceState(synchronizedAssignment: []);
+        }
+        finally
+        {
+            SemaphoreHelper.ReleaseSafely(_assignmentLock);
+        }
+
+        if (hadPaused)
+        {
+            PublishPausedSnapshot();
+            InvalidatePartitionCache();
+            InvalidateFetchRequestCache();
+        }
     }
 
     public async ValueTask<IReadOnlyDictionary<TopicPartition, long>> GetOffsetsForTimesAsync(

@@ -757,7 +757,8 @@ public sealed partial class ConsumerAssignmentFastPathTests
         IRebalanceListener? listener,
         IConsumerAwareRebalanceListener? consumerAwareListener,
         ConsumerGroupHeartbeatResponse[] script,
-        AutoOffsetReset? newPartitionsReset = null)
+        AutoOffsetReset? newPartitionsReset = null,
+        bool initialSync = true)
     {
         var connectionPool = Substitute.For<IConnectionPool>();
         var connection = Substitute.For<IKafkaConnection>();
@@ -784,7 +785,8 @@ public sealed partial class ConsumerAssignmentFastPathTests
             rebalanceListener: listener,
             consumerAwareRebalanceListener: consumerAwareListener);
         consumer.Subscribe("test-topic");
-        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+        if (initialSync)
+            await consumer.EnsureAssignmentAsync(CancellationToken.None);
         return new CallbackHarness(consumer, metadataManager, connection);
     }
 
