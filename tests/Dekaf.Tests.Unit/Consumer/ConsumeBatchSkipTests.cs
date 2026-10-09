@@ -462,6 +462,45 @@ public sealed class ConsumeBatchSkipTests
         await Assert.That(GetEofEvents(consumer)).IsEmpty();
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ManySkipsWithManyEofs_DropReleasedEofsAndKeepTheRestInOrder(bool raw)
+    {
+        const int partitionCount = 32;
+        const int skipped = partitionCount / 2;
+        var fetches = new PendingFetchData[partitionCount];
+        for (var i = 0; i < partitionCount; i++)
+            fetches[i] = CreatePendingFetch(new TopicPartition(Topic, i), 100L * i, 1);
+        await using var consumer = CreateConsumer(fetches);
+        var eofEvents = GetEofEvents(consumer);
+        for (var i = 0; i < partitionCount; i++)
+            eofEvents.Enqueue((new TopicPartition(Topic, i), 100L * i + 1));
+        await using var batches = Open(consumer, raw);
+
+        var dataOrder = new List<int>();
+        var eofOrder = new List<int>();
+        for (var i = 0; i < skipped + 2 * (partitionCount - skipped); i++)
+        {
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            var partition = batches.Current.Partition.Partition;
+            if (batches.Current.IsEof)
+            {
+                eofOrder.Add(partition);
+            }
+            else if (partition >= skipped)
+            {
+                _ = batches.Current.Offsets();
+                dataOrder.Add(partition);
+            }
+        }
+
+        var expected = Enumerable.Range(skipped, partitionCount - skipped).ToArray();
+        await Assert.That(dataOrder.SequenceEqual(expected)).IsTrue();
+        await Assert.That(eofOrder.SequenceEqual(expected)).IsTrue();
+        await Assert.That(eofEvents).IsEmpty();
+    }
+
     private sealed class TypedEnumerator(IAsyncEnumerator<ConsumeBatch<string, string>> inner)
         : IAsyncEnumerator<BatchView>
     {

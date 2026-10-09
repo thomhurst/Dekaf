@@ -11,8 +11,10 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// One batch stream over PartitionCount partitions, each with one queued fetch and one pending
 /// partition EOF. It delivers every fetch, then every EOF. This covers the EOF drain that holds
 /// an EOF back while its partition still has queued records. On this no-skip path the fetch
-/// queue is empty when the drain starts, so the check must add no per-EOF scan. The unit is
-/// one stream.
+/// queue is empty when the drain starts, so the check must add no per-EOF scan. With SkipHalf
+/// the stream skips the first half of the partitions without enumerating them. Each skip
+/// releases its partition and drops its queued EOF, which must not allocate, and the remaining
+/// EOFs are held behind their records. The unit is one stream.
 /// </summary>
 [MemoryDiagnoser]
 public class ConsumerBatchEofDrainBenchmarks
@@ -29,6 +31,13 @@ public class ConsumerBatchEofDrainBenchmarks
 
     [Params(false, true)]
     public bool Raw { get; set; }
+
+    [Params(false, true)]
+    public bool SkipHalf { get; set; }
+
+    private int Skipped => SkipHalf ? PartitionCount / 2 : 0;
+
+    private long ExpectedBatches => Skipped + 2L * (PartitionCount - Skipped);
 
     [GlobalSetup]
     public async Task Setup()
@@ -55,8 +64,8 @@ public class ConsumerBatchEofDrainBenchmarks
         _eofEvents = (ConcurrentQueue<(TopicPartition Partition, long Offset)>)
             BufferedConsumerHarness.GetPrivateField(_consumer, "_pendingEofEvents")!;
 
-        if (await Drain() != 2L * PartitionCount)
-            throw new InvalidOperationException("Every fetch and every EOF must be delivered once.");
+        if (await Drain() != ExpectedBatches)
+            throw new InvalidOperationException("Every processed fetch and its EOF must be delivered once.");
     }
 
     [Benchmark]
@@ -82,13 +91,19 @@ public class ConsumerBatchEofDrainBenchmarks
         await foreach (var batch in _consumer.ConsumeBatchAsync())
         {
             if (batch.IsPartitionEof)
+            {
+                if (batch.Partition < Skipped)
+                    return -1;
                 eofs++;
-            else
+            }
+            else if (batch.Partition >= Skipped)
+            {
                 foreach (var _ in batch) { }
-            if (++batches == 2L * PartitionCount)
+            }
+            if (++batches == ExpectedBatches)
                 break;
         }
-        return eofs == PartitionCount ? batches : -1;
+        return eofs == PartitionCount - Skipped ? batches : -1;
     }
 
     private async ValueTask<long> RawStream()
@@ -99,13 +114,19 @@ public class ConsumerBatchEofDrainBenchmarks
         await foreach (var batch in _consumer.ConsumeRawBatchAsync())
         {
             if (batch.IsPartitionEof)
+            {
+                if (batch.Partition < Skipped)
+                    return -1;
                 eofs++;
-            else
+            }
+            else if (batch.Partition >= Skipped)
+            {
                 foreach (var _ in batch) { }
-            if (++batches == 2L * PartitionCount)
+            }
+            if (++batches == ExpectedBatches)
                 break;
         }
-        return eofs == PartitionCount ? batches : -1;
+        return eofs == PartitionCount - Skipped ? batches : -1;
     }
 
     [GlobalCleanup]

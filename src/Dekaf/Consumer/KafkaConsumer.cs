@@ -8449,7 +8449,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (invalidateAllFetches)
                 InvalidateAllFetchesLocked();
             else
-                InvalidateFetchesForPartitionsLocked(removeSet);
+                InvalidateFetchesForPartitionSetLocked(removeSet);
 
             if (!preserveDivergingEpochResets)
             {
@@ -8510,19 +8510,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private void ClearPendingEofEventsForPartitions(HashSet<TopicPartition> partitionsToRemove)
     {
-        List<(TopicPartition Partition, long Offset)>? retained = null;
-        while (_pendingEofEvents.TryDequeue(out var eofEvent))
-        {
-            if (!partitionsToRemove.Contains(eofEvent.Partition))
-                (retained ??= []).Add(eofEvent);
-        }
-
-        if (retained is null)
+        // Seek, revocation and every skipped-batch release land here. With no queued EOF this
+        // is one read; otherwise rotate the queue once in place instead of copying it out.
+        if (_pendingEofEvents.IsEmpty)
             return;
 
-        foreach (var eofEvent in retained)
+        var count = _pendingEofEvents.Count;
+        for (var i = 0; i < count && _pendingEofEvents.TryDequeue(out var eofEvent); i++)
         {
-            _pendingEofEvents.Enqueue(eofEvent);
+            if (!partitionsToRemove.Contains(eofEvent.Partition))
+                _pendingEofEvents.Enqueue(eofEvent);
         }
     }
 
@@ -8928,6 +8925,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var minimumEpoch = Interlocked.Increment(ref _fetchBufferEpoch);
         Volatile.Write(ref _minimumFetchBufferEpoch, minimumEpoch);
         _minimumFetchBufferEpochsByPartition.Clear();
+    }
+
+    // Set variant: the struct enumerator keeps seek and skipped-batch release allocation-free.
+    private void InvalidateFetchesForPartitionSetLocked(HashSet<TopicPartition> partitions)
+    {
+        var minimumEpoch = Interlocked.Increment(ref _fetchBufferEpoch);
+        foreach (var partition in partitions)
+            _minimumFetchBufferEpochsByPartition[partition] = minimumEpoch;
     }
 
     private void InvalidateFetchesForPartitionsLocked(IEnumerable<TopicPartition> partitions)
