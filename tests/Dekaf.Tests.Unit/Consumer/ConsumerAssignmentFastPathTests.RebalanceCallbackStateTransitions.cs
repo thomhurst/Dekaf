@@ -29,7 +29,12 @@ public sealed partial class ConsumerAssignmentFastPathTests
         SyncCancelledThenRetried,
         SyncSupersededThenRetried,
         PreviousOwnershipPauseReassigned,
-        ClosedBeforeSync
+        ClosedBeforeSync,
+        CancelledAfterPublishThenAssignedManually,
+        CancelledAfterPublishThenResubscribed,
+        CancelledAfterPublishThenClosed,
+        SupersededByClassificationBeforeAck,
+        SupersededByReassignmentBeforeAck
     }
 
     [Test]
@@ -50,6 +55,11 @@ public sealed partial class ConsumerAssignmentFastPathTests
     [Arguments(CallbackTransition.SyncSupersededThenRetried, true, 42L)]
     [Arguments(CallbackTransition.PreviousOwnershipPauseReassigned, false, 20L)]
     [Arguments(CallbackTransition.ClosedBeforeSync, false, null)]
+    [Arguments(CallbackTransition.CancelledAfterPublishThenAssignedManually, false, null)]
+    [Arguments(CallbackTransition.CancelledAfterPublishThenResubscribed, false, 20L)]
+    [Arguments(CallbackTransition.CancelledAfterPublishThenClosed, false, null)]
+    [Arguments(CallbackTransition.SupersededByClassificationBeforeAck, true, 42L)]
+    [Arguments(CallbackTransition.SupersededByReassignmentBeforeAck, false, 20L)]
     public async Task RebalanceCallbackStateTransitions(
         CallbackTransition transition,
         bool expectPaused,
@@ -81,7 +91,13 @@ public sealed partial class ConsumerAssignmentFastPathTests
         };
 
         var listener = new CallbackListener();
-        await using var harness = await CreateCallbackHarnessAsync(listener, script);
+        await using var harness = await CreateCallbackHarnessCoreAsync(
+            listener,
+            consumerAwareListener: null,
+            script,
+            newPartitionsReset: transition == CallbackTransition.SupersededByClassificationBeforeAck
+                ? AutoOffsetReset.Earliest
+                : null);
         var consumer = harness.Consumer;
         var acted = false;
         if (transition != CallbackTransition.PreviousOwnershipPauseReassigned)
@@ -136,6 +152,40 @@ public sealed partial class ConsumerAssignmentFastPathTests
             case CallbackTransition.ClosedBeforeSync:
                 await consumer.CloseAsync(testTimeout);
                 sync = false;
+                break;
+            case CallbackTransition.CancelledAfterPublishThenAssignedManually:
+                await CancelFirstSyncDuringOffsetFetchAsync(harness);
+                consumer.Assign(new TopicPartition("test-topic", 0), Partition1);
+                sync = false;
+                break;
+            case CallbackTransition.CancelledAfterPublishThenResubscribed:
+                await CancelFirstSyncDuringOffsetFetchAsync(harness);
+                consumer.Unsubscribe();
+                consumer.Subscribe("test-topic");
+                break;
+            case CallbackTransition.CancelledAfterPublishThenClosed:
+                await CancelFirstSyncDuringOffsetFetchAsync(harness);
+                await consumer.CloseAsync(testTimeout);
+                sync = false;
+                break;
+            case CallbackTransition.SupersededByClassificationBeforeAck:
+            case CallbackTransition.SupersededByReassignmentBeforeAck:
+                // A heartbeat publishes a newer version after the pass's last version check and
+                // before its acknowledgement; the next sync must still start from the callback seek.
+                var coordinator = GetCoordinator(consumer);
+                var superseded = false;
+                consumer.BeforeAssignmentSyncAcknowledgedForTest = () =>
+                {
+                    if (superseded)
+                        return;
+                    superseded = true;
+                    if (transition == CallbackTransition.SupersededByClassificationBeforeAck)
+                        coordinator.MarkNewlyExpandedForTest(Partition1);
+                    else
+                        coordinator.RevokeAndReassignForTest(Partition1);
+                };
+                await consumer.EnsureAssignmentAsync(CancellationToken.None);
+                await Assert.That(superseded).IsTrue();
                 break;
         }
 

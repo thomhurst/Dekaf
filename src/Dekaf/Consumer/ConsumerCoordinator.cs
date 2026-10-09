@@ -523,13 +523,21 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
     }
 
-    internal void AcknowledgeAssignmentSync(int assignmentVersion)
+    /// <summary>
+    /// The owner synchronized <paramref name="assignmentVersion"/>. Returns true when that version was
+    /// still the published one at the acknowledgement, false when a newer version or a revocation superseded it: the owner then
+    /// treats the pass as not acknowledged.
+    /// </summary>
+    internal bool AcknowledgeAssignmentSync(int assignmentVersion)
     {
+        // Lock-free common case (the poll path). A publication increments the version before it
+        // queues revocations, so reading the queue empty and then the version unchanged places this
+        // acknowledgement before any later publication.
         if (Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0
             && Volatile.Read(ref _membershipFenced) == 0
             && _revokedPartitionsSinceLastSync.IsEmpty)
         {
-            return;
+            return Volatile.Read(ref _assignmentVersion) == assignmentVersion;
         }
 
         lock (_assignmentStateLock)
@@ -537,7 +545,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             if (Volatile.Read(ref _assignmentVersion) != assignmentVersion
                 || !_revokedPartitionsSinceLastSync.IsEmpty)
             {
-                return;
+                return false;
             }
 
             // The member has rejoined and the consumer has synchronized its assignment, dropping
@@ -547,10 +555,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             if (_state == CoordinatorState.Stable)
                 Volatile.Write(ref _membershipFenced, 0);
 
-            if (Volatile.Read(ref _maxPollExpiredAtPollVersion) == Volatile.Read(ref _pollVersion))
-                return;
+            if (Volatile.Read(ref _maxPollExpiredAtPollVersion) != Volatile.Read(ref _pollVersion))
+                Volatile.Write(ref _maxPollExpiredAtPollVersion, -1);
 
-            Volatile.Write(ref _maxPollExpiredAtPollVersion, -1);
+            return true;
         }
     }
 
@@ -2781,6 +2789,30 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     /// <summary>Publishes a newer assignment version without changing the assignment.</summary>
     internal void BumpAssignmentVersionForTest() => Interlocked.Increment(ref _assignmentVersion);
+
+    /// <summary>Publishes a classification-only update marking <paramref name="partition"/> newly expanded.</summary>
+    internal void MarkNewlyExpandedForTest(TopicPartition partition)
+    {
+        lock (_assignmentStateLock)
+        {
+            _newlyExpandedPartitions = new HashSet<TopicPartition>(_newlyExpandedPartitions) { partition };
+            Interlocked.Increment(ref _assignmentVersion);
+        }
+    }
+
+    /// <summary>
+    /// Publishes <paramref name="partition"/> revoked and assigned straight back, without delivering
+    /// callbacks (as if the notifications were still queued).
+    /// </summary>
+    internal void RevokeAndReassignForTest(TopicPartition partition)
+    {
+        NotifyRevoking([partition]);
+        lock (_assignmentStateLock)
+        {
+            Interlocked.Increment(ref _assignmentVersion);
+            EnqueueRevokedPartitions([partition]);
+        }
+    }
 
     /// <summary>
     /// Queues one OnPartitionsAssigned notification per entry and delivers them all in one drain.

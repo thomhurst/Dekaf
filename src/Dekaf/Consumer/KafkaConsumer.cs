@@ -1418,8 +1418,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly ConcurrentDictionary<TopicPartition, int> _storedOffsetLeaderEpochs = new();
     private readonly ConcurrentDictionary<TopicPartition, long> _fetchPositions = new(); // Fetch position (what to fetch next)
     // Seeks and pauses an OnPartitionsAssigned callback makes for a partition it announced belong to
-    // the ownership that callback starts, which assignment sync has not initialized yet. Per
-    // partition P, the state and every transition (tested by RebalanceCallbackStateTransitions):
+    // the ownership that callback starts, which assignment sync has not initialized yet.
+    //
+    // Three assignments are in play and must not be confused:
+    //   published     the coordinator's current assignment and version (callbacks announce it)
+    //   synchronized  _assignment/_assignmentSnapshot: what a sync pass has applied, possibly a pass
+    //                 later cancelled, failed or superseded before its acknowledgement
+    //   acknowledged  _acknowledgedCoordinatorAssignment: the last pass the coordinator confirmed
+    //                 was still the published version (AcknowledgeAssignmentSync returned true)
+    // Callback state is completed only by an acknowledged pass, and abandon decides which pauses
+    // survive from the acknowledged assignment, never from a merely synchronized one.
+    //
+    // Per partition P, the state and every transition (tested by RebalanceCallbackStateTransitions):
     //
     //   _pendingRebalanceSeeks[P]      seek staged by such a callback (either listener kind)
     //   _rebalancePausedPartitions[P]  the callback paused P: true while that ownership is current,
@@ -1439,18 +1449,28 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     //   sync position init -> staged seek applied but kept staged; recorded as applied (latest per P)
     //   sync retry         -> (cancelled, failed, superseded) revocations restored; the next pass
     //                         repeats cleanup and initialization with the same marker and seek
-    //   sync ack           -> applied seeks removed if unchanged; markers left are inert (the next
-    //                         revocation flips them false, cleanup or Resume removes them)
+    //   sync ack           -> only when the coordinator confirms the pass's version is still the
+    //                         published one: applied seeks removed if unchanged, the acknowledged
+    //                         assignment recorded. A pass superseded between its version check and
+    //                         the ack (classification-only or real change) completes nothing.
+    //                         Markers left are inert (the next revocation flips them false, cleanup
+    //                         or Resume removes them)
+    //   reclassified       -> (newly expanded, reinitialized) staged seek and marker kept: same
+    //                         ownership
     //   abandon            -> Unsubscribe, Subscribe (topics, filter or pattern), Assign, Unassign,
     //                         IncrementalAssign before sync: every staged seek and marker dropped,
-    //                         the pause of a marked partition not in the synchronized assignment
-    //                         removed, and a running assigned callback's staging ended (its later
-    //                         seeks, pauses and position reads act on the consumer directly)
+    //                         the pause of a marked partition not in the acknowledged assignment
+    //                         removed, the acknowledged assignment reset, and a running assigned
+    //                         callback's staging ended (its later seeks, pauses and position reads
+    //                         act on the consumer directly)
     //   close              -> as abandon, after the synchronized partitions are removed
     private readonly ConcurrentDictionary<TopicPartition, TopicPartitionOffset> _pendingRebalanceSeeks = new();
     private readonly ConcurrentDictionary<TopicPartition, bool> _rebalancePausedPartitions = new();
     // Guarded by _assignmentLock. At most one entry per partition, so retries do not accumulate.
     private readonly Dictionary<TopicPartition, TopicPartitionOffset> _unacknowledgedAppliedRebalanceSeeks = [];
+    // The group assignment of the last sync pass the coordinator confirmed as current (see the
+    // states above); empty after an abandon. Replaced, never mutated. Written under _assignmentLock.
+    private volatile HashSet<TopicPartition> _acknowledgedCoordinatorAssignment = [];
     // Serializes each Pause/Resume with assignment cleanup's clear-then-restore of a partition's
     // pause, so neither interleaves inside the other's check-then-act. Taken before
     // _coordinatorRevokedPartitionsPendingFetchClearLock, never while holding it. Not per message.
@@ -1651,6 +1671,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private int _lastCoordinatorAssignmentVersion = -1;
     // Deterministic test seam for assignment/revocation snapshot races.
     internal Action? BeforeCoordinatorAssignmentSnapshotForTest { get; set; }
+
+    // Runs after a sync pass's last version check, just before it acknowledges the sync.
+    internal Action? BeforeAssignmentSyncAcknowledgedForTest { get; set; }
     // Deterministic test seam: runs in assignment sync after the partitions assigned again are
     // identified and before revoked-partition state is cleaned up. It receives the consumer, so
     // a static keeps the instance layout unchanged and parallel tests can filter by it.
@@ -2492,7 +2515,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 _assignment.Clear();
                 PublishAssignmentSnapshot();
                 hadPaused = RemovePartitionState(previousAssignment);
-                hadPaused |= DiscardUnsynchronizedRebalanceState(previousAssignment);
+                hadPaused |= DiscardUnsynchronizedRebalanceState(_acknowledgedCoordinatorAssignment);
             }
         }
         finally
@@ -2547,7 +2570,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 PublishAssignmentSnapshot();
                 if (removedPartitions is not null)
                     hadPaused = RemovePartitionState(removedPartitions);
-                hadPaused |= DiscardUnsynchronizedRebalanceState(previousAssignment);
+                hadPaused |= DiscardUnsynchronizedRebalanceState(_acknowledgedCoordinatorAssignment);
             }
         }
         finally
@@ -2581,7 +2604,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 _assignment.Clear();
                 PublishAssignmentSnapshot();
                 hadPaused = RemovePartitionState(previousAssignment);
-                hadPaused |= DiscardUnsynchronizedRebalanceState(previousAssignment);
+                hadPaused |= DiscardUnsynchronizedRebalanceState(_acknowledgedCoordinatorAssignment);
             }
         }
         finally
@@ -2614,7 +2637,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             lock (_snapshotStateGate)
             {
-                hadPaused = DiscardUnsynchronizedRebalanceState(_assignmentSnapshot);
+                hadPaused = DiscardUnsynchronizedRebalanceState(_acknowledgedCoordinatorAssignment);
                 foreach (var tpo in partitions)
                 {
                     var tp = new TopicPartition(tpo.Topic, tpo.Partition);
@@ -7745,8 +7768,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         // A callback that polls synchronizes its own assignment (the poll does not wait for the
         // callback it runs in); the position is then the new ownership's.
-        if (!_assignmentSnapshot.Contains(partition) || !IsCoordinatorAssignmentSyncCurrent(coordinator, out _))
+        if (!_acknowledgedCoordinatorAssignment.Contains(partition)
+            || !IsCoordinatorAssignmentSyncCurrent(coordinator, out _))
+        {
             return null;
+        }
 
         return GetPositionWithoutCaching(partition);
     }
@@ -7776,7 +7802,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             if (_coordinator is { } coordinator
-                && _assignmentSnapshot.Contains(partition)
+                && _acknowledgedCoordinatorAssignment.Contains(partition)
                 && IsCoordinatorAssignmentSyncCurrent(coordinator, out _))
             {
                 ApplyPendingRebalanceSeek(partition);
@@ -7980,6 +8006,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         // A callback still running (this may be its own call) must not stage anything further.
         _coordinator?.EndAssignedCallbackStaging();
+        _acknowledgedCoordinatorAssignment = [];
         var hadPaused = false;
         lock (_pauseStateLock)
         {
@@ -9844,8 +9871,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             continue;
 
                         Volatile.Write(ref _lastCoordinatorAssignmentVersion, coordinatorAssignmentVersion);
-                        coordinator.AcknowledgeAssignmentSync(coordinatorAssignmentVersion);
-                        CompleteRebalanceSeeksOnSyncAcknowledged();
+                        if (coordinator.AcknowledgeAssignmentSync(coordinatorAssignmentVersion))
+                            CompleteAcknowledgedSync();
                         return;
                     }
 
@@ -9924,7 +9951,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     if (removedPartitions is not null)
                         QueueCoordinatorRevokedPartitionsForFetchClear(removedPartitions, reassignedPartitions);
                     if (reclassifiedPartitions is not null)
-                        QueueCoordinatorRevokedPartitionsForFetchClear(reclassifiedPartitions, reassignedPartitions);
+                    {
+                        // Reclassification keeps ownership: its staged seek and pause marker stay.
+                        var retained = new HashSet<TopicPartition>(reclassifiedPartitions);
+                        if (reassignedPartitions is not null)
+                            retained.UnionWith(reassignedPartitions);
+                        QueueCoordinatorRevokedPartitionsForFetchClear(reclassifiedPartitions, retained);
+                    }
 
                     // Update assignment from coordinator
                     _assignment.Clear();
@@ -9976,10 +10009,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     if (coordinator.AssignmentVersion != coordinatorAssignmentVersion)
                         continue;
 
+                    BeforeAssignmentSyncAcknowledgedForTest?.Invoke();
                     Volatile.Write(ref _lastCoordinatorAssignmentVersion, coordinatorAssignmentVersion);
-                    coordinator.AcknowledgeAssignmentSync(coordinatorAssignmentVersion);
+                    // A newer version published after the check above supersedes this pass: its
+                    // callback state stays pending for the pass that synchronizes that version.
+                    if (coordinator.AcknowledgeAssignmentSync(coordinatorAssignmentVersion))
+                        CompleteAcknowledgedSync();
                     unacknowledgedCoordinatorRevocations = null;
-                    CompleteRebalanceSeeksOnSyncAcknowledged();
                 }
                 else
                 {
@@ -10121,7 +10157,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     /// <param name="untilSyncAcknowledged">
     /// Assignment sync passes true: the seek stays staged until the sync is acknowledged
-    /// (<see cref="CompleteRebalanceSeeksOnSyncAcknowledged"/>), so a retried pass applies it again.
+    /// (<see cref="CompleteAcknowledgedSync"/>), so a retried pass applies it again.
     /// </param>
     private void ApplyPendingRebalanceSeek(TopicPartition partition, bool untilSyncAcknowledged = false)
     {
@@ -10158,8 +10194,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// while unchanged, so a seek a later callback staged for the same partition is kept. Caller
     /// holds <c>_assignmentLock</c>. Runs per acknowledged sync, never per message.
     /// </summary>
-    private void CompleteRebalanceSeeksOnSyncAcknowledged()
+    private void CompleteAcknowledgedSync()
     {
+        _acknowledgedCoordinatorAssignment = _assignmentSnapshot;
         if (_unacknowledgedAppliedRebalanceSeeks.Count == 0)
             return;
 

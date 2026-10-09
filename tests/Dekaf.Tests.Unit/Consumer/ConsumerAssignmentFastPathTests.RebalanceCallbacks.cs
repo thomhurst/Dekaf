@@ -756,7 +756,8 @@ public sealed partial class ConsumerAssignmentFastPathTests
     private static async Task<CallbackHarness> CreateCallbackHarnessCoreAsync(
         IRebalanceListener? listener,
         IConsumerAwareRebalanceListener? consumerAwareListener,
-        ConsumerGroupHeartbeatResponse[] script)
+        ConsumerGroupHeartbeatResponse[] script,
+        AutoOffsetReset? newPartitionsReset = null)
     {
         var connectionPool = Substitute.For<IConnectionPool>();
         var connection = Substitute.For<IKafkaConnection>();
@@ -779,6 +780,7 @@ public sealed partial class ConsumerAssignmentFastPathTests
         var consumer = CreateGroupConsumer(
             connectionPool,
             metadataManager,
+            autoOffsetResetNewPartitions: newPartitionsReset,
             rebalanceListener: listener,
             consumerAwareRebalanceListener: consumerAwareListener);
         consumer.Subscribe("test-topic");
