@@ -828,9 +828,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (string.IsNullOrEmpty(_options.GroupId))
             return;
 
-        if (commitState is not null)
-            Volatile.Write(ref _leaveCommitState, commitState);
-
         // Before reading _membershipRequested: a join either sees this flag or is seen below.
         Interlocked.Exchange(ref _leaveRequested, 1);
 
@@ -843,6 +840,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             return;
         }
+
+        // Only for a leave that can run: a state stored without one would be committed by an
+        // unrelated later leave. Taken (and cleared) by that leave's ReleaseAssignmentForLeave.
+        if (commitState is not null)
+            Volatile.Write(ref _leaveCommitState, commitState);
 
         // Stops a heartbeat response in flight from publishing (it is validated under the state
         // lock); the leave sets it again under that lock, after any join in flight completes.
@@ -980,6 +982,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // after the request; its callbacks' seeks are stale too.
         RecordLeaveRevocation();
 
+        // Taken on every path: a snapshot this leave does not use (the assignment was already gone)
+        // must not be committed by a later membership's leave.
+        var commitState = Interlocked.Exchange(ref _leaveCommitState, null);
+
         lock (_assignmentStateLock)
         {
             var owned = _assignedPartitions;
@@ -1005,7 +1011,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             TaskCreationOptions.RunContinuationsAsynchronously)),
                     Assignment = _assignedPartitions,
                     IsLeave = true,
-                    LeaveCommitState = Interlocked.Exchange(ref _leaveCommitState, null)
+                    LeaveCommitState = commitState
                 });
         }
 
@@ -2451,6 +2457,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         _generationId = -1;
         _state = CoordinatorState.Unjoined;
         Volatile.Write(ref _membershipFenced, 0);
+        // A leave commit snapshot belongs to the membership being reset.
+        Volatile.Write(ref _leaveCommitState, null);
         ClearAssignment();
     }
 

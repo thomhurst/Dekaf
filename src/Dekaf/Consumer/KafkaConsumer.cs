@@ -2588,12 +2588,66 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// </summary>
     private sealed record LeaveCommitSnapshot(TopicPartitionOffset[] Proven, TopicPartitionOffset[] Explicit);
 
+    /// <remarks>
+    /// Reads only: the vouched offsets are computed from the consumed positions, never staged in
+    /// the shared stored-offset map, where a concurrent auto-commit could send an offset past a
+    /// record the application is still processing.
+    /// </remarks>
     private LeaveCommitSnapshot? CaptureLeaveCommitSnapshot(TopicPartitionSet owned)
     {
         var proven = SnapshotStoredOffsets(owned);
-        StageExplicitCommitOffsets();
-        var vouched = SnapshotStoredOffsets(owned);
-        return proven.Length == 0 && vouched.Length == 0 ? null : new LeaveCommitSnapshot(proven, vouched);
+        Dictionary<TopicPartition, TopicPartitionOffset>? vouched = null;
+        foreach (var offset in proven)
+            (vouched ??= [])[new TopicPartition(offset.Topic, offset.Partition)] = offset;
+
+        // What a parameterless CommitAsync would stage (StageExplicitCommitOffsets): everything
+        // yielded, including a record still being processed.
+        if (_options.EnableAutoOffsetStore)
+        {
+            foreach (var partition in owned)
+            {
+                if (TryGetActiveConsumedPosition(partition, out var position, out var leaderEpoch))
+                    AddVouchedPosition(ref vouched, partition, position, leaderEpoch);
+            }
+
+            if (_pendingFetches.Count > 0)
+                AddVouchedPosition(ref vouched, owned, _pendingFetches.Peek());
+
+            foreach (var pending in _pausedPendingFetches)
+                AddVouchedPosition(ref vouched, owned, pending);
+        }
+
+        return proven.Length == 0 && vouched is null
+            ? null
+            : new LeaveCommitSnapshot(proven, vouched?.Values.ToArray() ?? []);
+    }
+
+    private void AddVouchedPosition(
+        ref Dictionary<TopicPartition, TopicPartitionOffset>? vouched,
+        TopicPartitionSet owned,
+        PendingFetchData pending)
+    {
+        if (TryGetConsumedPosition(
+                pending,
+                out var partition,
+                out var position,
+                out var leaderEpoch,
+                includeFilteredProgress: !HasPendingFetchClear(pending.TopicPartition))
+            && owned.Contains(partition))
+        {
+            AddVouchedPosition(ref vouched, partition, position, leaderEpoch);
+        }
+    }
+
+    private static void AddVouchedPosition(
+        ref Dictionary<TopicPartition, TopicPartitionOffset>? vouched,
+        TopicPartition partition,
+        long position,
+        int leaderEpoch)
+    {
+        vouched ??= [];
+        if (!vouched.TryGetValue(partition, out var existing) || existing.Offset < position)
+            vouched[partition] = new TopicPartitionOffset(partition.Topic, partition.Partition, position, leaderEpoch);
     }
 
     private TopicPartitionOffset[] SnapshotStoredOffsets(TopicPartitionSet partitions)

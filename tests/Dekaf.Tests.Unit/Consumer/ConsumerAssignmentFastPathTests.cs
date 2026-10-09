@@ -266,6 +266,44 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await Assert.That(consumer.GetRebalancePosition(partition)).IsNull();
     }
 
+    [Test]
+    public async Task LeaveCommitSnapshot_VouchesForInDoubtRecordWithoutStagingIt()
+    {
+        // Unsubscribe while the last yielded record is still being processed: the leave's
+        // CommitAsync() snapshot vouches for it, but the shared stored-offset map must not, or an
+        // auto-commit already past its stable check would commit past the unprocessed record.
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        SetupOffsetFetch(connection);
+
+        await using var consumer = CreateGroupConsumer(
+            connectionPool, metadataManager, offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        var partition = new TopicPartition("test-topic", 0);
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var type = typeof(KafkaConsumer<string, string>);
+        // Record 4 was yielded and is still being processed.
+        type.GetMethod("PublishActiveConsumedPosition", flags)!.Invoke(consumer, [partition, 5L, -1]);
+
+        var snapshot = type.GetMethod("CaptureLeaveCommitSnapshot", flags)!
+            .Invoke(consumer, [GetCoordinator(consumer).Assignment]);
+
+        var dirty = (System.Collections.Concurrent.ConcurrentDictionary<TopicPartition, long>)
+            type.GetField("_dirtyStoredOffsets", flags)!.GetValue(consumer)!;
+        await Assert.That(dirty.ContainsKey(partition)).IsFalse();
+        var vouched = (TopicPartitionOffset[])snapshot!.GetType().GetProperty("Explicit")!.GetValue(snapshot)!;
+        await Assert.That(vouched.Single().Offset).IsEqualTo(5L);
+        var proven = (TopicPartitionOffset[])snapshot.GetType().GetProperty("Proven")!.GetValue(snapshot)!;
+        await Assert.That(proven).IsEmpty();
+    }
+
     private static long GetCoordinatorRevocationSequence(ConsumerCoordinator coordinator) =>
         (long)typeof(ConsumerCoordinator)
             .GetField("_revocationSequence", BindingFlags.NonPublic | BindingFlags.Instance)!

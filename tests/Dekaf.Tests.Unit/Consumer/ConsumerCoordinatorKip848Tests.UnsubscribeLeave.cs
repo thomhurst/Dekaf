@@ -249,6 +249,54 @@ public sealed partial class ConsumerCoordinatorKip848Tests
             Arg.Any<ConsumerGroupHeartbeatRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
     }
 
+    [Test]
+    [Timeout(10_000)]
+    public async Task RequestLeaveGroup_AssignmentAlreadyGone_DropsCommitSnapshot(CancellationToken cancellationToken)
+    {
+        var script = new HeartbeatScript(this);
+        SetupFindCoordinator();
+        script.Respond = (_, request) => RespondRecordingLeave([], request, CreateAssignment(TestTopicId, 0));
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(), _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(LeaveTestTopics, cancellationToken);
+
+        // A heartbeat removed the assignment after the owner captured its snapshot.
+        SetPrivateField(coordinator, "_assignedPartitions", new HashSet<TopicPartition>());
+        coordinator.RequestLeaveGroup(new object());
+        await GetPrivateField<Task>(coordinator, "_pendingLeave").WaitAsync(cancellationToken);
+
+        await Assert.That(GetPrivateField<object?>(coordinator, "_leaveCommitState") is null).IsTrue();
+    }
+
+    [Test]
+    public async Task RequestLeaveGroup_NoLeaveToRun_DoesNotKeepCommitSnapshot()
+    {
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(), _connectionPool, _metadataManager);
+
+        coordinator.RequestLeaveGroup(new object());
+
+        await Assert.That(GetPrivateField<object?>(coordinator, "_leaveCommitState") is null).IsTrue();
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task ResetMemberState_ClearsCommitSnapshot(CancellationToken cancellationToken)
+    {
+        var script = new HeartbeatScript(this);
+        SetupFindCoordinator();
+        script.Respond = (_, request) => RespondRecordingLeave([], request, CreateAssignment(TestTopicId, 0));
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(), _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(LeaveTestTopics, cancellationToken);
+
+        // A snapshot no leave took (stored just as the membership ended another way).
+        SetPrivateField<object?>(coordinator, "_leaveCommitState", new object());
+        await coordinator.LeaveGroupAsync(cancellationToken);
+
+        await Assert.That(GetPrivateField<object?>(coordinator, "_leaveCommitState") is null).IsTrue();
+    }
+
     private static ValueTask<ConsumerGroupHeartbeatResponse> RespondRecordingLeave(
         List<string> calls,
         ConsumerGroupHeartbeatRequest request,
