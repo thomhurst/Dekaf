@@ -1099,6 +1099,62 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await Assert.That(generation).IsEqualTo(coordinator.SubscriptionGeneration);
     }
 
+    /// <summary>
+    /// Two listeners handle one assignment in turn. Work the first leaves running when it returns
+    /// sees no live callback while the second runs: its seek is not staged. The second listener's
+    /// own seek still is.
+    /// </summary>
+    [Test]
+    [Timeout(30_000)]
+    public async Task RebalanceCallbackStateTransitions_WorkOutlivingFirstListener_IsNotStagedDuringSecond(
+        CancellationToken testTimeout)
+    {
+        var first = new CallbackListener();
+        var second = new CallbackListener();
+        // The consumer-aware listener runs first, then the additional plain listener.
+        await using var harness = await CreateCallbackHarnessCoreAsync(
+            listener: null,
+            consumerAwareListener: first,
+            [AssignedResponse(1, 0)],
+            additionalListener: second);
+        var consumer = harness.Consumer;
+        var coordinator = GetCoordinator(consumer);
+        var secondRunning = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<bool>? lateWork = null;
+        bool? secondStaging = null;
+        first.OnAssignedConsumer = (view, partitions) =>
+        {
+            if (!partitions.Contains(Partition1))
+                return;
+
+            lateWork = Task.Run(
+                async () =>
+                {
+                    await secondRunning.Task;
+                    var staging = coordinator.TryGetAssignedCallbackRevocationSequence(Partition1, out _);
+                    consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
+                    return staging;
+                },
+                testTimeout);
+        };
+        second.OnAssigned = partitions =>
+        {
+            if (!partitions.Contains(Partition1))
+                return;
+
+            secondRunning.TrySetResult();
+            lateWork!.Wait(testTimeout);
+            secondStaging = coordinator.TryGetAssignedCallbackRevocationSequence(Partition1, out _);
+        };
+
+        await coordinator.DeliverAssignedCallbacksForTestAsync([Partition1]);
+
+        await Assert.That(await lateWork!).IsFalse();
+        await Assert.That(secondStaging).IsNotNull();
+        await Assert.That(secondStaging!.Value).IsTrue();
+        await Assert.That(consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
+    }
+
     /// <summary>A fresh subscription after an abandon reactivates staging for the new assignment.</summary>
     [Test]
     public async Task RebalanceCallbackStateTransitions_SubscribeAfterAbandon_Reactivates()

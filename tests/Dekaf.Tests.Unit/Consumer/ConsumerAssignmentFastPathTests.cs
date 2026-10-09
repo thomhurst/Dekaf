@@ -2301,7 +2301,8 @@ public sealed partial class ConsumerAssignmentFastPathTests
         AutoOffsetReset autoOffsetReset = AutoOffsetReset.Latest,
         TimeSpan? autoOffsetResetDuration = null,
         IRebalanceListener? rebalanceListener = null,
-        IConsumerAwareRebalanceListener? consumerAwareRebalanceListener = null)
+        IConsumerAwareRebalanceListener? consumerAwareRebalanceListener = null,
+        IRebalanceListener[]? additionalRebalanceListeners = null)
     {
         return new KafkaConsumer<string, string>(
             new ConsumerOptions
@@ -2317,7 +2318,8 @@ public sealed partial class ConsumerAssignmentFastPathTests
                 AutoOffsetReset = autoOffsetReset,
                 AutoOffsetResetDuration = autoOffsetResetDuration,
                 RebalanceListener = rebalanceListener,
-                ConsumerAwareRebalanceListener = consumerAwareRebalanceListener
+                ConsumerAwareRebalanceListener = consumerAwareRebalanceListener,
+                AdditionalRebalanceListeners = additionalRebalanceListeners
             },
             Serializers.String,
             Serializers.String,

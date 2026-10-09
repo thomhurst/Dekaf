@@ -44,6 +44,91 @@ public sealed class RebalanceCallbackConsumerStateTests(KafkaTestContainer kafka
     }
 
     [Test]
+    public async Task LegacyListener_SeekThenUnsubscribeBeforeSync_DoesNotLeakIntoNextSubscription()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var groupId = $"callback-seek-abandon-{Guid.NewGuid():N}";
+        await ProduceAsync(topic, partitions: 1, perPartition: 4);
+        var partition = new TopicPartition(topic, 0);
+
+        await using (var committer = await CreateConsumerAsync(groupId, listener: null))
+        {
+            committer.Subscribe(topic);
+            await ConsumeMessagesAsync(committer, count: 1);
+            await committer.CommitAsync([new TopicPartitionOffset(topic, 0, 1)]);
+        }
+
+        var listener = new LegacyListener();
+        await using var consumer = await CreateConsumerAsync(groupId, listener);
+        var seeked = false;
+        listener.OnAssigned = (c, partitions) =>
+        {
+            if (seeked || !partitions.Contains(partition))
+                return;
+
+            // The callback's seek is staged for the assignment it announced, which the consumer
+            // abandons before ever synchronizing it.
+            seeked = true;
+            c.Seek(new TopicPartitionOffset(topic, 0, 3));
+            c.Unsubscribe();
+        };
+        listener.Consumer = consumer;
+        consumer.Subscribe(topic);
+
+        // Joins; the assignment and its callback may follow on the heartbeat.
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        await ((KafkaConsumer<string, string>)consumer).EnsureAssignmentAsync(timeout.Token);
+        await WaitForConditionAsync(() => seeked, TimeSpan.FromSeconds(60), description: "assigned callback");
+
+        consumer.Subscribe(topic);
+        var first = (await ConsumeMessagesAsync(consumer, count: 1)).Single();
+
+        await Assert.That(first.Offset).IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task TwoListeners_SeekAndPauseInAssigned_BothSurviveSync()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var groupId = $"callback-two-listeners-{Guid.NewGuid():N}";
+        await ProduceAsync(topic, partitions: 1, perPartition: 4);
+        var partition = new TopicPartition(topic, 0);
+
+        var pausing = new ConsumerAwareListener
+        {
+            OnReturn = static (target, partitions) => target.Pause([.. partitions])
+        };
+        var seeking = new LegacyListener();
+        seeking.OnAssigned = (c, partitions) =>
+        {
+            if (partitions.Contains(partition))
+                c.Seek(new TopicPartitionOffset(topic, 0, 2));
+        };
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithRebalanceListener(pausing)
+            .AddRebalanceListener(seeking)
+            .BuildAsync();
+        seeking.Consumer = consumer;
+        consumer.Subscribe(topic);
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        await ((KafkaConsumer<string, string>)consumer).EnsureAssignmentAsync(timeout.Token);
+
+        await Assert.That(consumer.Assignment).Contains(partition);
+        await Assert.That(consumer.Paused).Contains(partition);
+        await Assert.That(consumer.Positions.GetPosition(partition)).IsEqualTo(2L);
+
+        consumer.Resume(partition);
+        var first = (await ConsumeMessagesAsync(consumer, count: 1)).Single();
+
+        await Assert.That(first.Offset).IsEqualTo(2L);
+    }
+
+    [Test]
     public async Task LegacyListener_SeekInAssignedForReturnedPartition_WinsOverResetOffset()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);

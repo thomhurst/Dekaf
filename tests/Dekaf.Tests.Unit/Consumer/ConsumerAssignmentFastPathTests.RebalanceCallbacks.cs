@@ -758,7 +758,8 @@ public sealed partial class ConsumerAssignmentFastPathTests
         IConsumerAwareRebalanceListener? consumerAwareListener,
         ConsumerGroupHeartbeatResponse[] script,
         AutoOffsetReset? newPartitionsReset = null,
-        bool initialSync = true)
+        bool initialSync = true,
+        IRebalanceListener? additionalListener = null)
     {
         var connectionPool = Substitute.For<IConnectionPool>();
         var connection = Substitute.For<IKafkaConnection>();
@@ -783,7 +784,8 @@ public sealed partial class ConsumerAssignmentFastPathTests
             metadataManager,
             autoOffsetResetNewPartitions: newPartitionsReset,
             rebalanceListener: listener,
-            consumerAwareRebalanceListener: consumerAwareListener);
+            consumerAwareRebalanceListener: consumerAwareListener,
+            additionalRebalanceListeners: additionalListener is null ? null : [additionalListener]);
         consumer.Subscribe("test-topic");
         if (initialSync)
             await consumer.EnsureAssignmentAsync(CancellationToken.None);

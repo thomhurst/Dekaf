@@ -837,10 +837,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 }
             }
 
-            if (SubscriptionMatches(topics, subscribedTopicRegex))
+            // The steady poll path: one snapshot read and, with the owner passing the same topics
+            // set it sent, a reference comparison.
+            var subscription = _subscriptionState;
+            if (SubscriptionMatches(subscription, topics, subscribedTopicRegex))
             {
                 // Same topics, possibly read at a newer generation: requests now answer it.
-                UpdateSubscription(topics, subscribedTopicRegex, subscriptionGeneration);
+                if (subscriptionGeneration > subscription.Generation)
+                    UpdateSubscription(topics, subscribedTopicRegex, subscriptionGeneration);
                 return;
             }
 
@@ -1293,6 +1297,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             ValueTask> consumerAwareCallback,
         IEnumerable<TopicPartition> newlyAssigned,
         PendingRebalanceCallback? progress,
+        AssignedCallbackInfo? assignedCallback,
         CancellationToken cancellationToken)
     {
         // With progress, listeners that already completed this notification are skipped and each
@@ -1305,31 +1310,49 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         var configuredListener = _rebalanceListener;
         if (configuredListener is not null && position++ >= completed)
         {
-            await InvokeRebalanceListenerAsync(
-                callbackName,
-                partitions,
-                configuredListener,
-                callback,
-                cancellationToken).ConfigureAwait(false);
+            var context = BeginAssignedCallback(assignedCallback);
+            try
+            {
+                await InvokeRebalanceListenerAsync(
+                    callbackName,
+                    partitions,
+                    configuredListener,
+                    callback,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                EndAssignedCallback(context);
+            }
+
             progress?.ListenersCompleted = position;
         }
 
         var consumerAwareListener = _consumerAwareRebalanceListener;
         if (consumerAwareListener is not null && position++ >= completed)
         {
-            await InvokeConsumerAwareRebalanceListenerAsync(
-                callbackName,
-                partitions,
-                consumerAwareListener,
-                consumerAwareCallback,
-                newlyAssigned,
-                // A queued callback's scope shows the assignment it was queued under, not one
-                // published since.
-                progress?.Assignment ?? _assignedPartitions,
-                // Likewise the revocations it predates: a seek it stages for a partition revoked
-                // since then is discarded.
-                progress?.RevocationSequence ?? Volatile.Read(ref _revocationSequence),
-                cancellationToken).ConfigureAwait(false);
+            var context = BeginAssignedCallback(assignedCallback);
+            try
+            {
+                await InvokeConsumerAwareRebalanceListenerAsync(
+                    callbackName,
+                    partitions,
+                    consumerAwareListener,
+                    consumerAwareCallback,
+                    newlyAssigned,
+                    // A queued callback's scope shows the assignment it was queued under, not one
+                    // published since.
+                    progress?.Assignment ?? _assignedPartitions,
+                    // Likewise the revocations it predates: a seek it stages for a partition
+                    // revoked since then is discarded.
+                    progress?.RevocationSequence ?? Volatile.Read(ref _revocationSequence),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                EndAssignedCallback(context);
+            }
+
             progress?.ListenersCompleted = position;
         }
 
@@ -1341,12 +1364,21 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 if (position++ < completed)
                     continue;
 
-                await InvokeRebalanceListenerAsync(
-                    callbackName,
-                    partitions,
-                    additionalListeners[index],
-                    callback,
-                    cancellationToken).ConfigureAwait(false);
+                var context = BeginAssignedCallback(assignedCallback);
+                try
+                {
+                    await InvokeRebalanceListenerAsync(
+                        callbackName,
+                        partitions,
+                        additionalListeners[index],
+                        callback,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    EndAssignedCallback(context);
+                }
+
                 progress?.ListenersCompleted = position;
             }
         }
@@ -1354,14 +1386,72 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         var runtimeListener = Volatile.Read(ref _runtimeRebalanceListener);
         if (runtimeListener is not null && position++ >= completed)
         {
-            await InvokeRebalanceListenerAsync(
-                callbackName,
-                partitions,
-                runtimeListener,
-                callback,
-                cancellationToken).ConfigureAwait(false);
+            var context = BeginAssignedCallback(assignedCallback);
+            try
+            {
+                await InvokeRebalanceListenerAsync(
+                    callbackName,
+                    partitions,
+                    runtimeListener,
+                    callback,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                EndAssignedCallback(context);
+            }
+
             progress?.ListenersCompleted = position;
         }
+    }
+
+    /// <summary>
+    /// Starts one listener's OnPartitionsAssigned call: a context of its own, so work an earlier
+    /// listener left running never sees a later listener's call as live. Allocated once per
+    /// listener call, never per message. The caller's async flow carries it into the listener.
+    /// </summary>
+    private AssignedCallbackContext? BeginAssignedCallback(AssignedCallbackInfo? assignedCallback)
+    {
+        if (assignedCallback is null)
+            return null;
+
+        var context = new AssignedCallbackContext(
+            this,
+            assignedCallback.Partitions,
+            assignedCallback.RevocationSequence);
+        s_assignedCallback.Value = context;
+        // Published before the generation is read, as an abandon bumps the generation before it
+        // reads the context: an abandon either sees this context or is seen here. A subscription
+        // change since the assignment was published starts the call with staging ended.
+        Interlocked.Exchange(ref _currentAssignedCallback, context);
+        if (assignedCallback.SubscriptionGeneration != Volatile.Read(ref _subscriptionGeneration))
+            context.Deactivate();
+        Interlocked.Increment(ref _assignedCallbacksRunning);
+        return context;
+    }
+
+    private void EndAssignedCallback(AssignedCallbackContext? context)
+    {
+        if (context is null)
+            return;
+
+        context.Deactivate();
+        Interlocked.CompareExchange(ref _currentAssignedCallback, null, context);
+        Interlocked.Decrement(ref _assignedCallbacksRunning);
+        s_assignedCallback.Value = null;
+    }
+
+    /// <summary>What every listener call of one OnPartitionsAssigned delivery shares.</summary>
+    private sealed class AssignedCallbackInfo(
+        HashSet<TopicPartition> partitions,
+        long revocationSequence,
+        int subscriptionGeneration)
+    {
+        public HashSet<TopicPartition> Partitions { get; } = partitions;
+
+        public long RevocationSequence { get; } = revocationSequence;
+
+        public int SubscriptionGeneration { get; } = subscriptionGeneration;
     }
 
     /// <summary>
@@ -2237,11 +2327,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 listener.OnPartitionsRevokedAsync(consumer, partitions, token),
             [],
             progress,
+            assignedCallback: null,
             cancellationToken);
 
     private ValueTask InvokePartitionsAssignedListenersAsync(
         IReadOnlyList<TopicPartition> assigned,
         PendingRebalanceCallback? progress,
+        AssignedCallbackInfo assignedCallback,
         CancellationToken cancellationToken) =>
         InvokeRebalanceListenersAsync(
             "OnPartitionsAssigned",
@@ -2251,6 +2343,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 listener.OnPartitionsAssignedAsync(consumer, partitions, token),
             assigned,
             progress,
+            assignedCallback,
             cancellationToken);
 
     internal Telemetry.ClientTelemetryMetricCollector? TelemetryMetricCollector { get; init; }
@@ -3587,6 +3680,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 listener.OnPartitionsLostAsync(consumer, partitions, token),
             [],
             progress,
+            assignedCallback: null,
             cancellationToken);
 
     private async ValueTask InvokePendingRebalanceCallbacksAsync(CancellationToken cancellationToken)
@@ -3676,34 +3770,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                     if (deferred.Assigned is { Count: > 0 } assigned)
                     {
-                        // The owner stages a seek or pause the callback makes on the consumer
-                        // itself for these partitions, as the consumer-aware scope does, so the
-                        // assignment sync that follows keeps it. Allocated once per delivery.
-                        var assignedCallback = new AssignedCallbackContext(
-                            this,
+                        // The owner stages a seek or pause a listener makes on the consumer itself
+                        // for these partitions, as the consumer-aware scope does, so the
+                        // assignment sync that follows keeps it. Each listener call gets its own
+                        // context (BeginAssignedCallback). Allocated once per delivery.
+                        var assignedCallback = new AssignedCallbackInfo(
                             new HashSet<TopicPartition>(assigned),
-                            pending.RevocationSequence);
-                        s_assignedCallback.Value = assignedCallback;
-                        // Published before the epoch is read, as EndAssignedCallbackStaging bumps the
-                        // epoch before it reads the context: an abandon either sees this context or
-                        // is seen here. One abandoned after the notification was queued starts the
-                        // callback with staging ended.
-                        Interlocked.Exchange(ref _currentAssignedCallback, assignedCallback);
-                        if (pending.SubscriptionGeneration != Volatile.Read(ref _subscriptionGeneration))
-                            assignedCallback.Deactivate();
-                        Interlocked.Increment(ref _assignedCallbacksRunning);
-                        try
-                        {
-                            await InvokePartitionsAssignedListenersAsync(assigned, pending, cancellationToken)
-                                .ConfigureAwait(false);
-                        }
-                        finally
-                        {
-                            assignedCallback.Deactivate();
-                            Interlocked.CompareExchange(ref _currentAssignedCallback, null, assignedCallback);
-                            Interlocked.Decrement(ref _assignedCallbacksRunning);
-                            s_assignedCallback.Value = null;
-                        }
+                            pending.RevocationSequence,
+                            pending.SubscriptionGeneration);
+                        await InvokePartitionsAssignedListenersAsync(
+                                assigned,
+                                pending,
+                                assignedCallback,
+                                cancellationToken)
+                            .ConfigureAwait(false);
                     }
                 }
 
