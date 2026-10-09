@@ -152,6 +152,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // own entry stays queued until it returns. The scope is deactivated when the drain ends, so a
     // task the listener started, which inherits the value, drains normally afterwards.
     private static readonly AsyncLocal<DrainScope?> s_drainScope = new();
+    // Non-zero while an OnPartitionsAssigned delivery runs, so the owner's seek, pause and position
+    // calls read s_drainScope only then.
+    private int _assignedCallbacksRunning;
     // Changes under _lock each time a join publishes a new membership and each time a fence ends
     // one. A fence observed by a request sent under an earlier membership must not clear the
     // assignment of a newer one, and a commit must not send offsets taken under an earlier one.
@@ -3389,8 +3392,23 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                     if (deferred.Assigned is { Count: > 0 } assigned)
                     {
-                        await InvokePartitionsAssignedListenersAsync(assigned, pending, cancellationToken)
-                            .ConfigureAwait(false);
+                        // The owner stages a seek or pause the callback makes on the consumer
+                        // itself for these partitions, as the consumer-aware scope does, so the
+                        // assignment sync that follows keeps it. Allocated once per delivery.
+                        scope.AssignedCallback = new AssignedCallbackContext(
+                            new HashSet<TopicPartition>(assigned),
+                            pending.RevocationSequence);
+                        Interlocked.Increment(ref _assignedCallbacksRunning);
+                        try
+                        {
+                            await InvokePartitionsAssignedListenersAsync(assigned, pending, cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                        finally
+                        {
+                            Interlocked.Decrement(ref _assignedCallbacksRunning);
+                            scope.AssignedCallback = null;
+                        }
                     }
                 }
 
@@ -3415,15 +3433,57 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private bool IsInsideOwnRebalanceCallback() =>
         s_drainScope.Value is { IsActive: true } scope && ReferenceEquals(scope.Coordinator, this);
 
+    /// <summary>
+    /// True when the calling flow is inside this coordinator's OnPartitionsAssigned delivery and
+    /// <paramref name="partition"/> is one of the partitions that callback announced, which the
+    /// owner has not synchronized yet. <paramref name="revocationSequence"/> is the notification's
+    /// revocation sequence (see <see cref="WasRevokedSince"/>). A volatile read when no assigned
+    /// callback is running.
+    /// </summary>
+    internal bool TryGetAssignedCallbackRevocationSequence(TopicPartition partition, out long revocationSequence)
+    {
+        if (Volatile.Read(ref _assignedCallbacksRunning) != 0
+            && s_drainScope.Value is { IsActive: true } scope
+            && ReferenceEquals(scope.Coordinator, this)
+            && scope.AssignedCallback is { } callback
+            && callback.Partitions.Contains(partition))
+        {
+            revocationSequence = callback.RevocationSequence;
+            return true;
+        }
+
+        revocationSequence = 0;
+        return false;
+    }
+
+    /// <summary>True while any OnPartitionsAssigned delivery runs; a cheap gate for the owner.</summary>
+    internal bool IsDeliveringAssignedCallback => Volatile.Read(ref _assignedCallbacksRunning) != 0;
+
     private sealed class DrainScope(ConsumerCoordinator coordinator)
     {
         private int _active = 1;
+        private AssignedCallbackContext? _assignedCallback;
 
         public ConsumerCoordinator Coordinator { get; } = coordinator;
 
         public bool IsActive => Volatile.Read(ref _active) != 0;
 
+        // The OnPartitionsAssigned delivery running in this drain, if any. A task the listener
+        // started shares the scope, so once the callback returns it no longer sees the context.
+        public AssignedCallbackContext? AssignedCallback
+        {
+            get => Volatile.Read(ref _assignedCallback);
+            set => Volatile.Write(ref _assignedCallback, value);
+        }
+
         public void Deactivate() => Volatile.Write(ref _active, 0);
+    }
+
+    private sealed class AssignedCallbackContext(HashSet<TopicPartition> partitions, long revocationSequence)
+    {
+        public HashSet<TopicPartition> Partitions { get; } = partitions;
+
+        public long RevocationSequence { get; } = revocationSequence;
     }
 
     /// <summary>

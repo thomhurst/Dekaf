@@ -1418,6 +1418,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly ConcurrentDictionary<TopicPartition, int> _storedOffsetLeaderEpochs = new();
     private readonly ConcurrentDictionary<TopicPartition, long> _fetchPositions = new(); // Fetch position (what to fetch next)
     private readonly ConcurrentDictionary<TopicPartition, TopicPartitionOffset> _pendingRebalanceSeeks = new();
+    // Partitions an OnPartitionsAssigned callback paused for the ownership it announced. Assignment
+    // sync clears the previous ownership's pause of a partition revoked and assigned again, then
+    // restores these. Dropped with the pending seeks when the partition is revoked again.
+    private readonly ConcurrentDictionary<TopicPartition, byte> _rebalancePausedPartitions = new();
     // Last consumed record-batch leader epoch. Sent as FetchRequest.LastFetchedEpoch while the
     // fetch position is the consumed position (no prefetch, or just after a seek/reset).
     private readonly ConcurrentDictionary<TopicPartition, int> _lastConsumedLeaderEpochs = new();
@@ -7645,6 +7649,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public long? GetPosition(TopicPartition partition)
     {
+        if (_coordinator is { IsDeliveringAssignedCallback: true } coordinator
+            && coordinator.TryGetAssignedCallbackRevocationSequence(partition, out _))
+        {
+            return GetAssignedCallbackPosition(coordinator, partition);
+        }
+
         if (TryGetActiveConsumedPosition(partition, out var activePosition, out var leaderEpoch))
         {
             // Materialize the snapshot into _positions for consistency, but do NOT stage it
@@ -7667,6 +7677,25 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _pendingRebalanceSeeks.TryGetValue(partition, out var pending)
             ? pending.Offset
             : GetPosition(partition);
+
+    /// <summary>
+    /// The position of a partition an OnPartitionsAssigned callback announced, read from inside that
+    /// callback: the seek it staged, otherwise null until assignment sync initializes the position.
+    /// A position held before then belongs to the previous ownership of a partition revoked or lost
+    /// and assigned again, and the sync replaces it.
+    /// </summary>
+    private long? GetAssignedCallbackPosition(ConsumerCoordinator coordinator, TopicPartition partition)
+    {
+        if (_pendingRebalanceSeeks.TryGetValue(partition, out var pending))
+            return pending.Offset;
+
+        // A callback that polls synchronizes its own assignment (the poll does not wait for the
+        // callback it runs in); the position is then the new ownership's.
+        if (!_assignmentSnapshot.Contains(partition) || !IsCoordinatorAssignmentSyncCurrent(coordinator, out _))
+            return null;
+
+        return GetPositionWithoutCaching(partition);
+    }
 
     /// <param name="offset">The seek an OnPartitionsAssigned callback requested.</param>
     /// <param name="revocationSequence">
@@ -7738,6 +7767,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public void Seek(TopicPartitionOffset offset)
     {
         LogSeek(offset.Topic, offset.Partition, offset.Offset);
+        if (_coordinator is { IsDeliveringAssignedCallback: true } coordinator
+            && coordinator.TryGetAssignedCallbackRevocationSequence(
+                new TopicPartition(offset.Topic, offset.Partition),
+                out var revocationSequence))
+        {
+            // Called from OnPartitionsAssigned for a partition it announced: written now, the
+            // position would be replaced when assignment sync initializes the partition.
+            StageRebalanceSeek(offset, revocationSequence);
+            return;
+        }
+
         // Keep invalidation, buffer drain, and position replacement atomic with prefetch publication.
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
@@ -7771,6 +7811,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public void SeekToBeginning(params TopicPartition[] partitions)
     {
+        if (!TryStageAssignedCallbackSeeks(ref partitions, offset: 0))
+            return;
+
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
             ThrowIfSnapshotOperationActive();
@@ -7788,6 +7831,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public void SeekToEnd(params TopicPartition[] partitions)
     {
+        if (!TryStageAssignedCallbackSeeks(ref partitions, offset: -1))
+            return;
+
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
             ThrowIfSnapshotOperationActive();
@@ -7804,6 +7850,71 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     /// <summary>
+    /// Stages the seeks an OnPartitionsAssigned callback makes for partitions it announced (see
+    /// <see cref="Seek"/>) and narrows <paramref name="partitions"/> to the rest. Returns false when
+    /// it staged every partition. Allocates only when called from such a callback.
+    /// </summary>
+    private bool TryStageAssignedCallbackSeeks(ref TopicPartition[] partitions, long offset)
+    {
+        if (_coordinator is not { IsDeliveringAssignedCallback: true } coordinator || partitions is null)
+            return true;
+
+        List<TopicPartition>? remaining = null;
+        for (var i = 0; i < partitions.Length; i++)
+        {
+            var partition = partitions[i];
+            if (coordinator.TryGetAssignedCallbackRevocationSequence(partition, out var revocationSequence))
+            {
+                StageRebalanceSeek(
+                    new TopicPartitionOffset(partition.Topic, partition.Partition, offset),
+                    revocationSequence);
+                if (remaining is null)
+                {
+                    remaining = new List<TopicPartition>(partitions.Length);
+                    for (var j = 0; j < i; j++)
+                        remaining.Add(partitions[j]);
+                }
+            }
+            else
+            {
+                remaining?.Add(partition);
+            }
+        }
+
+        if (remaining is null)
+            return true;
+
+        partitions = remaining.ToArray();
+        return partitions.Length != 0;
+    }
+
+    /// <summary>
+    /// Records a pause an OnPartitionsAssigned callback makes for partitions it announced, so
+    /// assignment sync keeps it for a partition revoked or lost and assigned again (the sync clears
+    /// the previous ownership's pause). A pause from a callback that predates a later revocation of
+    /// the partition is not recorded: that ownership has already ended.
+    /// </summary>
+    private void RecordAssignedCallbackPauses(TopicPartition[] partitions)
+    {
+        if (_coordinator is not { IsDeliveringAssignedCallback: true } coordinator)
+            return;
+
+        foreach (var partition in partitions)
+        {
+            if (!coordinator.TryGetAssignedCallbackRevocationSequence(partition, out var revocationSequence))
+                continue;
+
+            // The revocation hook drops these under this lock after the coordinator records the
+            // revocation, as it does staged seeks, so a stale pause is never kept.
+            lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+            {
+                if (!coordinator.WasRevokedSince(partition, revocationSequence))
+                    _rebalancePausedPartitions[partition] = 0;
+            }
+        }
+    }
+
+    /// <summary>
     /// Removes per-partition tracking state for the given partitions.
     /// Returns true if any partition was in the paused set.
     /// </summary>
@@ -7814,11 +7925,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var hadPaused = false;
         foreach (var partition in partitions)
         {
+            var reassigned = retainSeeks is not null && retainSeeks.Contains(partition);
             ClearActiveConsumedPosition(partition);
             _positions.TryRemove(partition, out _);
             ClearStoredOffset(partition);
             _fetchPositions.TryRemove(partition, out _);
-            if (retainSeeks is null || !retainSeeks.Contains(partition))
+            if (!reassigned)
                 _pendingRebalanceSeeks.TryRemove(partition, out _);
             _minimumFetchBufferEpochsByPartition.TryRemove(partition, out _);
             _lastConsumedLeaderEpochs.TryRemove(partition, out _);
@@ -7829,6 +7941,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // unassigned. A later assignment removes them before position reuse.
             _eofEmitted.TryRemove(partition, out _);
             hadPaused |= _paused.TryRemove(partition, out _);
+
+            // The previous ownership's pause ends with it; a pause the new assignment's
+            // OnPartitionsAssigned made is kept, like its staged seek.
+            if (_rebalancePausedPartitions.TryRemove(partition, out _) && reassigned)
+            {
+                _paused.TryAdd(partition, 0);
+                hadPaused = true;
+            }
         }
         return hadPaused;
     }
@@ -8292,7 +8412,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 // Coordinator revocation supersedes any correction from the old assignment.
                 // Keep the revocation marker so the consume loop still drains stale buffers.
                 if (retainSeeks is null || !retainSeeks.Contains(partition))
+                {
                     _pendingRebalanceSeeks.TryRemove(partition, out _);
+                    _rebalancePausedPartitions.TryRemove(partition, out _);
+                }
                 _pendingDivergingEpochResets.TryRemove(partition, out _);
                 SetPendingFetchClearMarkerLocked(
                     partition,
@@ -8781,6 +8904,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
         }
 
+        // Also when already paused: that pause may be the previous ownership's, which sync clears.
+        RecordAssignedCallbackPauses(partitions);
+
         if (changedPartitions is null)
             return;
 
@@ -8797,6 +8923,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             if (_paused.TryRemove(partition, out _))
             {
+                _rebalancePausedPartitions.TryRemove(partition, out _);
                 changedPartitions ??= [];
                 changedPartitions.Add(partition);
             }

@@ -17,7 +17,7 @@ namespace Dekaf.Tests.Unit.Consumer;
 // These tests coordinate background consumer work with Task continuations. Running thousands of
 // test cases concurrently can starve those continuations long enough to create false timeouts.
 [NotInParallel]
-public sealed class ConsumerAssignmentFastPathTests
+public sealed partial class ConsumerAssignmentFastPathTests
 {
     private static readonly Guid TestTopicId = Guid.Parse("00000000-0000-0000-0000-000000000001");
     private static readonly FieldInfo PollVersionField = typeof(ConsumerCoordinator).GetField(
@@ -2299,7 +2299,9 @@ public sealed class ConsumerAssignmentFastPathTests
         int defaultApiTimeoutMs = 60_000,
         AutoOffsetReset? autoOffsetResetNewPartitions = null,
         AutoOffsetReset autoOffsetReset = AutoOffsetReset.Latest,
-        TimeSpan? autoOffsetResetDuration = null)
+        TimeSpan? autoOffsetResetDuration = null,
+        IRebalanceListener? rebalanceListener = null,
+        IConsumerAwareRebalanceListener? consumerAwareRebalanceListener = null)
     {
         return new KafkaConsumer<string, string>(
             new ConsumerOptions
@@ -2313,7 +2315,9 @@ public sealed class ConsumerAssignmentFastPathTests
                 DefaultApiTimeoutMs = defaultApiTimeoutMs,
                 AutoOffsetResetNewPartitions = autoOffsetResetNewPartitions,
                 AutoOffsetReset = autoOffsetReset,
-                AutoOffsetResetDuration = autoOffsetResetDuration
+                AutoOffsetResetDuration = autoOffsetResetDuration,
+                RebalanceListener = rebalanceListener,
+                ConsumerAwareRebalanceListener = consumerAwareRebalanceListener
             },
             Serializers.String,
             Serializers.String,
