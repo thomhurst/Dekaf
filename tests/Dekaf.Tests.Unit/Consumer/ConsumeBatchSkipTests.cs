@@ -294,13 +294,89 @@ public sealed class ConsumeBatchSkipTests
         await Assert.That(GetDictionary(consumer, "_fetchPositions")[Partition0]).IsEqualTo(10L);
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task HeldSkip_DefersPartitionEofUntilRecordsAreRedelivered(bool raw)
+    {
+        await using var consumer = CreateConsumer(CreatePendingFetch(Partition0, 10, 2));
+        var snapshotActive = GetField("_snapshotOperationActive");
+        snapshotActive.SetValue(consumer, 1);
+        try
+        {
+            // Prefetch reports EOF at its fetch position, ahead of the held records.
+            GetEofEvents(consumer).Enqueue((Partition0, 12L));
+            await using var batches = Open(consumer, raw);
+
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            await Assert.That(batches.Current.IsEof).IsFalse();
+
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            await Assert.That(batches.Current.IsEof).IsFalse();
+            await Assert.That(batches.Current.Offsets()).IsEquivalentTo([10L, 11L]);
+
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            await Assert.That(batches.Current.IsEof).IsTrue();
+            await Assert.That(batches.Current.Partition).IsEqualTo(Partition0);
+        }
+        finally
+        {
+            snapshotActive.SetValue(consumer, 0);
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ReleasedSkip_DoesNotDeliverAnotherPartitionsEofBeforeItsRecords(bool raw)
+    {
+        await using var consumer = CreateConsumer(
+            CreatePendingFetch(Partition0, 10, 2),
+            CreatePendingFetch(Partition1, 20, 1));
+        GetEofEvents(consumer).Enqueue((Partition1, 21L));
+        await using var batches = Open(consumer, raw);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(Partition0);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.IsEof).IsFalse();
+        await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
+        await Assert.That(batches.Current.Offsets()).IsEquivalentTo([20L]);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.IsEof).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ReleasedSkip_DropsEofQueuedFromTheOldFetchPosition(bool raw)
+    {
+        await using var consumer = CreateConsumer(
+            500, null, prefetch: true, unknownPosition: null,
+            CreatePendingFetch(Partition0, 10, 2),
+            CreatePendingFetch(Partition1, 20, 1));
+        GetEofEvents(consumer).Enqueue((Partition0, 12L));
+        await using var batches = Open(consumer, raw);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
+
+        // The refetch re-derives EOF for partition 0; the stale one must not be delivered.
+        await Assert.That(GetEofEvents(consumer).Any(static e => e.Partition == Partition0)).IsFalse();
+    }
+
     private sealed class TypedEnumerator(IAsyncEnumerator<ConsumeBatch<string, string>> inner)
         : IAsyncEnumerator<BatchView>
     {
         public BatchView Current => new(
             inner.Current.TopicPartition,
             () => inner.Current.Select(static r => r.Offset).ToArray(),
-            () => _ = inner.Current.GetEnumerator());
+            () => _ = inner.Current.GetEnumerator(),
+            inner.Current.IsPartitionEof);
         public ValueTask<bool> MoveNextAsync() => inner.MoveNextAsync();
         public ValueTask DisposeAsync() => inner.DisposeAsync();
     }
@@ -311,14 +387,20 @@ public sealed class ConsumeBatchSkipTests
         public BatchView Current => new(
             inner.Current.TopicPartition,
             () => inner.Current.Select(static r => r.Offset).ToArray(),
-            () => _ = inner.Current.GetEnumerator());
+            () => _ = inner.Current.GetEnumerator(),
+            inner.Current.IsPartitionEof);
         public ValueTask<bool> MoveNextAsync() => inner.MoveNextAsync();
         public ValueTask DisposeAsync() => inner.DisposeAsync();
     }
 
-    private sealed class BatchView(TopicPartition partition, Func<long[]> offsets, Action createEnumerator)
+    private sealed class BatchView(
+        TopicPartition partition,
+        Func<long[]> offsets,
+        Action createEnumerator,
+        bool isEof)
     {
         public TopicPartition Partition { get; } = partition;
+        public bool IsEof { get; } = isEof;
         public long[] Offsets() => offsets();
         public void CreateEnumeratorOnly() => createEnumerator();
     }
@@ -424,6 +506,10 @@ public sealed class ConsumeBatchSkipTests
             }
         ]);
     }
+
+    private static ConcurrentQueue<(TopicPartition Partition, long Offset)> GetEofEvents(
+        KafkaConsumer<string, string> consumer) =>
+        (ConcurrentQueue<(TopicPartition Partition, long Offset)>)GetField("_pendingEofEvents").GetValue(consumer)!;
 
     private static Queue<PendingFetchData> GetPendingFetches(KafkaConsumer<string, string> consumer) =>
         (Queue<PendingFetchData>)GetField("_pendingFetches").GetValue(consumer)!;

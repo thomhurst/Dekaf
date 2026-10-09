@@ -3773,7 +3773,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     break;
             }
 
-            while (_pendingEofEvents.TryDequeue(out var eofEvent))
+            var eofEventsToCheck = _pendingEofEvents.IsEmpty ? 0 : _pendingEofEvents.Count;
+            while (TryDequeueDeliverableEof(ref eofEventsToCheck, out var eofEvent))
             {
                 using var eofPending = PendingFetchData.CreatePartitionEof(
                     eofEvent.Partition.Topic,
@@ -3954,7 +3955,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     break;
             }
 
-            while (_pendingEofEvents.TryDequeue(out var eofEvent))
+            var eofEventsToCheck = _pendingEofEvents.IsEmpty ? 0 : _pendingEofEvents.Count;
+            while (TryDequeueDeliverableEof(ref eofEventsToCheck, out var eofEvent))
             {
                 using var eofPending = PendingFetchData.CreatePartitionEof(
                     eofEvent.Partition.Topic,
@@ -4086,6 +4088,40 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 SetFetchPosition(partition, position);
             _eofEmitted.TryRemove(partition, out _);
         }
+    }
+
+    /// <summary>
+    /// Dequeues the next partition EOF the batch APIs may deliver. A skip leaves the batch loop
+    /// with fetches still queued, and prefetch reports EOF at its fetch position, ahead of
+    /// those records. An EOF for a partition with a queued fetch is put back until its records
+    /// are delivered. Released partitions already had their EOF dropped and re-derive it after
+    /// the refetch. Checks each event once per poll round; with an empty queue it reads one count.
+    /// </summary>
+    private bool TryDequeueDeliverableEof(
+        ref int remaining,
+        out (TopicPartition Partition, long Offset) eofEvent)
+    {
+        while (remaining-- > 0 && _pendingEofEvents.TryDequeue(out eofEvent))
+        {
+            if (_pendingFetches.Count == 0 || !HasQueuedFetch(eofEvent.Partition))
+                return true;
+
+            _pendingEofEvents.Enqueue(eofEvent);
+        }
+
+        eofEvent = default;
+        return false;
+    }
+
+    private bool HasQueuedFetch(TopicPartition partition)
+    {
+        foreach (var queued in _pendingFetches)
+        {
+            if (queued.TopicPartition == partition)
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>
