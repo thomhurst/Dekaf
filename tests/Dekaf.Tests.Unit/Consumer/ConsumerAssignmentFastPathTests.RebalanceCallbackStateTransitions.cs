@@ -1155,6 +1155,56 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await Assert.That(consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
     }
 
+    /// <summary>
+    /// A live callback's seek passes the callback check, then waits for the assignment lock while
+    /// the application abandons the assignment (which holds that lock). Once it gets the lock the
+    /// seek must not be staged for the abandoned assignment: it applies directly.
+    /// </summary>
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task RebalanceCallbackStateTransitions_AbandonWhileCallbackSeekWaitsForLock_SeeksDirectly(
+        bool seekToBeginning)
+    {
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessAsync(
+            listener,
+            AssignedResponse(1, 0),
+            AssignedResponse(2, 0, 1));
+        var consumer = harness.Consumer;
+        var abandoned = false;
+        consumer.BeforeStageRebalanceSeekLockForTest = () =>
+        {
+            if (abandoned)
+                return;
+            abandoned = true;
+            consumer.Assign(new TopicPartition("test-topic", 0), Partition1);
+        };
+        listener.OnAssigned = partitions =>
+        {
+            if (!partitions.Contains(Partition1))
+                return;
+
+            if (seekToBeginning)
+                consumer.SeekToBeginning(Partition1);
+            else
+                consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
+        };
+
+        try
+        {
+            await harness.HeartbeatAsync();
+        }
+        finally
+        {
+            consumer.BeforeStageRebalanceSeekLockForTest = null;
+        }
+
+        await Assert.That(abandoned).IsTrue();
+        await Assert.That(consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
+        await Assert.That(consumer.GetPosition(Partition1)).IsEqualTo(seekToBeginning ? 0L : 42L);
+    }
+
     /// <summary>A fresh subscription after an abandon reactivates staging for the new assignment.</summary>
     [Test]
     public async Task RebalanceCallbackStateTransitions_SubscribeAfterAbandon_Reactivates()

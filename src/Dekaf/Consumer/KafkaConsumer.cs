@@ -7834,9 +7834,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// for a partition revoked or lost since then is discarded: that ownership has ended, and a
     /// later assignment of the partition must not start at it.
     /// </param>
-    internal void StageRebalanceSeek(TopicPartitionOffset offset, long revocationSequence = long.MaxValue)
+    /// <param name="fromAssignedCallback">
+    /// Called from an OnPartitionsAssigned callback's own flow: the callback must still be live once
+    /// the assignment lock is held. An abandon (which takes that lock) may have ended its staging
+    /// while this call waited for it; then nothing is staged and false is returned, so the caller
+    /// seeks directly.
+    /// </param>
+    /// <returns>False only when <paramref name="fromAssignedCallback"/> and the callback is no longer live.</returns>
+    internal bool StageRebalanceSeek(
+        TopicPartitionOffset offset,
+        long revocationSequence = long.MaxValue,
+        bool fromAssignedCallback = false)
     {
         var partition = new TopicPartition(offset.Topic, offset.Partition);
+        if (fromAssignedCallback)
+            BeforeStageRebalanceSeekLockForTest?.Invoke();
         SemaphoreHelper.AcquireOrThrowDisposed(
             _assignmentLock,
             nameof(KafkaConsumer<TKey, TValue>));
@@ -7846,10 +7858,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // records the revocation, so checking and staging under it cannot keep a stale seek.
             lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
             {
+                // Rechecked immediately before the write, under the lock abandon holds.
+                if (fromAssignedCallback
+                    && _coordinator?.TryGetAssignedCallbackRevocationSequence(partition, out _) != true)
+                {
+                    return false;
+                }
+
                 if (_coordinator?.WasRevokedSince(partition, revocationSequence) == true)
                 {
                     LogStaleRebalanceCallbackCallIgnored(nameof(Seek), partition.Topic, partition.Partition);
-                    return;
+                    return true;
                 }
 
                 _pendingRebalanceSeeks[partition] = offset;
@@ -7861,12 +7880,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 ApplyPendingRebalanceSeek(partition);
             }
+
+            return true;
         }
         finally
         {
             SemaphoreHelper.ReleaseSafely(_assignmentLock);
         }
     }
+
+    // Runs when a callback's seek is about to wait for the assignment lock.
+    internal Action? BeforeStageRebalanceSeekLockForTest { get; set; }
 
     private void EmitFetchMetrics(PendingFetchData fetch)
     {
@@ -7907,9 +7931,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 out var revocationSequence))
         {
             // Called from OnPartitionsAssigned for a partition it announced: written now, the
-            // position would be replaced when assignment sync initializes the partition.
-            StageRebalanceSeek(offset, revocationSequence);
-            return;
+            // position would be replaced when assignment sync initializes the partition. Unless the
+            // assignment was abandoned meanwhile: then the seek applies directly, below.
+            if (StageRebalanceSeek(offset, revocationSequence, fromAssignedCallback: true))
+                return;
         }
 
         // Keep invalidation, buffer drain, and position replacement atomic with prefetch publication.
@@ -7997,11 +8022,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         for (var i = 0; i < partitions.Length; i++)
         {
             var partition = partitions[i];
-            if (coordinator.TryGetAssignedCallbackRevocationSequence(partition, out var revocationSequence))
-            {
-                StageRebalanceSeek(
+            if (coordinator.TryGetAssignedCallbackRevocationSequence(partition, out var revocationSequence)
+                && StageRebalanceSeek(
                     new TopicPartitionOffset(partition.Topic, partition.Partition, offset),
-                    revocationSequence);
+                    revocationSequence,
+                    fromAssignedCallback: true))
+            {
                 if (remaining is null)
                 {
                     remaining = new List<TopicPartition>(partitions.Length);
