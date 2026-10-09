@@ -4897,7 +4897,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         {
                             _stuckFetchPositionTracker.Reset(tp);
                             // We have new records - reset EOF state for this partition
-                            _eofEmitted.TryRemove(tp, out _);
+                            ResetPartitionEofForRecords(tp, fetchBufferEpoch);
 
                             var pending = PendingFetchData.Create(
                                 topic,
@@ -5555,6 +5555,27 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             TryQueuePartitionEof(partition, highWatermark, fetchBufferEpoch);
 
         return null;
+    }
+
+    /// <summary>
+    /// Re-arms partition EOF because a fetch response carried records. A response invalidated
+    /// by seek, revocation or skipped-batch release after its stale check (overlapping
+    /// prefetches across a connection change) must not clear the EOF marker a newer response
+    /// set, or a later empty response would queue a duplicate EOF. The epoch is therefore
+    /// rechecked under the invalidation lock. Without an EOF marker (EOF disabled, or none
+    /// emitted) there is nothing to clear and no lock is taken. At most once per partition
+    /// response, never per record.
+    /// </summary>
+    internal void ResetPartitionEofForRecords(TopicPartition partition, int fetchBufferEpoch)
+    {
+        if (!_eofEmitted.ContainsKey(partition))
+            return;
+
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            if (!ShouldDropStaleFetchPartition(partition, fetchBufferEpoch))
+                _eofEmitted.TryRemove(partition, out _);
+        }
     }
 
     /// <summary>
@@ -11534,7 +11555,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     {
                         _stuckFetchPositionTracker.Reset(tp);
                         // We have new records - reset EOF state for this partition
-                        _eofEmitted.TryRemove(tp, out _);
+                        ResetPartitionEofForRecords(tp, fetchBufferEpoch);
 
                         // Collect pending fetch data for lazy record iteration
                         pendingItems ??= ConsumerFetchPools.RentPendingFetchDataList();

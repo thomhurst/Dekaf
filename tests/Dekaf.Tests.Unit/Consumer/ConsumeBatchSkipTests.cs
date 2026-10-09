@@ -501,6 +501,39 @@ public sealed class ConsumeBatchSkipTests
         await Assert.That(eofEvents).IsEmpty();
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task StaleRecordResponseAfterRelease_DoesNotRearmCurrentEof(bool raw)
+    {
+        await using var consumer = CreateConsumer(
+            500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true,
+            CreatePendingFetch(Partition0, 10, 2),
+            CreatePendingFetch(Partition1, 20, 1));
+        await using var batches = Open(consumer, raw);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        // An older response with records passed its stale check before the skip release.
+        var staleEpoch = GetFetchBufferEpoch(consumer);
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
+
+        // A current empty response reports EOF for the rewound position.
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, GetFetchBufferEpoch(consumer));
+        await Assert.That(GetEofEvents(consumer).Count(static e => e.Partition == Partition0)).IsEqualTo(1);
+
+        // The old response resumes: it must not clear the current EOF marker...
+        consumer.ResetPartitionEofForRecords(Partition0, staleEpoch);
+        // ...so the next current empty response does not queue a duplicate.
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, GetFetchBufferEpoch(consumer));
+        await Assert.That(GetEofEvents(consumer).Count(static e => e.Partition == Partition0)).IsEqualTo(1);
+
+        // A current response with records still re-arms EOF.
+        consumer.ResetPartitionEofForRecords(Partition0, GetFetchBufferEpoch(consumer));
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, GetFetchBufferEpoch(consumer));
+        await Assert.That(GetEofEvents(consumer).Count(static e => e.Partition == Partition0)).IsEqualTo(2);
+    }
+
     private sealed class TypedEnumerator(IAsyncEnumerator<ConsumeBatch<string, string>> inner)
         : IAsyncEnumerator<BatchView>
     {
