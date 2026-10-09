@@ -369,6 +369,52 @@ public sealed class ConsumeBatchSkipTests
         await Assert.That(GetEofEvents(consumer).Any(static e => e.Partition == Partition0)).IsFalse();
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ReleasedSkip_ManyPartitions_DefersEachEofBehindItsOwnRecords(bool raw)
+    {
+        const int partitionCount = 64;
+        var fetches = new PendingFetchData[partitionCount];
+        for (var i = 0; i < partitionCount; i++)
+            fetches[i] = CreatePendingFetch(new TopicPartition(Topic, i), 100L * i, 1);
+        await using var consumer = CreateConsumer(fetches);
+        var eofEvents = GetEofEvents(consumer);
+        for (var i = 0; i < partitionCount; i++)
+            eofEvents.Enqueue((new TopicPartition(Topic, i), 100L * i + 1));
+        await using var batches = Open(consumer, raw);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition.Partition).IsEqualTo(0);
+
+        // Partition 0 is released (its stale EOF dropped). Every other partition's records
+        // come before any EOF, and each EOF arrives exactly once.
+        var delivered = new HashSet<int>();
+        var eofs = new HashSet<int>();
+        for (var i = 0; i < 2 * (partitionCount - 1); i++)
+        {
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            var partition = batches.Current.Partition.Partition;
+            if (batches.Current.IsEof)
+            {
+                await Assert.That(delivered.Contains(partition)).IsTrue();
+                await Assert.That(eofs.Add(partition)).IsTrue();
+            }
+            else
+            {
+                _ = batches.Current.Offsets();
+                await Assert.That(delivered.Add(partition)).IsTrue();
+            }
+        }
+
+        await Assert.That(delivered.Count).IsEqualTo(partitionCount - 1);
+        await Assert.That(eofs.Count).IsEqualTo(partitionCount - 1);
+        await Assert.That(eofs.Contains(0)).IsFalse();
+        // The per-drain hold set is released once the drain finishes.
+        await Assert.That(((HashSet<TopicPartition>)GetField("_eofHoldPartitions").GetValue(consumer)!).Count)
+            .IsEqualTo(0);
+    }
+
     private sealed class TypedEnumerator(IAsyncEnumerator<ConsumeBatch<string, string>> inner)
         : IAsyncEnumerator<BatchView>
     {

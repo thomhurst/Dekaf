@@ -1461,6 +1461,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly Queue<PendingFetchData> _pendingFetchScratch = new();
     // Reused by the consume loop to rewind a skipped batch without allocating a set.
     private readonly HashSet<TopicPartition> _skippedBatchPartitions = [];
+    // Partitions with a queued fetch, built only when an EOF drain starts with fetches queued.
+    private readonly HashSet<TopicPartition> _eofHoldPartitions = [];
     private int _observedPausedSnapshotVersion;
     private int _recordIterationEpochSeed;
     private int _pendingFetchDepth;
@@ -3773,7 +3775,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     break;
             }
 
-            var eofEventsToCheck = _pendingEofEvents.IsEmpty ? 0 : _pendingEofEvents.Count;
+            var eofEventsToCheck = PrepareEofDelivery();
             while (TryDequeueDeliverableEof(ref eofEventsToCheck, out var eofEvent))
             {
                 using var eofPending = PendingFetchData.CreatePartitionEof(
@@ -3955,7 +3957,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     break;
             }
 
-            var eofEventsToCheck = _pendingEofEvents.IsEmpty ? 0 : _pendingEofEvents.Count;
+            var eofEventsToCheck = PrepareEofDelivery();
             while (TryDequeueDeliverableEof(ref eofEventsToCheck, out var eofEvent))
             {
                 using var eofPending = PendingFetchData.CreatePartitionEof(
@@ -4091,11 +4093,34 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     /// <summary>
-    /// Dequeues the next partition EOF the batch APIs may deliver. A skip leaves the batch loop
-    /// with fetches still queued, and prefetch reports EOF at its fetch position, ahead of
-    /// those records. An EOF for a partition with a queued fetch is put back until its records
-    /// are delivered. Released partitions already had their EOF dropped and re-derive it after
-    /// the refetch. Checks each event once per poll round; with an empty queue it reads one count.
+    /// Starts one EOF drain and returns how many queued events it may check. A skip leaves the
+    /// batch loop with fetches still queued, and prefetch reports EOF at its fetch position,
+    /// ahead of those records. Only then is the set of partitions with a queued fetch built,
+    /// once per drain, so each EOF check is O(1). On the normal path the queue is empty and
+    /// this reads two counts.
+    /// </summary>
+    private int PrepareEofDelivery()
+    {
+        if (_eofHoldPartitions.Count > 0)
+            _eofHoldPartitions.Clear();
+
+        if (_pendingEofEvents.IsEmpty)
+            return 0;
+
+        if (_pendingFetches.Count > 0)
+        {
+            foreach (var queued in _pendingFetches)
+                _eofHoldPartitions.Add(queued.TopicPartition);
+        }
+
+        return _pendingEofEvents.Count;
+    }
+
+    /// <summary>
+    /// Dequeues the next partition EOF the batch APIs may deliver. An EOF for a partition that
+    /// still had a queued fetch when the drain started is put back until those records are
+    /// delivered. Released partitions already had their EOF dropped and re-derive it after
+    /// the refetch.
     /// </summary>
     private bool TryDequeueDeliverableEof(
         ref int remaining,
@@ -4103,24 +4128,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         while (remaining-- > 0 && _pendingEofEvents.TryDequeue(out eofEvent))
         {
-            if (_pendingFetches.Count == 0 || !HasQueuedFetch(eofEvent.Partition))
+            if (_eofHoldPartitions.Count == 0 || !_eofHoldPartitions.Contains(eofEvent.Partition))
                 return true;
 
             _pendingEofEvents.Enqueue(eofEvent);
         }
 
+        if (_eofHoldPartitions.Count > 0)
+            _eofHoldPartitions.Clear();
         eofEvent = default;
-        return false;
-    }
-
-    private bool HasQueuedFetch(TopicPartition partition)
-    {
-        foreach (var queued in _pendingFetches)
-        {
-            if (queued.TopicPartition == partition)
-                return true;
-        }
-
         return false;
     }
 
