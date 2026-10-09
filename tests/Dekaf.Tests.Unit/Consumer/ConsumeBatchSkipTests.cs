@@ -522,45 +522,68 @@ public sealed class ConsumeBatchSkipTests
     }
 
     [Test]
-    [Arguments(false)]
-    [Arguments(true)]
-    public async Task StaleRecordResponseAfterRelease_DoesNotRearmCurrentEof(bool raw)
+    public async Task StaleRecordResponse_DoesNotRearmCurrentEof()
     {
         await using var consumer = CreateConsumer(
             500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true,
-            CreatePendingFetch(Partition0, 10, 2),
-            CreatePendingFetch(Partition1, 20, 1));
-        using var cts = new CancellationTokenSource();
-        await using var batches = Open(consumer, raw, cts.Token);
-
-        await Assert.That(await batches.MoveNextAsync()).IsTrue();
-        // An older response with records passed its stale check before the skip release.
+            CreatePendingFetch(Partition0, 0, 1));
+        GetPendingFetches(consumer).Clear();
+        // An older records response passed its stale check, then a seek repositioned.
         var staleEpoch = GetFetchBufferEpoch(consumer);
-        await Assert.That(await batches.MoveNextAsync()).IsTrue();
-        await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
+        consumer.Seek(new TopicPartitionOffset(Topic, 0, 10));
+        ApplyStagedClears(consumer);
 
-        var waiting = LeaveBatchLoop(batches);
-        try
-        {
-            // A current empty response reports EOF for the rewound position.
-            _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, GetFetchBufferEpoch(consumer));
-            await Assert.That(GetEofEvents(consumer).Count(static e => e.Partition == Partition0)).IsEqualTo(1);
+        // A current empty response reports EOF for the new position.
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, GetFetchBufferEpoch(consumer));
+        await Assert.That(GetEofEvents(consumer).Count).IsEqualTo(1);
 
-            // The old response resumes: it must not clear the current EOF marker...
-            consumer.ResetPartitionEofForRecords(Partition0, staleEpoch);
-            // ...so the next current empty response does not queue a duplicate.
-            _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, GetFetchBufferEpoch(consumer));
-            await Assert.That(GetEofEvents(consumer).Count(static e => e.Partition == Partition0)).IsEqualTo(1);
+        // The old response publishes: it is dropped and must not clear the current marker...
+        await PublishPrefetchedAsync(consumer, CreatePendingFetch(Partition0, 3, 2), staleEpoch);
+        // ...so the next current empty response does not queue a duplicate.
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, GetFetchBufferEpoch(consumer));
+        await Assert.That(GetEofEvents(consumer).Count).IsEqualTo(1);
+    }
 
-            // A current response with records still re-arms EOF.
-            consumer.ResetPartitionEofForRecords(Partition0, GetFetchBufferEpoch(consumer));
-            _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, GetFetchBufferEpoch(consumer));
-            await Assert.That(GetEofEvents(consumer).Count(static e => e.Partition == Partition0)).IsEqualTo(2);
-        }
-        finally
-        {
-            await StopWaitingAsync(cts, waiting);
-        }
+    [Test]
+    public async Task OverlappingResponses_EofReportedBeforeRecordsArePublished_IsReportedAgainAfterThem()
+    {
+        await using var consumer = CreateConsumer(
+            500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true,
+            CreatePendingFetch(Partition0, 10, 1));
+        GetPendingFetches(consumer).Clear();
+        var fetchPositions = GetDictionary(consumer, "_fetchPositions");
+        fetchPositions[Partition0] = 10;
+        var epoch = GetFetchBufferEpoch(consumer);
+
+        // A response routed to a lagging replica reports EOF at 10 while a records response
+        // for offsets 10..11 from the leader is still being parsed.
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, epoch);
+        await Assert.That(GetEofEvents(consumer).Count).IsEqualTo(1);
+
+        // The records response publishes after that EOF. Publication re-arms EOF, so the real
+        // end after these records is reported instead of being suppressed by the old marker.
+        await PublishPrefetchedAsync(consumer, CreatePendingFetch(Partition0, 10, 2), epoch);
+        await Assert.That(fetchPositions[Partition0]).IsEqualTo(12L);
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 12, epoch);
+        var eofs = GetEofEvents(consumer).ToArray();
+        await Assert.That(eofs.Length).IsEqualTo(2);
+        await Assert.That(eofs[1]).IsEqualTo((Partition0, 12L));
+    }
+
+    private static void ApplyStagedClears(KafkaConsumer<string, string> consumer) =>
+        typeof(KafkaConsumer<string, string>)
+            .GetMethod("RecoverAndClearFetchBufferForPendingCoordinatorRevocations", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(consumer, null);
+
+    private static async Task PublishPrefetchedAsync(
+        KafkaConsumer<string, string> consumer,
+        PendingFetchData pending,
+        int fetchBufferEpoch)
+    {
+        var write = (ValueTask)typeof(KafkaConsumer<string, string>)
+            .GetMethod("WritePrefetchedItemsAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(consumer, [new List<PendingFetchData> { pending }, fetchBufferEpoch, CancellationToken.None])!;
+        await write;
     }
 
     [Test]
@@ -732,8 +755,7 @@ public sealed class ConsumeBatchSkipTests
         await Assert.That(GetEofEvents(consumer).Count).IsEqualTo(1);
 
         // With the invalidation lock held elsewhere, later empty responses for the idle
-        // partition, and record responses for partitions without an EOF marker, still
-        // complete: they take no lock.
+        // partition still complete: they take no lock.
         var lockObject = GetField("_coordinatorRevokedPartitionsPendingFetchClearLock").GetValue(consumer)!;
         using var held = new ManualResetEventSlim();
         using var release = new ManualResetEventSlim();
@@ -753,7 +775,6 @@ public sealed class ConsumeBatchSkipTests
                 for (var i = 0; i < 1000; i++)
                 {
                     _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 11, epoch);
-                    consumer.ResetPartitionEofForRecords(Partition1, epoch);
                 }
             });
             var completed = await Task.WhenAny(idle, Task.Delay(TimeSpan.FromSeconds(10)));

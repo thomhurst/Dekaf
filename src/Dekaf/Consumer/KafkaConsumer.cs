@@ -4987,8 +4987,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         if (records is { Count: > 0 })
                         {
                             _stuckFetchPositionTracker.Reset(tp);
-                            // We have new records - reset EOF state for this partition
-                            ResetPartitionEofForRecords(tp, fetchBufferEpoch);
+                            // EOF is re-armed when these records are published, under the lock
+                            // that serializes publication with EOF reporting.
 
                             var pending = PendingFetchData.Create(
                                 topic,
@@ -5649,24 +5649,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     /// <summary>
-    /// Re-arms partition EOF because a fetch response carried records. A response invalidated
-    /// by seek, revocation or skipped-batch release after its stale check (overlapping
-    /// prefetches across a connection change) must not clear the EOF marker a newer response
-    /// set, or a later empty response would queue a duplicate EOF. The epoch is therefore
-    /// rechecked under the invalidation lock. Without an EOF marker (EOF disabled, or none
-    /// emitted) there is nothing to clear and no lock is taken. At most once per partition
-    /// response, never per record.
+    /// Re-arms partition EOF because records for the partition are being published. Prefetch
+    /// calls it under the invalidation lock, which <see cref="TryQueuePartitionEof"/> also
+    /// holds, after the publication's stale-epoch check; direct fetches call it on the consumer
+    /// thread after every response of the cycle has been handled. Overlapping responses (replica routing, connection
+    /// changes) therefore cannot interleave: an EOF reported before these records loses its
+    /// marker here, so the next real EOF is reported; an EOF reported after them sees the
+    /// advanced fetch position. A stale response is dropped before reaching this point and can
+    /// never clear a current marker. Once per published partition response, never per record;
+    /// with EOF disabled it is one field read.
     /// </summary>
-    internal void ResetPartitionEofForRecords(TopicPartition partition, int fetchBufferEpoch)
+    private void RearmPartitionEofForPublishedRecords(TopicPartition partition, bool hasRecords)
     {
-        if (!_eofEmitted.ContainsKey(partition))
-            return;
-
-        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
-        {
-            if (!ShouldDropStaleFetchPartition(partition, fetchBufferEpoch))
-                _eofEmitted.TryRemove(partition, out _);
-        }
+        if (hasRecords && _options.EnablePartitionEof)
+            _eofEmitted.TryRemove(partition, out _);
     }
 
     /// <summary>
@@ -9135,8 +9131,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         pending.RaiseStartOffset(_fetchPositions.GetValueOrDefault(partition, -1));
                         var nextOffset = pending.FetchEndOffsetExclusive;
                         var nextOffsetLeaderEpoch = pending.FetchEndLeaderEpoch;
+                        var hasRecords = pending.GetBatches().Count > 0;
                         if (_prefetchBuffer.TryWrite(pending))
                         {
+                            RearmPartitionEofForPublishedRecords(partition, hasRecords);
                             // The reader can dispose pending immediately after TryWrite.
                             // Use captured values, and never advance for an unpublished item.
                             UpdateFetchPositionsFromPrefetch(
@@ -10626,6 +10624,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     continue;
                                 }
 
+                                // Direct fetches complete before this loop, so no EOF report can
+                                // interleave with this publication on the consumer thread.
+                                RearmPartitionEofForPublishedRecords(
+                                    pending.TopicPartition,
+                                    pending.GetBatches().Count > 0);
                                 EnqueuePendingFetch(pending);
                             }
                         }
@@ -11686,8 +11689,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     if (records is { Count: > 0 })
                     {
                         _stuckFetchPositionTracker.Reset(tp);
-                        // We have new records - reset EOF state for this partition
-                        ResetPartitionEofForRecords(tp, fetchBufferEpoch);
+                        // EOF is re-armed when these records are queued for delivery.
 
                         // Collect pending fetch data for lazy record iteration
                         pendingItems ??= ConsumerFetchPools.RentPendingFetchDataList();
