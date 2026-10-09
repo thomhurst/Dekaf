@@ -11,10 +11,10 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// One batch stream over PartitionCount partitions, each with one queued fetch and one pending
 /// partition EOF. It delivers every fetch, then every EOF. This covers the EOF drain that holds
 /// an EOF back while its partition still has queued records. On this no-skip path the fetch
-/// queue is empty when the drain starts, so the check must add no per-EOF scan. With SkipHalf
-/// the stream skips the first half of the partitions without enumerating them. Each skip
-/// releases its partition and drops its queued EOF, which must not allocate, and the remaining
-/// EOFs are held behind their records. The unit is a fixed number of MoveNext calls, which
+/// queue is empty when the drain starts, so the check must add no per-EOF scan. SkipHalf is the
+/// K-of-N skip case: the stream skips the first half of the partitions without enumerating
+/// them. Each skip releases its partition (one buffer sweep per batch loop, not per skip, and
+/// no allocation), and the remaining EOFs are held behind their records. The unit is a fixed number of MoveNext calls, which
 /// keeps it bounded on revisions that re-yield a skipped batch instead of releasing it.
 /// </summary>
 [MemoryDiagnoser]

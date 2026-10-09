@@ -359,14 +359,24 @@ public sealed class ConsumeBatchSkipTests
             CreatePendingFetch(Partition0, 10, 2),
             CreatePendingFetch(Partition1, 20, 1));
         GetEofEvents(consumer).Enqueue((Partition0, 12L));
-        await using var batches = Open(consumer, raw);
+        using var cts = new CancellationTokenSource();
+        await using var batches = Open(consumer, raw, cts.Token);
 
         await Assert.That(await batches.MoveNextAsync()).IsTrue();
         await Assert.That(await batches.MoveNextAsync()).IsTrue();
         await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
 
-        // The refetch re-derives EOF for partition 0; the stale one must not be delivered.
-        await Assert.That(GetEofEvents(consumer).Any(static e => e.Partition == Partition0)).IsFalse();
+        // The release completes when the batch loop exits, before any EOF is delivered.
+        var waiting = LeaveBatchLoop(batches);
+        try
+        {
+            // The refetch re-derives EOF for partition 0; the stale one must not be delivered.
+            await Assert.That(GetEofEvents(consumer).Any(static e => e.Partition == Partition0)).IsFalse();
+        }
+        finally
+        {
+            await StopWaitingAsync(cts, waiting);
+        }
     }
 
     [Test]
@@ -445,7 +455,8 @@ public sealed class ConsumeBatchSkipTests
             500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true,
             CreatePendingFetch(Partition0, 10, 2),
             CreatePendingFetch(Partition1, 20, 1));
-        await using var batches = Open(consumer, raw);
+        using var cts = new CancellationTokenSource();
+        await using var batches = Open(consumer, raw, cts.Token);
 
         await Assert.That(await batches.MoveNextAsync()).IsTrue();
         var staleEpoch = GetFetchBufferEpoch(consumer);
@@ -454,12 +465,21 @@ public sealed class ConsumeBatchSkipTests
 
         await Assert.That(await batches.MoveNextAsync()).IsTrue();
         await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
-        await Assert.That(GetDictionary(consumer, "_fetchPositions")[Partition0]).IsEqualTo(10L);
 
-        // The old response's EOF lands after the release: it must be dropped, not delivered
-        // ahead of offsets 10 and 11, which still have to be refetched.
-        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, staleEpoch);
-        await Assert.That(GetEofEvents(consumer)).IsEmpty();
+        var waiting = LeaveBatchLoop(batches);
+        try
+        {
+            await Assert.That(GetDictionary(consumer, "_fetchPositions")[Partition0]).IsEqualTo(10L);
+
+            // The old response's EOF lands after the release: it must be dropped, not delivered
+            // ahead of offsets 10 and 11, which still have to be refetched.
+            _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, staleEpoch);
+            await Assert.That(GetEofEvents(consumer)).IsEmpty();
+        }
+        finally
+        {
+            await StopWaitingAsync(cts, waiting);
+        }
     }
 
     [Test]
@@ -510,7 +530,8 @@ public sealed class ConsumeBatchSkipTests
             500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true,
             CreatePendingFetch(Partition0, 10, 2),
             CreatePendingFetch(Partition1, 20, 1));
-        await using var batches = Open(consumer, raw);
+        using var cts = new CancellationTokenSource();
+        await using var batches = Open(consumer, raw, cts.Token);
 
         await Assert.That(await batches.MoveNextAsync()).IsTrue();
         // An older response with records passed its stale check before the skip release.
@@ -518,20 +539,113 @@ public sealed class ConsumeBatchSkipTests
         await Assert.That(await batches.MoveNextAsync()).IsTrue();
         await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
 
-        // A current empty response reports EOF for the rewound position.
-        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, GetFetchBufferEpoch(consumer));
-        await Assert.That(GetEofEvents(consumer).Count(static e => e.Partition == Partition0)).IsEqualTo(1);
+        var waiting = LeaveBatchLoop(batches);
+        try
+        {
+            // A current empty response reports EOF for the rewound position.
+            _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, GetFetchBufferEpoch(consumer));
+            await Assert.That(GetEofEvents(consumer).Count(static e => e.Partition == Partition0)).IsEqualTo(1);
 
-        // The old response resumes: it must not clear the current EOF marker...
-        consumer.ResetPartitionEofForRecords(Partition0, staleEpoch);
-        // ...so the next current empty response does not queue a duplicate.
-        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, GetFetchBufferEpoch(consumer));
-        await Assert.That(GetEofEvents(consumer).Count(static e => e.Partition == Partition0)).IsEqualTo(1);
+            // The old response resumes: it must not clear the current EOF marker...
+            consumer.ResetPartitionEofForRecords(Partition0, staleEpoch);
+            // ...so the next current empty response does not queue a duplicate.
+            _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, GetFetchBufferEpoch(consumer));
+            await Assert.That(GetEofEvents(consumer).Count(static e => e.Partition == Partition0)).IsEqualTo(1);
 
-        // A current response with records still re-arms EOF.
-        consumer.ResetPartitionEofForRecords(Partition0, GetFetchBufferEpoch(consumer));
-        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, GetFetchBufferEpoch(consumer));
-        await Assert.That(GetEofEvents(consumer).Count(static e => e.Partition == Partition0)).IsEqualTo(2);
+            // A current response with records still re-arms EOF.
+            consumer.ResetPartitionEofForRecords(Partition0, GetFetchBufferEpoch(consumer));
+            _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, GetFetchBufferEpoch(consumer));
+            await Assert.That(GetEofEvents(consumer).Count(static e => e.Partition == Partition0)).IsEqualTo(2);
+        }
+        finally
+        {
+            await StopWaitingAsync(cts, waiting);
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task KOfNSkips_EachReleasedOnceInOneSweep_OthersInOrder(bool raw)
+    {
+        // The stubbed prefetch loop keeps the wait after the batch loop free of broker I/O.
+        const bool prefetch = true;
+        const int partitionCount = 48;
+        var fetches = new List<PendingFetchData>();
+        for (var i = 0; i < partitionCount; i++)
+            fetches.Add(CreatePendingFetch(new TopicPartition(Topic, i), 100L * i, 1));
+        // A second fetch per partition: skipped partitions' later fetches must be dropped too.
+        for (var i = 0; i < partitionCount; i++)
+            fetches.Add(CreatePendingFetch(new TopicPartition(Topic, i), 100L * i + 1, 1));
+        await using var consumer = CreateConsumer(500, null, prefetch, unknownPosition: null, [.. fetches]);
+        var fetchPositions = GetDictionary(consumer, "_fetchPositions");
+        for (var i = 0; i < partitionCount; i++)
+            fetchPositions[new TopicPartition(Topic, i)] = 100L * i + 2;
+        var epochBefore = GetFetchBufferEpoch(consumer);
+        using var cts = new CancellationTokenSource();
+        await using var batches = Open(consumer, raw, cts.Token);
+
+        // Skip every third partition's first batch; process everything else.
+        static bool Skips(int partition) => partition % 3 == 0;
+        var skippedYields = new List<int>();
+        var processed = new List<long>();
+        for (var i = 0; i < partitionCount / 3 + 2 * (partitionCount - partitionCount / 3); i++)
+        {
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            var partition = batches.Current.Partition.Partition;
+            if (Skips(partition))
+                skippedYields.Add(partition);
+            else
+                processed.AddRange(batches.Current.Offsets());
+        }
+
+        var waiting = LeaveBatchLoop(batches);
+        try
+        {
+            // Each skipped partition was offered once, then released; its second fetch dropped.
+            await Assert.That(skippedYields.SequenceEqual(
+                Enumerable.Range(0, partitionCount).Where(Skips))).IsTrue();
+            var expected = Enumerable.Range(0, partitionCount).Where(static p => !Skips(p))
+                .Select(static p => 100L * p)
+                .Concat(Enumerable.Range(0, partitionCount).Where(static p => !Skips(p)).Select(static p => 100L * p + 1))
+                .ToArray();
+            await Assert.That(processed.SequenceEqual(expected)).IsTrue();
+            await Assert.That(GetPendingFetches(consumer)).IsEmpty();
+            for (var i = 0; i < partitionCount; i++)
+            {
+                var position = fetchPositions[new TopicPartition(Topic, i)];
+                await Assert.That(position).IsEqualTo(Skips(i) ? 100L * i : 100L * i + 2);
+            }
+
+            // One sweep: a single fetch-epoch invalidation covers every released partition.
+            await Assert.That(GetFetchBufferEpoch(consumer)).IsEqualTo(epochBefore + 1);
+            await Assert.That(((HashSet<TopicPartition>)GetField("_skippedBatchPartitions").GetValue(consumer)!).Count)
+                .IsEqualTo(0);
+        }
+        finally
+        {
+            await StopWaitingAsync(cts, waiting);
+        }
+    }
+
+    /// <summary>
+    /// Requests the next batch when nothing deliverable is queued. The batch loop exits and its
+    /// releases complete synchronously; with the stubbed prefetch loop (or the delayed direct
+    /// fetch) the request then waits until cancelled.
+    /// </summary>
+    private static Task<bool> LeaveBatchLoop(IAsyncEnumerator<BatchView> batches) =>
+        batches.MoveNextAsync().AsTask();
+
+    private static async Task StopWaitingAsync(CancellationTokenSource cts, Task<bool> waiting)
+    {
+        await cts.CancelAsync();
+        try
+        {
+            await waiting;
+        }
+        catch (OperationCanceledException)
+        {
+        }
     }
 
     private sealed class TypedEnumerator(IAsyncEnumerator<ConsumeBatch<string, string>> inner)
