@@ -862,6 +862,88 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await Assert.That(coordinator.RevocationSequenceTrackingCountForTest).IsEqualTo(0);
     }
 
+    /// <summary>
+    /// A steady heartbeat is in flight when the application abandons the group assignment; its
+    /// response then publishes a new assignment and the heartbeat loop delivers OnPartitionsAssigned
+    /// (the coordinator is not told about the abandon). That callback belongs to the abandoned
+    /// assignment: its seek and pause act on the consumer directly and nothing is staged.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    [Arguments(AbandonAfterPublish.Assign)]
+    [Arguments(AbandonAfterPublish.Unsubscribe)]
+    public async Task RebalanceCallbackStateTransitions_InFlightHeartbeatAfterAbandon_DoesNotStage(
+        AbandonAfterPublish abandon,
+        CancellationToken testTimeout)
+    {
+        var listener = new CallbackListener();
+        var heartbeatInFlight = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseHeartbeat = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connectionPool = Substitute.For<Dekaf.Networking.IConnectionPool>();
+        var connection = Substitute.For<Dekaf.Networking.IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        var calls = 0;
+        connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => Interlocked.Increment(ref calls) switch
+            {
+                // The join: the steady heartbeat follows almost at once.
+                1 => ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = Dekaf.Protocol.ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = 1,
+                    HeartbeatIntervalMs = 10,
+                    Assignment = CreateAssignment(0)
+                }),
+                2 => HeldHeartbeatAsync(heartbeatInFlight, releaseHeartbeat),
+                _ => ValueTask.FromResult(CreateHeartbeatResponse(CreateAssignment(0, 1), 2))
+            });
+        SetupOffsetFetch(connection);
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager, rebalanceListener: listener);
+        var coordinator = GetCoordinator(consumer);
+        var callbackRan = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        listener.OnAssigned = partitions =>
+        {
+            if (!partitions.Contains(Partition1))
+                return;
+
+            var staging = coordinator.TryGetAssignedCallbackRevocationSequence(Partition1, out _);
+            consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
+            consumer.Pause(Partition1);
+            callbackRan.TrySetResult(staging);
+        };
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(testTimeout);
+
+        await heartbeatInFlight.Task.WaitAsync(testTimeout);
+        if (abandon == AbandonAfterPublish.Assign)
+            consumer.Assign(new TopicPartition("test-topic", 0));
+        else
+            consumer.Unsubscribe();
+        releaseHeartbeat.TrySetResult();
+
+        var stagingInCallback = await callbackRan.Task.WaitAsync(testTimeout);
+
+        await Assert.That(stagingInCallback).IsFalse();
+        await Assert.That(consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
+        await Assert.That(consumer.RebalancePausedPartitionCountForTest).IsEqualTo(0);
+    }
+
+    private static async ValueTask<ConsumerGroupHeartbeatResponse> HeldHeartbeatAsync(
+        TaskCompletionSource inFlight,
+        TaskCompletionSource release)
+    {
+        inFlight.TrySetResult();
+        await release.Task;
+        return CreateHeartbeatResponse(CreateAssignment(0, 1), 2);
+    }
+
     [Test]
     public async Task EnsureAssignmentAsync_RepeatedlySupersededSync_TracksOneAppliedSeekPerPartition()
     {

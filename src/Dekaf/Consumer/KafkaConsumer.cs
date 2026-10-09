@@ -1465,8 +1465,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     //                         or Resume removes them)
     //   reclassified       -> (newly expanded, reinitialized) staged seek and marker kept: same
     //                         ownership
-    //   queued callback    -> an abandon after its notification was queued starts it with staging
-    //                         ended (abandon epoch), like an abandon during it
+    //   queued callback    -> an abandon after its assignment was published starts it with staging
+    //                         ended (abandon epoch), like an abandon during it; so does any
+    //                         assignment published while abandoned (the membership and heartbeat
+    //                         loop outlive an abandon) until the consumer subscribes again
     //   abandon            -> Unsubscribe, Subscribe (topics, filter or pattern), Assign, Unassign,
     //                         IncrementalAssign before sync: every staged seek and marker dropped,
     //                         the pause of a marked partition removed unless the marker is current

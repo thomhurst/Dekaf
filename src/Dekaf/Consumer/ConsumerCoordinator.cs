@@ -67,6 +67,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // OnPartitionsAssigned notification captures it, so its callback starts with staging ended when
     // the assignment it announces was abandoned before it ran.
     private int _assignmentAbandonEpoch;
+    // Set by an abandon, cleared when the owner (re)subscribes through EnsureActiveGroupAsync. The
+    // membership and heartbeat loop outlive an abandon, so a heartbeat (in flight or later) can still
+    // publish an assignment and deliver its callbacks; one published while this is set belongs to
+    // the abandoned group assignment and never stages.
+    private int _assignmentAbandoned;
+    // AbandonEpoch of a notification published while the group assignment was abandoned.
+    private const int AbandonedAtPublication = -2;
     private Task _pendingRevocationCommit = Task.CompletedTask;
     // Completes once the callbacks of the latest published assignment change with newly assigned
     // partitions have been delivered. The consumer does not synchronize that assignment before
@@ -767,6 +774,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(ConsumerCoordinator));
 
+        // The owner is subscribed again: assignments published from here on are its own.
+        if (Volatile.Read(ref _assignmentAbandoned) != 0)
+            Volatile.Write(ref _assignmentAbandoned, 0);
+
         if (string.IsNullOrEmpty(_options.GroupId))
             return;
 
@@ -1289,7 +1300,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         public long RevocationSequence;
 
         // _assignmentAbandonEpoch when the assignment this notification announces was published
-        // (or when it was queued, if the publisher did not capture it); -1 until set.
+        // (or when it was queued, if the publisher did not capture it); -1 until set;
+        // AbandonedAtPublication when published while the group assignment was abandoned.
         public int AbandonEpoch = -1;
 
         public bool RevokedDelivered;
@@ -1330,7 +1342,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             callback.RevocationSequence = Volatile.Read(ref _revocationSequence);
             // Kept when the publisher captured it with the assignment it published.
-            if (callback.AbandonEpoch < 0)
+            if (callback.AbandonEpoch == -1)
                 callback.AbandonEpoch = Volatile.Read(ref _assignmentAbandonEpoch);
             if (!reserved)
             {
@@ -2769,7 +2781,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                 // With the publication: an abandon from here on (even before the callbacks are
                 // queued below) abandons this assignment, so its callback starts with staging ended.
-                publishedAbandonEpoch = Volatile.Read(ref _assignmentAbandonEpoch);
+                publishedAbandonEpoch = Volatile.Read(ref _assignmentAbandoned) != 0
+                    ? AbandonedAtPublication
+                    : Volatile.Read(ref _assignmentAbandonEpoch);
 
                 if (revoked is not null)
                     EnqueueRevokedPartitions(revoked, revocationSequence);
@@ -3560,8 +3574,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         // is seen here. One abandoned after the notification was queued starts the
                         // callback with staging ended.
                         Interlocked.Exchange(ref _currentAssignedCallback, assignedCallback);
-                        if (Volatile.Read(ref _assignmentAbandonEpoch) != pending.AbandonEpoch)
+                        if (pending.AbandonEpoch == AbandonedAtPublication
+                            || Volatile.Read(ref _assignmentAbandonEpoch) != pending.AbandonEpoch)
+                        {
                             assignedCallback.Deactivate();
+                        }
                         Interlocked.Increment(ref _assignedCallbacksRunning);
                         try
                         {
@@ -3629,6 +3646,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     internal void EndAssignedCallbackStaging()
     {
+        Volatile.Write(ref _assignmentAbandoned, 1);
         Interlocked.Increment(ref _assignmentAbandonEpoch);
         Volatile.Read(ref _currentAssignedCallback)?.Deactivate();
     }
