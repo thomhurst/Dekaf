@@ -3606,7 +3606,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             // Yield any pending EOF events (thread-safe with ConcurrentQueue)
-            while (_pendingEofEvents.TryDequeue(out var eofEvent))
+            while (TryDequeueCurrentEof(out var eofEvent))
             {
                 yield return ConsumeResult<TKey, TValue>.CreatePartitionEof(
                     eofEvent.Partition.Topic,
@@ -4223,6 +4223,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             && _eofSupersededBelow.TryGetValue(partition, out var below)
             && offset < below)
         || (_positions.TryGetValue(partition, out var position) && offset < position);
+
+    /// <summary>
+    /// Dequeues the next partition EOF for the record-at-a-time APIs, skipping any superseded
+    /// while queued. The batch APIs use <see cref="TryDequeueDeliverableEof"/>, which also
+    /// holds an EOF behind its partition's queued fetches.
+    /// </summary>
+    private bool TryDequeueCurrentEof(out (TopicPartition Partition, long Offset) eofEvent)
+    {
+        while (_pendingEofEvents.TryDequeue(out eofEvent))
+        {
+            if (!IsSupersededEof(eofEvent.Partition, eofEvent.Offset))
+                return true;
+        }
+
+        return false;
+    }
 
     private bool TryDequeueDeliverableEof(out (TopicPartition Partition, long Offset) eofEvent)
     {
@@ -5726,10 +5742,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // An EOF reported before these records is superseded by them: its offset is at most the
         // publication floor, below the records' end. Record that bound instead of searching the
         // EOF queue; the drain skips queued EOFs below it. O(1), and only when a marker existed.
+        // A response fully covered by earlier publications (RaiseStartOffset sets its end to -1)
+        // adds no records past the reported EOF, so the marker stays and no duplicate follows.
         if (!hasRecords
+            || publishedEndExclusive < 0
             || !_options.EnablePartitionEof
-            || !_eofEmitted.TryRemove(partition, out _)
-            || publishedEndExclusive < 0)
+            || !_eofEmitted.TryRemove(partition, out _))
         {
             return;
         }
@@ -6223,7 +6241,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private bool TryDequeuePendingEofResult(out ConsumeResult<TKey, TValue> result)
     {
-        if (_pendingEofEvents.TryDequeue(out var eofEvent))
+        if (TryDequeueCurrentEof(out var eofEvent))
         {
             result = ConsumeResult<TKey, TValue>.CreatePartitionEof(
                 eofEvent.Partition.Topic,

@@ -1053,6 +1053,68 @@ public sealed class ConsumeBatchSkipTests
         await Assert.That(GetEofEvents(consumer)).IsEmpty();
     }
 
+    [Test]
+    public async Task FullyCoveredRecordResponse_KeepsEofMarker_NoDuplicateEof()
+    {
+        await using var consumer = CreateConsumer(
+            500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true,
+            CreatePendingFetch(Partition0, 10, 1));
+        GetPendingFetches(consumer).Clear();
+        var fetchPositions = GetDictionary(consumer, "_fetchPositions");
+        fetchPositions[Partition0] = 12;
+        var epoch = GetFetchBufferEpoch(consumer);
+
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 12, epoch);
+        await Assert.That(GetEofEvents(consumer).Count).IsEqualTo(1);
+
+        // An overlapping same-epoch response for 10..11 is fully covered by the earlier
+        // publication: it adds nothing past the reported EOF and must not re-arm it.
+        await PublishPrefetchedAsync(consumer, CreatePendingFetch(Partition0, 10, 2), epoch);
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 12, epoch);
+        await Assert.That(GetEofEvents(consumer).Single()).IsEqualTo((Partition0, 12L));
+    }
+
+    [Test]
+    public async Task ConsumeAsync_SkipsSupersededEof()
+    {
+        await using var consumer = CreateSupersededEofConsumer();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using var records = consumer.ConsumeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+
+        await Assert.That(await records.MoveNextAsync()).IsTrue();
+        await Assert.That(records.Current.IsPartitionEof).IsTrue();
+        await Assert.That(records.Current.Offset).IsEqualTo(12L);
+        await Assert.That(GetEofEvents(consumer)).IsEmpty();
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_SkipsSupersededEof()
+    {
+        await using var consumer = CreateSupersededEofConsumer();
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.IsPartitionEof).IsTrue();
+        await Assert.That(result.Value.Offset).IsEqualTo(12L);
+        await Assert.That(GetEofEvents(consumer)).IsEmpty();
+    }
+
+    /// <summary>
+    /// Partition 0 was consumed to 12. A stale EOF at 10 is still queued ahead of the real one.
+    /// </summary>
+    private static KafkaConsumer<string, string> CreateSupersededEofConsumer()
+    {
+        var consumer = CreateConsumer(
+            500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true,
+            CreatePendingFetch(Partition0, 10, 1));
+        GetPendingFetches(consumer).Clear();
+        GetDictionary(consumer, "_positions")[Partition0] = 12;
+        GetEofEvents(consumer).Enqueue((Partition0, 10L));
+        GetEofEvents(consumer).Enqueue((Partition0, 12L));
+        return consumer;
+    }
+
     private sealed class TypedEnumerator(IAsyncEnumerator<ConsumeBatch<string, string>> inner)
         : IAsyncEnumerator<BatchView>
     {
