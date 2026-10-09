@@ -1468,7 +1468,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     //   queued callback    -> an abandon after its assignment was published starts it with staging
     //                         ended (abandon epoch), like an abandon during it; so does any
     //                         assignment published while abandoned (the membership and heartbeat
-    //                         loop outlive an abandon) until the consumer subscribes again
+    //                         loop outlive an abandon) until a sync acting on a subscription read
+    //                         at the current subscription generation reactivates it
     //   abandon            -> Unsubscribe, Subscribe (topics, filter or pattern), Assign, Unassign,
     //                         IncrementalAssign before sync: every staged seek and marker dropped,
     //                         the pause of a marked partition removed unless the marker is current
@@ -1696,6 +1697,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     // Runs after a sync pass's last version check, just before it acknowledges the sync.
     internal Action? BeforeAssignmentSyncAcknowledgedForTest { get; set; }
+
+    // Runs after EnsureAssignmentAsync captured the subscription, before it ensures group membership.
+    internal Action? BeforeEnsureActiveGroupForTest { get; set; }
 
     // Runs once the coordinator confirmed a sync pass, before the consumer completes it.
     internal Action? AfterAssignmentSyncAcknowledgedForTest { get; set; }
@@ -9862,11 +9866,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             await RefreshFilteredTopicsAsync(topicFilter, cancellationToken).ConfigureAwait(false);
         }
 
+        var coordinator = _coordinator;
+        // Before the subscription: a subscription change after this read makes the generation stale.
+        var subscriptionGeneration = coordinator?.SubscriptionGeneration ?? 0;
         var subscriptionSnapshot = _subscriptionSnapshot;
         var topicPattern = _topicPattern;
-        var coordinator = _coordinator;
         if ((subscriptionSnapshot.Count != 0 || topicPattern is not null) && coordinator is not null)
         {
+            BeforeEnsureActiveGroupForTest?.Invoke();
+            coordinator.ReactivateAssignmentCallbacks(subscriptionGeneration);
             await coordinator.EnsureActiveGroupAsync(subscriptionSnapshot, topicPattern, cancellationToken).ConfigureAwait(false);
 
             if (IsCoordinatorAssignmentSyncCurrent(coordinator, out var coordinatorAssignmentVersion))
@@ -9893,10 +9901,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (rejoinRequired && coordinator is not null)
             {
                 rejoinRequired = false;
+                subscriptionGeneration = coordinator.SubscriptionGeneration;
                 subscriptionSnapshot = _subscriptionSnapshot;
                 topicPattern = _topicPattern;
                 if (subscriptionSnapshot.Count != 0 || topicPattern is not null)
                 {
+                    coordinator.ReactivateAssignmentCallbacks(subscriptionGeneration);
                     await coordinator.EnsureActiveGroupAsync(subscriptionSnapshot, topicPattern, cancellationToken)
                         .ConfigureAwait(false);
                 }

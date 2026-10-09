@@ -944,6 +944,86 @@ public sealed partial class ConsumerAssignmentFastPathTests
         return CreateHeartbeatResponse(CreateAssignment(0, 1), 2);
     }
 
+    /// <summary>
+    /// An EnsureAssignmentAsync captures the (non-empty) subscription, then the application abandons
+    /// the group assignment before it reaches the coordinator. The stale call must not reactivate
+    /// staging: a callback for an assignment published afterwards acts directly.
+    /// </summary>
+    [Test]
+    [Arguments(AbandonAfterPublish.Assign)]
+    [Arguments(AbandonAfterPublish.Unsubscribe)]
+    public async Task RebalanceCallbackStateTransitions_StaleEnsureAfterAbandon_DoesNotReactivate(
+        AbandonAfterPublish abandon)
+    {
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessAsync(listener, AssignedResponse(1, 0));
+        var consumer = harness.Consumer;
+        var coordinator = GetCoordinator(consumer);
+        bool? staging = null;
+        listener.OnAssigned = partitions =>
+        {
+            if (partitions.Contains(Partition1))
+                staging = coordinator.TryGetAssignedCallbackRevocationSequence(Partition1, out _);
+        };
+
+        var abandoned = false;
+        consumer.BeforeEnsureActiveGroupForTest = () =>
+        {
+            if (abandoned)
+                return;
+            abandoned = true;
+            if (abandon == AbandonAfterPublish.Assign)
+                consumer.Assign(new TopicPartition("test-topic", 0));
+            else
+                consumer.Unsubscribe();
+        };
+        try
+        {
+            await consumer.EnsureAssignmentAsync(CancellationToken.None);
+        }
+        finally
+        {
+            consumer.BeforeEnsureActiveGroupForTest = null;
+        }
+
+        await Assert.That(abandoned).IsTrue();
+        await Assert.That(coordinator.IsAssignmentAbandonedForTest).IsTrue();
+
+        coordinator.QueueAssignedCallbacksForTest([Partition1]);
+        await coordinator.DeliverQueuedCallbacksForTestAsync();
+
+        await Assert.That(staging).IsNotNull();
+        await Assert.That(staging!.Value).IsFalse();
+    }
+
+    /// <summary>A fresh subscription after an abandon reactivates staging for the new assignment.</summary>
+    [Test]
+    public async Task RebalanceCallbackStateTransitions_SubscribeAfterAbandon_Reactivates()
+    {
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessAsync(listener, AssignedResponse(1, 0));
+        var consumer = harness.Consumer;
+        var coordinator = GetCoordinator(consumer);
+        bool? staging = null;
+        listener.OnAssigned = partitions =>
+        {
+            if (partitions.Contains(Partition1))
+                staging = coordinator.TryGetAssignedCallbackRevocationSequence(Partition1, out _);
+        };
+
+        consumer.Unsubscribe();
+        await Assert.That(coordinator.IsAssignmentAbandonedForTest).IsTrue();
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+        await Assert.That(coordinator.IsAssignmentAbandonedForTest).IsFalse();
+
+        coordinator.QueueAssignedCallbacksForTest([Partition1]);
+        await coordinator.DeliverQueuedCallbacksForTestAsync();
+
+        await Assert.That(staging).IsNotNull();
+        await Assert.That(staging!.Value).IsTrue();
+    }
+
     [Test]
     public async Task EnsureAssignmentAsync_RepeatedlySupersededSync_TracksOneAppliedSeekPerPartition()
     {

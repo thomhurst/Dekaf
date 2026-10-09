@@ -67,11 +67,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // OnPartitionsAssigned notification captures it, so its callback starts with staging ended when
     // the assignment it announces was abandoned before it ran.
     private int _assignmentAbandonEpoch;
-    // Set by an abandon, cleared when the owner (re)subscribes through EnsureActiveGroupAsync. The
-    // membership and heartbeat loop outlive an abandon, so a heartbeat (in flight or later) can still
-    // publish an assignment and deliver its callbacks; one published while this is set belongs to
-    // the abandoned group assignment and never stages.
-    private int _assignmentAbandoned;
+    // Incremented by each change of the owner's subscription or assignment mode (every abandon,
+    // including the one a Subscribe performs); control plane only. The owner captures it before it
+    // reads its subscription, so a call that acts on that subscription can tell it is still current.
+    private int _subscriptionGeneration;
+    // The generation of the latest abandon, or 0 once the owner, subscribed at that generation,
+    // reactivated (ReactivateAssignmentCallbacks). The membership and heartbeat loop outlive an
+    // abandon, so a heartbeat (in flight or later) can still publish an assignment and deliver its
+    // callbacks; one published while this is set belongs to the abandoned assignment and never stages.
+    private int _abandonedAtGeneration;
     // AbandonEpoch of a notification published while the group assignment was abandoned.
     private const int AbandonedAtPublication = -2;
     private Task _pendingRevocationCommit = Task.CompletedTask;
@@ -774,9 +778,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(ConsumerCoordinator));
 
-        // The owner is subscribed again: assignments published from here on are its own.
-        if (Volatile.Read(ref _assignmentAbandoned) != 0)
-            Volatile.Write(ref _assignmentAbandoned, 0);
 
         if (string.IsNullOrEmpty(_options.GroupId))
             return;
@@ -2781,7 +2782,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                 // With the publication: an abandon from here on (even before the callbacks are
                 // queued below) abandons this assignment, so its callback starts with staging ended.
-                publishedAbandonEpoch = Volatile.Read(ref _assignmentAbandoned) != 0
+                publishedAbandonEpoch = Volatile.Read(ref _abandonedAtGeneration) != 0
                     ? AbandonedAtPublication
                     : Volatile.Read(ref _assignmentAbandonEpoch);
 
@@ -2934,10 +2935,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             EnqueuePendingRebalanceCallback(new PendingRebalanceCallback
             {
                 Deferred = new ConsumerHeartbeatResult(true, null, assigned),
-                Assignment = _assignedPartitions
+                Assignment = _assignedPartitions,
+                // As a heartbeat publishing this assignment now would capture it.
+                AbandonEpoch = IsAssignmentAbandonedForTest
+                    ? AbandonedAtPublication
+                    : Volatile.Read(ref _assignmentAbandonEpoch)
             });
         }
     }
+
+    internal bool IsAssignmentAbandonedForTest => Volatile.Read(ref _abandonedAtGeneration) != 0;
 
     internal ValueTask DeliverQueuedCallbacksForTestAsync() =>
         InvokePendingRebalanceCallbacksAsync(CancellationToken.None);
@@ -3646,9 +3653,28 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     internal void EndAssignedCallbackStaging()
     {
-        Volatile.Write(ref _assignmentAbandoned, 1);
+        var generation = Interlocked.Increment(ref _subscriptionGeneration);
+        Volatile.Write(ref _abandonedAtGeneration, generation);
         Interlocked.Increment(ref _assignmentAbandonEpoch);
         Volatile.Read(ref _currentAssignedCallback)?.Deactivate();
+    }
+
+    /// <summary>
+    /// The owner's current subscription generation. Read before the subscription itself, and passed
+    /// to <see cref="ReactivateAssignmentCallbacks"/> by a call acting on that subscription.
+    /// </summary>
+    internal int SubscriptionGeneration => Volatile.Read(ref _subscriptionGeneration);
+
+    /// <summary>
+    /// The owner is subscribed at <paramref name="subscriptionGeneration"/>: assignments published
+    /// from here on are its own and their callbacks stage again. A no-op when the subscription or
+    /// assignment mode changed since that generation was read (a stale call), and a single volatile
+    /// read when nothing is abandoned.
+    /// </summary>
+    internal void ReactivateAssignmentCallbacks(int subscriptionGeneration)
+    {
+        if (subscriptionGeneration != 0 && Volatile.Read(ref _abandonedAtGeneration) == subscriptionGeneration)
+            Interlocked.CompareExchange(ref _abandonedAtGeneration, 0, subscriptionGeneration);
     }
 
     /// <summary>True while any OnPartitionsAssigned delivery runs; a cheap gate for the owner.</summary>
