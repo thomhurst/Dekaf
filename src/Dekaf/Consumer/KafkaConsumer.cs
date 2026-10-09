@@ -222,13 +222,34 @@ internal sealed class PendingFetchData : IDisposable
 
     internal bool IsExhausted { get; private set; }
 
+    // Iteration cursor captured when this fetch is yielded as a batch. Kept on the pooled
+    // instance so the batch iterators' state machines carry no extra per-stream state.
+    private int _yieldBatchIndex;
+    private int _yieldRecordIndex;
+    private bool _yieldBuffered;
+    private bool _yieldExhausted;
+
     /// <summary>
-    /// Where record iteration currently stands. The consume loop compares it across one batch
-    /// yield: unchanged means the caller never read a record, so it skipped the batch. Creating
-    /// an enumerator without calling MoveNext does not count. Read once per batch, never per record.
+    /// Captures where record iteration stands just before the fetch is yielded as a batch.
+    /// Once per batch, never per record.
     /// </summary>
-    internal (int BatchIndex, int RecordIndex, bool Buffered, bool Exhausted) IterationCursor
-        => (_batchIndex, _recordIndex, _hasBufferedCurrent, IsExhausted);
+    internal void CaptureYieldCursor()
+    {
+        _yieldBatchIndex = _batchIndex;
+        _yieldRecordIndex = _recordIndex;
+        _yieldBuffered = _hasBufferedCurrent;
+        _yieldExhausted = IsExhausted;
+    }
+
+    /// <summary>
+    /// Whether no record has been read since <see cref="CaptureYieldCursor"/>: the caller
+    /// skipped the batch. Creating an enumerator without calling MoveNext does not move it.
+    /// </summary>
+    internal bool IsAtYieldCursor =>
+        _batchIndex == _yieldBatchIndex
+        && _recordIndex == _yieldRecordIndex
+        && _hasBufferedCurrent == _yieldBuffered
+        && IsExhausted == _yieldExhausted;
     internal long FetchEndOffsetExclusive
     {
         get => _fetchEndOffsetExclusive;
@@ -1459,6 +1480,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly Queue<PendingFetchData> _heldSkippedFetches = new();
     // Partitions with a queued fetch, built only when an EOF drain starts with fetches queued.
     private readonly HashSet<TopicPartition> _eofHoldPartitions = [];
+    // Batch-loop state kept on the consumer, not hoisted into the async iterators, so the
+    // per-stream iterator allocation does not grow. Only the consume loop touches them.
+    private int _eofDrainRemaining;
+    private bool _batchLoopExitRequested;
     private int _observedPausedSnapshotVersion;
     private int _recordIterationEpochSeed;
     private int _pendingFetchDepth;
@@ -3713,11 +3738,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     pending.MarkYieldedProcessed();
                     int pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
                     var resumedAfterYield = false;
-                    var skippedWithoutProgress = false;
                     ConsumeBatch<TKey, TValue>? batch = null;
                     long? batchProcessingStarted = _adaptiveFetchSizer is not null
                         ? Stopwatch.GetTimestamp() : null;
-                    var cursorAtYield = default((int, int, bool, bool));
 
                     // User callbacks can seek or revoke this fetch during synchronous batch
                     // iteration. Retain once across the yield, including its final cleanup.
@@ -3746,7 +3769,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             _recordHeaderRoutingPlan,
                             _tryRecordPollFast,
                             _onBatchConsume);
-                        cursorAtYield = pending.IterationCursor;
+                        pending.CaptureYieldCursor();
                         yield return batch;
                         pending.EndCheckpointWindow(batch);
                         // Resumption = the caller requested the next batch, proving this one was
@@ -3758,20 +3781,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     {
                         if (!resumedAfterYield)
                             pending.EndCheckpointWindow(batch);
-                        skippedWithoutProgress = CompleteBatchPoll(
+                        _batchLoopExitRequested = CompleteBatchPoll(
                             pending,
                             pendingFetchesVersion,
                             metricsEnabled,
                             batchProcessingStarted,
                             disposePending: batch is null,
-                            yieldedBatchProcessed: resumedAfterYield,
-                            cursorAtYield);
+                            yieldedBatchProcessed: resumedAfterYield);
                     }
 
                     // A skipped batch that could not be released returns to the outer loop, so
                     // pause parking, revocation handling or the held-fetch wait run before any
                     // further delivery instead of spinning on the same queued fetch.
-                    if (skippedWithoutProgress)
+                    if (_batchLoopExitRequested)
                         break;
                 }
             }
@@ -3781,8 +3803,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 RestoreHeldSkippedFetches();
             }
 
-            var eofEventsToCheck = PrepareEofDelivery();
-            while (TryDequeueDeliverableEof(ref eofEventsToCheck, out var eofEvent))
+            PrepareEofDelivery();
+            while (TryDequeueDeliverableEof(out var eofEvent))
             {
                 using var eofPending = PendingFetchData.CreatePartitionEof(
                     eofEvent.Partition.Topic,
@@ -3917,11 +3939,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     pending.MarkYieldedProcessed();
                     int pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
                     var resumedAfterYield = false;
-                    var skippedWithoutProgress = false;
                     ConsumeRawBatch? batch = null;
                     long? batchProcessingStarted = _adaptiveFetchSizer is not null
                         ? Stopwatch.GetTimestamp() : null;
-                    var cursorAtYield = default((int, int, bool, bool));
 
                     try
                     {
@@ -3938,7 +3958,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 GetBatchIterationStatus),
                             _storeOffsetOnDelivery,
                             _options.MaxPollRecords);
-                        cursorAtYield = pending.IterationCursor;
+                        pending.CaptureYieldCursor();
                         yield return batch;
                         pending.EndCheckpointWindow(batch);
                         // Resumption = the caller requested the next batch, proving this one was
@@ -3950,20 +3970,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     {
                         if (!resumedAfterYield)
                             pending.EndCheckpointWindow(batch);
-                        skippedWithoutProgress = CompleteBatchPoll(
+                        _batchLoopExitRequested = CompleteBatchPoll(
                             pending,
                             pendingFetchesVersion,
                             metricsEnabled,
                             batchProcessingStarted,
                             disposePending: batch is null,
-                            yieldedBatchProcessed: resumedAfterYield,
-                            cursorAtYield);
+                            yieldedBatchProcessed: resumedAfterYield);
                     }
 
                     // A skipped batch that could not be released returns to the outer loop, so
                     // pause parking, revocation handling or the held-fetch wait run before any
                     // further delivery instead of spinning on the same queued fetch.
-                    if (skippedWithoutProgress)
+                    if (_batchLoopExitRequested)
                         break;
                 }
             }
@@ -3973,8 +3992,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 RestoreHeldSkippedFetches();
             }
 
-            var eofEventsToCheck = PrepareEofDelivery();
-            while (TryDequeueDeliverableEof(ref eofEventsToCheck, out var eofEvent))
+            PrepareEofDelivery();
+            while (TryDequeueDeliverableEof(out var eofEvent))
             {
                 using var eofPending = PendingFetchData.CreatePartitionEof(
                     eofEvent.Partition.Topic,
@@ -3998,8 +4017,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         bool metricsEnabled,
         long? batchProcessingStarted,
         bool disposePending,
-        bool yieldedBatchProcessed,
-        (int, int, bool, bool) cursorAtYield)
+        bool yieldedBatchProcessed)
     {
         var exhaustionProbePending = Interlocked.Exchange(
             ref _batchIterationEpoch.BatchExhaustionProbePending,
@@ -4041,7 +4059,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Checked once per batch. An unmoved iteration cursor means the caller never read a
         // record: it skipped the batch. Iteration the consumer itself stopped after a read
         // (pause during delivery) moved the cursor and keeps its buffered redelivery path.
-        if (!yieldedBatchProcessed || pending.IterationCursor != cursorAtYield)
+        if (!yieldedBatchProcessed || !pending.IsAtYieldCursor)
             return false;
 
         return !TryReleaseSkippedBatch(pending);
@@ -4153,19 +4171,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     /// <summary>
-    /// Starts one EOF drain and returns how many queued events it may check. A skip leaves the
+    /// Starts one EOF drain and records how many queued events it may check. A skip leaves the
     /// batch loop with fetches still queued, and prefetch reports EOF at its fetch position,
     /// ahead of those records. Only then is the set of partitions with a queued fetch built,
     /// once per drain, so each EOF check is O(1). On the normal path the queue is empty and
     /// this reads two counts.
     /// </summary>
-    private int PrepareEofDelivery()
+    private void PrepareEofDelivery()
     {
         if (_eofHoldPartitions.Count > 0)
             _eofHoldPartitions.Clear();
 
         if (_pendingEofEvents.IsEmpty)
-            return 0;
+        {
+            _eofDrainRemaining = 0;
+            return;
+        }
 
         if (_pendingFetches.Count > 0)
         {
@@ -4173,7 +4194,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 _eofHoldPartitions.Add(queued.TopicPartition);
         }
 
-        return _pendingEofEvents.Count;
+        _eofDrainRemaining = _pendingEofEvents.Count;
     }
 
     /// <summary>
@@ -4182,11 +4203,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// delivered. Released partitions already had their EOF dropped and re-derive it after
     /// the refetch.
     /// </summary>
-    private bool TryDequeueDeliverableEof(
-        ref int remaining,
-        out (TopicPartition Partition, long Offset) eofEvent)
+    private bool TryDequeueDeliverableEof(out (TopicPartition Partition, long Offset) eofEvent)
     {
-        while (remaining-- > 0 && _pendingEofEvents.TryDequeue(out eofEvent))
+        while (_eofDrainRemaining-- > 0 && _pendingEofEvents.TryDequeue(out eofEvent))
         {
             if (_eofHoldPartitions.Count == 0 || !_eofHoldPartitions.Contains(eofEvent.Partition))
                 return true;
