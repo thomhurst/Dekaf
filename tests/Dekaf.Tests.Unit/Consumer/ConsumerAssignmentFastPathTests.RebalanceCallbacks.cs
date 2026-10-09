@@ -330,6 +330,231 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await Assert.That(harness.Consumer.GetRebalancePosition(unassigned)).IsEqualTo(5L);
     }
 
+    [Test]
+    [Arguments(false, AbandonKind.Unsubscribe)]
+    [Arguments(true, AbandonKind.Unsubscribe)]
+    [Arguments(false, AbandonKind.Assign)]
+    [Arguments(true, AbandonKind.Assign)]
+    [Arguments(false, AbandonKind.Unassign)]
+    public async Task AbandonAssignmentBeforeSync_DropsSeekStagedByAssignedCallback(
+        bool consumerAware,
+        AbandonKind abandon)
+    {
+        var listener = new CallbackListener();
+        await using var harness = consumerAware
+            ? await CreateCallbackHarnessAsync(
+                consumerAwareListener: listener,
+                AssignedResponse(1, 0),
+                AssignedResponse(2, 0, 1))
+            : await CreateCallbackHarnessAsync(
+                listener,
+                AssignedResponse(1, 0),
+                AssignedResponse(2, 0, 1));
+
+        var seek = new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42);
+        listener.OnAssigned = partitions =>
+        {
+            if (partitions.Contains(Partition1))
+                harness.Consumer.Seek(seek);
+        };
+        listener.OnAssignedConsumer = (consumer, partitions) =>
+        {
+            if (partitions.Contains(Partition1))
+                consumer.Seek(seek);
+        };
+
+        // Partition 1 is announced and its callback seeks, but the consumer never synchronizes it.
+        await harness.HeartbeatAsync();
+        Abandon(harness.Consumer, abandon);
+
+        await Assert.That(harness.Consumer.GetRebalancePosition(Partition1)).IsNull();
+
+        // A later subscription assigned the same partition starts at the committed offset.
+        harness.Consumer.Subscribe("test-topic");
+        await harness.Consumer.EnsureAssignmentAsync(CancellationToken.None);
+        await Assert.That(harness.Consumer.GetPosition(Partition1)).IsEqualTo(20L);
+    }
+
+    [Test]
+    [Arguments(false, AbandonKind.Unsubscribe)]
+    [Arguments(true, AbandonKind.Unsubscribe)]
+    [Arguments(false, AbandonKind.Assign)]
+    [Arguments(false, AbandonKind.Unassign)]
+    public async Task AbandonAssignmentBeforeSync_DropsPauseMadeByAssignedCallback(
+        bool consumerAware,
+        AbandonKind abandon)
+    {
+        var listener = new CallbackListener();
+        await using var harness = consumerAware
+            ? await CreateCallbackHarnessAsync(
+                consumerAwareListener: listener,
+                AssignedResponse(1, 0),
+                AssignedResponse(2, 0, 1))
+            : await CreateCallbackHarnessAsync(
+                listener,
+                AssignedResponse(1, 0),
+                AssignedResponse(2, 0, 1));
+
+        listener.OnAssigned = partitions =>
+        {
+            if (partitions.Contains(Partition1))
+                harness.Consumer.Pause(Partition1);
+        };
+        listener.OnAssignedConsumer = static (consumer, partitions) =>
+        {
+            if (partitions.Contains(Partition1))
+                consumer.Pause(Partition1);
+        };
+
+        await harness.HeartbeatAsync();
+        Abandon(harness.Consumer, abandon);
+
+        await Assert.That(harness.Consumer.Paused).DoesNotContain(Partition1);
+    }
+
+    [Test]
+    public async Task AbandonAssignmentBeforeSync_KeepsPauseOfSynchronizedPartition()
+    {
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessAsync(
+            listener,
+            AssignedResponse(1, 0),
+            AssignedResponse(2, 0, 1));
+
+        listener.OnAssigned = partitions =>
+        {
+            if (partitions.Contains(Partition1))
+                harness.Consumer.Pause(Partition1);
+        };
+
+        await harness.HeartbeatAsync();
+        await harness.Consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        // Partition 1 is synchronized and paused; a manual assignment that keeps it keeps the pause.
+        harness.Consumer.Assign(new TopicPartition("test-topic", 0), Partition1);
+
+        await Assert.That(harness.Consumer.Paused).Contains(Partition1);
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task EnsureAssignmentAsync_ResumeDuringReassignedPauseRestoration_IsNotLost(
+        CancellationToken testTimeout)
+    {
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessAsync(
+            listener,
+            AssignedResponse(1, 0, 1),
+            AssignedResponse(2, 0),
+            AssignedResponse(3, 0, 1));
+
+        listener.OnAssigned = partitions =>
+        {
+            if (partitions.Contains(Partition1))
+                harness.Consumer.Pause(Partition1);
+        };
+
+        await harness.HeartbeatAsync();
+        await harness.HeartbeatAsync();
+
+        // The application resumes the partition while sync is between clearing the previous
+        // ownership's pause and restoring the callback's. The resume is the later call and wins.
+        Task? resume = null;
+        KafkaConsumer<string, string>.AfterPartitionPauseClearedForTest = (consumer, partition) =>
+        {
+            if (!ReferenceEquals(consumer, harness.Consumer) || partition != Partition1 || resume is not null)
+                return;
+
+            resume = Task.Run(() => harness.Consumer.Resume(Partition1), testTimeout);
+            // Bounded: a resume serialized with the restoration cannot finish until sync releases
+            // it, and either order must end resumed.
+            try { resume.Wait(TimeSpan.FromMilliseconds(500), testTimeout); }
+            catch (OperationCanceledException) { }
+        };
+        try
+        {
+            await harness.Consumer.EnsureAssignmentAsync(CancellationToken.None);
+        }
+        finally
+        {
+            KafkaConsumer<string, string>.AfterPartitionPauseClearedForTest = null;
+        }
+
+        await Assert.That(resume).IsNotNull();
+        await resume!.WaitAsync(testTimeout);
+        await Assert.That(harness.Consumer.Paused).DoesNotContain(Partition1);
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task Resume_ConcurrentWithAssignedCallbackPause_IsNotUndoneBySync(CancellationToken testTimeout)
+    {
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessAsync(
+            listener,
+            AssignedResponse(1, 0, 1),
+            AssignedResponse(2, 0),
+            AssignedResponse(3, 0, 1));
+
+        Task? resume = null;
+        listener.OnAssigned = partitions =>
+        {
+            if (!partitions.Contains(Partition1))
+                return;
+
+            // Another thread resumes between the callback's pause and its record of that pause.
+            KafkaConsumer<string, string>.AfterPartitionPausedForTest = (consumer, partition) =>
+            {
+                if (!ReferenceEquals(consumer, harness.Consumer) || partition != Partition1 || resume is not null)
+                    return;
+
+                resume = Task.Run(() => harness.Consumer.Resume(Partition1), testTimeout);
+                try { resume.Wait(TimeSpan.FromMilliseconds(500), testTimeout); }
+                catch (OperationCanceledException) { }
+            };
+            try
+            {
+                harness.Consumer.Pause(Partition1);
+            }
+            finally
+            {
+                KafkaConsumer<string, string>.AfterPartitionPausedForTest = null;
+            }
+        };
+
+        await harness.HeartbeatAsync();
+        await harness.HeartbeatAsync();
+        await Assert.That(resume).IsNotNull();
+        await resume!.WaitAsync(testTimeout);
+        await harness.Consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        await Assert.That(harness.Consumer.Paused).DoesNotContain(Partition1);
+    }
+
+    public enum AbandonKind
+    {
+        Unsubscribe,
+        Assign,
+        Unassign
+    }
+
+    private static void Abandon(KafkaConsumer<string, string> consumer, AbandonKind kind)
+    {
+        switch (kind)
+        {
+            case AbandonKind.Unsubscribe:
+                consumer.Unsubscribe();
+                break;
+            case AbandonKind.Assign:
+                consumer.Assign(new TopicPartition("test-topic", 0));
+                break;
+            default:
+                consumer.Unsubscribe();
+                consumer.Unassign();
+                break;
+        }
+    }
+
     public enum SeekKind
     {
         Offset,

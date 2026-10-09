@@ -1422,6 +1422,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // sync clears the previous ownership's pause of a partition revoked and assigned again, then
     // restores these. Dropped with the pending seeks when the partition is revoked again.
     private readonly ConcurrentDictionary<TopicPartition, byte> _rebalancePausedPartitions = new();
+    // Serializes each Pause/Resume with assignment cleanup's clear-then-restore of a partition's
+    // pause, so neither interleaves inside the other's check-then-act. Taken before
+    // _coordinatorRevokedPartitionsPendingFetchClearLock, never while holding it. Not per message.
+    private readonly object _pauseStateLock = new();
     // Last consumed record-batch leader epoch. Sent as FetchRequest.LastFetchedEpoch while the
     // fetch position is the consumed position (no prefetch, or just after a seek/reset).
     private readonly ConcurrentDictionary<TopicPartition, int> _lastConsumedLeaderEpochs = new();
@@ -1622,6 +1626,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // identified and before revoked-partition state is cleaned up. It receives the consumer, so
     // a static keeps the instance layout unchanged and parallel tests can filter by it.
     internal static Action<object>? BeforeRevokedPartitionStateCleanupForTest;
+    // Test hooks inside the pause state transitions: after assignment cleanup removes a partition's
+    // pause, and after Pause adds one. They receive the consumer and the partition.
+    internal static Action<object, TopicPartition>? AfterPartitionPauseClearedForTest;
+    internal static Action<object, TopicPartition>? AfterPartitionPausedForTest;
     // Thread-local storage keeps the production consumer's instance layout unchanged.
     [ThreadStatic]
     internal static Action? BeforeOffsetResetCommitForTest;
@@ -2451,6 +2459,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 _assignment.Clear();
                 PublishAssignmentSnapshot();
                 hadPaused = RemovePartitionState(previousAssignment);
+                hadPaused |= DiscardUnsynchronizedRebalanceState(previousAssignment);
             }
         }
         finally
@@ -2505,6 +2514,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 PublishAssignmentSnapshot();
                 if (removedPartitions is not null)
                     hadPaused = RemovePartitionState(removedPartitions);
+                hadPaused |= DiscardUnsynchronizedRebalanceState(previousAssignment);
             }
         }
         finally
@@ -2538,6 +2548,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 _assignment.Clear();
                 PublishAssignmentSnapshot();
                 hadPaused = RemovePartitionState(previousAssignment);
+                hadPaused |= DiscardUnsynchronizedRebalanceState(previousAssignment);
             }
         }
         finally
@@ -2564,11 +2575,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _subscription.Clear();
         PublishSubscriptionSnapshot();
 
+        var hadPaused = false;
         SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
         {
             lock (_snapshotStateGate)
             {
+                hadPaused = DiscardUnsynchronizedRebalanceState(_assignmentSnapshot);
                 foreach (var tpo in partitions)
                 {
                     var tp = new TopicPartition(tpo.Topic, tpo.Partition);
@@ -2594,6 +2607,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             SemaphoreHelper.ReleaseSafely(_assignmentLock);
         }
+
+        if (hadPaused)
+            PublishPausedSnapshot();
+
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
     }
@@ -7915,6 +7932,34 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     /// <summary>
+    /// Drops what OnPartitionsAssigned callbacks left for an assignment the consumer abandons
+    /// (unsubscribe, or a switch to manual assignment) before synchronizing it: every staged seek,
+    /// and the pause of each partition such a callback paused that is not in
+    /// <paramref name="synchronizedAssignment"/> (whose state the caller handles). A later
+    /// subscription assigned the same partitions must not inherit them. Caller holds
+    /// <c>_assignmentLock</c>, so no sync runs concurrently. Returns true if the paused set changed.
+    /// </summary>
+    private bool DiscardUnsynchronizedRebalanceState(HashSet<TopicPartition> synchronizedAssignment)
+    {
+        var hadPaused = false;
+        lock (_pauseStateLock)
+        {
+            lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+            {
+                _pendingRebalanceSeeks.Clear();
+                foreach (var entry in _rebalancePausedPartitions)
+                {
+                    _rebalancePausedPartitions.TryRemove(entry.Key, out _);
+                    if (!synchronizedAssignment.Contains(entry.Key))
+                        hadPaused |= _paused.TryRemove(entry.Key, out _);
+                }
+            }
+        }
+
+        return hadPaused;
+    }
+
+    /// <summary>
     /// Removes per-partition tracking state for the given partitions.
     /// Returns true if any partition was in the paused set.
     /// </summary>
@@ -7940,14 +7985,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // IConsumerOffsets exposes the last cached broker watermarks even while
             // unassigned. A later assignment removes them before position reuse.
             _eofEmitted.TryRemove(partition, out _);
-            hadPaused |= _paused.TryRemove(partition, out _);
-
             // The previous ownership's pause ends with it; a pause the new assignment's
-            // OnPartitionsAssigned made is kept, like its staged seek.
-            if (_rebalancePausedPartitions.TryRemove(partition, out _) && reassigned)
+            // OnPartitionsAssigned made is kept, like its staged seek. Under the pause lock, so a
+            // concurrent Resume lands before the clear or after the restore, never between.
+            lock (_pauseStateLock)
             {
-                _paused.TryAdd(partition, 0);
-                hadPaused = true;
+                hadPaused |= _paused.TryRemove(partition, out _);
+                AfterPartitionPauseClearedForTest?.Invoke(this, partition);
+
+                if (_rebalancePausedPartitions.TryRemove(partition, out _) && reassigned)
+                {
+                    _paused.TryAdd(partition, 0);
+                    hadPaused = true;
+                }
             }
         }
         return hadPaused;
@@ -8895,17 +8945,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ArgumentNullException.ThrowIfNull(partitions);
 
         List<TopicPartition>? changedPartitions = null;
-        foreach (var partition in partitions)
+        // The add and its record as a callback pause are one step for Resume and assignment sync.
+        lock (_pauseStateLock)
         {
-            if (_paused.TryAdd(partition, 0))
+            foreach (var partition in partitions)
             {
-                changedPartitions ??= [];
-                changedPartitions.Add(partition);
+                if (_paused.TryAdd(partition, 0))
+                {
+                    AfterPartitionPausedForTest?.Invoke(this, partition);
+                    changedPartitions ??= [];
+                    changedPartitions.Add(partition);
+                }
             }
-        }
 
-        // Also when already paused: that pause may be the previous ownership's, which sync clears.
-        RecordAssignedCallbackPauses(partitions);
+            // Also when already paused: that pause may be the previous ownership's, which sync clears.
+            RecordAssignedCallbackPauses(partitions);
+        }
 
         if (changedPartitions is null)
             return;
@@ -8919,13 +8974,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ArgumentNullException.ThrowIfNull(partitions);
 
         List<TopicPartition>? changedPartitions = null;
-        foreach (var partition in partitions)
+        lock (_pauseStateLock)
         {
-            if (_paused.TryRemove(partition, out _))
+            foreach (var partition in partitions)
             {
-                _rebalancePausedPartitions.TryRemove(partition, out _);
-                changedPartitions ??= [];
-                changedPartitions.Add(partition);
+                if (_paused.TryRemove(partition, out _))
+                {
+                    _rebalancePausedPartitions.TryRemove(partition, out _);
+                    changedPartitions ??= [];
+                    changedPartitions.Add(partition);
+                }
             }
         }
 
