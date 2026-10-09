@@ -54,6 +54,12 @@ for the next record. Dekaf uses that request as the acknowledgment signal:
 The same "a new call proves the previous record" contract applies to `ConsumeOneAsync` and to
 `ConsumeBatchAsync` (where the unit of proof is the whole batch).
 
+A batch proves only the records you enumerated. If you request the next batch without
+enumerating the current one (for example `if (batch.Partition == 3) continue;`), nothing is
+proven: that partition is rewound to its position and its records are fetched and delivered
+again later, while other partitions keep flowing. To hold a partition back deliberately, use
+`Pause` instead. A paused partition keeps its fetched records and resumes without a refetch.
+
 Records rejected by a [pre-deserialization filter](filtering-and-routing.md) are different: they
 are never delivered to application code, so they are proven immediately. The consumer position
 advances and automatic offset storage can commit them without waiting for another pull.

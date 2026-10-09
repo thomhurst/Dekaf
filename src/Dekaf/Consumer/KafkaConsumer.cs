@@ -1443,6 +1443,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // here preserves its iterator, pooled storage, offsets, and per-partition order.
     private readonly Queue<PendingFetchData> _pausedPendingFetches = new();
     private readonly Queue<PendingFetchData> _pendingFetchScratch = new();
+    // Reused by the consume loop to rewind a skipped batch without allocating a set.
+    private readonly HashSet<TopicPartition> _skippedBatchPartitions = [];
     private int _observedPausedSnapshotVersion;
     private int _recordIterationEpochSeed;
     private int _pendingFetchDepth;
@@ -3683,9 +3685,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 pending.MarkYieldedProcessed();
                 int pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
                 var resumedAfterYield = false;
+                var skippedWithoutProgress = false;
                 ConsumeBatch<TKey, TValue>? batch = null;
                 long? batchProcessingStarted = _adaptiveFetchSizer is not null
                     ? Stopwatch.GetTimestamp() : null;
+                long messageCountAtYield = -1;
 
                 // User callbacks can seek or revoke this fetch during synchronous batch
                 // iteration. Retain once across the yield, including its final cleanup.
@@ -3714,6 +3718,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         _recordHeaderRoutingPlan,
                         _tryRecordPollFast,
                         _onBatchConsume);
+                    messageCountAtYield = pending.MessageCount;
                     yield return batch;
                     pending.EndCheckpointWindow(batch);
                     // Resumption = the caller requested the next batch, proving this one was
@@ -3725,14 +3730,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 {
                     if (!resumedAfterYield)
                         pending.EndCheckpointWindow(batch);
-                    CompleteBatchPoll(
+                    skippedWithoutProgress = CompleteBatchPoll(
                         pending,
                         pendingFetchesVersion,
                         metricsEnabled,
                         batchProcessingStarted,
                         disposePending: batch is null,
-                        yieldedBatchProcessed: resumedAfterYield);
+                        yieldedBatchProcessed: resumedAfterYield,
+                        batchEnumerated: batch?.EnumerationStarted == true,
+                        messageCountAtYield);
                 }
+
+                // A skipped batch was rewound for redelivery. Return to the outer loop so
+                // assignment sync, revocation handling and the next fetch run before any
+                // further delivery instead of spinning on the same queued fetch.
+                if (skippedWithoutProgress)
+                    break;
             }
 
             while (_pendingEofEvents.TryDequeue(out var eofEvent))
@@ -3856,9 +3869,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 pending.MarkYieldedProcessed();
                 int pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
                 var resumedAfterYield = false;
+                var skippedWithoutProgress = false;
                 ConsumeRawBatch? batch = null;
                 long? batchProcessingStarted = _adaptiveFetchSizer is not null
                     ? Stopwatch.GetTimestamp() : null;
+                long messageCountAtYield = -1;
 
                 try
                 {
@@ -3875,6 +3890,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             GetBatchIterationStatus),
                         _storeOffsetOnDelivery,
                         _options.MaxPollRecords);
+                    messageCountAtYield = pending.MessageCount;
                     yield return batch;
                     pending.EndCheckpointWindow(batch);
                     // Resumption = the caller requested the next batch, proving this one was
@@ -3886,14 +3902,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 {
                     if (!resumedAfterYield)
                         pending.EndCheckpointWindow(batch);
-                    CompleteBatchPoll(
+                    skippedWithoutProgress = CompleteBatchPoll(
                         pending,
                         pendingFetchesVersion,
                         metricsEnabled,
                         batchProcessingStarted,
                         disposePending: batch is null,
-                        yieldedBatchProcessed: resumedAfterYield);
+                        yieldedBatchProcessed: resumedAfterYield,
+                        batchEnumerated: batch?.EnumerationStarted == true,
+                        messageCountAtYield);
                 }
+
+                // A skipped batch was rewound for redelivery. Return to the outer loop so
+                // assignment sync, revocation handling and the next fetch run before any
+                // further delivery instead of spinning on the same queued fetch.
+                if (skippedWithoutProgress)
+                    break;
             }
 
             while (_pendingEofEvents.TryDequeue(out var eofEvent))
@@ -3908,23 +3932,30 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    private void CompleteBatchPoll(
+    /// <returns>
+    /// <see langword="true"/> when the caller requested the next batch without enumerating
+    /// this one. The fetch was then rewound for redelivery, and the batch loop must
+    /// return to its outer poll loop before delivering again.
+    /// </returns>
+    private bool CompleteBatchPoll(
         PendingFetchData pending,
         int pendingFetchesVersion,
         bool metricsEnabled,
         long? batchProcessingStarted,
         bool disposePending,
-        bool yieldedBatchProcessed)
+        bool yieldedBatchProcessed,
+        bool batchEnumerated,
+        long messageCountAtYield)
     {
         var exhaustionProbePending = Interlocked.Exchange(
             ref _batchIterationEpoch.BatchExhaustionProbePending,
             0) != 0;
 
         if (Volatile.Read(ref _pendingFetchesVersion) != pendingFetchesVersion)
-            return;
+            return false;
 
         if (_pendingFetches.Count == 0 || !ReferenceEquals(_pendingFetches.Peek(), pending))
-            return;
+            return false;
 
         if (exhaustionProbePending)
             pending.TryBufferNext();
@@ -3950,6 +3981,76 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             || !IsCurrentlyAssigned(pending.TopicPartition))
         {
             DisposeQueuedFetch(DequeuePendingFetch());
+            return false;
+        }
+
+        // Checked once per batch. A caller that never started enumerating and consumed no
+        // record skipped the batch. Iteration the consumer itself stopped (pause, revocation)
+        // started enumeration, so it keeps its existing redelivery path.
+        if (!yieldedBatchProcessed
+            || batchEnumerated
+            || pending.MessageCount != messageCountAtYield)
+        {
+            return false;
+        }
+
+        RewindSkippedBatch(pending);
+        return true;
+    }
+
+    /// <summary>
+    /// Releases a batch the caller resumed past without consuming, so its records are
+    /// redelivered from the partition position. Re-yielding the queued fetch instead would
+    /// spin on it forever, starving the fetches queued behind it and the assignment sync
+    /// that only runs between deliveries. The skip proved nothing, so neither the position
+    /// nor the stored offset moves. Runs only on a skip, never per record.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void RewindSkippedBatch(PendingFetchData pending)
+    {
+        var partition = pending.TopicPartition;
+
+        // Paused data stays parked for Resume; the next delivery boundary moves it aside.
+        // Snapshot reads own their bounded positions, and Seek rejects changes during them.
+        if (_paused.ContainsKey(partition)
+            || pending.IsSnapshotEnd
+            || Volatile.Read(ref _snapshotOperationActive) != 0)
+        {
+            return;
+        }
+
+        // Keep fetch invalidation and the replacement position atomic with background
+        // prefetch publication, matching Seek and RewindAfterDeliveryFailure.
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            // A staged seek or revocation owns this partition's queued data.
+            if (HasPendingFetchClear(partition))
+                return;
+
+            long position = -1;
+            if (_positions.TryGetValue(partition, out var consumedPosition))
+                position = consumedPosition;
+
+            // Prefetch runs ahead of the consumed position. Without a known position the
+            // queued data cannot be refetched safely, so it stays queued for redelivery.
+            if (position < 0 && _prefetchEnabled)
+                return;
+
+            var partitions = _skippedBatchPartitions;
+            partitions.Add(partition);
+            try
+            {
+                ClearFetchBufferForPartitions(partitions);
+            }
+            finally
+            {
+                partitions.Clear();
+            }
+
+            // Direct fetches already resume from the consumed position.
+            if (position >= 0)
+                SetFetchPosition(partition, position);
+            _eofEmitted.TryRemove(partition, out _);
         }
     }
 

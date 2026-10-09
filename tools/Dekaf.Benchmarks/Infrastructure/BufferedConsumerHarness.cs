@@ -96,12 +96,27 @@ internal static class BufferedConsumerHarness
         int recordsPerBatch)
     {
         DrainPendingFetches(consumer);
+        AppendPendingFetch(consumer, topic, partition, seedRecordArrays, batchCount, recordsPerBatch, baseOffset: 0);
+    }
 
+    /// <summary>
+    /// Enqueues one more <see cref="PendingFetchData"/> behind any already queued, starting at
+    /// <paramref name="baseOffset"/>, so a single stream can resume across several fetches.
+    /// </summary>
+    public static void AppendPendingFetch<TKey, TValue>(
+        KafkaConsumer<TKey, TValue> consumer,
+        string topic,
+        int partition,
+        Record[][] seedRecordArrays,
+        int batchCount,
+        int recordsPerBatch,
+        long baseOffset)
+    {
         var batches = new RecordBatch[batchCount];
         for (var batchIndex = 0; batchIndex < batchCount; batchIndex++)
         {
             var batch = RecordBatch.RentFromPool();
-            batch.BaseOffset = (long)batchIndex * recordsPerBatch;
+            batch.BaseOffset = baseOffset + (long)batchIndex * recordsPerBatch;
             batch.BaseTimestamp = 1_700_000_000_000L;
             batch.MaxTimestamp = 1_700_000_000_000L + recordsPerBatch - 1;
             batch.LastOffsetDelta = recordsPerBatch - 1;
