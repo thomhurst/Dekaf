@@ -149,6 +149,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // _revocationSequence when a leave last ended the membership. Every notification published
     // before it belongs to that membership, so a seek its callback stages is stale (WasRevokedSince).
     private long _leaveRevocationSequence;
+    // The owner's commit state for the partitions the next leave revokes (opaque here), taken
+    // when Unsubscribe cleared the consumer's own state. The leave's revocation hands it to the
+    // revoked-offset commit and to commits its OnPartitionsRevoked callback makes.
+    private object? _leaveCommitState;
+    // Non-zero while a leave's revocation is delivered; gates the s_leaveRevocation lookup.
+    private int _leaveRevocationsRunning;
+    // The leave revocation the current flow is delivering (see TryGetLeaveCommitState).
+    private static readonly AsyncLocal<LeaveRevocationScope?> s_leaveRevocation = new();
     private readonly object _leaveGate = new();
     // Cancelled by disposal: bounds a leave still running when the consumer is torn down.
     private readonly CancellationTokenSource _leaveCancellation = new();
@@ -805,16 +813,23 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// The owner no longer wants group membership (Unsubscribe, or a switch to manual assignment).
     /// Synchronously, no join starts and no heartbeat is installed from here on, and a heartbeat
     /// response still in flight is discarded instead of publishing an assignment. A background
-    /// leave then stops the heartbeat, delivers OnPartitionsRevoked for the partitions the member
-    /// owns (no automatic offset commit, as in Java's unsubscribe), sends the KIP-848 leave
+    /// leave then stops the heartbeat, runs the owner's revoked-offset commit (auto commit) and
+    /// OnPartitionsRevoked for the partitions the member owns, sends the KIP-848 leave
     /// heartbeat (MemberEpoch -1, static members included: the member stops consuming rather than
     /// restarting) and resets the membership. A later subscription waits for that leave and joins
     /// with a fresh membership; close and disposal wait for it too. Never blocks the caller.
     /// </summary>
-    internal void RequestLeaveGroup()
+    /// <param name="commitState">
+    /// The owner's commit state for the partitions it is giving up, captured before it cleared
+    /// them; available to commits made during the leave's revocation (TryGetLeaveCommitState).
+    /// </param>
+    internal void RequestLeaveGroup(object? commitState = null)
     {
         if (string.IsNullOrEmpty(_options.GroupId))
             return;
+
+        if (commitState is not null)
+            Volatile.Write(ref _leaveCommitState, commitState);
 
         // Before reading _membershipRequested: a join either sees this flag or is seen below.
         Interlocked.Exchange(ref _leaveRequested, 1);
@@ -979,11 +994,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             EnqueuePendingRebalanceCallback(
                 new PendingRebalanceCallback
                 {
+                    // The completion makes the drain run the owner's revoked-offset commit (auto
+                    // commit) before OnPartitionsRevoked, as for a broker revocation. Nothing
+                    // waits for it: no assignment sync follows a leave.
                     Deferred = new ConsumerHeartbeatResult(
                         AssignmentChanged: true,
                         Revoked: owned.ToList(),
-                        Assigned: null),
-                    Assignment = _assignedPartitions
+                        Assigned: null,
+                        RevocationCommitCompletion: new TaskCompletionSource<bool>(
+                            TaskCreationOptions.RunContinuationsAsynchronously)),
+                    Assignment = _assignedPartitions,
+                    IsLeave = true,
+                    LeaveCommitState = Interlocked.Exchange(ref _leaveCommitState, null)
                 });
         }
 
@@ -1688,6 +1710,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // listener's scope. Assignment sets are replaced, never mutated, so the reference is a
         // stable snapshot.
         public required HashSet<TopicPartition> Assignment { get; init; }
+
+        // A leave's revocation (Unsubscribe or a switch to manual assignment), and the owner's
+        // commit state for its partitions.
+        public bool IsLeave { get; init; }
+
+        public object? LeaveCommitState { get; init; }
 
         // _revocationSequence when this notification was queued, after its own revocations were
         // recorded, so only later revocations or losses make its seeks stale. Set under
@@ -3972,42 +4000,51 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     var deferred = pending.Deferred;
                     if (!pending.RevokedDelivered)
                     {
-                        if (deferred.Revoked is { Count: > 0 } revoked)
+                        var leaveScope = pending.IsLeave ? EnterLeaveRevocation(pending) : null;
+                        try
                         {
-                            // The internal revocation commit runs once, on whichever delivery reaches
-                            // this entry first, before the public callback. Assignment sync waits for
-                            // its completion, so the revoked partitions' stored offsets are still
-                            // there to commit even when an earlier callback's cancellation delayed it.
-                            if (deferred.RevocationCommitCompletion is { } commitCompletion &&
-                                !pending.RevocationCommitStarted)
+                            if (deferred.Revoked is { Count: > 0 } revoked)
                             {
-                                pending.RevocationCommitStarted = true;
-                                try
+                                // The internal revocation commit runs once, on whichever delivery reaches
+                                // this entry first, before the public callback. Assignment sync waits for
+                                // its completion, so the revoked partitions' stored offsets are still
+                                // there to commit even when an earlier callback's cancellation delayed it.
+                                if (deferred.RevocationCommitCompletion is { } commitCompletion &&
+                                    !pending.RevocationCommitStarted)
                                 {
-                                    if (_onPartitionsRevokedAsync is not null)
-                                        await _onPartitionsRevokedAsync(revoked, cancellationToken).ConfigureAwait(false);
-                                }
-                                catch (OperationCanceledException)
-                                {
-                                    // Cancellation interrupted the commit: the next delivery runs it
-                                    // again (the same offsets, so a commit that did reach the broker
-                                    // is simply repeated), and sync keeps waiting until then.
-                                    pending.RevocationCommitStarted = false;
-                                    throw;
-                                }
-                                catch
-                                {
-                                    // Any other failure ends the attempt; the consumer's commit hook
-                                    // logs its own failures, and retrying could repeat it forever.
+                                    pending.RevocationCommitStarted = true;
+                                    try
+                                    {
+                                        if (_onPartitionsRevokedAsync is not null)
+                                            await _onPartitionsRevokedAsync(revoked, cancellationToken).ConfigureAwait(false);
+                                    }
+                                    catch (OperationCanceledException)
+                                    {
+                                        // Cancellation interrupted the commit: the next delivery runs it
+                                        // again (the same offsets, so a commit that did reach the broker
+                                        // is simply repeated), and sync keeps waiting until then.
+                                        pending.RevocationCommitStarted = false;
+                                        throw;
+                                    }
+                                    catch
+                                    {
+                                        // Any other failure ends the attempt; the consumer's commit hook
+                                        // logs its own failures, and retrying could repeat it forever.
+                                        commitCompletion.TrySetResult(true);
+                                        throw;
+                                    }
+
                                     commitCompletion.TrySetResult(true);
-                                    throw;
                                 }
 
-                                commitCompletion.TrySetResult(true);
+                                await InvokePartitionsRevokedListenersAsync(revoked, pending, cancellationToken)
+                                    .ConfigureAwait(false);
                             }
-
-                            await InvokePartitionsRevokedListenersAsync(revoked, pending, cancellationToken)
-                                .ConfigureAwait(false);
+                        }
+                        finally
+                        {
+                            if (leaveScope is not null)
+                                ExitLeaveRevocation(leaveScope);
                         }
 
                         pending.RevokedDelivered = true;
@@ -4049,6 +4086,55 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             scope.Deactivate();
         }
+    }
+
+    private LeaveRevocationScope EnterLeaveRevocation(PendingRebalanceCallback pending)
+    {
+        var scope = new LeaveRevocationScope(this, pending.LeaveCommitState);
+        s_leaveRevocation.Value = scope;
+        Interlocked.Increment(ref _leaveRevocationsRunning);
+        return scope;
+    }
+
+    private void ExitLeaveRevocation(LeaveRevocationScope scope)
+    {
+        scope.Deactivate();
+        Interlocked.Decrement(ref _leaveRevocationsRunning);
+        s_leaveRevocation.Value = null;
+    }
+
+    /// <summary>
+    /// True when the calling flow is delivering this coordinator's leave revocation: its
+    /// revoked-offset commit or its OnPartitionsRevoked callback. <paramref name="commitState"/> is
+    /// the commit state the owner passed to <see cref="RequestLeaveGroup"/> (null when it had
+    /// nothing to commit): the owner already cleared its own state for those partitions. One
+    /// volatile read when no leave revocation is running.
+    /// </summary>
+    internal bool TryGetLeaveCommitState(out object? commitState)
+    {
+        if (Volatile.Read(ref _leaveRevocationsRunning) != 0
+            && s_leaveRevocation.Value is { IsActive: true } scope
+            && ReferenceEquals(scope.Coordinator, this))
+        {
+            commitState = scope.CommitState;
+            return true;
+        }
+
+        commitState = null;
+        return false;
+    }
+
+    private sealed class LeaveRevocationScope(ConsumerCoordinator coordinator, object? commitState)
+    {
+        private int _active = 1;
+
+        public ConsumerCoordinator Coordinator { get; } = coordinator;
+
+        public object? CommitState { get; } = commitState;
+
+        public bool IsActive => Volatile.Read(ref _active) != 0;
+
+        public void Deactivate() => Volatile.Write(ref _active, 0);
     }
 
     private bool IsInsideOwnRebalanceCallback() =>

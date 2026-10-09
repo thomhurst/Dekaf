@@ -94,8 +94,11 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// A consumer that has joined its group leaves it: in the background, the rebalance listeners'
     /// <c>OnPartitionsRevokedAsync</c> runs for the partitions the member owns, then the consumer
     /// sends the leave heartbeat and stops heartbeating, so the remaining members take over those
-    /// partitions at once. No offsets are committed automatically; commit before unsubscribing or
-    /// from <c>OnPartitionsRevokedAsync</c>. A later subscription joins the group again.
+    /// partitions at once. As for any revocation, an auto-commit consumer first commits the offsets
+    /// of the records it processed, and <c>CommitAsync()</c> called from that
+    /// <c>OnPartitionsRevokedAsync</c> commits what the departing partitions held when
+    /// <c>Unsubscribe</c> was called (the consumer clears them immediately). A later subscription
+    /// joins the group again.
     /// <see cref="IConsumerPartitions.Assign"/> and <see cref="IConsumerPartitions.IncrementalAssign"/>
     /// end group membership the same way.
     /// </remarks>

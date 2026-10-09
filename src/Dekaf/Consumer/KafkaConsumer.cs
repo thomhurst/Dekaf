@@ -2571,9 +2571,66 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (_coordinator is not { } coordinator)
             return;
 
-        coordinator.RequestLeaveGroup();
+        // Unsubscribe clears the departing partitions' positions and stored offsets right after
+        // this, before the leave's OnPartitionsRevoked runs; what a commit then would have sent is
+        // captured now for that revocation (see CommitAsync and CommitRevokedOffsetsAsync).
+        var owned = coordinator.Assignment;
+        coordinator.RequestLeaveGroup(owned.Count != 0 ? CaptureLeaveCommitSnapshot(owned) : null);
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
             _pendingRebalanceSeeks.Clear();
+    }
+
+    /// <summary>
+    /// The offsets the leave's revocation commits for the departing partitions: <see cref="Proven"/>,
+    /// the stored offsets of processed records (the automatic revoked-offset commit), and
+    /// <see cref="Explicit"/>, which also vouches for the last yielded record, as a parameterless
+    /// <see cref="CommitAsync(CancellationToken)"/> does.
+    /// </summary>
+    private sealed record LeaveCommitSnapshot(TopicPartitionOffset[] Proven, TopicPartitionOffset[] Explicit);
+
+    private LeaveCommitSnapshot? CaptureLeaveCommitSnapshot(TopicPartitionSet owned)
+    {
+        var proven = SnapshotStoredOffsets(owned);
+        StageExplicitCommitOffsets();
+        var vouched = SnapshotStoredOffsets(owned);
+        return proven.Length == 0 && vouched.Length == 0 ? null : new LeaveCommitSnapshot(proven, vouched);
+    }
+
+    private TopicPartitionOffset[] SnapshotStoredOffsets(TopicPartitionSet partitions)
+    {
+        List<TopicPartitionOffset>? offsets = null;
+        foreach (var entry in _dirtyStoredOffsets)
+        {
+            if (partitions.Contains(entry.Key))
+            {
+                (offsets ??= []).Add(new TopicPartitionOffset(
+                    entry.Key.Topic,
+                    entry.Key.Partition,
+                    entry.Value,
+                    GetStoredOffsetLeaderEpoch(entry.Key)));
+            }
+        }
+
+        return offsets?.ToArray() ?? [];
+    }
+
+    /// <summary>
+    /// Commits a leave's captured offsets under the membership that is leaving (still current
+    /// while its revocation is delivered).
+    /// </summary>
+    private async ValueTask<bool> CommitLeaveOffsetsAsync(
+        TopicPartitionOffset[] offsets,
+        bool retryUntilApiTimeout,
+        CancellationToken cancellationToken)
+    {
+        if (offsets.Length == 0)
+            return false;
+
+        var coordinator = GetCommitCoordinator();
+        await coordinator.CommitOffsetsAsync(offsets, retryUntilApiTimeout, coordinator.MembershipVersion, cancellationToken)
+            .ConfigureAwait(false);
+        InvokeOnCommitInterceptors(offsets);
+        return true;
     }
 
     private void PublishSubscriptionAndClearAssignment(bool invalidatePartitionCache)
@@ -7461,6 +7518,28 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
     {
+        // From OnPartitionsRevoked of a leave (Unsubscribe or a switch to manual assignment): the
+        // consumer already cleared the departing partitions, so commit what they held then.
+        if (_coordinator is { } leavingCoordinator
+            && leavingCoordinator.TryGetLeaveCommitState(out var leaveCommitState))
+        {
+            using var leaveTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
+            try
+            {
+                if (leaveCommitState is LeaveCommitSnapshot snapshot)
+                {
+                    await CommitLeaveOffsetsAsync(snapshot.Explicit, retryUntilApiTimeout: true, leaveTimeout.Token)
+                        .ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException ex) when (leaveTimeout.DefaultTimeoutExpired)
+            {
+                throw leaveTimeout.CreateTimeoutException(nameof(CommitAsync), ex);
+            }
+
+            return;
+        }
+
         // Read before staging: offsets staged under a membership that a fence and rejoin replace
         // before the send are rejected rather than sent under the new member's identity.
         var membershipVersion = GetCommitCoordinator().MembershipVersion;
@@ -7592,6 +7671,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         try
         {
+            // A leave's revocation: the consumer cleared these partitions when the application
+            // unsubscribed, so commit the processed offsets they held then.
+            if (_coordinator is { } coordinator && coordinator.TryGetLeaveCommitState(out var leaveCommitState))
+            {
+                if (leaveCommitState is LeaveCommitSnapshot snapshot
+                    && await CommitLeaveOffsetsAsync(snapshot.Proven, retryUntilApiTimeout: false, commitCancellationToken)
+                        .ConfigureAwait(false))
+                {
+                    LogCommittedRevokedOffsets();
+                }
+
+                return;
+            }
+
             var revoked = partitions.ToHashSet();
             if (await CommitStoredOffsetsAsync(revoked, commitCancellationToken).ConfigureAwait(false))
                 LogCommittedRevokedOffsets();

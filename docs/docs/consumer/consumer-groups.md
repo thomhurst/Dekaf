@@ -327,8 +327,10 @@ assignment bypasses group membership, but it does not lower Dekaf's supported Ka
 floor. `enforceRebalance` is also intentionally absent and has no direct KIP-848 equivalent.
 `Subscribe`, `SubscribePattern`, and `Unsubscribe` update the subscription and trigger normal
 broker reconciliation. `Unsubscribe`, and a switch to manual assignment with `Assign` or
-`IncrementalAssign`, leave the group: `OnPartitionsRevokedAsync` runs for the owned partitions
-(no automatic offset commit, as in the Java client), then the consumer sends the leave heartbeat
+`IncrementalAssign`, leave the group: as for a cooperative revoke, the automatic revoked-offset
+commit (auto-commit mode) and `OnPartitionsRevokedAsync` run for the owned partitions; a
+`CommitAsync()` in that callback commits what those partitions held when you unsubscribed. Then
+the consumer sends the leave heartbeat
 and stops heartbeating, so other members take over its partitions immediately. A later
 `Subscribe` joins with a fresh membership. `GroupRemoteAssignor` is configured when creating the consumer; recreate
 the consumer to change it. Recreating a member changes group membership but does not guarantee

@@ -120,12 +120,13 @@ public sealed class ConsumerUnsubscribeTests(KafkaTestContainer kafka) : KafkaIn
     }
 
     [Test]
-    public async Task Unsubscribe_DoesNotCommitUncommittedProgress()
+    public async Task Unsubscribe_AutoCommit_CommitsStoredOffsetsOnRevoke()
     {
-        // Java parity: unsubscribe runs OnPartitionsRevoked and leaves, but does not auto-commit.
-        // Offsets committed before unsubscribing are kept; later progress is not committed.
+        // As for a cooperative revoke, an auto-commit consumer commits the offsets it stored for
+        // the partitions it gives up before OnPartitionsRevoked, although Unsubscribe clears the
+        // consumer's own state for them at once.
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
-        var groupId = $"unsubscribe-commit-{Guid.NewGuid():N}";
+        var groupId = $"unsubscribe-autocommit-{Guid.NewGuid():N}";
         await ProduceToPartitionsAsync(topic, [0, 0, 0, 0], "record");
 
         await using var memberA = await CreateGroupConsumerAsync(
@@ -135,20 +136,14 @@ public sealed class ConsumerUnsubscribeTests(KafkaTestContainer kafka) : KafkaIn
         memberA.Subscribe(topic);
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-        for (var i = 0; i < 2; i++)
+        for (var i = 0; i < 3; i++)
         {
             var record = await memberA.ConsumeOneAsync(TimeSpan.FromSeconds(30), timeout.Token);
             await Assert.That(record).IsNotNull();
             await Assert.That(record!.Value.Offset).IsEqualTo(i);
         }
 
-        await memberA.CommitAsync(timeout.Token);
-        var third = await memberA.ConsumeOneAsync(TimeSpan.FromSeconds(30), timeout.Token);
-        await Assert.That(third!.Value.Offset).IsEqualTo(2);
-        // Proves offset 2 was processed, so a close would commit 3.
-        var fourth = await memberA.ConsumeOneAsync(TimeSpan.FromSeconds(30), timeout.Token);
-        await Assert.That(fourth!.Value.Offset).IsEqualTo(3);
-
+        memberA.StoreOffset(new TopicPartitionOffset(topic, 0, 3));
         memberA.Unsubscribe();
 
         await using var memberB = await CreateGroupConsumerAsync(groupId, new RecordingListener());
@@ -156,7 +151,80 @@ public sealed class ConsumerUnsubscribeTests(KafkaTestContainer kafka) : KafkaIn
         var first = await memberB.ConsumeOneAsync(HandOffBound, timeout.Token);
 
         await Assert.That(first).IsNotNull();
-        await Assert.That(first!.Value.Offset).IsEqualTo(2);
+        await Assert.That(first!.Value.Offset).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task Unsubscribe_CommitAsyncInRevokeCallback_NextMemberResumesAfterConsumedRecords()
+    {
+        // The documented pattern: commit from OnPartitionsRevokedAsync. Unsubscribe clears the
+        // departing partitions at once, so the callback's CommitAsync() must commit what they held.
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        var groupId = $"unsubscribe-revoke-commit-{Guid.NewGuid():N}";
+        await ProduceToPartitionsAsync(topic, [0, 0, 0], "record");
+
+        var listener = new CommittingListener();
+        await using var memberA = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithRebalanceListener(listener)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        memberA.Subscribe(topic);
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        for (var i = 0; i < 3; i++)
+        {
+            var record = await memberA.ConsumeOneAsync(TimeSpan.FromSeconds(30), timeout.Token);
+            await Assert.That(record).IsNotNull();
+            await Assert.That(record!.Value.Offset).IsEqualTo(i);
+        }
+
+        memberA.Unsubscribe();
+        await listener.RevokedCommitted.Task.WaitAsync(HandOffBound, timeout.Token);
+
+        await ProduceToPartitionsAsync(topic, [0], "after-unsubscribe");
+        await using var memberB = await CreateGroupConsumerAsync(groupId, new RecordingListener());
+        memberB.Subscribe(topic);
+        var first = await memberB.ConsumeOneAsync(HandOffBound, timeout.Token);
+
+        await Assert.That(first).IsNotNull();
+        await Assert.That(first!.Value.Offset).IsEqualTo(3);
+        await Assert.That(first.Value.Value).IsEqualTo("after-unsubscribe");
+    }
+
+    private sealed class CommittingListener : IConsumerAwareRebalanceListener
+    {
+        public TaskCompletionSource RevokedCommitted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ValueTask OnPartitionsAssignedAsync(
+            IRebalanceConsumer consumer,
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public async ValueTask OnPartitionsRevokedAsync(
+            IRebalanceConsumer consumer,
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                await consumer.CommitAsync(cancellationToken);
+                RevokedCommitted.TrySetResult();
+            }
+            catch (Exception ex)
+            {
+                RevokedCommitted.TrySetException(ex);
+            }
+        }
+
+        public ValueTask OnPartitionsLostAsync(
+            IRebalanceConsumer consumer,
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken) => ValueTask.CompletedTask;
     }
 
     [Test]
