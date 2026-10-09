@@ -346,6 +346,90 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await Assert.That(consumer.RebalancePausedPartitionCountForTest).IsEqualTo(0);
     }
 
+    public enum StaleCallbackAction
+    {
+        Pause,
+        Seek,
+        PauseThenResume
+    }
+
+    public enum StaleCallbackEnd
+    {
+        Sync,
+        Unsubscribe,
+        Assign,
+        Close
+    }
+
+    /// <summary>
+    /// The partition is revoked (and assigned straight back by a notification not yet delivered)
+    /// while the callback that announced it is still running; the callback then pauses, seeks or
+    /// pauses and resumes it. That ownership has ended, so nothing it does survives the next sync or
+    /// an abandon.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    [MatrixDataSource]
+    public async Task RebalanceCallbackStateTransitions_StaleCallbackActsAfterRevocation_LeavesNothing(
+        [Matrix] StaleCallbackAction action,
+        [Matrix] StaleCallbackEnd end,
+        CancellationToken testTimeout)
+    {
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessAsync(
+            listener,
+            AssignedResponse(1, 0),
+            AssignedResponse(2, 0, 1));
+        var consumer = harness.Consumer;
+        var coordinator = GetCoordinator(consumer);
+        var acted = false;
+        listener.OnAssigned = partitions =>
+        {
+            if (acted || !partitions.Contains(Partition1))
+                return;
+
+            acted = true;
+            coordinator.RevokeAndReassignForTest(Partition1);
+            switch (action)
+            {
+                case StaleCallbackAction.Pause:
+                    consumer.Pause(Partition1);
+                    break;
+                case StaleCallbackAction.Seek:
+                    consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
+                    break;
+                default:
+                    consumer.Pause(Partition1);
+                    consumer.Resume(Partition1);
+                    break;
+            }
+        };
+
+        await harness.HeartbeatAsync();
+        await Assert.That(acted).IsTrue();
+
+        switch (end)
+        {
+            case StaleCallbackEnd.Sync:
+                await consumer.EnsureAssignmentAsync(CancellationToken.None);
+                await Assert.That(consumer.GetPosition(Partition1)).IsEqualTo(20L);
+                break;
+            case StaleCallbackEnd.Unsubscribe:
+                consumer.Unsubscribe();
+                break;
+            case StaleCallbackEnd.Assign:
+                consumer.Assign(new TopicPartition("test-topic", 0), Partition1);
+                break;
+            default:
+                await consumer.CloseAsync(testTimeout);
+                break;
+        }
+
+        await Assert.That(consumer.Paused).DoesNotContain(Partition1);
+        await Assert.That(consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
+        await Assert.That(consumer.RebalancePausedPartitionCountForTest).IsEqualTo(0);
+    }
+
     [Test]
     public async Task EnsureAssignmentAsync_RepeatedlySupersededSync_TracksOneAppliedSeekPerPartition()
     {

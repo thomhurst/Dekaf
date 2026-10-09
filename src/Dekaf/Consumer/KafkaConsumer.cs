@@ -1438,7 +1438,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     //
     //   callback Seek      -> staged, unless P was revoked since the callback's notification
     //                         (StageRebalanceSeek); applied at once if P is already synchronized
-    //   callback Pause     -> _paused[P] and marker true (same staleness rule), under _pauseStateLock
+    //   callback Pause     -> _paused[P] and a marker, under _pauseStateLock: true, or false when P
+    //                         was revoked since the callback's notification (a stale callback); a
+    //                         stale callback Seek is dropped (StageRebalanceSeek)
     //   revoke / lost      -> staged seek dropped; marker true -> false (the pause stays in _paused
     //                         until cleanup, which knows whether P was ever synchronized)
     //   Resume             -> _paused[P] and marker removed together, under _pauseStateLock
@@ -7974,7 +7976,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// Records a pause an OnPartitionsAssigned callback makes for partitions it announced, so
     /// assignment sync keeps it for a partition revoked or lost and assigned again (the sync clears
     /// the previous ownership's pause). A pause from a callback that predates a later revocation of
-    /// the partition is not recorded: that ownership has already ended.
+    /// the partition is recorded as revoked: sync does not restore it, abandon and close remove it.
     /// </summary>
     private void RecordAssignedCallbackPauses(TopicPartition[] partitions)
     {
@@ -7988,10 +7990,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             // The revocation hook drops these under this lock after the coordinator records the
             // revocation, as it does staged seeks, so a stale pause is never kept.
+            // A callback whose ownership was already revoked still gets a marker, flagged revoked:
+            // sync never restores that pause, and abandon or close still find it and remove it.
             lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
             {
-                if (!coordinator.WasRevokedSince(partition, revocationSequence))
-                    _rebalancePausedPartitions[partition] = true;
+                _rebalancePausedPartitions[partition] =
+                    !coordinator.WasRevokedSince(partition, revocationSequence);
             }
         }
     }
