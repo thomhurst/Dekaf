@@ -886,6 +886,27 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await Assert.That(consumer.RevocationSequenceTrackingCountForTest).IsEqualTo(0);
         await consumer.EnsureAssignmentAsync(testTimeout);
 
+        // Cycles whose revocations are queued but never drained before the switch to manual
+        // assignment, and which keep arriving while manually assigned (the heartbeat outlives it).
+        for (var cycle = 0; cycle < 20; cycle++)
+        {
+            for (var partition = 0; partition < perSync; partition++)
+                coordinator.RevokeAndReassignForTest(new TopicPartition("queued-topic", (cycle * perSync) + partition));
+
+            consumer.Assign(new TopicPartition("test-topic", 0));
+            await Assert.That(coordinator.RevocationSequenceTrackingCountForTest).IsEqualTo(0);
+
+            for (var partition = 0; partition < perSync; partition++)
+                coordinator.RevokeAndReassignForTest(new TopicPartition("manual-topic", (cycle * perSync) + partition));
+            await Assert.That(coordinator.RevocationSequenceTrackingCountForTest).IsEqualTo(0);
+
+            consumer.Subscribe("test-topic");
+            await consumer.EnsureAssignmentAsync(testTimeout);
+        }
+
+        await Assert.That(coordinator.RevocationSequenceTrackingCountForTest).IsEqualTo(0);
+        await Assert.That(consumer.RevocationSequenceTrackingCountForTest).IsEqualTo(0);
+
         // A revocation not yet covered by an acknowledged sync is still tracked.
         coordinator.RevokeAndReassignForTest(Partition1);
         await Assert.That(consumer.IsRevokedSinceAcknowledgedForTest(Partition1)).IsTrue();
@@ -1037,6 +1058,45 @@ public sealed partial class ConsumerAssignmentFastPathTests
 
         await Assert.That(staging).IsNotNull();
         await Assert.That(staging!.Value).IsFalse();
+    }
+
+    /// <summary>
+    /// A heartbeat request built while the subscription changes carries a generation stamp that
+    /// matches the subscription it sends: it never sends the new topics under the old stamp.
+    /// </summary>
+    [Test]
+    public async Task RebalanceCallbackStateTransitions_SubscriptionChangeDuringRequestBuild_StampMatchesPayload()
+    {
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessAsync(listener, AssignedResponse(1, 0));
+        var consumer = harness.Consumer;
+        var coordinator = GetCoordinator(consumer);
+
+        (int Generation, bool Changed, IReadOnlyCollection<string>? Topics)? observed = null;
+        coordinator.AfterSubscriptionTopicsUpdatedForTest = () =>
+        {
+            if (observed is null)
+            {
+                var read = coordinator.ReadSubscriptionForRequestForTest();
+                observed = (read.Generation, read.Changed, read.Topics);
+            }
+        };
+        try
+        {
+            consumer.Subscribe("test-topic", "other-topic");
+            await consumer.EnsureAssignmentAsync(CancellationToken.None);
+        }
+        finally
+        {
+            coordinator.AfterSubscriptionTopicsUpdatedForTest = null;
+        }
+
+        await Assert.That(observed).IsNotNull();
+        var (generation, changed, topics) = observed!.Value;
+        await Assert.That(changed).IsTrue();
+        await Assert.That(topics).IsNotNull();
+        await Assert.That(topics!).Contains("other-topic");
+        await Assert.That(generation).IsEqualTo(coordinator.SubscriptionGeneration);
     }
 
     /// <summary>A fresh subscription after an abandon reactivates staging for the new assignment.</summary>

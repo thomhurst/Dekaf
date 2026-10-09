@@ -10332,6 +10332,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 coordinator.PruneRevocationSequence(drained.Key, drained.Value);
             foreach (var acknowledged in _acknowledgedRevocationSequences)
                 coordinator.PruneRevocationSequence(acknowledged.Key, acknowledged.Value);
+            coordinator.ForgetQueuedRevocationSequences();
         }
 
         _drainedRevocationSequences.Clear();
