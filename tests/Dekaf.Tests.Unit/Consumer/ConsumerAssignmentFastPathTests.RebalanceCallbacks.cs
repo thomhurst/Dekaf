@@ -531,6 +531,153 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await Assert.That(harness.Consumer.Paused).DoesNotContain(Partition1);
     }
 
+    [Test]
+    public async Task EnsureAssignmentAsync_SyncRetriedAfterCancellation_KeepsReassignedCallbackPause()
+    {
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessAsync(
+            listener,
+            AssignedResponse(1, 0, 1),
+            AssignedResponse(2, 0),
+            AssignedResponse(3, 0, 1));
+
+        listener.OnAssigned = partitions =>
+        {
+            if (partitions.Contains(Partition1))
+                harness.Consumer.Pause(Partition1);
+        };
+
+        await harness.HeartbeatAsync();
+        await harness.HeartbeatAsync();
+
+        // The first sync cleans up the reassigned partition, then its offset fetch is cancelled
+        // before the sync is acknowledged; the next sync repeats the cleanup.
+        var fetchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        harness.Connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => Interlocked.Increment(ref calls) == 1
+                ? BlockUntilCancelledAsync(fetchStarted, call.ArgAt<CancellationToken>(2))
+                : ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse()));
+
+        using (var cts = new CancellationTokenSource())
+        {
+            var sync = harness.Consumer.EnsureAssignmentAsync(cts.Token).AsTask();
+            await fetchStarted.Task;
+            await cts.CancelAsync();
+            await Assert.That(async () => await sync).Throws<OperationCanceledException>();
+        }
+
+        await harness.Consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        await Assert.That(harness.Consumer.Paused).Contains(Partition1);
+    }
+
+    [Test]
+    public async Task EnsureAssignmentAsync_SyncRestartedAfterPositionInitialization_KeepsReassignedCallbackSeekAndPause()
+    {
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessAsync(
+            listener,
+            AssignedResponse(1, 0, 1),
+            AssignedResponse(2, 0),
+            AssignedResponse(3, 0, 1));
+
+        listener.OnAssigned = partitions =>
+        {
+            if (!partitions.Contains(Partition1))
+                return;
+
+            harness.Consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
+            harness.Consumer.Pause(Partition1);
+        };
+
+        await harness.HeartbeatAsync();
+        await harness.HeartbeatAsync();
+
+        // A newer assignment version is published while the first sync initializes positions, so
+        // that pass is not acknowledged and the next one repeats the cleanup and initialization.
+        var coordinator = GetCoordinator(harness.Consumer);
+        var calls = 0;
+        harness.Connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                if (Interlocked.Increment(ref calls) == 1)
+                    coordinator.BumpAssignmentVersionForTest();
+                return ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse());
+            });
+
+        await harness.Consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        await Assert.That(calls).IsEqualTo(2);
+        await Assert.That(harness.Consumer.GetPosition(Partition1)).IsEqualTo(42L);
+        await Assert.That(harness.Consumer.Paused).Contains(Partition1);
+        // Acknowledged: the seek is no longer pending.
+        await Assert.That(GetPendingRebalanceSeekCount(harness.Consumer)).IsEqualTo(0);
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task Seek_FromWorkOutlivingAssignedCallback_IsNotStagedForLaterCallback(CancellationToken testTimeout)
+    {
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessAsync(
+            listener,
+            AssignedResponse(1, 0));
+
+        var coordinator = GetCoordinator(harness.Consumer);
+        var secondCallbackRunning = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<bool>? lateWork = null;
+        listener.OnAssignedAsync = async partitions =>
+        {
+            if (partitions.Contains(new TopicPartition("test-topic", 0)))
+            {
+                // Work the first callback starts and leaves running: it seeks once the second
+                // callback, which announces partition 1, is running in the same drain.
+                lateWork = Task.Run(
+                    async () =>
+                    {
+                        await secondCallbackRunning.Task;
+                        var inContext = coordinator.TryGetAssignedCallbackRevocationSequence(Partition1, out _);
+                        harness.Consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
+                        return inContext;
+                    },
+                    testTimeout);
+                return;
+            }
+
+            secondCallbackRunning.TrySetResult();
+            await lateWork!.WaitAsync(testTimeout);
+        };
+
+        await coordinator.DeliverAssignedCallbacksForTestAsync(
+            [new TopicPartition("test-topic", 0)],
+            [Partition1]);
+
+        await Assert.That(await lateWork!).IsFalse();
+        await Assert.That(GetPendingRebalanceSeekCount(harness.Consumer)).IsEqualTo(0);
+    }
+
+    private static async ValueTask<OffsetFetchResponse> BlockUntilCancelledAsync(
+        TaskCompletionSource started,
+        CancellationToken cancellationToken)
+    {
+        started.TrySetResult();
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        throw new InvalidOperationException("Cancellation wait completed without cancellation");
+    }
+
+    private static int GetPendingRebalanceSeekCount(KafkaConsumer<string, string> consumer) =>
+        ((System.Collections.ICollection)typeof(KafkaConsumer<string, string>).GetField(
+                "_pendingRebalanceSeeks",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .GetValue(consumer)!).Count;
+
     public enum AbandonKind
     {
         Unsubscribe,
@@ -636,14 +783,17 @@ public sealed partial class ConsumerAssignmentFastPathTests
             consumerAwareRebalanceListener: consumerAwareListener);
         consumer.Subscribe("test-topic");
         await consumer.EnsureAssignmentAsync(CancellationToken.None);
-        return new CallbackHarness(consumer, metadataManager);
+        return new CallbackHarness(consumer, metadataManager, connection);
     }
 
     private sealed class CallbackHarness(
         KafkaConsumer<string, string> consumer,
-        Dekaf.Metadata.MetadataManager metadataManager) : IAsyncDisposable
+        Dekaf.Metadata.MetadataManager metadataManager,
+        IKafkaConnection connection) : IAsyncDisposable
     {
         public KafkaConsumer<string, string> Consumer { get; } = consumer;
+
+        public IKafkaConnection Connection { get; } = connection;
 
         /// <summary>Runs one heartbeat round trip and delivers its rebalance callbacks.</summary>
         public async Task HeartbeatAsync()
@@ -668,10 +818,14 @@ public sealed partial class ConsumerAssignmentFastPathTests
 
         public Action<IReadOnlyCollection<TopicPartition>>? OnLost { get; set; }
 
-        public ValueTask OnPartitionsAssignedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)
+        public Func<IReadOnlyCollection<TopicPartition>, Task>? OnAssignedAsync { get; set; }
+
+        public async ValueTask OnPartitionsAssignedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)
         {
-            OnAssigned?.Invoke(partitions.ToList());
-            return ValueTask.CompletedTask;
+            var list = partitions.ToList();
+            OnAssigned?.Invoke(list);
+            if (OnAssignedAsync is { } onAssignedAsync)
+                await onAssignedAsync(list);
         }
 
         public ValueTask OnPartitionsRevokedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken) =>

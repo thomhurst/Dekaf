@@ -152,8 +152,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // own entry stays queued until it returns. The scope is deactivated when the drain ends, so a
     // task the listener started, which inherits the value, drains normally afterwards.
     private static readonly AsyncLocal<DrainScope?> s_drainScope = new();
+    // The OnPartitionsAssigned delivery the current flow runs in. Set per callback delivery and
+    // deactivated for good when it returns, so work a callback leaves running never sees itself, or
+    // a later callback of the same drain, as running inside an assigned callback.
+    private static readonly AsyncLocal<AssignedCallbackContext?> s_assignedCallback = new();
     // Non-zero while an OnPartitionsAssigned delivery runs, so the owner's seek, pause and position
-    // calls read s_drainScope only then.
+    // calls read s_assignedCallback only then.
     private int _assignedCallbacksRunning;
     // Changes under _lock each time a join publishes a new membership and each time a fence ends
     // one. A fence observed by a request sent under an earlier membership must not clear the
@@ -2773,6 +2777,26 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     internal int RevocationSequenceCountForTest => _partitionRevocationSequences.Count;
 
+    /// <summary>Publishes a newer assignment version without changing the assignment.</summary>
+    internal void BumpAssignmentVersionForTest() => Interlocked.Increment(ref _assignmentVersion);
+
+    /// <summary>
+    /// Queues one OnPartitionsAssigned notification per entry and delivers them all in one drain.
+    /// </summary>
+    internal async ValueTask DeliverAssignedCallbacksForTestAsync(params IReadOnlyList<TopicPartition>[] assignedSets)
+    {
+        foreach (var assigned in assignedSets)
+        {
+            EnqueuePendingRebalanceCallback(new PendingRebalanceCallback
+            {
+                Deferred = new ConsumerHeartbeatResult(true, null, assigned),
+                Assignment = _assignedPartitions
+            });
+        }
+
+        await InvokePendingRebalanceCallbacksAsync(CancellationToken.None).ConfigureAwait(false);
+    }
+
     /// <summary>
     /// True when <paramref name="partition"/> was revoked or lost after a rebalance notification
     /// captured <paramref name="revocationSequence"/>. A seek that notification's callback stages
@@ -3395,9 +3419,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         // The owner stages a seek or pause the callback makes on the consumer
                         // itself for these partitions, as the consumer-aware scope does, so the
                         // assignment sync that follows keeps it. Allocated once per delivery.
-                        scope.AssignedCallback = new AssignedCallbackContext(
+                        var assignedCallback = new AssignedCallbackContext(
+                            this,
                             new HashSet<TopicPartition>(assigned),
                             pending.RevocationSequence);
+                        s_assignedCallback.Value = assignedCallback;
                         Interlocked.Increment(ref _assignedCallbacksRunning);
                         try
                         {
@@ -3406,8 +3432,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         }
                         finally
                         {
+                            assignedCallback.Deactivate();
                             Interlocked.Decrement(ref _assignedCallbacksRunning);
-                            scope.AssignedCallback = null;
+                            s_assignedCallback.Value = null;
                         }
                     }
                 }
@@ -3443,9 +3470,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     internal bool TryGetAssignedCallbackRevocationSequence(TopicPartition partition, out long revocationSequence)
     {
         if (Volatile.Read(ref _assignedCallbacksRunning) != 0
-            && s_drainScope.Value is { IsActive: true } scope
-            && ReferenceEquals(scope.Coordinator, this)
-            && scope.AssignedCallback is { } callback
+            && s_assignedCallback.Value is { IsActive: true } callback
+            && ReferenceEquals(callback.Coordinator, this)
             && callback.Partitions.Contains(partition))
         {
             revocationSequence = callback.RevocationSequence;
@@ -3462,28 +3488,31 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private sealed class DrainScope(ConsumerCoordinator coordinator)
     {
         private int _active = 1;
-        private AssignedCallbackContext? _assignedCallback;
 
         public ConsumerCoordinator Coordinator { get; } = coordinator;
 
         public bool IsActive => Volatile.Read(ref _active) != 0;
 
-        // The OnPartitionsAssigned delivery running in this drain, if any. A task the listener
-        // started shares the scope, so once the callback returns it no longer sees the context.
-        public AssignedCallbackContext? AssignedCallback
-        {
-            get => Volatile.Read(ref _assignedCallback);
-            set => Volatile.Write(ref _assignedCallback, value);
-        }
-
         public void Deactivate() => Volatile.Write(ref _active, 0);
     }
 
-    private sealed class AssignedCallbackContext(HashSet<TopicPartition> partitions, long revocationSequence)
+    /// <summary>One OnPartitionsAssigned delivery; inactive for good once that callback returns.</summary>
+    private sealed class AssignedCallbackContext(
+        ConsumerCoordinator coordinator,
+        HashSet<TopicPartition> partitions,
+        long revocationSequence)
     {
+        private int _active = 1;
+
+        public ConsumerCoordinator Coordinator { get; } = coordinator;
+
         public HashSet<TopicPartition> Partitions { get; } = partitions;
 
         public long RevocationSequence { get; } = revocationSequence;
+
+        public bool IsActive => Volatile.Read(ref _active) != 0;
+
+        public void Deactivate() => Volatile.Write(ref _active, 0);
     }
 
     /// <summary>

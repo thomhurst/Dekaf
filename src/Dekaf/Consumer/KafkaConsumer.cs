@@ -1422,6 +1422,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // sync clears the previous ownership's pause of a partition revoked and assigned again, then
     // restores these. Dropped with the pending seeks when the partition is revoked again.
     private readonly ConcurrentDictionary<TopicPartition, byte> _rebalancePausedPartitions = new();
+    // Staged seeks position initialization applied in a sync pass not yet acknowledged. They stay
+    // staged until the sync is acknowledged, so a pass that is retried (cancelled, failed, or
+    // superseded by a newer assignment version) applies them again after repeating the cleanup.
+    // Guarded by _assignmentLock.
+    private readonly List<TopicPartitionOffset> _unacknowledgedAppliedRebalanceSeeks = [];
     // Serializes each Pause/Resume with assignment cleanup's clear-then-restore of a partition's
     // pause, so neither interleaves inside the other's check-then-act. Taken before
     // _coordinatorRevokedPartitionsPendingFetchClearLock, never while holding it. Not per message.
@@ -7947,6 +7952,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
             {
                 _pendingRebalanceSeeks.Clear();
+                _unacknowledgedAppliedRebalanceSeeks.Clear();
                 foreach (var entry in _rebalancePausedPartitions)
                 {
                     _rebalancePausedPartitions.TryRemove(entry.Key, out _);
@@ -7993,7 +7999,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 hadPaused |= _paused.TryRemove(partition, out _);
                 AfterPartitionPauseClearedForTest?.Invoke(this, partition);
 
-                if (_rebalancePausedPartitions.TryRemove(partition, out _) && reassigned)
+                // A reassigned partition keeps its record: a sync pass that is retried before it is
+                // acknowledged repeats this cleanup and must restore the pause again. A later
+                // revocation, Resume or abandoned subscription drops the record.
+                if (!reassigned)
+                {
+                    _rebalancePausedPartitions.TryRemove(partition, out _);
+                }
+                else if (_rebalancePausedPartitions.ContainsKey(partition))
                 {
                     _paused.TryAdd(partition, 0);
                     hadPaused = true;
@@ -9795,6 +9808,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                         Volatile.Write(ref _lastCoordinatorAssignmentVersion, coordinatorAssignmentVersion);
                         coordinator.AcknowledgeAssignmentSync(coordinatorAssignmentVersion);
+                        CompleteRebalanceSeeksOnSyncAcknowledged();
                         return;
                     }
 
@@ -9928,6 +9942,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     Volatile.Write(ref _lastCoordinatorAssignmentVersion, coordinatorAssignmentVersion);
                     coordinator.AcknowledgeAssignmentSync(coordinatorAssignmentVersion);
                     unacknowledgedCoordinatorRevocations = null;
+                    CompleteRebalanceSeeksOnSyncAcknowledged();
                 }
                 else
                 {
@@ -10054,7 +10069,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     SetFetchPosition(partition, offset);
                 }
 
-                ApplyPendingRebalanceSeek(partition);
+                ApplyPendingRebalanceSeek(partition, untilSyncAcknowledged: true);
 
                 if (isNewlyExpanded)
                     (initializedNewPartitions ??= []).Add(partition);
@@ -10067,10 +10082,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    private void ApplyPendingRebalanceSeek(TopicPartition partition)
+    /// <param name="untilSyncAcknowledged">
+    /// Assignment sync passes true: the seek stays staged until the sync is acknowledged
+    /// (<see cref="CompleteRebalanceSeeksOnSyncAcknowledged"/>), so a retried pass applies it again.
+    /// </param>
+    private void ApplyPendingRebalanceSeek(TopicPartition partition, bool untilSyncAcknowledged = false)
     {
-        if (!_pendingRebalanceSeeks.TryRemove(partition, out var offset))
+        TopicPartitionOffset offset;
+        if (untilSyncAcknowledged)
+        {
+            if (!_pendingRebalanceSeeks.TryGetValue(partition, out offset))
+                return;
+            _unacknowledgedAppliedRebalanceSeeks.Add(offset);
+        }
+        else if (!_pendingRebalanceSeeks.TryRemove(partition, out offset))
+        {
             return;
+        }
 
         // Keep invalidation, buffer drain, and position replacement atomic with prefetch publication.
         // The immediate path can run after this partition has already prefetched records.
@@ -10086,6 +10114,27 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             SetFetchPosition(partition, offset.Offset);
             _eofEmitted.TryRemove(partition, out _);
         }
+    }
+
+    /// <summary>
+    /// The sync that applied staged seeks is acknowledged: they are no longer pending. Removed only
+    /// while unchanged, so a seek a later callback staged for the same partition is kept. Caller
+    /// holds <c>_assignmentLock</c>. Runs per acknowledged sync, never per message.
+    /// </summary>
+    private void CompleteRebalanceSeeksOnSyncAcknowledged()
+    {
+        if (_unacknowledgedAppliedRebalanceSeeks.Count == 0)
+            return;
+
+        var pending = (ICollection<KeyValuePair<TopicPartition, TopicPartitionOffset>>)_pendingRebalanceSeeks;
+        foreach (var offset in _unacknowledgedAppliedRebalanceSeeks)
+        {
+            pending.Remove(new KeyValuePair<TopicPartition, TopicPartitionOffset>(
+                new TopicPartition(offset.Topic, offset.Partition),
+                offset));
+        }
+
+        _unacknowledgedAppliedRebalanceSeeks.Clear();
     }
 
     private async ValueTask<long> GetResetOffsetAsync(
