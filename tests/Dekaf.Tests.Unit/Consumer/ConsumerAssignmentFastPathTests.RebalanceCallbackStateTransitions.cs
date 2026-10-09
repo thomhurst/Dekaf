@@ -1,0 +1,229 @@
+using Dekaf.Consumer;
+using Dekaf.Protocol.Messages;
+using NSubstitute;
+
+namespace Dekaf.Tests.Unit.Consumer;
+
+/// <summary>
+/// One row per transition of the OnPartitionsAssigned seek/pause state machine documented on
+/// <c>KafkaConsumer._pendingRebalanceSeeks</c>. In every row the first OnPartitionsAssigned that
+/// announces partition 1 pauses it and seeks it to 42 (its committed offset is 20), unless the row
+/// says otherwise. Every row ends with no staged or unacknowledged seek left behind.
+/// </summary>
+public sealed partial class ConsumerAssignmentFastPathTests
+{
+    public enum CallbackTransition
+    {
+        NewPartitionSynced,
+        ReassignedSynced,
+        RevokedBeforeSync,
+        RevokedThenReassignedBeforeSync,
+        LostThenReassignedBeforeSync,
+        ResumedBeforeSync,
+        ResumedAfterSync,
+        UnsubscribedBeforeSync,
+        AssignedManuallyBeforeSync,
+        RevokedThenAssignedManuallyBeforeSync,
+        UnassignedBeforeSync,
+        IncrementallyAssignedBeforeSync,
+        SyncCancelledThenRetried,
+        SyncSupersededThenRetried,
+        PreviousOwnershipPauseReassigned,
+        ClosedBeforeSync
+    }
+
+    [Test]
+    [Timeout(60_000)]
+    [Arguments(CallbackTransition.NewPartitionSynced, true, 42L)]
+    [Arguments(CallbackTransition.ReassignedSynced, true, 42L)]
+    [Arguments(CallbackTransition.RevokedBeforeSync, false, null)]
+    [Arguments(CallbackTransition.RevokedThenReassignedBeforeSync, false, 20L)]
+    [Arguments(CallbackTransition.LostThenReassignedBeforeSync, false, 20L)]
+    [Arguments(CallbackTransition.ResumedBeforeSync, false, 42L)]
+    [Arguments(CallbackTransition.ResumedAfterSync, false, 42L)]
+    [Arguments(CallbackTransition.UnsubscribedBeforeSync, false, 20L)]
+    [Arguments(CallbackTransition.AssignedManuallyBeforeSync, false, null)]
+    [Arguments(CallbackTransition.RevokedThenAssignedManuallyBeforeSync, false, null)]
+    [Arguments(CallbackTransition.UnassignedBeforeSync, false, null)]
+    [Arguments(CallbackTransition.IncrementallyAssignedBeforeSync, false, null)]
+    [Arguments(CallbackTransition.SyncCancelledThenRetried, true, 42L)]
+    [Arguments(CallbackTransition.SyncSupersededThenRetried, true, 42L)]
+    [Arguments(CallbackTransition.PreviousOwnershipPauseReassigned, false, 20L)]
+    [Arguments(CallbackTransition.ClosedBeforeSync, false, null)]
+    public async Task RebalanceCallbackStateTransitions(
+        CallbackTransition transition,
+        bool expectPaused,
+        long? expectPosition,
+        CancellationToken testTimeout)
+    {
+        var aba = transition is CallbackTransition.ReassignedSynced
+            or CallbackTransition.SyncCancelledThenRetried
+            or CallbackTransition.SyncSupersededThenRetried
+            or CallbackTransition.PreviousOwnershipPauseReassigned;
+        ConsumerGroupHeartbeatResponse[] script = transition switch
+        {
+            _ when aba => [AssignedResponse(1, 0, 1), AssignedResponse(2, 0), AssignedResponse(3, 0, 1)],
+            CallbackTransition.RevokedBeforeSync or CallbackTransition.RevokedThenAssignedManuallyBeforeSync =>
+                [AssignedResponse(1, 0), AssignedResponse(2, 0, 1), AssignedResponse(3, 0)],
+            CallbackTransition.RevokedThenReassignedBeforeSync =>
+                [AssignedResponse(1, 0), AssignedResponse(2, 0, 1), AssignedResponse(3, 0), AssignedResponse(4, 0, 1)],
+            CallbackTransition.LostThenReassignedBeforeSync =>
+                [AssignedResponse(1, 0), AssignedResponse(2, 0, 1), FencedResponse(), AssignedResponse(1, 0, 1)],
+            _ => [AssignedResponse(1, 0), AssignedResponse(2, 0, 1)]
+        };
+        var heartbeats = transition switch
+        {
+            _ when aba => 2,
+            CallbackTransition.RevokedBeforeSync or CallbackTransition.RevokedThenAssignedManuallyBeforeSync => 2,
+            CallbackTransition.RevokedThenReassignedBeforeSync => 3,
+            CallbackTransition.LostThenReassignedBeforeSync => 2,
+            _ => 1
+        };
+
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessAsync(listener, script);
+        var consumer = harness.Consumer;
+        var acted = false;
+        if (transition != CallbackTransition.PreviousOwnershipPauseReassigned)
+        {
+            listener.OnAssigned = partitions =>
+            {
+                if (acted || !partitions.Contains(Partition1))
+                    return;
+
+                acted = true;
+                consumer.Pause(Partition1);
+                consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
+            };
+        }
+        else
+        {
+            consumer.Pause(Partition1);
+        }
+
+        for (var i = 0; i < heartbeats; i++)
+            await harness.HeartbeatAsync();
+
+        var sync = true;
+        switch (transition)
+        {
+            case CallbackTransition.ResumedBeforeSync:
+                consumer.Resume(Partition1);
+                break;
+            case CallbackTransition.UnsubscribedBeforeSync:
+                consumer.Unsubscribe();
+                consumer.Subscribe("test-topic");
+                break;
+            case CallbackTransition.AssignedManuallyBeforeSync:
+            case CallbackTransition.RevokedThenAssignedManuallyBeforeSync:
+                consumer.Assign(new TopicPartition("test-topic", 0), Partition1);
+                sync = false;
+                break;
+            case CallbackTransition.UnassignedBeforeSync:
+                consumer.Unassign();
+                sync = false;
+                break;
+            case CallbackTransition.IncrementallyAssignedBeforeSync:
+                consumer.IncrementalAssign([new TopicPartitionOffset("test-topic", 0, 5)]);
+                sync = false;
+                break;
+            case CallbackTransition.SyncCancelledThenRetried:
+                await CancelFirstSyncDuringOffsetFetchAsync(harness);
+                break;
+            case CallbackTransition.SyncSupersededThenRetried:
+                SupersedeFirstSyncPasses(harness, passes: 1);
+                break;
+            case CallbackTransition.ClosedBeforeSync:
+                await consumer.CloseAsync(testTimeout);
+                sync = false;
+                break;
+        }
+
+        if (sync)
+            await consumer.EnsureAssignmentAsync(CancellationToken.None);
+        if (transition == CallbackTransition.ResumedAfterSync)
+            consumer.Resume(Partition1);
+
+        if (transition != CallbackTransition.PreviousOwnershipPauseReassigned)
+            await Assert.That(acted).IsTrue();
+        await Assert.That(consumer.Paused.Contains(Partition1)).IsEqualTo(expectPaused);
+        if (expectPosition is not null)
+            await Assert.That(consumer.GetPosition(Partition1)).IsEqualTo(expectPosition);
+        else if (sync)
+            await Assert.That(consumer.Assignment).DoesNotContain(Partition1);
+        await Assert.That(consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
+        await Assert.That(consumer.UnacknowledgedAppliedRebalanceSeekCountForTest).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task EnsureAssignmentAsync_RepeatedlySupersededSync_TracksOneAppliedSeekPerPartition()
+    {
+        var listener = new CallbackListener();
+        await using var harness = await CreateCallbackHarnessAsync(
+            listener,
+            AssignedResponse(1, 0, 1),
+            AssignedResponse(2, 0),
+            AssignedResponse(3, 0, 1));
+
+        listener.OnAssigned = partitions =>
+        {
+            if (partitions.Contains(Partition1))
+                harness.Consumer.Seek(new TopicPartitionOffset(Partition1.Topic, Partition1.Partition, 42));
+        };
+
+        await harness.HeartbeatAsync();
+        await harness.HeartbeatAsync();
+
+        const int passes = 5;
+        var maxTracked = SupersedeFirstSyncPasses(harness, passes);
+        await harness.Consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        await Assert.That(maxTracked()).IsEqualTo(1);
+        await Assert.That(harness.Consumer.GetPosition(Partition1)).IsEqualTo(42L);
+        await Assert.That(harness.Consumer.UnacknowledgedAppliedRebalanceSeekCountForTest).IsEqualTo(0);
+        await Assert.That(harness.Consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// The first <paramref name="passes"/> sync passes initialize positions and are then superseded by
+    /// a newer assignment version, so each is retried. Returns the largest number of applied seeks
+    /// tracked when a pass starts its offset fetch.
+    /// </summary>
+    private static Func<int> SupersedeFirstSyncPasses(CallbackHarness harness, int passes)
+    {
+        var coordinator = GetCoordinator(harness.Consumer);
+        var calls = 0;
+        var maxTracked = 0;
+        harness.Connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                maxTracked = Math.Max(maxTracked, harness.Consumer.UnacknowledgedAppliedRebalanceSeekCountForTest);
+                if (Interlocked.Increment(ref calls) <= passes)
+                    coordinator.BumpAssignmentVersionForTest();
+                return ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse());
+            });
+        return () => Math.Max(maxTracked, harness.Consumer.UnacknowledgedAppliedRebalanceSeekCountForTest);
+    }
+
+    private static async Task CancelFirstSyncDuringOffsetFetchAsync(CallbackHarness harness)
+    {
+        var fetchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        harness.Connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => Interlocked.Increment(ref calls) == 1
+                ? BlockUntilCancelledAsync(fetchStarted, call.ArgAt<CancellationToken>(2))
+                : ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse()));
+
+        using var cts = new CancellationTokenSource();
+        var sync = harness.Consumer.EnsureAssignmentAsync(cts.Token).AsTask();
+        await fetchStarted.Task;
+        await cts.CancelAsync();
+        await Assert.That(async () => await sync).Throws<OperationCanceledException>();
+    }
+}
