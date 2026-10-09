@@ -718,6 +718,81 @@ public sealed class ConsumeBatchSkipTests
         }
     }
 
+    [Test]
+    public async Task IdlePartitionAtHighWatermark_EmptyResponsesTakeNoLockAfterEof()
+    {
+        await using var consumer = CreateConsumer(
+            500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true,
+            CreatePendingFetch(Partition0, 10, 1));
+        GetDictionary(consumer, "_fetchPositions")[Partition0] = 11;
+        var epoch = GetFetchBufferEpoch(consumer);
+
+        // The first empty response at the high watermark reports EOF under the lock.
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 11, epoch);
+        await Assert.That(GetEofEvents(consumer).Count).IsEqualTo(1);
+
+        // With the invalidation lock held elsewhere, later empty responses for the idle
+        // partition, and record responses for partitions without an EOF marker, still
+        // complete: they take no lock.
+        var lockObject = GetField("_coordinatorRevokedPartitionsPendingFetchClearLock").GetValue(consumer)!;
+        using var held = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var holder = Task.Factory.StartNew(() =>
+        {
+            lock (lockObject)
+            {
+                held.Set();
+                release.Wait();
+            }
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        held.Wait();
+        try
+        {
+            var idle = Task.Run(() =>
+            {
+                for (var i = 0; i < 1000; i++)
+                {
+                    _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 11, epoch);
+                    consumer.ResetPartitionEofForRecords(Partition1, epoch);
+                }
+            });
+            var completed = await Task.WhenAny(idle, Task.Delay(TimeSpan.FromSeconds(10)));
+            await Assert.That(completed).IsSameReferenceAs(idle);
+            await idle;
+        }
+        finally
+        {
+            release.Set();
+            await holder;
+        }
+
+        await Assert.That(GetEofEvents(consumer).Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ClearedEofMarker_NextEmptyResponseReportsEofAgain()
+    {
+        await using var consumer = CreateConsumer(
+            500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true,
+            CreatePendingFetch(Partition0, 10, 1));
+        GetDictionary(consumer, "_fetchPositions")[Partition0] = 11;
+
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 11, GetFetchBufferEpoch(consumer));
+        // The fast path skips while the marker exists...
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 11, GetFetchBufferEpoch(consumer));
+        await Assert.That(GetEofEvents(consumer).Count).IsEqualTo(1);
+
+        // ...and a seek that clears it (and drops the queued EOF) lets the next current
+        // empty response report EOF again, so a skip racing the clear never loses it.
+        consumer.Seek(new TopicPartitionOffset(Topic, 0, 11));
+        await Assert.That(GetEofEvents(consumer)).IsEmpty();
+        typeof(KafkaConsumer<string, string>)
+            .GetMethod("RecoverAndClearFetchBufferForPendingCoordinatorRevocations", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(consumer, null);
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 11, GetFetchBufferEpoch(consumer));
+        await Assert.That(GetEofEvents(consumer).Single()).IsEqualTo((Partition0, 11L));
+    }
+
     private sealed class TypedEnumerator(IAsyncEnumerator<ConsumeBatch<string, string>> inner)
         : IAsyncEnumerator<BatchView>
     {

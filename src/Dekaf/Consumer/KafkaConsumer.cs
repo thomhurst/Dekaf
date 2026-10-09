@@ -5675,10 +5675,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// from a response that passed its stale check before that invalidation must not be queued
     /// afterwards, ahead of the records the new position refetches. Revalidating here, and
     /// reading the position here, closes that window as prefetched record publication does.
-    /// Runs only when a response reaches the high watermark, never per record.
+    /// Runs only when a response reaches the high watermark, never per record, and takes the
+    /// lock only until the partition's EOF has been reported.
     /// </summary>
     private void TryQueuePartitionEof(TopicPartition partition, long highWatermark, int fetchBufferEpoch)
     {
+        // Lock-free fast path for partitions idling at the high watermark: their EOF is already
+        // reported, so unrelated fetch handlers never serialize here. A clear (seek, revocation,
+        // release) that races this read only defers the EOF to the next empty response, which
+        // derives it again; once the marker is gone the locked path below runs.
+        if (_eofEmitted.ContainsKey(partition))
+            return;
+
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
             var fetchPosition = _fetchPositions.GetValueOrDefault(partition, 0);
