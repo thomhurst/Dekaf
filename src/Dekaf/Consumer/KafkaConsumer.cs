@@ -1490,6 +1490,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // Per partition: queued EOFs below this offset were superseded by records published after
     // them. Written under the invalidation lock (or on the consumer thread for direct fetches).
     private readonly ConcurrentDictionary<TopicPartition, long> _eofSupersededBelow = new();
+    // Set by CompleteBatchPoll and reset by BeginBatchStream. Safe as a consumer field only
+    // because the batch APIs are single-consumer: one stream enumerates at a time.
     private bool _batchLoopExitRequested;
     private int _observedPausedSnapshotVersion;
     private int _recordIterationEpochSeed;
@@ -4209,12 +4211,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     /// <summary>
-    /// Dequeues the next partition EOF the batch APIs may deliver. An EOF for a partition that
-    /// still had a queued fetch when the drain started is put back until those records are
-    /// delivered. Released partitions already had their EOF dropped and re-derive it after
-    /// the refetch.
-    /// </summary>
-    /// <summary>
     /// One or two dictionary lookups per delivered EOF. Both dictionaries are empty unless a
     /// partition has been consumed or records superseded a queued EOF.
     /// </summary>
@@ -4240,6 +4236,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return false;
     }
 
+    /// <summary>
+    /// Dequeues the next partition EOF the batch APIs may deliver. An EOF for a partition that
+    /// still had a queued fetch when the drain started is put back until those records are
+    /// delivered. Released partitions already had their EOF dropped and re-derive it after
+    /// the refetch.
+    /// </summary>
     private bool TryDequeueDeliverableEof(out (TopicPartition Partition, long Offset) eofEvent)
     {
         while (_eofDrainRemaining-- > 0 && _pendingEofEvents.TryDequeue(out eofEvent))
