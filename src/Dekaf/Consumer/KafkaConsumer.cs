@@ -1700,6 +1700,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // by the revocations of that membership and by CommitAsync; inert once the membership has
     // changed. Control plane.
     private LeaveCommitSnapshot? _departingOffsets;
+    // The capture EndGroupMembership started, completed by the clear that follows it in the same
+    // call (ClearFetchBuffer adds the fetches it discards); null otherwise.
+    private LeaveCommitSnapshot? _leaveFetchCapture;
     // Deterministic test seam for assignment/revocation snapshot races.
     internal Action? BeforeCoordinatorAssignmentSnapshotForTest { get; set; }
 
@@ -2558,6 +2561,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Before the subscription is cleared, so a poll that read it earlier cannot rejoin. The
         // coordinator revokes the owned partitions and leaves the group in the background.
         EndGroupMembership();
+        try
+        {
+            UnsubscribeCore();
+        }
+        finally
+        {
+            CompleteGroupMembershipEnd();
+        }
+    }
+
+    private void UnsubscribeCore()
+    {
         _topicFilter = null;
         _topicPattern = null;
         _subscription.Clear();
@@ -2576,14 +2591,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (_coordinator is not { } coordinator)
             return;
 
+        var groupSubscribed = _topicFilter is not null || _topicPattern is not null || _subscriptionSnapshot.Count != 0;
+
+        // First: whatever follows, the member leaves. The leave delivers no revocation until the
+        // caller releases it (ReleaseLeaveRequest, in its finally) once the capture is complete.
+        coordinator.RequestLeaveGroup(holdUntilReleased: groupSubscribed);
+
         // Unsubscribe clears the departing partitions' positions and stored offsets right after
         // this, before the revocations still to be delivered for them run: the leave's, and any a
         // heartbeat published earlier whose callback has not run yet (the coordinator no longer
         // lists those partitions, but the consumer still holds them). What their commits would
-        // have sent is captured now, for every partition the consumer holds, and they take it
-        // per partition (see CommitAsync and CommitRevokedOffsetsAsync). A later switch covered
-        // by the same membership's leave keeps the first capture: it holds only manual partitions.
-        if (_topicFilter is not null || _topicPattern is not null || _subscriptionSnapshot.Count != 0)
+        // have sent is captured for every partition the consumer holds, and they take it per
+        // partition (see CommitAsync and CommitRevokedOffsetsAsync). Read here: the stored offsets
+        // and the published consumed position, both safe from any thread. The fetches the consume
+        // loop owns are read as the clear that follows dequeues them (ClearFetchBuffer). A later
+        // switch covered by the same membership's leave keeps the first capture: it holds only
+        // manual partitions.
+        if (groupSubscribed)
         {
             var membershipVersion = coordinator.MembershipVersion;
             var existing = Volatile.Read(ref _departingOffsets);
@@ -2591,13 +2615,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 var held = new HashSet<TopicPartition>(_assignmentSnapshot);
                 held.UnionWith(coordinator.Assignment);
-                Volatile.Write(ref _departingOffsets, CaptureLeaveCommitSnapshot(held, membershipVersion));
+                var capture = CaptureLeaveCommitSnapshot(held, membershipVersion);
+                Volatile.Write(ref _departingOffsets, capture);
+                Volatile.Write(ref _leaveFetchCapture, capture);
             }
         }
 
-        coordinator.RequestLeaveGroup();
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
             _pendingRebalanceSeeks.Clear();
+    }
+
+    /// <summary>
+    /// Ends the capture <see cref="EndGroupMembership"/> started and lets the leave deliver its
+    /// revocations. Called in a finally by every caller of EndGroupMembership.
+    /// </summary>
+    private void CompleteGroupMembershipEnd()
+    {
+        Volatile.Write(ref _leaveFetchCapture, null);
+        _coordinator?.ReleaseLeaveRequest();
     }
 
     /// <summary>
@@ -2608,11 +2643,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// </summary>
     private sealed class LeaveCommitSnapshot(
         int membershipVersion,
+        HashSet<TopicPartition> held,
         ConcurrentDictionary<TopicPartition, TopicPartitionOffset> proven,
         ConcurrentDictionary<TopicPartition, TopicPartitionOffset> vouched)
     {
         /// <summary>The membership the offsets belong to; they are never sent under another.</summary>
         public int MembershipVersion { get; } = membershipVersion;
+
+        /// <summary>The partitions the consumer held when it ended its membership. Read-only.</summary>
+        public HashSet<TopicPartition> Held { get; } = held;
+
+        /// <summary>
+        /// Serializes reading, committing and removing these offsets, so a commit never sends an
+        /// offset lower than one another commit of them already sent.
+        /// </summary>
+        public SemaphoreSlim CommitLock { get; } = new(1, 1);
 
         public ConcurrentDictionary<TopicPartition, TopicPartitionOffset> Proven { get; } = proven;
 
@@ -2622,78 +2667,100 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// <remarks>
     /// Reads only: the vouched offsets are computed from the consumed positions, never staged in
     /// the shared stored-offset map, where a concurrent auto-commit could send an offset past a
-    /// record the application is still processing.
+    /// record the application is still processing. Touches no fetch the consume loop owns; those
+    /// are added by <see cref="CaptureDepartingFetchPositions"/> as the clear dequeues them.
     /// </remarks>
-    private LeaveCommitSnapshot? CaptureLeaveCommitSnapshot(TopicPartitionSet owned, int membershipVersion)
+    private LeaveCommitSnapshot CaptureLeaveCommitSnapshot(HashSet<TopicPartition> held, int membershipVersion)
     {
-        var stored = SnapshotStoredOffsets(owned);
-        Dictionary<TopicPartition, TopicPartitionOffset>? proven = null;
-        foreach (var offset in stored)
-            (proven ??= [])[new TopicPartition(offset.Topic, offset.Partition)] = offset;
+        var proven = new ConcurrentDictionary<TopicPartition, TopicPartitionOffset>();
+        foreach (var offset in SnapshotStoredOffsets(held))
+            proven[new TopicPartition(offset.Topic, offset.Partition)] = offset;
 
-        // Records the application has processed whose offsets are not staged yet: stored offsets
-        // advance only at fetch boundaries, and the fetches are discarded right after this, so
-        // the processed range is read from them, as the close commit flushes the head fetch.
-        if (_options.EnableAutoOffsetStore)
+        var vouched = new ConcurrentDictionary<TopicPartition, TopicPartitionOffset>(proven);
+
+        // What a parameterless CommitAsync would stage for the record being processed: the
+        // auto-commit consumed-position snapshot is published for readers on any thread.
+        if (_options.EnableAutoOffsetStore
+            && _options.OffsetCommitMode == OffsetCommitMode.Auto
+            && TryReadActiveConsumedPosition(out var partition, out var position, out var leaderEpoch, out _)
+            && held.Contains(partition))
         {
-            if (_pendingFetches.Count > 0)
-                AddProvenPosition(ref proven, owned, _pendingFetches.Peek());
-
-            foreach (var pending in _pausedPendingFetches)
-                AddProvenPosition(ref proven, owned, pending);
+            AddDepartingPosition(vouched, partition, position, leaderEpoch);
         }
 
-        Dictionary<TopicPartition, TopicPartitionOffset>? vouched = proven is null ? null : new(proven);
-
-        // What a parameterless CommitAsync would stage (StageExplicitCommitOffsets): everything
-        // yielded, including a record still being processed.
-        if (_options.EnableAutoOffsetStore)
-        {
-            foreach (var partition in owned)
-            {
-                if (TryGetActiveConsumedPosition(partition, out var position, out var leaderEpoch))
-                    AddVouchedPosition(ref vouched, partition, position, leaderEpoch);
-            }
-
-            if (_pendingFetches.Count > 0)
-                AddVouchedPosition(ref vouched, owned, _pendingFetches.Peek());
-
-            foreach (var pending in _pausedPendingFetches)
-                AddVouchedPosition(ref vouched, owned, pending);
-        }
-
-        return vouched is null
-            ? null
-            : new LeaveCommitSnapshot(
-                membershipVersion,
-                new ConcurrentDictionary<TopicPartition, TopicPartitionOffset>(
-                    proven ?? new Dictionary<TopicPartition, TopicPartitionOffset>()),
-                new ConcurrentDictionary<TopicPartition, TopicPartitionOffset>(vouched));
+        return new LeaveCommitSnapshot(membershipVersion, held, proven, vouched);
     }
 
     /// <summary>
-    /// Reads the captured departing offsets of <paramref name="partitions"/> (all when null): the
-    /// processed ones, or with <paramref name="vouched"/> the ones a parameterless commit vouches
-    /// for. A copy: entries leave the capture only once a commit of them has succeeded
-    /// (<see cref="CommitDepartingOffsetsAsync"/>), so a cancelled or failed attempt is retried
-    /// with the same offsets. None once the membership they belong to has changed.
+    /// Adds what a fetch the clear is discarding holds for a departing partition: the processed
+    /// records not staged yet (stored offsets advance at fetch boundaries; the close commit
+    /// flushes the head fetch for the same reason), and everything yielded for a vouching commit.
+    /// Called by <see cref="ClearFetchBuffer"/> for each fetch it dequeues, before it is disposed.
     /// </summary>
-    private TopicPartitionOffset[]? PeekDepartingOffsets(
-        bool vouched,
-        IReadOnlyList<TopicPartition>? partitions,
-        out LeaveCommitSnapshot? state)
+    private void CaptureDepartingFetchPositions(LeaveCommitSnapshot capture, PendingFetchData pending)
     {
-        state = Volatile.Read(ref _departingOffsets);
+        if (!_options.EnableAutoOffsetStore || !capture.Held.Contains(pending.TopicPartition))
+            return;
+
+        if (pending.ProvenOffset >= 0)
+        {
+            AddDepartingPosition(capture.Proven, pending.TopicPartition, pending.ProvenOffset + 1, pending.ProvenLeaderEpoch);
+            AddDepartingPosition(capture.Explicit, pending.TopicPartition, pending.ProvenOffset + 1, pending.ProvenLeaderEpoch);
+        }
+
+        if (TryGetConsumedPosition(pending, out var partition, out var position, out var leaderEpoch, includeFilteredProgress: false))
+            AddDepartingPosition(capture.Explicit, partition, position, leaderEpoch);
+    }
+
+    private static void AddDepartingPosition(
+        ConcurrentDictionary<TopicPartition, TopicPartitionOffset> offsets,
+        TopicPartition partition,
+        long position,
+        int leaderEpoch)
+    {
+        var offset = new TopicPartitionOffset(partition.Topic, partition.Partition, position, leaderEpoch);
+        while (true)
+        {
+            if (!offsets.TryGetValue(partition, out var existing))
+            {
+                if (offsets.TryAdd(partition, offset))
+                    return;
+
+                continue;
+            }
+
+            if (existing.Offset >= position || offsets.TryUpdate(partition, offset, existing))
+                return;
+        }
+    }
+
+    /// <summary>
+    /// The departing offsets of the membership that is current, if any; a capture of an earlier
+    /// membership is dropped.
+    /// </summary>
+    private LeaveCommitSnapshot? GetCurrentDepartingOffsets()
+    {
+        var state = Volatile.Read(ref _departingOffsets);
         if (state is null || _coordinator is not { } coordinator)
             return null;
 
-        if (state.MembershipVersion != coordinator.MembershipVersion)
-        {
-            Interlocked.CompareExchange(ref _departingOffsets, null, state);
-            state = null;
-            return null;
-        }
+        if (state.MembershipVersion == coordinator.MembershipVersion)
+            return state;
 
+        Interlocked.CompareExchange(ref _departingOffsets, null, state);
+        return null;
+    }
+
+    /// <summary>
+    /// Copies the departing offsets of <paramref name="partitions"/> (all when null): the
+    /// processed ones, or with <paramref name="vouched"/> the ones a parameterless commit vouches
+    /// for. Entries leave the capture only once a commit of them has succeeded.
+    /// </summary>
+    private static TopicPartitionOffset[]? PeekDepartingOffsets(
+        LeaveCommitSnapshot state,
+        bool vouched,
+        IReadOnlyList<TopicPartition>? partitions)
+    {
         var source = vouched ? state.Explicit : state.Proven;
         List<TopicPartitionOffset>? offsets = null;
         if (partitions is null)
@@ -2739,49 +2806,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    private static void AddProvenPosition(
-        ref Dictionary<TopicPartition, TopicPartitionOffset>? proven,
-        TopicPartitionSet owned,
-        PendingFetchData pending)
-    {
-        if (pending.ProvenOffset >= 0 && owned.Contains(pending.TopicPartition))
-        {
-            AddVouchedPosition(
-                ref proven,
-                pending.TopicPartition,
-                pending.ProvenOffset + 1,
-                pending.ProvenLeaderEpoch);
-        }
-    }
-
-    private void AddVouchedPosition(
-        ref Dictionary<TopicPartition, TopicPartitionOffset>? vouched,
-        TopicPartitionSet owned,
-        PendingFetchData pending)
-    {
-        if (TryGetConsumedPosition(
-                pending,
-                out var partition,
-                out var position,
-                out var leaderEpoch,
-                includeFilteredProgress: !HasPendingFetchClear(pending.TopicPartition))
-            && owned.Contains(partition))
-        {
-            AddVouchedPosition(ref vouched, partition, position, leaderEpoch);
-        }
-    }
-
-    private static void AddVouchedPosition(
-        ref Dictionary<TopicPartition, TopicPartitionOffset>? vouched,
-        TopicPartition partition,
-        long position,
-        int leaderEpoch)
-    {
-        vouched ??= [];
-        if (!vouched.TryGetValue(partition, out var existing) || existing.Offset < position)
-            vouched[partition] = new TopicPartitionOffset(partition.Topic, partition.Partition, position, leaderEpoch);
-    }
-
     private TopicPartitionOffset[] SnapshotStoredOffsets(TopicPartitionSet partitions)
     {
         List<TopicPartitionOffset>? offsets = null;
@@ -2801,27 +2825,43 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     /// <summary>
-    /// Commits departing offsets under the membership they belong to (rejected if it has changed).
-    /// Never waits for the leave: that membership's identity is the one that must commit them.
+    /// Commits the departing offsets of <paramref name="partitions"/> (all when null) under the
+    /// membership they belong to, and removes them once committed; a cancelled or failed attempt
+    /// leaves them for the retry. Reading, committing and removing run under the capture's commit
+    /// lock, so concurrent commits of them (the revoked-offset commit and an explicit
+    /// CommitAsync) never send an offset lower than one already sent. Never waits for the leave:
+    /// the departing member's identity is the one that must commit them.
     /// </summary>
     private async ValueTask<bool> CommitDepartingOffsetsAsync(
-        TopicPartitionOffset[] offsets,
-        LeaveCommitSnapshot state,
         bool vouched,
+        IReadOnlyList<TopicPartition>? partitions,
         bool retryUntilApiTimeout,
         CancellationToken cancellationToken)
     {
-        if (offsets.Length == 0)
+        if (GetCurrentDepartingOffsets() is not { } state)
             return false;
 
-        await GetCommitCoordinator()
-            .CommitOffsetsAsync(offsets, retryUntilApiTimeout, state.MembershipVersion, cancellationToken)
-            .ConfigureAwait(false);
+        await state.CommitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!ReferenceEquals(GetCurrentDepartingOffsets(), state)
+                || PeekDepartingOffsets(state, vouched, partitions) is not { } offsets)
+            {
+                return false;
+            }
 
-        // Only now: a commit cancelled or failed above leaves them for the retry.
-        RemoveCommittedDepartingOffsets(state, offsets, vouched);
-        InvokeOnCommitInterceptors(offsets);
-        return true;
+            await GetCommitCoordinator()
+                .CommitOffsetsAsync(offsets, retryUntilApiTimeout, state.MembershipVersion, cancellationToken)
+                .ConfigureAwait(false);
+
+            RemoveCommittedDepartingOffsets(state, offsets, vouched);
+            InvokeOnCommitInterceptors(offsets);
+            return true;
+        }
+        finally
+        {
+            state.CommitLock.Release();
+        }
     }
 
     private void PublishSubscriptionAndClearAssignment(bool invalidatePartitionCache)
@@ -2867,6 +2907,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ThrowIfNewPartitionResetUsesManualAssignment();
         // Manual assignment ends group membership, as Unsubscribe does.
         EndGroupMembership();
+        try
+        {
+            AssignCore(partitions);
+        }
+        finally
+        {
+            CompleteGroupMembershipEnd();
+        }
+    }
+
+    private void AssignCore(TopicPartition[] partitions)
+    {
         _topicFilter = null;
         _topicPattern = null;
         _subscription.Clear();
@@ -2951,6 +3003,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ThrowIfNewPartitionResetUsesManualAssignment();
         // Clear subscription since we're doing manual assignment; that ends group membership.
         EndGroupMembership();
+        try
+        {
+            IncrementalAssignCore(partitions);
+        }
+        finally
+        {
+            CompleteGroupMembershipEnd();
+        }
+    }
+
+    private void IncrementalAssignCore(IEnumerable<TopicPartitionOffset> partitions)
+    {
         _topicFilter = null;
         _topicPattern = null;
         _subscription.Clear();
@@ -7716,16 +7780,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // The partitions the consumer gave up when it ended its group membership (cleared at
             // once, e.g. from OnPartitionsRevoked of the leave): commit what they held then,
             // under the membership that is leaving.
-            if (PeekDepartingOffsets(vouched: true, partitions: null, out var departingState) is { } departing)
-            {
-                await CommitDepartingOffsetsAsync(
-                        departing,
-                        departingState!,
-                        vouched: true,
-                        retryUntilApiTimeout: true,
-                        apiTimeout.Token)
-                    .ConfigureAwait(false);
-            }
+            await CommitDepartingOffsetsAsync(
+                    vouched: true,
+                    partitions: null,
+                    retryUntilApiTimeout: true,
+                    apiTimeout.Token)
+                .ConfigureAwait(false);
 
             // From a revoke callback of the leave: the departing offsets are all it commits. The
             // consumer's live offsets belong to its manual assignment, committed by commits made
@@ -7879,14 +7939,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // Partitions the consumer cleared when the application ended its group membership
             // (this is the leave's revocation, or one a heartbeat published before it): commit
             // the processed offsets they held then.
-            var committed = PeekDepartingOffsets(vouched: false, partitions, out var departingState) is { } departing
-                && await CommitDepartingOffsetsAsync(
-                        departing,
-                        departingState!,
-                        vouched: false,
-                        retryUntilApiTimeout: false,
-                        commitCancellationToken)
-                    .ConfigureAwait(false);
+            var committed = await CommitDepartingOffsetsAsync(
+                    vouched: false,
+                    partitions,
+                    retryUntilApiTimeout: false,
+                    commitCancellationToken)
+                .ConfigureAwait(false);
 
             // During a leave the departing offsets are all this membership has to commit: the
             // live stored offsets now belong to the consumer's manual assignment (which may
@@ -8813,16 +8871,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             _pendingDivergingEpochResets.Clear();
         }
 
+        // A group membership being ended in this call: what the discarded fetches hold for the
+        // departing partitions goes into its capture before they are disposed.
+        var leaveCapture = Volatile.Read(ref _leaveFetchCapture);
+
         // Dispose and clear pending fetches to release pooled memory
         while (_pendingFetches.TryDequeue(out var pending))
         {
             Interlocked.Decrement(ref _pendingFetchDepth);
+            if (leaveCapture is not null)
+                CaptureDepartingFetchPositions(leaveCapture, pending);
             StagePendingFetchClear(pending.TopicPartition);
             DisposeQueuedFetch(pending);
         }
         while (_pausedPendingFetches.TryDequeue(out var pausedPending))
         {
             Interlocked.Decrement(ref _pendingFetchDepth);
+            if (leaveCapture is not null)
+                CaptureDepartingFetchPositions(leaveCapture, pausedPending);
             StagePendingFetchClear(pausedPending.TopicPartition);
             DisposeQueuedFetch(pausedPending);
         }

@@ -331,14 +331,152 @@ public sealed partial class ConsumerAssignmentFastPathTests
         pending.TrackConsumed(11, 1);
         GetPendingFetches(consumer).Enqueue(pending);
 
-        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
-        var snapshot = typeof(KafkaConsumer<string, string>).GetMethod("CaptureLeaveCommitSnapshot", flags)!
-            .Invoke(consumer, [GetCoordinator(consumer).Assignment, 0]);
+        // The clear Unsubscribe performs reads the fetch as it discards it.
+        consumer.Unsubscribe();
 
-        var proven = ((ConcurrentDictionary<TopicPartition, TopicPartitionOffset>)snapshot!.GetType().GetProperty("Proven")!.GetValue(snapshot)!).Values.ToArray();
+        var proven = GetDepartingOffsets(consumer, "Proven").Values.ToArray();
         await Assert.That(proven.Single().Offset).IsEqualTo(11L);
-        var vouched = ((ConcurrentDictionary<TopicPartition, TopicPartitionOffset>)snapshot.GetType().GetProperty("Explicit")!.GetValue(snapshot)!).Values.ToArray();
+        var vouched = GetDepartingOffsets(consumer, "Explicit").Values.ToArray();
         await Assert.That(vouched.Single().Offset).IsEqualTo(12L);
+    }
+
+    [Test]
+    [Timeout(60_000)]
+    public async Task LeaveCommitSnapshot_ConcurrentWithConsumeLoop_DoesNotThrow(CancellationToken testTimeout)
+    {
+        // Unsubscribe or Assign from another thread while ConsumeAsync runs: the capture must not
+        // read the fetch queues the consume loop owns (a Peek racing a dequeue, or an enumeration
+        // racing a change, throws before the member has left the group).
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        SetupOffsetFetch(connection);
+        await using var consumer = CreateGroupConsumer(
+            connectionPool, metadataManager, offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(testTimeout);
+
+        var fetch = CreateFetch(partition: 0, baseOffset: 10, value: "v");
+        fetch.TrackConsumed(10, 1);
+        fetch.MarkYieldedProcessed();
+        var pendingFetches = GetPendingFetches(consumer);
+        var pausedFetches = (Queue<PendingFetchData>)typeof(KafkaConsumer<string, string>)
+            .GetField("_pausedPendingFetches", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(consumer)!;
+        using var stop = new CancellationTokenSource();
+        var consumeLoop = Task.Run(() =>
+        {
+            // The consume loop's queue traffic: fetches arrive, are delivered and dequeued.
+            while (!stop.IsCancellationRequested)
+            {
+                pendingFetches.Enqueue(fetch);
+                pausedFetches.Enqueue(fetch);
+                pendingFetches.TryDequeue(out _);
+                pausedFetches.TryDequeue(out _);
+            }
+        }, CancellationToken.None);
+
+        var capture = typeof(KafkaConsumer<string, string>)
+            .GetMethod("CaptureLeaveCommitSnapshot", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var held = new HashSet<TopicPartition> { new("test-topic", 0) };
+        try
+        {
+            for (var i = 0; i < 1000; i++)
+                capture.Invoke(consumer, [held, 0]);
+        }
+        finally
+        {
+            await stop.CancelAsync();
+            await consumeLoop.WaitAsync(testTimeout);
+            pendingFetches.Clear();
+            pausedFetches.Clear();
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task DepartingOffsets_ExplicitAndRevokedCommitsInterleaved_NeverMoveBackwards(
+        CancellationToken testTimeout)
+    {
+        // Auto commit: a CommitAsync() right after Unsubscribe (vouched 10) races the leave's
+        // revoked-offset commit (processed 8). Whatever the interleaving, the group must not end at 8.
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+        SetupFindCoordinator(connection);
+        SetupOffsetFetch(connection);
+        var commits = new List<OffsetCommitRequest>();
+        var firstCommitSent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstCommit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => RespondToCommitAsync(call.ArgAt<OffsetCommitRequest>(0)));
+        await using var metadataManager = CreateCommitMetadataManager(connectionPool);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        await using var consumer = CreateGroupConsumer(
+            connectionPool, metadataManager, offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(testTimeout);
+        var coordinator = GetCoordinator(consumer);
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.StoreOffset(new TopicPartitionOffset(partition.Topic, partition.Partition, 8));
+        // Record 9 yielded and being processed.
+        typeof(KafkaConsumer<string, string>)
+            .GetMethod("PublishActiveConsumedPosition", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(consumer, [partition, 10L, -1]);
+
+        var stateLock = GetCoordinatorField<SemaphoreSlim>(coordinator, "_lock");
+        await stateLock.WaitAsync(testTimeout);
+        Task explicitCommit;
+        try
+        {
+            consumer.Unsubscribe();
+            explicitCommit = consumer.CommitAsync(testTimeout).AsTask();
+            await firstCommitSent.Task.WaitAsync(testTimeout);
+
+            // The leave's revoked-offset commit runs while the explicit one is in flight.
+            var revokedCommit = InvokeCommitRevokedOffsetsAsync(consumer, [partition], testTimeout).AsTask();
+            await Task.Delay(200, testTimeout);
+            releaseFirstCommit.SetResult();
+            await revokedCommit.WaitAsync(testTimeout);
+        }
+        finally
+        {
+            releaseFirstCommit.TrySetResult();
+            stateLock.Release();
+        }
+
+        await explicitCommit.WaitAsync(testTimeout);
+
+        var committed = commits
+            .SelectMany(request => request.Topics.SelectMany(topic => topic.Partitions))
+            .Select(entry => entry.CommittedOffset)
+            .ToList();
+        await Assert.That(committed[^1]).IsEqualTo(10L);
+        await Assert.That(committed.Contains(8L)).IsFalse();
+
+        async ValueTask<OffsetCommitResponse> RespondToCommitAsync(OffsetCommitRequest request)
+        {
+            int count;
+            lock (commits)
+            {
+                commits.Add(request);
+                count = commits.Count;
+            }
+
+            if (count == 1)
+            {
+                firstCommitSent.TrySetResult();
+                await releaseFirstCommit.Task;
+            }
+
+            return new OffsetCommitResponse { Topics = [] };
+        }
     }
 
     [Test]

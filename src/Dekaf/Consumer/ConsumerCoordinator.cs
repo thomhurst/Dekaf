@@ -149,6 +149,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // _revocationSequence when a leave last ended the membership. Every notification published
     // before it belongs to that membership, so a seek its callback stages is stale (WasRevokedSince).
     private long _leaveRevocationSequence;
+    // Completed by the owner (ReleaseLeaveRequest) once it has captured its departing state.
+    private TaskCompletionSource? _leaveOwnerReady;
     private readonly object _leaveGate = new();
     // Cancelled by disposal: bounds a leave still running when the consumer is torn down.
     private readonly CancellationTokenSource _leaveCancellation = new();
@@ -811,7 +813,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// restarting) and resets the membership. A later subscription waits for that leave and joins
     /// with a fresh membership; close and disposal wait for it too. Never blocks the caller.
     /// </summary>
-    internal void RequestLeaveGroup()
+    /// <param name="holdUntilReleased">
+    /// True when the owner still has state to hand over (its departing offsets): the leave delivers
+    /// no revocation until <see cref="ReleaseLeaveRequest"/>. The owner releases it in a finally.
+    /// </param>
+    internal void RequestLeaveGroup(bool holdUntilReleased = false)
     {
         if (string.IsNullOrEmpty(_options.GroupId))
             return;
@@ -850,7 +856,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             try
             {
                 Volatile.Write(ref _leaveInProgress, 1);
-                Volatile.Write(ref _pendingLeave, Task.Run(LeaveGroupForUnsubscribeAsync));
+                var ownerReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                if (!holdUntilReleased)
+                    ownerReady.TrySetResult();
+                Volatile.Write(ref _leaveOwnerReady, ownerReady);
+                Volatile.Write(ref _pendingLeave, Task.Run(() => LeaveGroupForUnsubscribeAsync(ownerReady.Task)));
             }
             finally
             {
@@ -898,6 +908,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     }
 
     /// <summary>
+    /// The owner has handed over its state for a leave it requested with holdUntilReleased; the
+    /// leave may deliver its revocations. Harmless when no leave waits for it.
+    /// </summary>
+    internal void ReleaseLeaveRequest() => Volatile.Read(ref _leaveOwnerReady)?.TrySetResult();
+
+    /// <summary>
     /// The owner subscribes again: joins are allowed once any leave in progress has completed.
     /// </summary>
     internal void ResumeGroupMembership() => Interlocked.Exchange(ref _leaveRequested, 0);
@@ -922,7 +938,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         return Volatile.Read(ref _leaveRequested) == 0;
     }
 
-    private async Task LeaveGroupForUnsubscribeAsync()
+    private async Task LeaveGroupForUnsubscribeAsync(Task ownerReady)
     {
         try
         {
@@ -930,6 +946,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // be delivering a callback. No heartbeat is installed again while the leave is
             // requested, and a join already in flight finishes before the lock is taken below.
             await StopHeartbeatAsyncCore(_leaveCancellation.Token).ConfigureAwait(false);
+
+            // The owner is still capturing what the revocations below commit.
+            await ownerReady.WaitAsync(_leaveCancellation.Token).ConfigureAwait(false);
 
             await _lock.WaitAsync(_leaveCancellation.Token).ConfigureAwait(false);
             try
