@@ -1121,6 +1121,50 @@ public sealed partial class ConsumerDirtyCommitTests
     }
 
     [Test]
+    [NotInParallel("StoreOffsetSeam")]
+    public async Task GroupConsumer_PartitionRevokedBetweenStoreOffsetCheckAndWrite_KeepsNoSlotForIt()
+    {
+        // StoreOffset finds the record owned; before its write lands, assignment sync revokes the
+        // partition and removes its slot. The late write must not leave a slot behind for a
+        // partition no later sync removes again.
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(requests, ErrorCode.None);
+        consumer.Subscribe("topic-a");
+        PublishInitializedAssignment(consumer, OwnedP0);
+        using var fetch = PendingFetchData.Create("topic-a", 0, Array.Empty<RecordBatch>());
+        var record = CreateFetchedResult(fetch, offset: 2);
+        var revoked = 0;
+        Action<object> revokeBeforeWrite = instance =>
+        {
+            if (!ReferenceEquals(instance, consumer) || Interlocked.Exchange(ref revoked, 1) != 0)
+                return;
+
+            RevokeLikeAssignmentSync(consumer, OwnedP0);
+        };
+
+        KafkaConsumer<string, string>.AfterStoreOffsetOwnershipCheckedForTest += revokeBeforeWrite;
+        try
+        {
+            consumer.StoreOffset(record);
+        }
+        finally
+        {
+            KafkaConsumer<string, string>.AfterStoreOffsetOwnershipCheckedForTest -= revokeBeforeWrite;
+        }
+
+        await Assert.That(Volatile.Read(ref revoked)).IsEqualTo(1);
+        await Assert.That(GetMapCount(consumer, "_storedOffsetSlots")).IsEqualTo(0);
+
+        // Assigned again: the new ownership's stores land in a fresh slot and commit.
+        PublishInitializedAssignment(consumer, OwnedP0);
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 7, leaderEpoch: 1));
+        await consumer.CommitAsync(CancellationToken.None);
+
+        await Assert.That(requests).Count().IsEqualTo(1);
+        await Assert.That(requests[0].Topics[0].Partitions[0].CommittedOffset).IsEqualTo(7);
+    }
+
+    [Test]
     public async Task GroupConsumer_ManyRevokeAndReassignCycles_WithExplicitCommitsOnly_KeepStoredOffsetsBounded()
     {
         // An application that commits only explicit offsets never runs the stored-offset commit

@@ -5547,10 +5547,41 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// </summary>
     private void StoreOffsetCore(TopicPartition partition, long ownership, long offset, int leaderEpoch)
     {
-        if (!_storedOffsetSlots.TryGetValue(partition, out var slot))
-            slot = _storedOffsetSlots.GetOrAdd(partition, s_createStoredOffsetSlot);
+        if (!_storedOffsetSlots.TryGetValue(partition, out var slot) || !slot.TryStore(ownership, offset, leaderEpoch))
+            StoreOffsetInAddedSlot(partition, ownership, offset, leaderEpoch);
+    }
 
-        slot.Store(ownership, offset, leaderEpoch);
+    /// <summary>
+    /// The first store of a partition's ownership, or a store that met a retired slot. A store
+    /// validated under an ownership that ended before this write can run after assignment sync
+    /// removed the partition's slot, and would add one for a partition nothing removes again. So
+    /// once written, the ownership is checked again (sync ends it before it removes the slot), and
+    /// a slot that still holds only the ended ownership's store is retired and removed, by
+    /// instance: a store of a newer ownership either landed first (the slot is kept) or finds the
+    /// slot retired and adds a fresh one. Per partition per ownership, not per message.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void StoreOffsetInAddedSlot(TopicPartition partition, long ownership, long offset, int leaderEpoch)
+    {
+        while (true)
+        {
+            var slot = _storedOffsetSlots.GetOrAdd(partition, s_createStoredOffsetSlot);
+            if (!slot.TryStore(ownership, offset, leaderEpoch))
+            {
+                // Retired by a store whose ownership had ended: finish its removal and retry.
+                _storedOffsetSlots.TryRemove(new KeyValuePair<TopicPartition, StoredOffsetSlot>(partition, slot));
+                continue;
+            }
+
+            if (ownership != 0
+                && _ownershipStartGenerations.GetValueOrDefault(partition) != ownership
+                && slot.TryRetire(ownership))
+            {
+                _storedOffsetSlots.TryRemove(new KeyValuePair<TopicPartition, StoredOffsetSlot>(partition, slot));
+            }
+
+            return;
+        }
     }
 
     /// <summary>
@@ -5609,16 +5640,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         private long _offset;
         private int _leaderEpoch = -1;
         private bool _dirty;
+        private bool _retired; // removed (or being removed) from the map: stores go to a new slot
 
         /// <summary>
         /// Stores, unless the slot already holds a later ownership's offset: ownership starts only
         /// grow, so such a write was validated under an ownership that has ended. 0 (not
-        /// group-managed) always stores.
+        /// group-managed) always stores. False only when the slot is retired; nothing was written.
         /// </summary>
-        public void Store(long ownership, long offset, int leaderEpoch)
+        public bool TryStore(long ownership, long offset, int leaderEpoch)
         {
             var sequence = Enter();
-            if (ownership == 0 || ownership >= _ownership)
+            var retired = _retired;
+            if (!retired && (ownership == 0 || ownership >= _ownership))
             {
                 _ownership = ownership;
                 _offset = offset;
@@ -5627,6 +5660,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             Exit(sequence);
+            return !retired;
+        }
+
+        /// <summary>
+        /// Retires the slot if it holds the ended <paramref name="ownership"/>'s store and nothing
+        /// newer, so no later store can land in it once it leaves the map.
+        /// </summary>
+        public bool TryRetire(long ownership)
+        {
+            var sequence = Enter();
+            var retire = _ownership == ownership;
+            if (retire)
+                _retired = true;
+            Exit(sequence);
+            return retire;
         }
 
         public void Clear()
