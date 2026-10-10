@@ -837,13 +837,17 @@ public sealed partial class ConsumerAssignmentFastPathTests
 
     [Test]
     [Timeout(30_000)]
+    [Arguments(false)]
+    [Arguments(true)]
     public async Task Assign_LeaveCallbackOverrunsRebalanceTimeout_CommitAsyncCommitsNothing(
+        bool explicitOffsets,
         CancellationToken testTimeout)
     {
         // A slow OnPartitionsRevokedAsync of the leave ignores cancellation and outlives the
         // rebalance timeout; the leave stops waiting for it and completes. Its later
         // CommitAsync() must commit nothing (not the manual assignment's offsets under the old
-        // member), and warn.
+        // member), and warn. The same holds for the explicit-offsets overload: the partitions it
+        // names belonged to the membership that ended and may have moved to another member.
         var (connectionPool, connection, commits) = CreateCommitCapturingConnection();
         await using var metadataManager = CreateCommitMetadataManager(connectionPool);
         SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
@@ -893,7 +897,10 @@ public sealed partial class ConsumerAssignmentFastPathTests
             await gate.Task;
             try
             {
-                await consumer!.CommitAsync(CancellationToken.None);
+                if (explicitOffsets)
+                    await consumer!.CommitAsync([new TopicPartitionOffset("test-topic", 0, 5)], CancellationToken.None);
+                else
+                    await consumer!.CommitAsync(CancellationToken.None);
                 callbackCommitted.TrySetResult();
             }
             catch (Exception ex)

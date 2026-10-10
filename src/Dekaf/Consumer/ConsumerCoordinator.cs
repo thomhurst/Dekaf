@@ -871,13 +871,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Waits for a leave in progress before a commit of the owner's own (manual or later) offsets:
-    /// the departing member identity is about to be reset, so such a commit runs after the leave,
-    /// as a non-member commit, like an offset fetch made while leaving. Commits made by the
-    /// leave's own revocation (its revoked-offset commit and callbacks) run inside its delivery
-    /// and do not wait. One volatile read when no leave is running.
-    /// </summary>
-    /// <summary>
     /// True while a leave (Unsubscribe or a switch to manual assignment) is in progress, from the
     /// request until the membership is reset. Revocations delivered meanwhile end that membership.
     /// </summary>
@@ -896,6 +889,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         IsInsideOwnRebalanceCallback()
         && (IsLeaveInProgress || s_drainScope.Value is { IsLeave: true });
 
+    /// <summary>
+    /// Waits for a leave in progress before a commit of the owner's own (manual or later) offsets:
+    /// the departing member identity is about to be reset, so such a commit runs after the leave,
+    /// as a non-member commit, like an offset fetch made while leaving. Commits made by the
+    /// leave's own revocation (its revoked-offset commit and callbacks) run inside its delivery
+    /// and do not wait. One volatile read when no leave is running.
+    /// </summary>
     internal ValueTask WaitForLeaveBeforeCommitAsync(CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _leaveInProgress) == 0 || IsInsideOwnRebalanceCallback())

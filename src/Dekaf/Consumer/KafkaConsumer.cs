@@ -7987,6 +7987,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
         try
         {
+            // From a revoke callback the leave stopped waiting for: the membership these offsets
+            // belong to has ended and its partitions may already be another member's.
+            if (coordinator.IsInsideLeaveRevocation && !coordinator.IsLeaveInProgress)
+            {
+                LogLeaveCallbackCommitAfterLeave(_options.RebalanceTimeoutMs);
+                return;
+            }
+
             // After a leave in progress (a switch to manual assignment): these offsets are not the
             // departing member's to commit, and its identity is about to be reset.
             await coordinator.WaitForLeaveBeforeCommitAsync(apiTimeout.Token).ConfigureAwait(false);
