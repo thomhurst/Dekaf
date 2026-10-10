@@ -867,6 +867,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// leave's own revocation (its revoked-offset commit and callbacks) run inside its delivery
     /// and do not wait. One volatile read when no leave is running.
     /// </summary>
+    /// <summary>
+    /// True while a leave (Unsubscribe or a switch to manual assignment) is in progress, from the
+    /// request until the membership is reset. Revocations delivered meanwhile end that membership.
+    /// </summary>
+    internal bool IsLeaveInProgress => Volatile.Read(ref _leaveInProgress) != 0;
+
+    /// <summary>
+    /// True when the calling flow is a rebalance callback delivered while a leave is in progress:
+    /// a commit from it belongs to the departing membership.
+    /// </summary>
+    internal bool IsInsideLeaveRevocation => IsLeaveInProgress && IsInsideOwnRebalanceCallback();
+
     internal ValueTask WaitForLeaveBeforeCommitAsync(CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _leaveInProgress) == 0 || IsInsideOwnRebalanceCallback())

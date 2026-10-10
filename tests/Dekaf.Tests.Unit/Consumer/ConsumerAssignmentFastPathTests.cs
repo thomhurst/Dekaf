@@ -600,6 +600,103 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await Assert.That(commits[1].Topics.Single().Partitions.Single().CommittedOffset).IsEqualTo(5L);
     }
 
+    [Test]
+    [Timeout(30_000)]
+    public async Task Assign_RetainingGroupPartition_LeaveCommitsOnlyDepartingOffset(CancellationToken testTimeout)
+    {
+        // Subscribe -> Assign keeping a group-owned partition. The group membership stored 5; the
+        // manual assignment then stores 9 before the leave's revoked-offset commit runs. The leave
+        // must commit 5 (the group's) and never 9 (the manual assignment's) under the old member.
+        var (connectionPool, connection, commits) = CreateCommitCapturingConnection();
+        await using var metadataManager = CreateCommitMetadataManager(connectionPool);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        await using var consumer = CreateGroupConsumer(
+            connectionPool, metadataManager, offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(testTimeout);
+        var coordinator = GetCoordinator(consumer);
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.StoreOffset(new TopicPartitionOffset(partition.Topic, partition.Partition, 5));
+
+        var stateLock = GetCoordinatorField<SemaphoreSlim>(coordinator, "_lock");
+        await stateLock.WaitAsync(testTimeout);
+        try
+        {
+            consumer.Assign(partition);
+            consumer.StoreOffset(new TopicPartitionOffset(partition.Topic, partition.Partition, 9));
+
+            // The leave's revocation of the group partition.
+            await InvokeCommitRevokedOffsetsAsync(consumer, [partition], testTimeout);
+        }
+        finally
+        {
+            stateLock.Release();
+        }
+
+        var commit = commits.Single();
+        await Assert.That(commit.MemberId).IsEqualTo("member-1");
+        await Assert.That(commit.Topics.Single().Partitions.Single().CommittedOffset).IsEqualTo(5L);
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task Assign_CommitAsyncInLeaveRevokeCallback_CommitsOnlyDepartingOffset(CancellationToken testTimeout)
+    {
+        // The leave's OnPartitionsRevokedAsync runs after the manual assignment stored a newer
+        // offset; its parameterless CommitAsync() commits the group's offset only.
+        var (connectionPool, connection, commits) = CreateCommitCapturingConnection();
+        await using var metadataManager = CreateCommitMetadataManager(connectionPool);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callbackCommitted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        KafkaConsumer<string, string>? consumer = null;
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsRevokedAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(call => new ValueTask(CommitAfterGateAsync(call.ArgAt<CancellationToken>(1))));
+        consumer = new KafkaConsumer<string, string>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                GroupId = "group-a",
+                OffsetCommitMode = OffsetCommitMode.Manual,
+                QueuedMinMessages = 1,
+                RebalanceListener = listener
+            },
+            Serializers.String,
+            Serializers.String,
+            connectionPool,
+            metadataManager);
+        await using var disposeConsumer = consumer;
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(testTimeout);
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.StoreOffset(new TopicPartitionOffset(partition.Topic, partition.Partition, 5));
+
+        consumer.Assign(partition);
+        consumer.StoreOffset(new TopicPartitionOffset(partition.Topic, partition.Partition, 9));
+        gate.SetResult();
+        await callbackCommitted.Task.WaitAsync(testTimeout);
+        await GetCoordinatorField<Task>(GetCoordinator(consumer), "_pendingLeave").WaitAsync(testTimeout);
+
+        var commit = commits.Single();
+        await Assert.That(commit.MemberId).IsEqualTo("member-1");
+        await Assert.That(commit.Topics.Single().Partitions.Single().CommittedOffset).IsEqualTo(5L);
+
+        async Task CommitAfterGateAsync(CancellationToken cancellationToken)
+        {
+            await gate.Task;
+            try
+            {
+                await consumer!.CommitAsync(cancellationToken);
+                callbackCommitted.TrySetResult();
+            }
+            catch (Exception ex)
+            {
+                callbackCommitted.TrySetException(ex);
+            }
+        }
+    }
+
     private static (IConnectionPool Pool, IKafkaConnection Connection, List<OffsetCommitRequest> Commits)
         CreateCommitCapturingConnection()
     {

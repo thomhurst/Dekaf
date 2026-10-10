@@ -7727,6 +7727,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     .ConfigureAwait(false);
             }
 
+            // From a revoke callback of the leave: the departing offsets are all it commits. The
+            // consumer's live offsets belong to its manual assignment, committed by commits made
+            // outside the callback, after the leave, without the departing member's identity.
+            if (coordinator.IsInsideLeaveRevocation)
+                return;
+
             // The consumer's own offsets are committed after a leave in progress, without the
             // departing member's identity.
             await coordinator.WaitForLeaveBeforeCommitAsync(apiTimeout.Token).ConfigureAwait(false);
@@ -7875,6 +7881,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         retryUntilApiTimeout: false,
                         commitCancellationToken)
                     .ConfigureAwait(false);
+
+            // During a leave the departing offsets are all this membership has to commit: the
+            // live stored offsets now belong to the consumer's manual assignment (which may
+            // retain these partitions) and must not be sent under the departing member.
+            if (GetCommitCoordinator().IsLeaveInProgress)
+            {
+                if (committed)
+                    LogCommittedRevokedOffsets();
+                return;
+            }
 
             // The revoked membership's own commit: it never waits for a leave (the version is
             // passed), and is rejected if that membership has ended.
