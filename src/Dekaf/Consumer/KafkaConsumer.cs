@@ -7731,7 +7731,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // consumer's live offsets belong to its manual assignment, committed by commits made
             // outside the callback, after the leave, without the departing member's identity.
             if (coordinator.IsInsideLeaveRevocation)
+            {
+                // The leave stopped waiting for this callback and completed: its offsets were
+                // discarded with the membership, whose partitions may have moved on.
+                if (!coordinator.IsLeaveInProgress)
+                    LogLeaveCallbackCommitAfterLeave(_options.RebalanceTimeoutMs);
                 return;
+            }
 
             // The consumer's own offsets are committed after a leave in progress, without the
             // departing member's identity.
@@ -14671,6 +14677,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     #endregion
 
     #region Logging
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "CommitAsync from a rebalance callback of Unsubscribe or a switch to manual assignment ran after the group was left (the callback overran the {RebalanceTimeoutMs} ms rebalance timeout); nothing was committed because the partitions may already belong to another member")]
+    private partial void LogLeaveCallbackCommitAfterLeave(int rebalanceTimeoutMs);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Error in prefetch loop")]
     private partial void LogPrefetchLoopError(Exception exception);

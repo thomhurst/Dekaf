@@ -877,7 +877,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// True when the calling flow is a rebalance callback delivered while a leave is in progress:
     /// a commit from it belongs to the departing membership.
     /// </summary>
-    internal bool IsInsideLeaveRevocation => IsLeaveInProgress && IsInsideOwnRebalanceCallback();
+    /// <remarks>
+    /// Also true after the leave has completed for a callback it started and stopped waiting for
+    /// (one that overran the rebalance timeout): such a callback still belongs to the membership
+    /// that ended.
+    /// </remarks>
+    internal bool IsInsideLeaveRevocation =>
+        IsInsideOwnRebalanceCallback()
+        && (IsLeaveInProgress || s_drainScope.Value is { IsLeave: true });
 
     internal ValueTask WaitForLeaveBeforeCommitAsync(CancellationToken cancellationToken)
     {
@@ -3998,6 +4005,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             while (_pendingRebalanceCallbacks.TryPeek(out var pending))
             {
                 ThrowIfCallbackDeliveryStopped(cancellationToken);
+                if (Volatile.Read(ref _leaveInProgress) != 0)
+                    scope.MarkLeave();
+
                 if (pending.Lost is { } lost)
                 {
                     await InvokePartitionsLostCoreAsync(lost, pending, cancellationToken).ConfigureAwait(false);
@@ -4165,10 +4175,17 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private sealed class DrainScope(ConsumerCoordinator coordinator)
     {
         private int _active = 1;
+        private int _leave;
 
         public ConsumerCoordinator Coordinator { get; } = coordinator;
 
         public bool IsActive => Volatile.Read(ref _active) != 0;
+
+        // Set once the drain delivers a callback while a leave is in progress; kept for the rest
+        // of the drain, so a callback that outlives the leave is still known as the leave's.
+        public bool IsLeave => Volatile.Read(ref _leave) != 0;
+
+        public void MarkLeave() => Volatile.Write(ref _leave, 1);
 
         public void Deactivate() => Volatile.Write(ref _active, 0);
     }

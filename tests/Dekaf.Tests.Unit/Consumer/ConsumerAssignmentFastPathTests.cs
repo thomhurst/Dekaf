@@ -697,6 +697,88 @@ public sealed partial class ConsumerAssignmentFastPathTests
         }
     }
 
+    [Test]
+    [Timeout(30_000)]
+    public async Task Assign_LeaveCallbackOverrunsRebalanceTimeout_CommitAsyncCommitsNothing(
+        CancellationToken testTimeout)
+    {
+        // A slow OnPartitionsRevokedAsync of the leave ignores cancellation and outlives the
+        // rebalance timeout; the leave stops waiting for it and completes. Its later
+        // CommitAsync() must commit nothing (not the manual assignment's offsets under the old
+        // member), and warn.
+        var (connectionPool, connection, commits) = CreateCommitCapturingConnection();
+        await using var metadataManager = CreateCommitMetadataManager(connectionPool);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callbackCommitted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var logger = new CapturingLogger();
+        KafkaConsumer<string, string>? consumer = null;
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsRevokedAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(_ => new ValueTask(CommitAfterGateAsync()));
+        consumer = new KafkaConsumer<string, string>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                GroupId = "group-a",
+                OffsetCommitMode = OffsetCommitMode.Manual,
+                QueuedMinMessages = 1,
+                RebalanceTimeoutMs = 200,
+                RebalanceListener = listener
+            },
+            Serializers.String,
+            Serializers.String,
+            connectionPool,
+            metadataManager,
+            new SingleLoggerFactory(logger));
+        await using var disposeConsumer = consumer;
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(testTimeout);
+        var partition = new TopicPartition("test-topic", 0);
+
+        consumer.Assign(partition);
+        consumer.StoreOffset(new TopicPartitionOffset(partition.Topic, partition.Partition, 9));
+        await GetCoordinatorField<Task>(GetCoordinator(consumer), "_pendingLeave").WaitAsync(testTimeout);
+
+        gate.SetResult();
+        await callbackCommitted.Task.WaitAsync(testTimeout);
+
+        await Assert.That(commits).IsEmpty();
+        await Assert.That(logger.Messages.Any(entry =>
+                entry.Level == Microsoft.Extensions.Logging.LogLevel.Warning
+                && entry.Message.Contains("overran", StringComparison.Ordinal)))
+            .IsTrue();
+
+        async Task CommitAfterGateAsync()
+        {
+            // Ignores the callback's cancellation, as a handler blocked on I/O does.
+            await gate.Task;
+            try
+            {
+                await consumer!.CommitAsync(CancellationToken.None);
+                callbackCommitted.TrySetResult();
+            }
+            catch (Exception ex)
+            {
+                callbackCommitted.TrySetException(ex);
+            }
+        }
+    }
+
+    private sealed class SingleLoggerFactory(Microsoft.Extensions.Logging.ILogger logger)
+        : Microsoft.Extensions.Logging.ILoggerFactory
+    {
+        public Microsoft.Extensions.Logging.ILogger CreateLogger(string categoryName) => logger;
+
+        public void AddProvider(Microsoft.Extensions.Logging.ILoggerProvider provider)
+        {
+        }
+
+        public void Dispose()
+        {
+        }
+    }
+
     private static (IConnectionPool Pool, IKafkaConnection Connection, List<OffsetCommitRequest> Commits)
         CreateCommitCapturingConnection()
     {
