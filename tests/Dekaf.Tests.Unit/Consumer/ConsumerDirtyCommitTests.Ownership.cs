@@ -764,6 +764,7 @@ public sealed partial class ConsumerDirtyCommitTests
     }
 
     [Test]
+    [NotInParallel("AssignmentSyncPublishedSeam")]
     public async Task AssignmentSync_RevokedAndReassignedPartition_StaleStoredOffsetIsNotCommittedDuringCleanup()
     {
         // P0 is revoked and assigned back before the consumer synchronizes. A commit that runs

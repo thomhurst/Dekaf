@@ -486,6 +486,7 @@ public sealed partial class ConsumerDirtyCommitTests
     }
 
     [Test]
+    [NotInParallel("RevokedPartitionCleanupSeam")]
     public async Task AssignmentSync_ReassignedSeekRevokedDuringCleanup_IsNotRestored()
     {
         var p0 = new TopicPartition("topic-a", 0);
