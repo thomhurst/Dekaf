@@ -28,7 +28,7 @@ public class ConsumerCoordinatorStablePollBenchmarks
         // The stable path never reaches the connection pool or metadata.
         _coordinator = new ConsumerCoordinator(options, null!, null!);
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
-        typeof(ConsumerCoordinator).GetField("_subscribedTopics", flags)!.SetValue(_coordinator, _topics);
+        CoordinatorSubscription.Set(_coordinator, _topics);
         typeof(ConsumerCoordinator).GetField("_state", flags)!.SetValue(_coordinator, CoordinatorState.Stable);
 
         var pending = EnsureActiveGroup();

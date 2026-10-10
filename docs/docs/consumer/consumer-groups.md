@@ -202,6 +202,14 @@ assignment, group metadata, and offset queries. It intentionally excludes consum
 close/dispose, subscribe, and assignment mutation. The view is valid only while its
 callback is running; using a retained view afterward throws `InvalidOperationException`.
 
+A seek or pause made in `OnPartitionsAssignedAsync` for a partition that callback
+assigned applies to the new ownership and replaces the committed or reset position,
+whether it goes through `IRebalanceConsumer` or a captured consumer. That holds when
+the partition was revoked or lost and then assigned straight back: the previous
+ownership's pause and position are cleared, the callback's are kept. Until the
+consumer initializes the partition, `GetPosition` in that callback returns the seek it
+made, or `null`.
+
 Existing `IRebalanceListener` implementations and registrations require no changes.
 Migrate only listeners that need safe consumer operations by changing the implemented
 interface and adding the `IRebalanceConsumer` callback parameter.

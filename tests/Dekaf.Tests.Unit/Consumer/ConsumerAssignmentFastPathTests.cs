@@ -17,7 +17,7 @@ namespace Dekaf.Tests.Unit.Consumer;
 // These tests coordinate background consumer work with Task continuations. Running thousands of
 // test cases concurrently can starve those continuations long enough to create false timeouts.
 [NotInParallel]
-public sealed class ConsumerAssignmentFastPathTests
+public sealed partial class ConsumerAssignmentFastPathTests
 {
     private static readonly Guid TestTopicId = Guid.Parse("00000000-0000-0000-0000-000000000001");
     private static readonly FieldInfo PollVersionField = typeof(ConsumerCoordinator).GetField(
@@ -1027,7 +1027,7 @@ public sealed class ConsumerAssignmentFastPathTests
         var staleInFlightFetch = CreateFetch(partition: 0, baseOffset: 102, value: "stale-in-flight");
         await WritePrefetchedItemsAsync(consumer, [staleInFlightFetch], staleFetchBufferEpoch);
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
-        var (_, _, _, pendingClassifications) =
+        var (_, _, _, pendingClassifications, _) =
             await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
 
         await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(0L);
@@ -1083,7 +1083,7 @@ public sealed class ConsumerAssignmentFastPathTests
         var coordinator = GetCoordinator(consumer);
         ProcessCoordinatorAssignment(coordinator, CreateAssignmentWithNewPartitions([0], [0]));
         await consumer.EnsureAssignmentAsync(CancellationToken.None);
-        var (_, _, _, pendingClassifications) =
+        var (_, _, _, pendingClassifications, _) =
             await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
 
         await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(100L);
@@ -1133,7 +1133,7 @@ public sealed class ConsumerAssignmentFastPathTests
             .Throws<KafkaException>();
 
         var coordinator = GetCoordinator(consumer);
-        var (_, _, _, pendingClassifications) =
+        var (_, _, _, pendingClassifications, _) =
             await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
 
         await Assert.That(GetFetchPositions(consumer)[new TopicPartition("test-topic", 0)]).IsEqualTo(10L);
@@ -2299,7 +2299,10 @@ public sealed class ConsumerAssignmentFastPathTests
         int defaultApiTimeoutMs = 60_000,
         AutoOffsetReset? autoOffsetResetNewPartitions = null,
         AutoOffsetReset autoOffsetReset = AutoOffsetReset.Latest,
-        TimeSpan? autoOffsetResetDuration = null)
+        TimeSpan? autoOffsetResetDuration = null,
+        IRebalanceListener? rebalanceListener = null,
+        IConsumerAwareRebalanceListener? consumerAwareRebalanceListener = null,
+        IRebalanceListener[]? additionalRebalanceListeners = null)
     {
         return new KafkaConsumer<string, string>(
             new ConsumerOptions
@@ -2313,7 +2316,10 @@ public sealed class ConsumerAssignmentFastPathTests
                 DefaultApiTimeoutMs = defaultApiTimeoutMs,
                 AutoOffsetResetNewPartitions = autoOffsetResetNewPartitions,
                 AutoOffsetReset = autoOffsetReset,
-                AutoOffsetResetDuration = autoOffsetResetDuration
+                AutoOffsetResetDuration = autoOffsetResetDuration,
+                RebalanceListener = rebalanceListener,
+                ConsumerAwareRebalanceListener = consumerAwareRebalanceListener,
+                AdditionalRebalanceListeners = additionalRebalanceListeners
             },
             Serializers.String,
             Serializers.String,
@@ -3213,7 +3219,8 @@ public sealed class ConsumerAssignmentFastPathTests
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("ProcessConsumerGroupAssignment method not found.");
 
-        return method.Invoke(coordinator, [assignment])
+        // As a response to a request stamped with the current subscription generation.
+        return method.Invoke(coordinator, [assignment, coordinator.SubscriptionGeneration])
             ?? throw new InvalidOperationException("ProcessConsumerGroupAssignment returned null.");
     }
 

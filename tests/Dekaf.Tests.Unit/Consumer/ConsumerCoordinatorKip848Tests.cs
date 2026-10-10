@@ -1781,7 +1781,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
         await Assert.That(commitRequestCount).IsEqualTo(0);
 
-        var (_, assignmentVersion, _, _) = await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(
+        var (_, assignmentVersion, _, _, _) = await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(
             CancellationToken.None);
         coordinator.AcknowledgeAssignmentSync(assignmentVersion);
         await coordinator.CommitOffsetsAsync(
@@ -1836,7 +1836,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             "_maxPollExpiredAtPollVersion",
             GetCoordinatorLongField(coordinator, "_pollVersion"));
 
-        var (_, assignmentVersion, _, _) = await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(
+        var (_, assignmentVersion, _, _, _) = await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(
             CancellationToken.None);
         coordinator.AcknowledgeAssignmentSync(assignmentVersion);
 
@@ -1874,7 +1874,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
 
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
-        var (_, _, _, newlyExpandedPartitions) =
+        var (_, _, _, newlyExpandedPartitions, _) =
             await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
 
         await Assert.That(newlyExpandedPartitions).IsEquivalentTo(
@@ -1910,10 +1910,10 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             _metadataManager);
 
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
-        var (_, firstVersion, _, _) = await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(
+        var (_, firstVersion, _, _, _) = await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(
             CancellationToken.None);
         await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
-        var (_, secondVersion, _, classifications) =
+        var (_, secondVersion, _, classifications, _) =
             await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
 
         var expandedPartition = new TopicPartition("test-topic", 1);
@@ -1921,7 +1921,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(classifications).IsEquivalentTo([expandedPartition]);
 
         coordinator.AcknowledgeInitializedPartitions([expandedPartition], secondVersion);
-        var (_, acknowledgedVersion, _, acknowledgedClassifications) =
+        var (_, acknowledgedVersion, _, acknowledgedClassifications, _) =
             await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
 
         await Assert.That(acknowledgedVersion).IsEqualTo(firstVersion);
@@ -1957,15 +1957,15 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             _metadataManager);
 
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
-        var (_, staleVersion, _, _) = await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(
+        var (_, staleVersion, _, _, _) = await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(
             CancellationToken.None);
         await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
-        var (_, currentVersion, _, currentClassifications) =
+        var (_, currentVersion, _, currentClassifications, _) =
             await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
 
         var partition = new TopicPartition("test-topic", 1);
         coordinator.AcknowledgeInitializedPartitions([partition], staleVersion);
-        var (_, _, _, afterStaleAcknowledgement) =
+        var (_, _, _, afterStaleAcknowledgement, _) =
             await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
 
         await Assert.That(currentVersion).IsGreaterThan(staleVersion);
@@ -1974,7 +1974,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(afterStaleAcknowledgement).IsEquivalentTo(currentClassifications);
 
         coordinator.AcknowledgeInitializedPartitions([partition], currentVersion);
-        var (_, _, _, afterCurrentAcknowledgement) =
+        var (_, _, _, afterCurrentAcknowledgement, _) =
             await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
 
         await Assert.That(afterCurrentAcknowledgement).IsEquivalentTo(
