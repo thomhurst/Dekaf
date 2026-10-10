@@ -28,7 +28,7 @@ public sealed partial class KafkaConsumerServiceTests
         // (both callbacks ran, both syncs completed) before processing started. The record belongs
         // to the ended ownership: a DLQ copy would duplicate the new ownership's, and its stored
         // offset would rewind the new ownership's progress.
-        var consumer = CreateGroupConsumer();
+        await using var consumer = CreateGroupConsumer();
         AssignAndInitialize(consumer, FetchedPartition);
         using var fetch = PendingFetchData.Create(FetchedPartition.Topic, FetchedPartition.Partition, Array.Empty<RecordBatch>());
         var record = CreateFetchedRecord(fetch, offset: 42);
@@ -56,7 +56,7 @@ public sealed partial class KafkaConsumerServiceTests
         // The coordinator revokes the partition while the DLQ copy is produced; the consumer has
         // not synchronized yet. The revocation commit has run or is running, so an offset stored
         // now would be committed after it, over the next owner's progress.
-        var consumer = CreateGroupConsumer();
+        await using var consumer = CreateGroupConsumer();
         AssignAndInitialize(consumer, FetchedPartition);
         using var fetch = PendingFetchData.Create(FetchedPartition.Topic, FetchedPartition.Partition, Array.Empty<RecordBatch>());
         var record = CreateFetchedRecord(fetch, offset: 42);
@@ -80,7 +80,7 @@ public sealed partial class KafkaConsumerServiceTests
     [Test]
     public async Task RealConsumer_RecordOfCurrentOwnership_IsRoutedAndStored()
     {
-        var consumer = CreateGroupConsumer();
+        await using var consumer = CreateGroupConsumer();
         AssignAndInitialize(consumer, FetchedPartition);
         using var fetch = PendingFetchData.Create(FetchedPartition.Topic, FetchedPartition.Partition, Array.Empty<RecordBatch>());
         var record = CreateFetchedRecord(fetch, offset: 42);
