@@ -1490,6 +1490,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // Per partition: queued EOFs below this offset were superseded by records published after
     // them. Written under the invalidation lock (or on the consumer thread for direct fetches).
     private readonly ConcurrentDictionary<TopicPartition, long> _eofSupersededBelow = new();
+    // Set after a bound is written to _eofSupersededBelow, cleared before a full clear. The EOF
+    // drain reads it instead of ConcurrentDictionary.IsEmpty, which takes every bucket lock when
+    // the dictionary is empty: the normal path's case, and it ran once per delivered EOF.
+    private volatile bool _hasEofSupersededBounds;
     // Set by CompleteBatchPoll and reset by BeginBatchStream. Safe as a consumer field only
     // because the batch APIs are single-consumer: one stream enumerates at a time.
     private bool _batchLoopExitRequested;
@@ -4211,11 +4215,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     /// <summary>
-    /// One or two dictionary lookups per delivered EOF. Both dictionaries are empty unless a
-    /// partition has been consumed or records superseded a queued EOF.
+    /// Per delivered EOF: one lock-free position lookup. The superseded-bound lookup runs only
+    /// once records have superseded a queued EOF; before that it is one field read.
     /// </summary>
     private bool IsSupersededEof(TopicPartition partition, long offset) =>
-        (!_eofSupersededBelow.IsEmpty
+        (_hasEofSupersededBounds
             && _eofSupersededBelow.TryGetValue(partition, out var below)
             && offset < below)
         || (_positions.TryGetValue(partition, out var position) && offset < position);
@@ -5756,6 +5760,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         if (!_eofSupersededBelow.TryGetValue(partition, out var below) || below < publishedEndExclusive)
             _eofSupersededBelow[partition] = publishedEndExclusive;
+        _hasEofSupersededBounds = true;
     }
 
     /// <summary>
@@ -8640,6 +8645,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
         // Clear pending EOF events as they are stale after buffer clear
         _pendingEofEvents.Clear();
+        // Flag first: a bound written concurrently either survives with the flag set again, or
+        // is cleared with it. The flag may stay set over an empty dictionary, never the reverse.
+        _hasEofSupersededBounds = false;
         _eofSupersededBelow.Clear();
     }
 
@@ -8754,7 +8762,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void ClearPendingEofEventsForPartitions(HashSet<TopicPartition> partitionsToRemove)
     {
         // A replaced position (seek, revocation, release) starts a new EOF history.
-        if (!_eofSupersededBelow.IsEmpty)
+        if (_hasEofSupersededBounds)
         {
             foreach (var partition in partitionsToRemove)
                 _eofSupersededBelow.TryRemove(partition, out _);
