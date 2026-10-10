@@ -39,6 +39,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // Heartbeats can revoke and reassign a partition between poll-loop snapshots.
     // Signal before publication to defeat assignment ABA (A -> B -> A with the same final set).
     private readonly Action<IReadOnlyList<TopicPartition>>? _onPartitionsRevoking;
+    // Receives the generation a revocation takes; the same generation is enqueued with it.
+    private readonly Action<IReadOnlyList<TopicPartition>, long>? _onPartitionsRevokingAt;
     // Runs after assignment publication but before user revoke callbacks and the next heartbeat.
     // Assignment snapshots wait for this hook so KafkaConsumer cannot discard dirty revoked offsets first.
     private readonly Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>?
@@ -48,7 +50,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         IEnumerable<TopicPartition>,
         long,
         IRebalanceConsumerScope>? _createRebalanceConsumerScope;
-    private readonly ConcurrentQueue<TopicPartition> _revokedPartitionsSinceLastSync = new();
+    // Each revocation with the generation NotifyRevoking took for it (see KafkaConsumer's
+    // ownership invariants): a drain reports exactly the generations it removed.
+    private readonly ConcurrentQueue<(TopicPartition Partition, long Generation)> _revokedPartitionsSinceLastSync = new();
     // Advances on every published revocation or loss. Each partition keeps the sequence of its
     // latest revocation, and each queued rebalance notification the sequence when it was
     // queued, so a callback delivered after its partitions were revoked is recognizably stale.
@@ -279,7 +283,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoking,
         Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? onPartitionsRevokedAsync = null,
         Func<IEnumerable<TopicPartition>, IEnumerable<TopicPartition>, long, IRebalanceConsumerScope>?
-            createRebalanceConsumerScope = null)
+            createRebalanceConsumerScope = null,
+        Action<IReadOnlyList<TopicPartition>, long>? onPartitionsRevokingAt = null)
     {
         _options = options;
         _connectionPool = connectionPool;
@@ -291,6 +296,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         _additionalRebalanceListeners = options.AdditionalRebalanceListeners;
         _onPartitionsRevoked = onPartitionsRevoked;
         _onPartitionsRevoking = onPartitionsRevoking;
+        _onPartitionsRevokingAt = onPartitionsRevokingAt;
         _onPartitionsRevokedAsync = onPartitionsRevokedAsync;
         _createRebalanceConsumerScope = createRebalanceConsumerScope;
         if (_consumerAwareRebalanceListener is not null && _createRebalanceConsumerScope is null)
@@ -533,9 +539,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 {
                     HashSet<TopicPartition>? revoked = null;
                     Dictionary<TopicPartition, long>? sequences = null;
-                    while (_revokedPartitionsSinceLastSync.TryDequeue(out var partition))
+                    Dictionary<TopicPartition, long>? generations = null;
+                    while (_revokedPartitionsSinceLastSync.TryDequeue(out var entry))
                     {
+                        var partition = entry.Partition;
                         (revoked ??= []).Add(partition);
+                        generations ??= [];
+                        generations[partition] = generations.TryGetValue(partition, out var drained)
+                            ? Math.Max(drained, entry.Generation)
+                            : entry.Generation;
                         if (_enqueuedRevocationSequences.TryGetValue(partition, out var sequence))
                         {
                             // Handed to the owner, which keeps it until an acknowledged sync covers it.
@@ -543,6 +555,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             (sequences ??= [])[partition] = sequence;
                         }
                     }
+
+                    DrainedRevocationGenerations = generations;
 
                     return (
                         _assignedPartitions,
@@ -557,11 +571,25 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// The latest generation of each partition the last
+    /// <see cref="GetAssignmentSnapshotAndDrainRevocationsAsync"/> drained, or null when it drained
+    /// none. Only those generations, never a later one, count as drained: a revocation whose
+    /// generation was taken but which was not enqueued yet stays pending. Read by the single
+    /// drainer (the owner's assignment sync, under its assignment lock) right after the drain.
+    /// </summary>
+    internal IReadOnlyDictionary<TopicPartition, long>? DrainedRevocationGenerations { get; private set; }
+
     internal void RestoreRevokedPartitionsSinceLastSync(HashSet<TopicPartition> revoked)
     {
         lock (_assignmentStateLock)
         {
-            EnqueueRevokedPartitions(revoked);
+            var generations = DrainedRevocationGenerations;
+            foreach (var partition in revoked)
+            {
+                _revokedPartitionsSinceLastSync.Enqueue(
+                    (partition, generations is not null && generations.TryGetValue(partition, out var generation) ? generation : 0));
+            }
         }
     }
 
@@ -677,11 +705,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         return true;
     }
 
+    /// <param name="generation">
+    /// The fetch generation <see cref="NotifyRevoking"/> took for these revocations.
+    /// </param>
     /// <param name="revocationSequence">
     /// The sequence <see cref="NotifyRevoking"/> recorded for these revocations; 0 when re-queueing
     /// revocations already published. Caller holds <c>_assignmentStateLock</c>.
     /// </param>
-    private void EnqueueRevokedPartitions(IEnumerable<TopicPartition> revoked, long revocationSequence = 0)
+    private void EnqueueRevokedPartitions(IEnumerable<TopicPartition> revoked, long generation, long revocationSequence = 0)
     {
         foreach (var partition in revoked)
         {
@@ -693,7 +724,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         : revocationSequence;
             }
 
-            _revokedPartitionsSinceLastSync.Enqueue(partition);
+            _revokedPartitionsSinceLastSync.Enqueue((partition, generation));
         }
     }
 
@@ -1866,7 +1897,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     /// <summary>
     /// The current membership version. A caller that snapshots offsets reads it first and passes
-    /// it to <see cref="CommitOffsetsAsync(IEnumerable{TopicPartitionOffset}, bool, int, CancellationToken)"/>,
+    /// it to <see cref="CommitOffsetsAsync(IEnumerable{TopicPartitionOffset}, bool, int, CancellationToken, int?)"/>,
     /// so offsets taken under a membership that has since been replaced are never sent.
     /// </summary>
     internal int MembershipVersion
@@ -1912,11 +1943,19 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// The membership version read before the offsets were taken. The commit is rejected if the
     /// membership changes after that, up to the send.
     /// </param>
+    /// <param name="ownershipMemberEpoch">
+    /// The member epoch read before the caller decided which partitions it owns, or null to send
+    /// the current epoch. KIP-848 bumps the member epoch when its assignment changes, so the
+    /// broker rejects the commit with StaleMemberEpoch if a partition was revoked (and possibly
+    /// taken over) after that decision, instead of letting it rewind the new owner's progress.
+    /// Such a rejection is not retried here: the caller decides ownership again.
+    /// </param>
     internal async ValueTask CommitOffsetsAsync(
         IEnumerable<TopicPartitionOffset> offsets,
         bool retryUntilApiTimeout,
         int membershipVersion,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? ownershipMemberEpoch = null)
     {
         if (string.IsNullOrEmpty(_options.GroupId))
             return;
@@ -2011,6 +2050,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 }
 
                 ReadCommitIdentity(membershipVersion, out var commitMemberId, out var commitMemberEpoch);
+                if (ownershipMemberEpoch is { } ownershipEpoch)
+                    commitMemberEpoch = ownershipEpoch;
                 var request = new OffsetCommitRequest
                 {
                     GroupId = _options.GroupId!,
@@ -2042,6 +2083,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         if (partition.ErrorCode != ErrorCode.None)
                         {
                             var staleMemberEpoch = partition.ErrorCode == ErrorCode.StaleMemberEpoch;
+                            if (staleMemberEpoch && ownershipMemberEpoch is not null)
+                            {
+                                // The assignment changed after the caller decided ownership: retrying
+                                // with the same epoch is rejected again, and a newer epoch could send
+                                // offsets of a partition this member no longer owns.
+                                throw new Errors.GroupException(
+                                    ErrorCode.StaleMemberEpoch,
+                                    $"OffsetCommit failed for {topicName}-{partition.PartitionIndex}: the member's assignment changed after its owned offsets were taken",
+                                    isRetriable: false)
+                                {
+                                    GroupId = _options.GroupId
+                                };
+                            }
+
                             if (staleMemberEpoch)
                             {
                                 // KIP-848: the coordinator bumped the member epoch (e.g. a
@@ -2090,6 +2145,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             _commitLock.Release();
         }
     }
+
+    /// <summary>
+    /// After a commit pinned to <paramref name="staleEpoch"/> was rejected: waits, while the member
+    /// is active, for the heartbeat to deliver the epoch of its changed assignment.
+    /// </summary>
+    internal ValueTask WaitForCommitMemberEpochRefreshAsync(int staleEpoch, CancellationToken cancellationToken)
+        => _state == CoordinatorState.Stable
+            ? WaitForMemberEpochRefreshAsync(staleEpoch, cancellationToken)
+            : default;
 
     /// <summary>
     /// Waits for the background heartbeat loop to advance the member epoch past the value a
@@ -2524,7 +2588,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     {
         var revoked = _assignedPartitions.Count != 0 ? _assignedPartitions.ToList() : null;
 
-        var revocationSequence = NotifyRevoking(revoked);
+        var (revocationSequence, revocationGeneration) = NotifyRevoking(revoked);
 
         lock (_assignmentStateLock)
         {
@@ -2535,7 +2599,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             if (revoked is not null)
             {
                 Interlocked.Increment(ref _assignmentVersion);
-                EnqueueRevokedPartitions(revoked, revocationSequence);
+                EnqueueRevokedPartitions(revoked, revocationGeneration, revocationSequence);
             }
         }
 
@@ -2650,7 +2714,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             return null;
 
         lock (_assignmentStateLock)
-            return _revokedPartitionsSinceLastSync.IsEmpty ? null : [.. _revokedPartitionsSinceLastSync];
+            return _revokedPartitionsSinceLastSync.IsEmpty
+                ? null
+                : new HashSet<TopicPartition>(_revokedPartitionsSinceLastSync.Select(static entry => entry.Partition));
     }
     private Telemetry.StandardClientTelemetryMetrics? StandardTelemetryMetrics => TelemetryMetricCollector?.StandardMetrics;
 
@@ -2971,21 +3037,28 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (response.MemberId is not null)
             _memberId = response.MemberId;
 
-        if (response.MemberEpoch != _generationId)
-        {
-            LogMemberEpochUpdated(response.MemberEpoch);
-            _generationId = response.MemberEpoch;
-        }
-
         if (response.HeartbeatIntervalMs > 0)
             _heartbeatIntervalMs = response.HeartbeatIntervalMs;
 
-        if (response.Assignment is not null)
+        try
         {
-            return ProcessConsumerGroupAssignment(response.Assignment, requestSubscriptionGeneration);
-        }
+            if (response.Assignment is not null)
+                return ProcessConsumerGroupAssignment(response.Assignment, requestSubscriptionGeneration);
 
-        return default;
+            return default;
+        }
+        finally
+        {
+            // Published after the assignment it comes with: the owner records a revocation in it
+            // (NotifyRevoking) before this volatile write, so a stored-offset commit that reads
+            // the new epoch (its ownership epoch) then also sees the revocation pending, and does
+            // not send the revoked partition's offset with an epoch the broker accepts.
+            if (response.MemberEpoch != _generationId)
+            {
+                LogMemberEpochUpdated(response.MemberEpoch);
+                _generationId = response.MemberEpoch;
+            }
+        }
     }
 
     /// <summary>
@@ -3232,7 +3305,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             ? new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)
             : null;
 
-        var revocationSequence = NotifyRevoking(revoked);
+        var (revocationSequence, revocationGeneration) = NotifyRevoking(revoked);
 
         var classificationChanged = false;
         var publishedSubscriptionGeneration = OutdatedSubscriptionGeneration;
@@ -3270,7 +3343,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     publishedSubscriptionGeneration = requestSubscriptionGeneration;
 
                 if (revoked is not null)
-                    EnqueueRevokedPartitions(revoked, revocationSequence);
+                    EnqueueRevokedPartitions(revoked, revocationGeneration, revocationSequence);
                 if (revocationCommitCompletion is not null)
                     _pendingRevocationCommit = revocationCommitCompletion.Task;
                 if (assignmentCallbacksCompletion is not null)
@@ -3305,11 +3378,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         return result;
     }
 
-    /// <returns>The revocation sequence recorded, or 0 when nothing was revoked.</returns>
-    private long NotifyRevoking(IReadOnlyList<TopicPartition>? revoked)
+    /// <returns>
+    /// The revocation sequence recorded (0 when nothing was revoked or it is not tracked), and the
+    /// fetch generation this revocation took (0 when nothing was revoked), which the caller
+    /// enqueues with the revoked partitions.
+    /// </returns>
+    private (long Sequence, long Generation) NotifyRevoking(IReadOnlyList<TopicPartition>? revoked)
     {
         if (revoked is null)
-            return 0;
+            return (0, 0);
 
         // While the owner's subscription has changed since the one this member answers (it
         // abandoned the group assignment), nothing it keeps can consult revocation sequences, and
@@ -3337,8 +3414,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
 
         PruneRevocationSequences();
+        var generation = PendingFetchData.NextFetchGeneration();
+        _onPartitionsRevokingAt?.Invoke(revoked, generation);
         _onPartitionsRevoking?.Invoke(revoked);
-        return tracked ? sequence : 0;
+        return (tracked ? sequence : 0, generation);
     }
 
     /// <summary>
@@ -3401,11 +3480,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     internal void RevokeAndReassignForTest(TopicPartition partition)
     {
-        var revocationSequence = NotifyRevoking([partition]);
+        var (revocationSequence, revocationGeneration) = NotifyRevoking([partition]);
         lock (_assignmentStateLock)
         {
             Interlocked.Increment(ref _assignmentVersion);
-            EnqueueRevokedPartitions([partition], revocationSequence);
+            EnqueueRevokedPartitions([partition], revocationGeneration, revocationSequence);
         }
     }
 

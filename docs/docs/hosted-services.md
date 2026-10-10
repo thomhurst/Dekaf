@@ -175,6 +175,12 @@ When `ProcessAsync` throws, the service works through these layers:
 
 The terminal disposition defaults to `MessageFailureDisposition.Redeliver`. The service keeps running: it seeks the record's partition back to the failed offset and pauses that partition for `PollRetryBackoff` (one second by default), doubling the pause for each consecutive redelivery of the same offset up to `MaxPollRetryBackoff` (30 seconds by default). Other partitions keep consuming. The failed offset stays uncommitted until processing succeeds, so a record that always fails holds its partition. Configure retry topics or a DLQ, or return `Discard`, to move past records that cannot succeed.
 
+If a rebalance revokes or loses the record's partition while the record is being processed, the service does not pause, rewind, or store an offset for it: the record is still uncommitted, so the partition's next owner delivers it again. The service also stops working on the record: it makes no further in-place retry (a pending retry delay ends early) and produces no retry-topic or DLQ copy. The handler invocation already running is not cancelled. If the revocation lands while a copy is being produced, the offset is still not stored, so the next owner can produce a second copy (at-least-once).
+
+:::note Decorated consumers
+These checks ask the Dekaf consumer which ownership each record was fetched under. If you pass the service your own decorator around a Dekaf consumer, the service cannot ask that, so it falls back to the decorator's `Assignment`: it notices a revocation only once the consumer has applied it, and it cannot tell when a partition was revoked and then assigned back, so it may still retry, rewind or copy such a record to a retry topic or DLQ. The wrapped Dekaf consumer still refuses to store or commit offsets for records it no longer owns, as long as your decorator forwards `StoreOffset` and the commit calls.
+:::
+
 | Terminal decision | Offset | Service behavior |
 | --- | --- | --- |
 | `MessageFailureDisposition.Redeliver` (default) | Uncommitted; partition rewound and paused with backoff | Continues consuming |

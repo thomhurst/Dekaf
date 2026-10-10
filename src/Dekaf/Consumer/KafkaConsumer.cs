@@ -283,9 +283,17 @@ internal sealed class PendingFetchData : IDisposable
         IPooledMemory? memoryOwner = null,
         string? activityName = null,
         long skipRecordsBelowOffset = -1,
-        long stopAtOffsetExclusive = -1)
+        long stopAtOffsetExclusive = -1,
+        long ownershipStart = 0)
     {
         var instance = Rent();
+        WriteGeneration(ref instance._ownershipStart, ownershipStart);
+        // Fetches of records take ordered generations, so a record's generation (which its
+        // ConsumeResult already carries) also tells whether it was fetched before an ownership
+        // of its partition began. Once per fetched partition batch.
+        var fetchGeneration = NextFetchGeneration();
+        WriteGeneration(ref instance._fetchGeneration, fetchGeneration);
+        Volatile.Write(ref instance._headerGeneration, (int)fetchGeneration);
         instance.Topic = topic;
         instance.PartitionIndex = partitionIndex;
         instance._activityName = activityName;
@@ -497,6 +505,105 @@ internal sealed class PendingFetchData : IDisposable
     public RecordBatch CurrentBatch => _batches[_batchIndex];
 
     internal int HeaderGeneration => Volatile.Read(ref _headerGeneration);
+
+    // Process-wide and 64-bit, so it never wraps. A result keeps only the low 32 bits (its
+    // header generation, which keeps ConsumeResult's size); while its fetch is not reused the full
+    // value is read from the fetch (TryGetFetchGeneration), otherwise ExpandFetchGeneration
+    // restores it from the counter.
+    private static long s_fetchGeneration;
+
+    // This use's full generation; its low 32 bits are the header generation it started with.
+    private long _fetchGeneration;
+
+    // The ownership start (S) of the partition when this fetch was created: offsets stored for
+    // its records are tagged with it, so they only commit under that ownership.
+    private long _ownershipStart;
+
+    /// <summary>
+    /// The ownership start this fetch was created under, while the fetch is still in the use the
+    /// header generation identifies. False once it was disposed or reused.
+    /// </summary>
+    internal long OwnershipStart => ReadGeneration(ref _ownershipStart);
+
+    internal bool TryGetOwnershipStart(int headerGeneration, out long ownershipStart)
+    {
+        ownershipStart = ReadGeneration(ref _ownershipStart);
+        return (int)ReadGeneration(ref _fetchGeneration) == headerGeneration
+               && Volatile.Read(ref _headerGeneration) == headerGeneration;
+    }
+
+    /// <summary>
+    /// The full generation of a result built from this fetch, while the fetch is still in that
+    /// use: its header generation still matches. False once the fetch was disposed or reused.
+    /// </summary>
+    internal bool TryGetFetchGeneration(int headerGeneration, out long fetchGeneration)
+    {
+        fetchGeneration = ReadGeneration(ref _fetchGeneration);
+        return (int)fetchGeneration == headerGeneration
+               && Volatile.Read(ref _headerGeneration) == headerGeneration;
+    }
+
+    /// <summary>The full generation and the ownership start, with one check of the fetch's use.</summary>
+    internal bool TryGetFetchGeneration(int headerGeneration, out long fetchGeneration, out long ownershipStart)
+    {
+        fetchGeneration = ReadGeneration(ref _fetchGeneration);
+        ownershipStart = ReadGeneration(ref _ownershipStart);
+        return (int)fetchGeneration == headerGeneration
+               && Volatile.Read(ref _headerGeneration) == headerGeneration;
+    }
+
+    private static void WriteGeneration(ref long field, long value)
+    {
+        if (IntPtr.Size == 8)
+            Volatile.Write(ref field, value);
+        else
+            Interlocked.Exchange(ref field, value);
+    }
+
+    /// <summary>
+    /// The latest generation taken: by a record-bearing fetch, a coordinator revocation, or an
+    /// ownership start. Later ones are larger.
+    /// </summary>
+    internal static long CurrentFetchGeneration => ReadGeneration(ref s_fetchGeneration);
+
+    /// <summary>A new, larger generation whose low 32 bits are never 0 (0 marks results without a fetch).</summary>
+    internal static long NextFetchGeneration()
+    {
+        while (true)
+        {
+            var generation = Interlocked.Increment(ref s_fetchGeneration);
+            if ((int)generation != 0)
+                return generation;
+        }
+    }
+
+    /// <summary>
+    /// The full generation of a delivered record from the low 32 bits its result carries: the
+    /// latest generation with those bits not after the current one. Exact for any record fetched
+    /// within the last 2^32 generations; a result retained longer reads as newer.
+    /// </summary>
+    internal static long ExpandFetchGeneration(int lowBits)
+    {
+        var current = CurrentFetchGeneration;
+        return current - unchecked((uint)((int)current - lowBits));
+    }
+
+    /// <summary>Atomic on 32-bit processes too; a plain volatile read on 64-bit ones.</summary>
+    internal static long ReadGeneration(ref long field)
+        => IntPtr.Size == 8 ? Volatile.Read(ref field) : Interlocked.Read(ref field);
+
+    /// <summary>Moves the generation counter forward to <paramref name="generation"/> (tests only).</summary>
+    internal static void AdvanceFetchGenerationForTest(long generation)
+    {
+        var current = CurrentFetchGeneration;
+        while (current < generation)
+        {
+            var observed = Interlocked.CompareExchange(ref s_fetchGeneration, generation, current);
+            if (observed == current)
+                return;
+            current = observed;
+        }
+    }
 
     internal bool IsHeaderGenerationActive(int generation) =>
         Volatile.Read(ref _referenceCount) > 0 && Volatile.Read(ref _headerGeneration) == generation;
@@ -1253,6 +1360,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     IConsumerPartitions,
     IConsumerOffsets,
     IConsumerRebalanceEventSource,
+    IConsumerRecordOwnership<TKey, TValue>,
     IConsumerLoggerFactorySource,
     IConsumerOffsetStoreTimingConfiguration,
     IConsumerBatchOffsetStore,
@@ -1413,9 +1521,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     //   a single fetch using a stale position before being updated by the next operation.
     //   Adding locks would defeat the purpose of lock-free consumption.
     private readonly ConcurrentDictionary<TopicPartition, long> _positions = new();      // Consumed position (what app has seen)
-    private readonly ConcurrentDictionary<TopicPartition, long> _storedOffsets = new();  // Offsets staged for commit
-    private readonly ConcurrentDictionary<TopicPartition, long> _dirtyStoredOffsets = new(); // Stored offsets changed since last successful commit
-    private readonly ConcurrentDictionary<TopicPartition, int> _storedOffsetLeaderEpochs = new();
+    // The stored offset of each partition with the ownership it was stored under (the partition's
+    // ownership start S for a group-managed consumer, 0 otherwise) and its leader epoch, in one
+    // slot per partition updated in place. A commit takes a dirty slot only when its ownership is
+    // the partition's current one, so a store validated under an ended ownership never commits.
+    private readonly ConcurrentDictionary<TopicPartition, StoredOffsetSlot> _storedOffsetSlots = new();
+    private static readonly Func<TopicPartition, StoredOffsetSlot> s_createStoredOffsetSlot = static _ => new StoredOffsetSlot();
+    // Group-managed (subscribed) consumer; republished with the subscription snapshot.
+    private volatile bool _isGroupManaged;
     private readonly ConcurrentDictionary<TopicPartition, long> _fetchPositions = new(); // Fetch position (what to fetch next)
     // Seeks and pauses an OnPartitionsAssigned callback makes for a partition it announced belong to
     // the ownership that callback starts, which assignment sync has not initialized yet.
@@ -1513,6 +1626,61 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private long _committedOffsetGeneration;
     private readonly ConcurrentDictionary<TopicPartition, WatermarkCacheEntry> _watermarks = new(); // Cached watermark offsets from fetch responses
     private readonly ConcurrentDictionary<TopicPartition, int> _watermarkAssignmentVersions = new();
+    // Fetch generation at which each assigned partition's current ownership began, and the latest
+    // ownership start or end: a record fetched after it, with no coordinator change since the last
+    // sync, belongs to a current ownership without further lookups.
+    // Record ownership invariants. One process-wide 64-bit counter (PendingFetchData's fetch
+    // generation) orders three kinds of events; each takes a new, larger value:
+    //   F  a record-bearing fetch is created (the value its records carry, low 32 bits);
+    //   R  the coordinator publishes a revocation or loss of partitions (NotifyRevoking, before
+    //      any revocation callback runs, before the revocation is enqueued for sync);
+    //   S  assignment sync publishes a partition's ownership start (new or assigned again).
+    // State, per partition:
+    //   _ownershipStartGenerations[p] = S of the current ownership; absent iff p is unassigned.
+    //   _pendingRevocations[p] = latest R not yet applied by a sync. An immutable map, replaced
+    //      under _pendingRevocationsLock and published with one volatile write, so an R becomes
+    //      visible for all its partitions at once (that write is its linearization point). Raised
+    //      only by the R hook (never lowered); an entry is removed only by the sync publication
+    //      that drained exactly that R or a later one (ForgetDrainedRevocations compares with the
+    //      drained entry's own generation, never with the counter, so an R taken but not yet
+    //      enqueued during a drain survives it). The sync forgets it last, under _snapshotStateGate,
+    //      after it cleared the old ownership's stored offsets and positions; a stored-offset
+    //      commit decides ownership under that gate too, so it never sees stale state as owned.
+    //   _latestOwnershipChangeFetchGeneration = max over every R and S (only raised; an R raises
+    //      it before its map is published).
+    // Stored offsets carry the ownership they were stored under (one StoredOffsetSlot per
+    //   partition: S of the record's fetch, or of the partition at an explicit store/seek; 0 when
+    //   not group-managed). A slot never takes a store of an earlier ownership than it holds
+    //   (starts only grow). A commit takes a slot only if its ownership is the partition's current
+    //   S, so a store validated under an ownership that ended before the write landed never
+    //   commits; such a slot is marked clean by the commit path.
+    // Rewinds the hosted service makes (pause and seek) are decided and applied in one step under
+    //   _snapshotStateGate (RewindIfOwned), so an ownership change cannot fall between them.
+    // Member epoch: the coordinator publishes a heartbeat's new member epoch only after it has
+    //   recorded that heartbeat's revocations (R). A stored-offset commit reads the epoch first
+    //   and decides ownership after, so with the new epoch it also sees the revocation pending;
+    //   with the old one the broker rejects it (StaleMemberEpoch) once the revocation completed.
+    // f is the full 64-bit generation: read from the record's fetch while that fetch is in the
+    //   same use, else expanded from the 32 bits the result keeps (exact within 2^32 generations).
+    // Classification of a record of p with fetch generation f (f = 0: not from a fetch, unknown):
+    //   Ended             p unassigned, or f < S(p) (fetched under an earlier ownership);
+    //   RevocationPending an unapplied R exists for p;
+    //   Owned             otherwise.
+    // Fast path: no pending R at all, f > latest change, and the coordinator's assignment version
+    //   equals the last synced one implies Owned (no S or R since the fetch, nothing unapplied).
+    //   An R disables it with the same volatile write that makes the R visible to the slow path.
+    // Every writer below goes through StartOwnership, EndOwnership, RecordCoordinatorRevocation
+    // or ForgetDrainedRevocations; every reader through GetRecordOwnership, IsRevocationPending or
+    // IsFetchedUnderCurrentSynchronizedOwnership.
+    private readonly ConcurrentDictionary<TopicPartition, long> _ownershipStartGenerations = new();
+    private readonly object _pendingRevocationsLock = new();
+    // Empty: the sentinel itself, so the fast path checks it with one reference comparison.
+    private static readonly Dictionary<TopicPartition, long> s_noPendingRevocations = [];
+    private volatile Dictionary<TopicPartition, long> _pendingRevocations = s_noPendingRevocations;
+    private long _latestOwnershipChangeFetchGeneration;
+    // Deterministic test seam: runs in RecordCoordinatorRevocation after the new map is built and
+    // before it is published.
+    internal static Action<object>? BeforePendingRevocationsPublishedForTest;
 
 
     // Partition EOF tracking
@@ -1539,6 +1707,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private int _activeConsumedPartition;
     private long _activeConsumedPosition;
     private int _activeConsumedLeaderEpoch = -1;
+    // The ownership start of the fetch the active position came from, written with the partition
+    // (the per-record fast path rewrites only the position; every ownership change clears the
+    // snapshot first). Lets a commit flush store the position under the ownership it was
+    // consumed in, after the fetch itself left the queue.
+    private long _activeConsumedOwnership;
     private int _activeConsumedPositionVersion;
 
     // Incremented whenever queued fetch data is disposed (Seek/Assign clear the buffer).
@@ -1744,6 +1917,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _coordinator is { } coordinator
         && coordinator.GetLastRevocationSequence(partition)
             > (_acknowledgedRevocationSequences.TryGetValue(partition, out var acknowledged) ? acknowledged : 0);
+
+    // Deterministic test seam: runs on the commit path after each stored offset's ownership is
+    // evaluated, so a test can change ownership the way a concurrent assignment sync would.
+    internal static Action<object>? AfterStoredOffsetOwnershipEvaluatedForTest;
+    // Deterministic test seam: runs in a commit's flush after the active consumed position is
+    // read and before it is stored, so a test can revoke and reassign the partition in between.
+    internal static Action<object>? AfterActiveConsumedPositionReadForTest;
+    // Deterministic test seam: runs in assignment sync right after it publishes the assignment,
+    // under the snapshot gate, before the old ownership's state is cleaned up.
+    internal static Action<object>? AfterAssignmentSyncPublishedForTest;
+    // Deterministic test seam: runs in StoreOffset(ConsumeResult) after the record's ownership was
+    // checked and before the offset is written.
+    internal static Action<object>? AfterStoreOffsetOwnershipCheckedForTest;
     // Thread-local storage keeps the production consumer's instance layout unchanged.
     [ThreadStatic]
     internal static Action? BeforeOffsetResetCommitForTest;
@@ -2168,7 +2354,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     new RebalanceConsumerScope<TKey, TValue>(
                         this,
                         assignment,
-                        newlyAssigned))
+                        newlyAssigned),
+                onPartitionsRevokingAt: RecordCoordinatorRevocation)
             {
                 TelemetryMetricCollector = _telemetryMetricCollector,
                 SynchronizesAssignment = true
@@ -5142,7 +5329,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 partitionResponse.AbortedTransactions,
                                 activityName: activityName,
                                 skipRecordsBelowOffset: _fetchPositions.GetValueOrDefault(tp, -1),
-                                stopAtOffsetExclusive: GetSnapshotEndOffset(tp));
+                                stopAtOffsetExclusive: GetSnapshotEndOffset(tp),
+                                ownershipStart: _ownershipStartGenerations.GetValueOrDefault(tp));
 
                             // Collect for later - we'll assign memory owner to the last one
                             pendingItems.Add(pending);
@@ -5243,12 +5431,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             if (EagerOffsetStore || (fullyTraversed && allYieldedRecordsProven))
             {
-                StoreOffsetCore(tp, nextOffset, leaderEpoch);
+                StoreOffsetCore(pending, nextOffset, leaderEpoch);
             }
             else
             {
                 if (pending.ProvenOffset >= 0)
-                    StoreOffsetCore(tp, pending.ProvenOffset + 1, pending.ProvenLeaderEpoch);
+                    StoreOffsetCore(pending, pending.ProvenOffset + 1, pending.ProvenLeaderEpoch);
                 stagedFullRange = pending.ProvenOffset + 1 >= nextOffset;
             }
         }
@@ -5275,12 +5463,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// stages everything yielded, including a record the application may still be holding.
     /// An explicit commit is the caller vouching for everything delivered so far.
     /// </summary>
-    private void ApplyConsumedPosition(TopicPartition partition, long nextOffset, int leaderEpoch)
+    private void ApplyConsumedPosition(TopicPartition partition, long ownership, long nextOffset, int leaderEpoch)
     {
         _positions[partition] = nextOffset;
         SetLastConsumedLeaderEpoch(partition, leaderEpoch);
+        // Stored under the ownership the position was consumed in, not the current one: a
+        // revocation and reassignment since the position was read must not make it the new
+        // ownership's offset. 0 for a consumer that is not group-managed.
         if (_options.EnableAutoOffsetStore)
-            StoreOffsetCore(partition, nextOffset, leaderEpoch);
+            StoreOffsetCore(partition, IsGroupManagedSubscription() ? ownership : 0, nextOffset, leaderEpoch);
 
         if (!_prefetchEnabled)
         {
@@ -5293,7 +5484,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
         {
-            if (TryReadActiveConsumedPosition(out var partition, out var nextOffset, out var leaderEpoch, out var version))
+            if (TryReadActiveConsumedPositionWithOwnership(
+                    out var partition, out var nextOffset, out var leaderEpoch, out var ownership, out var version))
             {
                 PendingFetchData? activePending = _pendingFetches.Count > 0
                     ? _pendingFetches.Peek()
@@ -5304,7 +5496,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         && activePending.LastYieldedLeaderEpoch == leaderEpoch))
                 {
                     activePending?.MarkYieldedProcessed();
-                    ApplyConsumedPosition(partition, nextOffset, leaderEpoch);
+                    AfterActiveConsumedPositionReadForTest?.Invoke(this);
+                    ApplyConsumedPosition(partition, activePending?.OwnershipStart ?? ownership, nextOffset, leaderEpoch);
                     ClearActiveConsumedPosition(partition, nextOffset, version);
                     return true;
                 }
@@ -5405,7 +5598,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
         {
-            PublishActiveConsumedPosition(pending.TopicPartition, offset + 1, pending.LastYieldedLeaderEpoch);
+            PublishActiveConsumedPositionCore(
+                pending.TopicPartition, offset + 1, pending.LastYieldedLeaderEpoch, pending.OwnershipStart);
         }
 
         // OnDelivery (at-most-once) staging: the offset becomes committable the moment the
@@ -5413,7 +5607,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // costs per-message dictionary writes that the default fetch-boundary flush avoids.
         if (_options.EnableAutoOffsetStore && EagerOffsetStore)
         {
-            StoreOffsetCore(pending.TopicPartition, offset + 1, pending.LastYieldedLeaderEpoch);
+            StoreOffsetCore(pending, offset + 1, pending.LastYieldedLeaderEpoch);
         }
     }
 
@@ -5447,7 +5641,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
+    /// <summary>Publishes a position consumed under the partition's current ownership.</summary>
     private void PublishActiveConsumedPosition(TopicPartition partition, long position, int leaderEpoch)
+        => PublishActiveConsumedPositionCore(partition, position, leaderEpoch, GetCurrentStoreOwnership(partition));
+
+    private void PublishActiveConsumedPositionCore(TopicPartition partition, long position, int leaderEpoch, long ownership)
     {
         var observedVersion = Volatile.Read(ref _activeConsumedPositionVersion);
         if ((observedVersion & 1) == 0
@@ -5469,6 +5667,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         Volatile.Write(ref _activeConsumedPartition, partition.Partition);
         Volatile.Write(ref _activeConsumedPosition, position);
         Volatile.Write(ref _activeConsumedLeaderEpoch, leaderEpoch);
+        Volatile.Write(ref _activeConsumedOwnership, ownership);
         Volatile.Write(ref _activeConsumedPositionVersion, version + 2);
     }
 
@@ -5496,7 +5695,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         out long position,
         out int leaderEpoch,
         out int version)
+        => TryReadActiveConsumedPositionWithOwnership(out partition, out position, out leaderEpoch, out _, out version);
+
+    private bool TryReadActiveConsumedPositionWithOwnership(
+        out TopicPartition partition,
+        out long position,
+        out int leaderEpoch,
+        out long ownership,
+        out int version)
     {
+        ownership = 0;
         var spin = new SpinWait();
         for (var attempt = 0; attempt < 4; attempt++)
         {
@@ -5511,6 +5719,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             var partitionIndex = Volatile.Read(ref _activeConsumedPartition);
             position = Volatile.Read(ref _activeConsumedPosition);
             leaderEpoch = Volatile.Read(ref _activeConsumedLeaderEpoch);
+            ownership = Volatile.Read(ref _activeConsumedOwnership);
             var observedVersion = Volatile.Read(ref _activeConsumedPositionVersion);
             if (version != observedVersion || (observedVersion & 1) != 0)
             {
@@ -5643,22 +5852,220 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
+    /// <summary>
+    /// Stores under the partition's current ownership (explicit stores, seeks). A group-managed
+    /// consumer stores nothing for a partition it does not own: such an offset never commits, and
+    /// keeping it would leave a slot behind for a partition no rebalance removes again.
+    /// </summary>
     private void StoreOffsetCore(TopicPartition partition, long offset, int leaderEpoch)
     {
-        _storedOffsets[partition] = offset;
-        _dirtyStoredOffsets[partition] = offset;
+        long ownership = 0;
+        if (IsGroupManagedSubscription())
+        {
+            ownership = _ownershipStartGenerations.GetValueOrDefault(partition);
+            if (ownership == 0)
+                return;
+        }
 
-        if (leaderEpoch >= 0)
-            _storedOffsetLeaderEpochs[partition] = leaderEpoch;
-        else
-            _storedOffsetLeaderEpochs.TryRemove(partition, out _);
+        StoreOffsetCore(partition, ownership, offset, leaderEpoch);
     }
+
+    /// <summary>Stores a fetched record's progress under the ownership its fetch was created in.</summary>
+    private void StoreOffsetCore(PendingFetchData pending, long offset, int leaderEpoch)
+        => StoreOffsetCore(
+            pending.TopicPartition,
+            IsGroupManagedSubscription() ? pending.OwnershipStart : 0,
+            offset,
+            leaderEpoch);
+
+    /// <summary>
+    /// One lookup of the partition's slot (created on the partition's first store) and an
+    /// in-place update. A write into a slot <see cref="RemoveStoredOffset"/> removed after this
+    /// lookup is lost with the slot: the partition has left the assignment since.
+    /// </summary>
+    private void StoreOffsetCore(TopicPartition partition, long ownership, long offset, int leaderEpoch)
+    {
+        if (!_storedOffsetSlots.TryGetValue(partition, out var slot) || !slot.TryStore(ownership, offset, leaderEpoch))
+            StoreOffsetInAddedSlot(partition, ownership, offset, leaderEpoch);
+    }
+
+    /// <summary>
+    /// The first store of a partition's ownership, or a store that met a retired slot. A store
+    /// validated under an ownership that ended before this write can run after assignment sync
+    /// removed the partition's slot, and would add one for a partition nothing removes again. So
+    /// once written, the ownership is checked again (sync ends it before it removes the slot), and
+    /// a slot that still holds only the ended ownership's store is retired and removed, by
+    /// instance: a store of a newer ownership either landed first (the slot is kept) or finds the
+    /// slot retired and adds a fresh one. Per partition per ownership, not per message.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void StoreOffsetInAddedSlot(TopicPartition partition, long ownership, long offset, int leaderEpoch)
+    {
+        while (true)
+        {
+            var slot = _storedOffsetSlots.GetOrAdd(partition, s_createStoredOffsetSlot);
+            if (!slot.TryStore(ownership, offset, leaderEpoch))
+            {
+                // Retired by a store whose ownership had ended: finish its removal and retry.
+                _storedOffsetSlots.TryRemove(new KeyValuePair<TopicPartition, StoredOffsetSlot>(partition, slot));
+                continue;
+            }
+
+            if (ownership != 0
+                && _ownershipStartGenerations.GetValueOrDefault(partition) != ownership
+                && slot.TryRetire(ownership))
+            {
+                _storedOffsetSlots.TryRemove(new KeyValuePair<TopicPartition, StoredOffsetSlot>(partition, slot));
+            }
+
+            return;
+        }
+    }
+
+    /// <summary>
+    /// The ownership tag a store made now belongs to: the partition's ownership start for a
+    /// group-managed consumer (0 while unassigned, which never commits), 0 otherwise.
+    /// </summary>
+    private long GetCurrentStoreOwnership(TopicPartition partition)
+        => IsGroupManagedSubscription() ? _ownershipStartGenerations.GetValueOrDefault(partition) : 0;
 
     private void ClearStoredOffset(TopicPartition partition)
     {
-        _storedOffsets.TryRemove(partition, out _);
-        _dirtyStoredOffsets.TryRemove(partition, out _);
-        _storedOffsetLeaderEpochs.TryRemove(partition, out _);
+        if (_storedOffsetSlots.TryGetValue(partition, out var slot))
+            slot.Clear();
+    }
+
+    /// <summary>
+    /// Drops the slot of a partition that left the assignment, so a long-running consumer keeps
+    /// slots only for the partitions it holds (a pattern subscription over transient topics would
+    /// otherwise keep one for every partition it ever stored). Commits and commit acknowledgements
+    /// find slots through the map only, so a store that looked the slot up earlier changes nothing
+    /// anyone reads, and the next store of a reassigned partition creates a fresh slot. Per
+    /// partition per rebalance.
+    /// </summary>
+    private void RemoveStoredOffset(TopicPartition partition)
+        => _storedOffsetSlots.TryRemove(partition, out _);
+
+    /// <summary>Dirty stored offsets by partition, for tests: those of the current ownership.</summary>
+    internal IReadOnlyDictionary<TopicPartition, long> DirtyStoredOffsetsForTest
+    {
+        get
+        {
+            var offsets = new Dictionary<TopicPartition, long>();
+            foreach (var (partition, slot) in _storedOffsetSlots)
+            {
+                if (slot.TryReadDirty(out var ownership, out var offset, out _)
+                    && ownership == GetCurrentStoreOwnership(partition))
+                {
+                    offsets[partition] = offset;
+                }
+            }
+
+            return offsets;
+        }
+    }
+
+    /// <summary>
+    /// A partition's stored offset, the ownership it was stored under, its leader epoch and whether
+    /// it changed since the last successful commit. Writers take the slot with one CAS (a store is
+    /// otherwise uncontended: the consume loop or the application) and readers retry while a write
+    /// is in progress, so a reader always sees one store's values together. Never allocates.
+    /// </summary>
+    private sealed class StoredOffsetSlot
+    {
+        private int _sequence; // odd while a writer holds the slot
+        private long _ownership;
+        private long _offset;
+        private int _leaderEpoch = -1;
+        private bool _dirty;
+        private bool _retired; // removed (or being removed) from the map: stores go to a new slot
+
+        /// <summary>
+        /// Stores, unless the slot already holds a later ownership's offset: ownership starts only
+        /// grow, so such a write was validated under an ownership that has ended. 0 (not
+        /// group-managed) always stores. False only when the slot is retired; nothing was written.
+        /// </summary>
+        public bool TryStore(long ownership, long offset, int leaderEpoch)
+        {
+            var sequence = Enter();
+            var retired = _retired;
+            if (!retired && (ownership == 0 || ownership >= _ownership))
+            {
+                _ownership = ownership;
+                _offset = offset;
+                _leaderEpoch = leaderEpoch;
+                _dirty = true;
+            }
+
+            Exit(sequence);
+            return !retired;
+        }
+
+        /// <summary>
+        /// Retires the slot if it holds the ended <paramref name="ownership"/>'s store and nothing
+        /// newer, so no later store can land in it once it leaves the map.
+        /// </summary>
+        public bool TryRetire(long ownership)
+        {
+            var sequence = Enter();
+            var retire = _ownership == ownership;
+            if (retire)
+                _retired = true;
+            Exit(sequence);
+            return retire;
+        }
+
+        public void Clear()
+        {
+            var sequence = Enter();
+            _dirty = false;
+            _ownership = 0;
+            Exit(sequence);
+        }
+
+        /// <summary>Marks the slot clean if it still holds exactly what was committed.</summary>
+        public void ClearIfUnchanged(long ownership, long offset)
+        {
+            var sequence = Enter();
+            if (_dirty && _ownership == ownership && _offset == offset)
+                _dirty = false;
+            Exit(sequence);
+        }
+
+        public bool TryReadDirty(out long ownership, out long offset, out int leaderEpoch)
+        {
+            var spinner = new SpinWait();
+            while (true)
+            {
+                var sequence = Volatile.Read(ref _sequence);
+                if ((sequence & 1) == 0)
+                {
+                    var dirty = _dirty;
+                    ownership = _ownership;
+                    offset = _offset;
+                    leaderEpoch = _leaderEpoch;
+                    Interlocked.MemoryBarrier();
+                    if (Volatile.Read(ref _sequence) == sequence)
+                        return dirty;
+                }
+
+                spinner.SpinOnce();
+            }
+        }
+
+        private int Enter()
+        {
+            var spinner = new SpinWait();
+            while (true)
+            {
+                var sequence = Volatile.Read(ref _sequence);
+                if ((sequence & 1) == 0 && Interlocked.CompareExchange(ref _sequence, sequence + 1, sequence) == sequence)
+                    return sequence + 1;
+                spinner.SpinOnce();
+            }
+        }
+
+        private void Exit(int sequence) => Volatile.Write(ref _sequence, sequence + 1);
     }
 
     private void SetLastConsumedLeaderEpoch(TopicPartition partition, int leaderEpoch)
@@ -5716,18 +6123,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return lastConsumedLeaderEpochs?.GetValueOrDefault(partition, -1) ?? -1;
     }
 
-    private void ClearDirtyStoredOffsetIfCommitted(TopicPartition partition, long committedOffset)
-    {
-        _dirtyStoredOffsets.TryRemove(new KeyValuePair<TopicPartition, long>(partition, committedOffset));
-    }
-
     private void MarkOffsetCommitted(TopicPartition partition, long committedOffset)
+        => MarkOffsetCommitted(partition, GetCurrentStoreOwnership(partition), committedOffset);
+
+    private void MarkOffsetCommitted(TopicPartition partition, long ownership, long committedOffset)
     {
         _ = TryCacheCommittedOffset(
             partition,
             committedOffset,
             Interlocked.Increment(ref _committedOffsetGeneration));
-        ClearDirtyStoredOffsetIfCommitted(partition, committedOffset);
+        if (_storedOffsetSlots.TryGetValue(partition, out var slot))
+            slot.ClearIfUnchanged(ownership, committedOffset);
     }
 
     internal void UpdateFetchPositionsFromPrefetch(
@@ -7863,14 +8269,31 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Read before the snapshot: offsets taken under a membership that a fence and rejoin
         // replace before the send are rejected rather than sent under the new member's identity.
         var commitMembershipVersion = membershipVersion ?? _coordinator.MembershipVersion;
+        var pinsOwnershipEpoch = partitions is null && IsGroupManagedSubscription();
 
+        for (var attempt = 1; ; attempt++)
         {
+            // Read before ownership is decided and sent with the commit: a revocation completed
+            // between the decision and the send changes the member epoch, so the broker rejects
+            // the commit instead of applying a revoked partition's offset over its new owner's.
+            int? ownershipMemberEpoch = pinsOwnershipEpoch ? _coordinator.GenerationId : null;
+
             // Commit only offsets that changed since the last successful commit.
             // Snapshot the concurrent dictionary to avoid race conditions during enumeration
-            var dirtyOffsetsSnapshot = partitions is null
-                ? _dirtyStoredOffsets.ToArray()
-                : _dirtyStoredOffsets.Where(kvp => partitions.Contains(kvp.Key)).ToArray();
-            offsetCount = dirtyOffsetsSnapshot.Length;
+            List<StoredOffsetSnapshot> dirtyOffsetsSnapshot;
+            if (partitions is null && IsGroupManagedSubscription())
+            {
+                // Snapshot and decide ownership under the gate assignment sync publishes and cleans
+                // up under, so the assignment, positions and ownership starts read are consistent.
+                // Commit path only.
+                lock (_snapshotStateGate)
+                    dirtyOffsetsSnapshot = SnapshotCommittableStoredOffsets(partitions);
+            }
+            else
+            {
+                dirtyOffsetsSnapshot = SnapshotCommittableStoredOffsets(partitions);
+            }
+            offsetCount = dirtyOffsetsSnapshot.Count;
             if (offsetCount == 0)
                 return false;
 
@@ -7881,27 +8304,48 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             try
             {
                 int index = 0;
-                foreach (var kvp in dirtyOffsetsSnapshot)
+                foreach (var stored in dirtyOffsetsSnapshot)
                 {
                     offsetsArray[index++] = new TopicPartitionOffset(
-                        kvp.Key.Topic,
-                        kvp.Key.Partition,
-                        kvp.Value,
-                        GetStoredOffsetLeaderEpoch(kvp.Key));
+                        stored.Partition.Topic,
+                        stored.Partition.Partition,
+                        stored.Offset,
+                        stored.LeaderEpoch);
                 }
 
                 // Create array segment to pass only the used portion
                 var offsets = new ArraySegment<TopicPartitionOffset>(offsetsArray, 0, offsetCount);
 
-                await _coordinator.CommitOffsetsAsync(offsets, retryUntilApiTimeout, commitMembershipVersion, cancellationToken)
-                    .ConfigureAwait(false);
+                try
+                {
+                    await _coordinator.CommitOffsetsAsync(
+                            offsets,
+                            retryUntilApiTimeout,
+                            commitMembershipVersion,
+                            cancellationToken,
+                            ownershipMemberEpoch)
+                        .ConfigureAwait(false);
+                }
+                catch (Errors.GroupException ex) when (ownershipMemberEpoch is { } staleEpoch
+                                                     && ex.ErrorCode == ErrorCode.StaleMemberEpoch)
+                {
+                    if (attempt >= MaxOwnershipEpochCommitAttempts)
+                    {
+                        throw new Errors.GroupException(ErrorCode.StaleMemberEpoch, ex.Message, isRetriable: true)
+                        {
+                            GroupId = ex.GroupId
+                        };
+                    }
+
+                    // Decide ownership again under the refreshed epoch.
+                    await _coordinator.WaitForCommitMemberEpochRefreshAsync(staleEpoch, cancellationToken)
+                        .ConfigureAwait(false);
+                    continue;
+                }
 
                 // Update committed offsets tracking
-                foreach (var offset in offsets)
-                {
-                    var partition = new TopicPartition(offset.Topic, offset.Partition);
-                    MarkOffsetCommitted(partition, offset.Offset);
-                }
+                foreach (var stored in dirtyOffsetsSnapshot)
+                    MarkOffsetCommitted(stored.Partition, stored.Ownership, stored.Offset);
 
                 // Invoke OnCommit interceptors - wrap array as ArraySegment to avoid Span→Array copy
                 InvokeOnCommitInterceptors(new ArraySegment<TopicPartitionOffset>(offsetsArray, 0, offsetCount));
@@ -7910,10 +8354,74 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 ArrayPool<TopicPartitionOffset>.Shared.Return(offsetsArray);
             }
+
+            return true;
+        }
+    }
+
+    // A commit rejected because the member's assignment changed after ownership was decided is
+    // decided and sent again, at most this many times in all.
+    private const int MaxOwnershipEpochCommitAttempts = 3;
+
+    private bool IsGroupManagedSubscription() => _isGroupManaged;
+
+    /// <summary>
+    /// A group-managed consumer commits stored offsets only for partitions it owns, as Java's
+    /// <c>commitSync()</c> commits only assigned partitions' positions. Seek and StoreOffset do not
+    /// check ownership and run concurrently with assignment sync, so an offset stored for a
+    /// partition after sync revoked it (or before sync initialized its new ownership) would
+    /// otherwise be committed over the progress of the member that owns it now. An owned
+    /// partition has an initialized fetch position; position initialization replaces anything
+    /// stored before it. Offsets stored for unowned partitions are skipped. Commit path only.
+    /// </summary>
+    private List<StoredOffsetSnapshot> SnapshotCommittableStoredOffsets(TopicPartitionSet? partitions)
+    {
+        // One pass, one ownership evaluation per offset: assignment sync changes fetch positions
+        // concurrently, so a second evaluation could disagree with the first.
+        var groupManaged = IsGroupManagedSubscription();
+        var assignment = _assignmentSnapshot;
+        var committable = new List<StoredOffsetSnapshot>();
+        foreach (var (partition, slot) in _storedOffsetSlots)
+        {
+            if (partitions is not null && !partitions.Contains(partition))
+                continue;
+            if (!slot.TryReadDirty(out var ownership, out var offset, out var leaderEpoch))
+                continue;
+
+            // Stored under an ended ownership (or while unassigned): it never commits, and the slot
+            // is marked clean unless a newer store landed meanwhile.
+            if (ownership != GetCurrentStoreOwnership(partition))
+            {
+                LogStoredOffsetOfUnownedPartitionNotCommitted(partition.Topic, partition.Partition, offset);
+                slot.ClearIfUnchanged(ownership, offset);
+                continue;
+            }
+
+            // The revocation commit (explicit partitions) runs while the partitions are still owned.
+            var isOwned = partitions is not null || !groupManaged || IsOwnedForCommit(assignment, partition);
+            AfterStoredOffsetOwnershipEvaluatedForTest?.Invoke(this);
+            if (!isOwned)
+            {
+                // Pending revocation or position not initialized yet: stays for later.
+                LogStoredOffsetOfUnownedPartitionNotCommitted(partition.Topic, partition.Partition, offset);
+                continue;
+            }
+
+            committable.Add(new StoredOffsetSnapshot(partition, ownership, offset, leaderEpoch));
         }
 
-        return true;
+        return committable;
     }
+
+    private readonly record struct StoredOffsetSnapshot(TopicPartition Partition, long Ownership, long Offset, int LeaderEpoch);
+
+    // A partition whose revocation awaits sync is committed by the revocation commit only, which
+    // passes its partitions explicitly: a later commit could follow it with an offset stored
+    // after the revocation, over the progress of the partition's next owner.
+    private bool IsOwnedForCommit(HashSet<TopicPartition> assignment, TopicPartition partition)
+        => assignment.Contains(partition)
+            && _fetchPositions.ContainsKey(partition)
+            && !IsRevocationPending(partition);
 
     private async ValueTask CommitRevokedOffsetsAsync(
         IReadOnlyList<TopicPartition> partitions,
@@ -8044,11 +8552,186 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (result.IsPartitionEof)
             return;
 
-        StoreOffsetCore(
-            new TopicPartition(result.Topic, result.Partition),
-            checked(result.Offset + 1),
-            result.LeaderEpoch ?? -1);
+        var partition = new TopicPartition(result.Topic, result.Partition);
+        long ownership = 0;
+        if (IsGroupManagedSubscription() && _coordinator is { } coordinator)
+        {
+            // The store is tagged with the ownership the check found the record in: if a rebalance
+            // ends that ownership before the write lands, it can never be committed.
+            var fetchGeneration = result.ResolveFetchGeneration(out var fetchOwnershipStart);
+            if (fetchOwnershipStart != 0 && IsFetchedUnderCurrentSynchronizedOwnership(coordinator, fetchGeneration))
+            {
+                ownership = fetchOwnershipStart;
+            }
+            else if (!TryGetOwnershipForStore(partition, fetchGeneration, out ownership))
+            {
+                LogStoredOffsetOfEndedOwnershipIgnored(partition.Topic, partition.Partition, result.Offset);
+                return;
+            }
+
+            AfterStoreOffsetOwnershipCheckedForTest?.Invoke(this);
+        }
+
+        StoreOffsetCore(partition, ownership, checked(result.Offset + 1), result.LeaderEpoch ?? -1);
     }
+
+    /// <summary>
+    /// The ownership a record that the fast path could not decide belongs to, when it is Owned:
+    /// one lookup of the partition's ownership start.
+    /// </summary>
+    private bool TryGetOwnershipForStore(TopicPartition partition, long fetchGeneration, out long ownership)
+        => _ownershipStartGenerations.TryGetValue(partition, out ownership)
+           && (fetchGeneration == 0 || fetchGeneration >= ownership)
+           && !IsRevocationPending(partition);
+
+    /// <summary>
+    /// Steady-state fast path of the ownership check (four volatile reads): no revocation is
+    /// pending, the record was fetched after the latest ownership start, end or revocation, so its
+    /// partition is still assigned under the same ownership, and the coordinator has changed
+    /// nothing since the last assignment sync.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool IsFetchedUnderCurrentSynchronizedOwnership(ConsumerCoordinator coordinator, long fetchGeneration)
+        => fetchGeneration != 0
+            && ReferenceEquals(_pendingRevocations, s_noPendingRevocations)
+            && fetchGeneration > PendingFetchData.ReadGeneration(ref _latestOwnershipChangeFetchGeneration)
+            && coordinator.AssignmentVersion == Volatile.Read(ref _lastCoordinatorAssignmentVersion);
+
+    RecordOwnership IConsumerRecordOwnership<TKey, TValue>.RewindIfOwned(
+        in ConsumeResult<TKey, TValue> result,
+        TopicPartitionOffset rewindTo,
+        bool whileRevocationPending)
+    {
+        var partition = new TopicPartition(result.Topic, result.Partition);
+        // Decided and applied under the gate assignment sync publishes and cleans up under: an
+        // ownership change cannot fall between the check and the pause and seek. Failure paths only.
+        lock (_snapshotStateGate)
+        {
+            var ownership = GetRecordOwnership(partition, result.ResolveFetchGeneration());
+            if (ownership == RecordOwnership.Ended
+                || ownership == RecordOwnership.RevocationPending && !whileRevocationPending)
+            {
+                return ownership;
+            }
+
+            Pause(partition);
+            Seek(rewindTo);
+            return ownership;
+        }
+    }
+
+    RecordOwnership IConsumerRecordOwnership<TKey, TValue>.GetRecordOwnership(in ConsumeResult<TKey, TValue> result)
+    {
+        var fetchGeneration = result.ResolveFetchGeneration();
+        if (_coordinator is { } coordinator
+            && IsFetchedUnderCurrentSynchronizedOwnership(coordinator, fetchGeneration))
+        {
+            return RecordOwnership.Owned;
+        }
+
+        return GetRecordOwnership(new TopicPartition(result.Topic, result.Partition), fetchGeneration);
+    }
+
+    /// <summary>
+    /// Ownership of a delivered record. <list type="bullet">
+    /// <item>Ended: the partition is unassigned, or the record was fetched before the partition's
+    /// current ownership began (revoked or lost and assigned again, ABA). A record with fetch
+    /// generation 0 was not delivered from a fetch (a constructed result); only the assignment
+    /// decides for it.</item>
+    /// <item>RevocationPending: the coordinator revoked or lost the partition (published before
+    /// any revocation callback runs), and no assignment sync that drained that revocation has
+    /// started the partition's next ownership or removed it yet. This holds while the coordinator
+    /// already assigned the partition again and its revocation queue was drained.</item>
+    /// </list>
+    /// </summary>
+    private RecordOwnership GetRecordOwnership(TopicPartition partition, long fetchGeneration)
+    {
+        // Absent when unassigned.
+        if (!_ownershipStartGenerations.TryGetValue(partition, out var ownershipStart)
+            || fetchGeneration != 0 && fetchGeneration < ownershipStart)
+        {
+            return RecordOwnership.Ended;
+        }
+
+        return IsRevocationPending(partition)
+            ? RecordOwnership.RevocationPending
+            : RecordOwnership.Owned;
+    }
+
+    private bool IsRevocationPending(TopicPartition partition)
+        => _pendingRevocations.ContainsKey(partition);
+
+    /// <summary>
+    /// R: the coordinator published a revocation or loss of these partitions with
+    /// <paramref name="generation"/>, before any revocation callback runs and before it enqueues
+    /// the revocation for assignment sync.
+    /// </summary>
+    private void RecordCoordinatorRevocation(IReadOnlyList<TopicPartition> partitions, long generation)
+    {
+        // Rebalance path only: one copy of the (small) pending map per revocation.
+        lock (_pendingRevocationsLock)
+        {
+            var pending = new Dictionary<TopicPartition, long>(_pendingRevocations);
+            foreach (var partition in partitions)
+            {
+                // Raised, never lowered: a concurrent later revocation wins.
+                if (!pending.TryGetValue(partition, out var current) || current < generation)
+                    pending[partition] = generation;
+            }
+
+            // Before the map: records fetched before this R stop taking the fast path no later.
+            WriteLatestOwnershipChange(generation);
+            BeforePendingRevocationsPublishedForTest?.Invoke(this);
+            _pendingRevocations = pending;
+        }
+    }
+
+    /// <summary>S: records fetched before <paramref name="generation"/> belong to an earlier ownership.</summary>
+    private void StartOwnership(TopicPartition partition, long generation)
+    {
+        _ownershipStartGenerations[partition] = generation;
+        WriteLatestOwnershipChange(generation);
+    }
+
+    private void EndOwnership(TopicPartition partition, long generation)
+    {
+        _ownershipStartGenerations.TryRemove(partition, out _);
+        WriteLatestOwnershipChange(generation);
+    }
+
+    /// <summary>
+    /// The sync publication applied these drained revocations: forgets each pending revocation
+    /// whose generation is not after the drained entry's. A later revocation stays pending.
+    /// </summary>
+    private void ForgetDrainedRevocations(IReadOnlyDictionary<TopicPartition, long> drained)
+    {
+        lock (_pendingRevocationsLock)
+        {
+            Dictionary<TopicPartition, long>? remaining = null;
+            foreach (var (partition, drainedGeneration) in drained)
+            {
+                if (_pendingRevocations.TryGetValue(partition, out var pending) && pending <= drainedGeneration)
+                    (remaining ??= new Dictionary<TopicPartition, long>(_pendingRevocations)).Remove(partition);
+            }
+
+            if (remaining is not null)
+                _pendingRevocations = remaining.Count == 0 ? s_noPendingRevocations : remaining;
+        }
+    }
+
+    private void WriteLatestOwnershipChange(long generation)
+    {
+        // Only moves forward: concurrent writers (sync, revocation hook) never lower it.
+        var current = PendingFetchData.ReadGeneration(ref _latestOwnershipChangeFetchGeneration);
+        while (current < generation)
+        {
+            var observed = Interlocked.CompareExchange(ref _latestOwnershipChangeFetchGeneration, generation, current);
+            if (observed == current)
+                return;
+            current = observed;
+        }
+    }
+
 
     public void StoreOffset(TopicPartitionOffset offset)
     {
@@ -8534,7 +9217,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             var reassigned = retainSeeks is not null && retainSeeks.Contains(partition);
             ClearActiveConsumedPosition(partition);
             _positions.TryRemove(partition, out _);
-            ClearStoredOffset(partition);
+            RemoveStoredOffset(partition);
             _fetchPositions.TryRemove(partition, out _);
             if (!reassigned)
                 _pendingRebalanceSeeks.TryRemove(partition, out _);
@@ -10407,6 +11090,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             }
                         }
                     }
+                    var drainedRevocations = coordinatorRevocations is null ? null : coordinator.DrainedRevocationGenerations;
                     if (coordinatorRevocations is not null)
                     {
                         unacknowledgedCoordinatorRevocations = (coordinator, coordinatorRevocations);
@@ -10532,12 +11216,29 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     lock (_snapshotStateGate)
                     {
                         PublishAssignmentSnapshotCore(newPartitions);
+                        AfterAssignmentSyncPublishedForTest?.Invoke(this);
+
+                        // Position initialization replaces whatever was stored for a partition
+                        // before this ownership; drop it now so a commit before initialization
+                        // cannot send an offset a Seek or StoreOffset left while it was unowned.
+                        if (newPartitions is not null)
+                        {
+                            foreach (var partition in newPartitions)
+                                ClearStoredOffset(partition);
+                        }
 
                         // Clean up state for removed partitions while lag-query cache publication
                         // is excluded from the assignment transition.
                         if (removedPartitions is not null
                             && RemovePartitionState(removedPartitions, reassignedPartitions))
                             PublishPausedSnapshot();
+
+                        // Last: the drained revocations stay pending until the old ownership's
+                        // stored offsets and positions are gone. Stored-offset commits decide
+                        // ownership under this same gate, so they see either the revocation
+                        // pending or the cleaned state, never the stale state as owned.
+                        if (drainedRevocations is not null)
+                            ForgetDrainedRevocations(drainedRevocations);
                     }
 
                     InvalidatePartitionCache();
@@ -11264,12 +11965,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             var previousAssignment = _assignmentSnapshot;
             var assignmentVersion = Interlocked.Increment(ref _assignmentEnsureVersion);
+            // Records fetched up to this generation belong to an earlier ownership of the
+            // partitions whose ownership starts here.
+            var ownershipStart = PendingFetchData.NextFetchGeneration();
 
             foreach (var partition in previousAssignment)
             {
                 if (assignmentSnapshot.Contains(partition))
                     continue;
 
+                EndOwnership(partition, ownershipStart);
                 _watermarkAssignmentVersions.TryRemove(partition, out _);
                 if (_watermarks.TryGetValue(partition, out var entry))
                     RetainUnassignedWatermarkSnapshot(partition, entry, assignmentSnapshot);
@@ -11280,6 +11985,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 if (previousAssignment.Contains(partition))
                     continue;
 
+                StartOwnership(partition, ownershipStart);
                 _watermarkAssignmentVersions[partition] = assignmentVersion;
                 _watermarks.TryRemove(partition, out _);
             }
@@ -11291,6 +11997,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     if (!assignmentSnapshot.Contains(partition))
                         continue;
 
+                    StartOwnership(partition, ownershipStart);
                     _watermarkAssignmentVersions[partition] = assignmentVersion;
                     _watermarks.TryRemove(partition, out _);
                 }
@@ -11317,7 +12024,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// </summary>
     private void PublishSubscriptionSnapshot()
     {
-        _subscriptionSnapshot = _subscription.Keys.ToHashSet();
+        var snapshot = _subscription.Keys.ToHashSet();
+        _subscriptionSnapshot = snapshot;
+        _isGroupManaged = _topicFilter is not null || _topicPattern is not null || snapshot.Count != 0;
     }
 
     /// <summary>
@@ -12200,7 +12909,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             partitionResponse.AbortedTransactions,
                             activityName: activityName,
                             skipRecordsBelowOffset: _fetchPositions.GetValueOrDefault(tp, -1),
-                            stopAtOffsetExclusive: GetSnapshotEndOffset(tp)));
+                            stopAtOffsetExclusive: GetSnapshotEndOffset(tp),
+                            ownershipStart: _ownershipStartGenerations.GetValueOrDefault(tp)));
                     }
                     else
                     {
@@ -12945,8 +13655,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private int GetLastConsumedLeaderEpoch(TopicPartition partition) =>
         _lastConsumedLeaderEpochs.GetValueOrDefault(partition, -1);
 
-    private int GetStoredOffsetLeaderEpoch(TopicPartition partition) =>
-        _storedOffsetLeaderEpochs.GetValueOrDefault(partition, -1);
+
 
     private bool ResetToDivergingEpoch(
         string topic,
@@ -14822,6 +15531,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Committed stored offsets before partition revocation")]
     private partial void LogCommittedRevokedOffsets();
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Not committing stored offset {Offset} for {Topic}[{Partition}]: the partition is not owned by this member")]
+    private partial void LogStoredOffsetOfUnownedPartitionNotCommitted(string topic, int partition, long offset);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Ignoring StoreOffset for {Topic}[{Partition}]@{Offset}: the record was fetched under an ownership of the partition that has ended")]
+    private partial void LogStoredOffsetOfEndedOwnershipIgnored(string topic, int partition, long offset);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Commit of revoked offsets timed out after {TimeoutMs}ms; continuing rebalance")]
     private partial void LogCommitRevokedOffsetsTimedOut(int timeoutMs);

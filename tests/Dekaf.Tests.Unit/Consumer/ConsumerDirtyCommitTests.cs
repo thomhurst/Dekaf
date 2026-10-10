@@ -10,7 +10,7 @@ using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
-public sealed class ConsumerDirtyCommitTests
+public sealed partial class ConsumerDirtyCommitTests
 {
     [Test]
     public async Task CommitAsync_WithoutConsumerGroup_ThrowsWithGroupIdGuidance()
@@ -486,6 +486,7 @@ public sealed class ConsumerDirtyCommitTests
     }
 
     [Test]
+    [NotInParallel("RevokedPartitionCleanupSeam")]
     public async Task AssignmentSync_ReassignedSeekRevokedDuringCleanup_IsNotRestored()
     {
         var p0 = new TopicPartition("topic-a", 0);
@@ -1391,7 +1392,8 @@ public sealed class ConsumerDirtyCommitTests
         int rebalanceTimeoutMs = 60_000,
         Func<CancellationToken, ValueTask>? onOffsetCommitAsync = null,
         int defaultApiTimeoutMs = 60_000,
-        string? groupId = "group-a")
+        string? groupId = "group-a",
+        Func<OffsetCommitRequest, ErrorCode>? respond = null)
         => CreateConsumer(
             requests,
             new Queue<ErrorCode>([responseError]),
@@ -1401,7 +1403,8 @@ public sealed class ConsumerDirtyCommitTests
             rebalanceTimeoutMs,
             onOffsetCommitAsync,
             defaultApiTimeoutMs,
-            groupId);
+            groupId,
+            respond);
 
     private static KafkaConsumer<string, string> CreateConsumer(
         List<OffsetCommitRequest> requests,
@@ -1412,7 +1415,8 @@ public sealed class ConsumerDirtyCommitTests
         int rebalanceTimeoutMs = 60_000,
         Func<CancellationToken, ValueTask>? onOffsetCommitAsync = null,
         int defaultApiTimeoutMs = 60_000,
-        string? groupId = "group-a")
+        string? groupId = "group-a",
+        Func<OffsetCommitRequest, ErrorCode>? respond = null)
     {
         var connectionPool = Substitute.For<IConnectionPool>();
         var connection = Substitute.For<IKafkaConnection>();
@@ -1450,7 +1454,8 @@ public sealed class ConsumerDirtyCommitTests
                 var token = call.Arg<CancellationToken>();
                 onOffsetCommit?.Invoke(token);
 
-                var error = responseErrors.Count == 0 ? ErrorCode.None : responseErrors.Dequeue();
+                var error = respond?.Invoke(request)
+                            ?? (responseErrors.Count == 0 ? ErrorCode.None : responseErrors.Dequeue());
                 return onOffsetCommitAsync is null
                     ? ValueTask.FromResult(CreateResponse(request, error))
                     : CompleteOffsetCommitAsync(request, error, onOffsetCommitAsync(token));
@@ -1557,7 +1562,10 @@ public sealed class ConsumerDirtyCommitTests
             "ApplyConsumedPosition",
             BindingFlags.NonPublic | BindingFlags.Instance)!;
 
-        method.Invoke(consumer, [partition, position, leaderEpoch]);
+        var ownership = (long)typeof(KafkaConsumer<string, string>)
+            .GetMethod("GetCurrentStoreOwnership", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .Invoke(consumer, [partition])!;
+        method.Invoke(consumer, [partition, ownership, position, leaderEpoch]);
     }
 
     private static async Task CommitStoredOffsetsAsync(KafkaConsumer<string, string> consumer)
