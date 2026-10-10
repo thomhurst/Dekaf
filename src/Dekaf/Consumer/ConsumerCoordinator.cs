@@ -1872,12 +1872,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Waits for the background heartbeat loop to advance the member epoch past the value a
-    /// failed OffsetCommit was sent with. Bounded by one heartbeat interval plus slack: if the
-    /// epoch has not refreshed by then, the retry proceeds anyway and surfaces the coordinator's
-    /// verdict. Stops early when the member leaves the active state (the heartbeat loop stopped).
-    /// </summary>
-    /// <summary>
     /// After a commit pinned to <paramref name="staleEpoch"/> was rejected: waits, while the member
     /// is active, for the heartbeat to deliver the epoch of its changed assignment.
     /// </summary>
@@ -1886,6 +1880,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             ? WaitForMemberEpochRefreshAsync(staleEpoch, cancellationToken)
             : default;
 
+    /// <summary>
+    /// Waits for the background heartbeat loop to advance the member epoch past the value a
+    /// failed OffsetCommit was sent with. Bounded by one heartbeat interval plus slack: if the
+    /// epoch has not refreshed by then, the retry proceeds anyway and surfaces the coordinator's
+    /// verdict. Stops early when the member leaves the active state (the heartbeat loop stopped).
+    /// </summary>
     private async ValueTask WaitForMemberEpochRefreshAsync(int staleEpoch, CancellationToken cancellationToken)
     {
         var maxWait = TimeSpan.FromMilliseconds(_heartbeatIntervalMs + 1_000);
