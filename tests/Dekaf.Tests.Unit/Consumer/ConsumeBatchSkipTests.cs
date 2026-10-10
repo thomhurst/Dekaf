@@ -53,7 +53,7 @@ public sealed class ConsumeBatchSkipTests
         await Assert.That(GetPendingFetches(consumer).Any(static f => f.TopicPartition == Partition0)).IsFalse();
         await Assert.That(GetDictionary(consumer, "_fetchPositions")[Partition0]).IsEqualTo(10L);
         await Assert.That(GetDictionary(consumer, "_positions")[Partition0]).IsEqualTo(10L);
-        await Assert.That(GetDictionary(consumer, "_dirtyStoredOffsets").ContainsKey(Partition0)).IsFalse();
+        await Assert.That(consumer.DirtyStoredOffsetsForTest.ContainsKey(Partition0)).IsFalse();
     }
 
     [Test]
@@ -79,7 +79,7 @@ public sealed class ConsumeBatchSkipTests
         await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
         await Assert.That(GetDictionary(consumer, "_fetchPositions")[Partition0]).IsEqualTo(11L);
         await Assert.That(GetDictionary(consumer, "_positions")[Partition0]).IsEqualTo(11L);
-        await Assert.That(GetDictionary(consumer, "_dirtyStoredOffsets")[Partition0]).IsEqualTo(11L);
+        await Assert.That(consumer.DirtyStoredOffsetsForTest[Partition0]).IsEqualTo(11L);
     }
 
     [Test]

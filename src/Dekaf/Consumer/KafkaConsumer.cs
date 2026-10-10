@@ -3049,16 +3049,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private TopicPartitionOffset[] SnapshotStoredOffsets(TopicPartitionSet partitions)
     {
+        // Only offsets stored under the partition's current ownership: one stored under an ended
+        // ownership never commits (see SnapshotCommittableStoredOffsets).
         List<TopicPartitionOffset>? offsets = null;
-        foreach (var entry in _dirtyStoredOffsets)
+        foreach (var (partition, slot) in _storedOffsetSlots)
         {
-            if (partitions.Contains(entry.Key))
+            if (partitions.Contains(partition)
+                && slot.TryReadDirty(out var ownership, out var offset, out var leaderEpoch)
+                && ownership == GetCurrentStoreOwnership(partition))
             {
-                (offsets ??= []).Add(new TopicPartitionOffset(
-                    entry.Key.Topic,
-                    entry.Key.Partition,
-                    entry.Value,
-                    GetStoredOffsetLeaderEpoch(entry.Key)));
+                (offsets ??= []).Add(new TopicPartitionOffset(partition.Topic, partition.Partition, offset, leaderEpoch));
             }
         }
 

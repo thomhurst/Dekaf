@@ -295,9 +295,7 @@ public sealed partial class ConsumerAssignmentFastPathTests
         var snapshot = type.GetMethod("CaptureLeaveCommitSnapshot", flags)!
             .Invoke(consumer, [GetCoordinator(consumer).Assignment, 0]);
 
-        var dirty = (System.Collections.Concurrent.ConcurrentDictionary<TopicPartition, long>)
-            type.GetField("_dirtyStoredOffsets", flags)!.GetValue(consumer)!;
-        await Assert.That(dirty.ContainsKey(partition)).IsFalse();
+        await Assert.That(consumer.DirtyStoredOffsetsForTest.ContainsKey(partition)).IsFalse();
         var vouched = ((ConcurrentDictionary<TopicPartition, TopicPartitionOffset>)snapshot!.GetType().GetProperty("Explicit")!.GetValue(snapshot)!).Values.ToArray();
         await Assert.That(vouched.Single().Offset).IsEqualTo(5L);
         var proven = ((ConcurrentDictionary<TopicPartition, TopicPartitionOffset>)snapshot.GetType().GetProperty("Proven")!.GetValue(snapshot)!).Values.ToArray();
