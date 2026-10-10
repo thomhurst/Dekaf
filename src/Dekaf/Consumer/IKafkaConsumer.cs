@@ -580,7 +580,69 @@ public readonly struct ConsumeResult<TKey, TValue>
     private readonly int _pooledHeaderCount;
     private readonly PendingFetchData? _headerOwner;
     private readonly int _headerGeneration;
+    // The generation of the fetch the record was delivered from (0 when not from a fetch). Equal
+    // to _headerGeneration until an interceptor replaces the result: a replacement keeps its own
+    // header owner and generation as a pair (its headers may borrow another live fetch), and the
+    // delivered record's fetch identity stays here. The one-byte timestamp type makes room for it.
+    private readonly int _fetchGeneration;
     private readonly PackedProcessingEpoch _leaderEpoch;
+
+    /// <summary>
+    /// The generation of the fetch the record was delivered from, or 0 for a result that was not
+    /// (a constructed result). Fetch generations are ordered, so the consumer can tell a record
+    /// fetched before its partition was assigned again. Replacement results (interceptors) carry
+    /// the original's.
+    /// </summary>
+    internal int FetchGeneration => _fetchGeneration;
+
+    /// <summary>
+    /// The full 64-bit generation of the fetch the record was delivered from, or 0 when unknown.
+    /// Read from the fetch while it is still in that use (exact at any distance); after the fetch
+    /// was disposed or reused, expanded from the 32 bits the result keeps (exact for a result
+    /// within 2^32 generations of the current one). One field read on top of the result's own in
+    /// the common case; never allocates.
+    /// </summary>
+    /// <summary>
+    /// The ownership start the record's fetch was created under, while the fetch is still in that
+    /// use. False when unknown (not from a fetch, or the fetch was released or reused).
+    /// </summary>
+    internal bool TryResolveFetchOwnershipStart(out long ownershipStart)
+    {
+        ownershipStart = 0;
+        return _fetchGeneration != 0
+               && _headerOwner is { } owner
+               && owner.TryGetOwnershipStart(_fetchGeneration, out ownershipStart)
+               && ownershipStart != 0;
+    }
+
+    /// <summary>
+    /// <see cref="ResolveFetchGeneration()"/>, and with it the ownership start the record's fetch
+    /// was created under (0 when unknown), from one check of the fetch.
+    /// </summary>
+    internal long ResolveFetchGeneration(out long ownershipStart)
+    {
+        ownershipStart = 0;
+        var headerGeneration = _fetchGeneration;
+        if (headerGeneration == 0)
+            return 0;
+
+        if (_headerOwner is { } owner && owner.TryGetFetchGeneration(headerGeneration, out var fetchGeneration, out ownershipStart))
+            return fetchGeneration;
+
+        ownershipStart = 0;
+        return PendingFetchData.ExpandFetchGeneration(headerGeneration);
+    }
+
+    internal long ResolveFetchGeneration()
+    {
+        var headerGeneration = _fetchGeneration;
+        if (headerGeneration == 0)
+            return 0;
+
+        return _headerOwner is { } owner && owner.TryGetFetchGeneration(headerGeneration, out var fetchGeneration)
+            ? fetchGeneration
+            : PendingFetchData.ExpandFetchGeneration(headerGeneration);
+    }
 
     // Stamped before channel publication. The index shares the epoch's eight-byte storage;
     // completion ownership remains independent of borrowed fetch storage.
@@ -612,6 +674,11 @@ public readonly struct ConsumeResult<TKey, TValue>
         Topic = original.Topic;
         Partition = original.Partition;
         Offset = original.Offset;
+        // The fetch identity, like the broker identity, is the delivered record's. The header
+        // owner and generation stay the replacement's pair: its headers may borrow another fetch.
+        // A replacement from another fetch resolves the original's generation through the 32-bit
+        // expansion (its owner is a different fetch), and its ownership start from the consumer.
+        _fetchGeneration = original._fetchGeneration;
         _leaderEpoch = original._leaderEpoch.WithIndex(replacement.ProcessingIndex);
         _flags = (byte)((replacement._flags & ~PartitionEofFlag) | (original._flags & PartitionEofFlag));
     }
@@ -622,13 +689,17 @@ public readonly struct ConsumeResult<TKey, TValue>
         ref ConsumeResult<TKey, TValue> replacement, in ConsumeResult<TKey, TValue> original)
     {
         if (replacement._headerOwner is null && original._headerOwner is { } owner)
-            replacement = new(replacement, owner);
+            replacement = new(replacement, owner, original._headerGeneration, original._fetchGeneration);
     }
 
-    private ConsumeResult(in ConsumeResult<TKey, TValue> replacement, PendingFetchData owner)
+    private ConsumeResult(
+        in ConsumeResult<TKey, TValue> replacement, PendingFetchData owner, int headerGeneration, int fetchGeneration)
     {
         this = replacement;
         _headerOwner = owner;
+        // The replacement's headers are caller-owned (below), so the owner only retains storage.
+        _headerGeneration = headerGeneration;
+        _fetchGeneration = fetchGeneration;
         if (_pooledHeaderCount != DeferredHeaderSnapshot)
             _pooledHeaderCount = CallerOwnedHeaders;
     }
@@ -742,8 +813,9 @@ public readonly struct ConsumeResult<TKey, TValue>
         _pooledHeaderCount = pooledHeaderCount;
         _headerOwner = headerOwner;
         _headerGeneration = headerOwner.HeaderGeneration;
+        _fetchGeneration = _headerGeneration;
         _timestampMs = timestampMs;
-        TimestampType = timestampType;
+        _timestampType = (sbyte)timestampType;
         _leaderEpoch = PackedProcessingEpoch.FromEpoch(leaderEpoch);
         _flags = isKeyNull ? NullKeyFlag : (byte)0;
     }
@@ -775,8 +847,9 @@ public readonly struct ConsumeResult<TKey, TValue>
         _pooledHeaderCount = deferHeaderSnapshot ? DeferredHeaderSnapshot : 0;
         _headerOwner = null;
         _headerGeneration = 0;
+        _fetchGeneration = 0;
         _timestampMs = timestampMs;
-        TimestampType = timestampType;
+        _timestampType = (sbyte)timestampType;
         _leaderEpoch = PackedProcessingEpoch.FromEpoch(leaderEpoch);
         _flags = isKeyNull ? NullKeyFlag : (byte)0;
     }
@@ -808,8 +881,9 @@ public readonly struct ConsumeResult<TKey, TValue>
         _pooledHeaderCount = pooledHeaderCount;
         _headerOwner = headerOwner;
         _headerGeneration = headerGeneration;
+        _fetchGeneration = headerGeneration;
         _timestampMs = timestampMs;
-        TimestampType = timestampType;
+        _timestampType = (sbyte)timestampType;
         _leaderEpoch = PackedProcessingEpoch.FromEpoch(leaderEpoch);
         _flags = (byte)((isPartitionEof ? PartitionEofFlag : 0) | (isKeyNull ? NullKeyFlag : 0));
 
@@ -1064,8 +1138,9 @@ public readonly struct ConsumeResult<TKey, TValue>
         _pooledHeaderCount = 0;
         _headerOwner = null;
         _headerGeneration = 0;
+        _fetchGeneration = 0;
         _timestampMs = 0;
-        TimestampType = TimestampType.NotAvailable;
+        _timestampType = (sbyte)TimestampType.NotAvailable;
         _leaderEpoch = default;
         _flags = PartitionEofFlag;
     }
@@ -1137,7 +1212,10 @@ public readonly struct ConsumeResult<TKey, TValue>
     /// <summary>
     /// The timestamp type.
     /// </summary>
-    public TimestampType TimestampType { get; }
+    public TimestampType TimestampType => (TimestampType)_timestampType;
+
+    // One byte (the enum's values are -1..1) so the fetch generation fits without growing results.
+    private readonly sbyte _timestampType;
 
     /// <summary>
     /// The leader epoch.

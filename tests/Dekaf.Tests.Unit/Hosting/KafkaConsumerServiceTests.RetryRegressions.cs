@@ -25,6 +25,9 @@ public sealed partial class KafkaConsumerServiceTests
         var registration = Substitute.For<IDisposable>();
         consumer.Register = listener => { registered.TrySetResult(listener); return registration; };
         consumer.Inner.ConsumeAsync(Arg.Any<CancellationToken>()).Returns(call => WaitForCancellation(call.Arg<CancellationToken>()));
+        // The service checks ownership against Assignment when the consumer forwards rebalance events.
+        var assignment = new HashSet<TopicPartition> { new("orders-retry-1s", 0), new("orders-retry-1s", 1) };
+        consumer.Inner.Assignment.Returns(_ => assignment);
         await using var service = new TestConsumerService(consumer, ["orders"],
             options: new Dekaf.Extensions.Hosting.KafkaConsumerServiceOptions { DrainOnShutdown = false },
             deadLetterOptions: new DeadLetterOptions
@@ -87,6 +90,8 @@ public sealed partial class KafkaConsumerServiceTests
         var consumer = new KafkaConsumer<string, string>(
             new ConsumerOptions { BootstrapServers = ["localhost:9092"], OffsetCommitMode = OffsetCommitMode.Manual },
             Serializers.String, Serializers.String);
+        // The record's partition is owned: routing skips records of partitions it no longer owns.
+        consumer.Assign(new TopicPartition("orders", 0));
         ReadOnlyMemory<byte> bytes = payloadKind switch
         {
             0 => default,
@@ -168,14 +173,50 @@ public sealed partial class KafkaConsumerServiceTests
         await Assert.That(sent.Headers!.GetFirstAsString(DeadLetterHeaders.FailureCountKey)).IsEqualTo("2147483647");
     }
     private sealed class RebalanceTestConsumer : IKafkaConsumer<string, string>, IConsumerRebalanceEventSource,
-        IConsumerOffsetStoreTimingConfiguration
+        IConsumerOffsetStoreTimingConfiguration, IConsumerRecordOwnership<string, string>
     {
         internal IKafkaConsumer<string, string> Inner { get; } = Substitute.For<IKafkaConsumer<string, string>>();
+
+        // Emulates the consumer's record ownership when set: a partition outside the assignment, or
+        // assigned again since the in-flight record was fetched, has ended; one whose revocation
+        // the coordinator published has a revocation pending until it leaves the assignment.
+        internal HashSet<TopicPartition>? OwnershipAssignment { get; set; }
+        internal HashSet<TopicPartition> PendingRevocations { get; } = [];
+        internal HashSet<TopicPartition> ReassignedSinceFetch { get; } = [];
+
+        public RecordOwnership GetRecordOwnership(in ConsumeResult<string, string> result)
+        {
+            if (OwnershipAssignment is not { } assignment)
+                return RecordOwnership.Owned;
+
+            var partition = new TopicPartition(result.Topic, result.Partition);
+            if (!assignment.Contains(partition) || ReassignedSinceFetch.Contains(partition))
+                return RecordOwnership.Ended;
+
+            return PendingRevocations.Contains(partition) ? RecordOwnership.RevocationPending : RecordOwnership.Owned;
+        }
+
+        public RecordOwnership RewindIfOwned(
+            in ConsumeResult<string, string> result,
+            TopicPartitionOffset rewindTo,
+            bool whileRevocationPending)
+        {
+            var ownership = GetRecordOwnership(result);
+            if (ownership == RecordOwnership.Ended
+                || ownership == RecordOwnership.RevocationPending && !whileRevocationPending)
+            {
+                return ownership;
+            }
+
+            Inner.Partitions.Pause(new TopicPartition(result.Topic, result.Partition));
+            Inner.Positions.Seek(rewindTo);
+            return ownership;
+        }
         internal Func<IRebalanceListener, IDisposable> Register { get; set; } = null!;
         public IDisposable RegisterRuntimeRebalanceListener(IRebalanceListener listener) => Register(listener);
-        public OffsetCommitMode OffsetCommitMode => OffsetCommitMode.Manual;
-        public bool EnableAutoOffsetStore => false;
-        public bool HasConsumerGroup => false;
+        public OffsetCommitMode OffsetCommitMode { get; set; } = OffsetCommitMode.Manual;
+        public bool EnableAutoOffsetStore { get; set; }
+        public bool HasConsumerGroup { get; set; }
         public bool StoresOffsetsOnDelivery => false;
         public StringSet Subscription => Inner.Subscription;
         public string? SubscriptionPattern => Inner.SubscriptionPattern;

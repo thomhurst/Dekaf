@@ -85,6 +85,16 @@ await foreach (var msg in consumer.ConsumeAsync(ct))
 network commits. If processing throws before `StoreOffset`, the message's offset is never staged
 and it will be redelivered — even if you catch the exception and keep consuming.
 
+A subscribed (group-managed) consumer commits stored offsets only for partitions it currently
+owns, as Java's `commitSync()` does. An offset stored, or a `Seek` made, for a partition that a
+rebalance has moved to another member is dropped instead of being committed over that member's
+progress. `StoreOffset(result)` for a record fetched before its partition was revoked and
+assigned back to this member is ignored too, since it belongs to the ended ownership. Once the
+coordinator has revoked a partition, its revocation commit sends what was stored until then;
+after that, `StoreOffset(result)` for the partition is ignored and later commits skip it until
+the member's assignment is updated. Explicit
+`CommitAsync(offsets)` and manually assigned consumers commit what you pass or store, unchanged.
+
 :::caution
 Offsets are positions, not per-message acknowledgements. Storing a later offset also commits
 everything before it — if you skip a failed message and keep storing later offsets, the failed

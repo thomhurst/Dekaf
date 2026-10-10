@@ -1324,8 +1324,13 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
             sender.Enqueue(expired);
             await WaitForSendsAsync(connection, 2, cancellationToken);
 
-            // The first batch goes to carry-over with a backoff, then the second expires.
+            // The first batch goes to carry-over with a backoff, then the second expires. Each
+            // response reaches the sender through its own asynchronous continuation, so the second
+            // could be seen first; the fresh batch would then be sent while the first request is
+            // unanswered (ordinary pipelining), not behind a queued retry. Wait for the retry's mute.
             responses[0].SetResult(CreateErrorResponse(Topic, 0, ErrorCode.NotLeaderOrFollower));
+            while (!accumulator.IsMuted(Partition0))
+                await Task.Delay(1, cancellationToken);
             responses[1].SetResult(CreateErrorResponse(Topic, 0, ErrorCode.NotLeaderOrFollower));
             await Assert.That(async () => await expiredDelivery.WaitAsync(cancellationToken))
                 .ThrowsExactly<Dekaf.Errors.KafkaTimeoutException>();

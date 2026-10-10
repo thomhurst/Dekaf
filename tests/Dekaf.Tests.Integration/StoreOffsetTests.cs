@@ -597,4 +597,87 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
                 .IsEqualTo(offset.Offset);
         }
     }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task GroupConsumer_SeekAndStoreForPartitionMovedToAnotherMember_DoNotRewindItsCommit(
+        CancellationToken cancellationToken)
+    {
+        // Seek and StoreOffset do not check ownership. A group member that seeks or stores an
+        // offset for a partition another member now owns must not commit it over that member's
+        // progress, neither with CommitAsync() nor when it closes.
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2).ConfigureAwait(false);
+        var groupId = $"moved-partition-{Guid.NewGuid():N}";
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        for (var partition = 0; partition < 2; partition++)
+        {
+            for (var index = 0; index < 3; index++)
+            {
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Partition = partition,
+                    Key = "key",
+                    Value = $"value-{partition}-{index}"
+                }, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        var first = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        await using var second = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        try
+        {
+            first.Subscribe(topic);
+            for (var consumed = 0; consumed < 6;)
+            {
+                if (await first.ConsumeOneAsync(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false) is not null)
+                    consumed++;
+            }
+
+            await first.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+            // The second member takes one partition; both keep polling so the revocation completes.
+            second.Subscribe(topic);
+            while (first.Assignment.Count != 1 || second.Assignment.Count != 1)
+            {
+                await first.ConsumeOneAsync(TimeSpan.FromMilliseconds(100), cancellationToken).ConfigureAwait(false);
+                await second.ConsumeOneAsync(TimeSpan.FromMilliseconds(100), cancellationToken).ConfigureAwait(false);
+            }
+
+            var moved = second.Assignment.Single();
+            await Assert.That(first.Assignment.Contains(moved)).IsFalse();
+
+            first.Seek(new TopicPartitionOffset(moved.Topic, moved.Partition, 0));
+            await first.CommitAsync(cancellationToken).ConfigureAwait(false);
+            first.StoreOffset(new TopicPartitionOffset(moved.Topic, moved.Partition, 1));
+        }
+        finally
+        {
+            // Close commits stored offsets too.
+            await first.DisposeAsync().ConfigureAwait(false);
+        }
+
+        await using var admin = new AdminClientBuilder()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .Build();
+        var committed = await admin.ListConsumerGroupOffsetsAsync(groupId, cancellationToken: cancellationToken).ConfigureAwait(false);
+        await Assert.That(committed[new TopicPartition(topic, 0)]).IsEqualTo(3);
+        await Assert.That(committed[new TopicPartition(topic, 1)]).IsEqualTo(3);
+    }
 }

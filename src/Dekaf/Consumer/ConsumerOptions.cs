@@ -671,6 +671,42 @@ internal interface IConsumerRebalanceEventSource
     IDisposable RegisterRuntimeRebalanceListener(IRebalanceListener listener);
 }
 
+/// <summary>Whether the member still owns a delivered record's partition under the ownership the record was fetched in.</summary>
+internal enum RecordOwnership
+{
+    /// <summary>The record was fetched under the partition's current ownership.</summary>
+    Owned,
+
+    /// <summary>
+    /// The coordinator has revoked or lost the partition, but the consumer has not synchronized
+    /// that yet: the member still holds the partition's position and pause state.
+    /// </summary>
+    RevocationPending,
+
+    /// <summary>The partition is unassigned, or the record was fetched under an earlier ownership.</summary>
+    Ended
+}
+
+/// <summary>
+/// Decides record ownership from the consumer's own state: the fetch a record came from and the
+/// partition's current ownership. Failure paths and offset storage only; O(1) in steady state.
+/// </summary>
+internal interface IConsumerRecordOwnership<TKey, TValue>
+{
+    RecordOwnership GetRecordOwnership(in ConsumeResult<TKey, TValue> result);
+
+    /// <summary>
+    /// Pauses the record's partition and seeks it to <paramref name="rewindTo"/>, in one step with
+    /// the ownership check, if the record is Owned (or RevocationPending, when
+    /// <paramref name="whileRevocationPending"/>). Returns the ownership found; nothing is applied
+    /// otherwise.
+    /// </summary>
+    RecordOwnership RewindIfOwned(
+        in ConsumeResult<TKey, TValue> result,
+        TopicPartitionOffset rewindTo,
+        bool whileRevocationPending);
+}
+
 /// <summary>
 /// Optional companion interface for observing graceful partition stop during
 /// <see cref="IKafkaConsumer{TKey,TValue}.CloseAsync(CancellationToken)"/> or

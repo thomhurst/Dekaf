@@ -27,7 +27,16 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     private readonly object _postponementsLock = new();
     private readonly Dictionary<TopicPartition, PartitionPostponement> _postponements = [];
     private readonly Dictionary<TopicPartition, Redelivery> _redeliveries = [];
-    private long _assignmentEpoch;
+    // Decides whether the member still owns a record's partition under the ownership the record
+    // was fetched in (the consumer compares the record's fetch generation with the partition's
+    // ownership). Null for a decorated consumer, whose failure paths act as before.
+    private readonly IConsumerRecordOwnership<TKey, TValue>? _recordOwnership;
+    // Counts rebalance callbacks: distinguishes an identical postponement replayed after a
+    // reassignment. Guarded by _postponementsLock.
+    private int _rebalanceEpoch;
+    // The in-flight record's pending local retry backoff, ended early by a rebalance callback for
+    // its partition. Guarded by _postponementsLock; set only while a backoff is awaited.
+    private RetryBackoff? _retryBackoff;
     private IKafkaProducer<byte[]?, byte[]?>? _dlqProducer;
     private int _disposeStarted;
     private volatile bool _hasInDoubtFailedRecord;
@@ -79,6 +88,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         }
 
         _consumer = consumer;
+        _recordOwnership = consumer as IConsumerRecordOwnership<TKey, TValue>;
         _logger = logger;
         _deadLetterOptions = deadLetterOptions;
         _retryPolicy = retryPolicy;
@@ -574,7 +584,14 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                 var delay = _retryPolicy?.GetNextDelay(attempt, ex);
                 if (delay is not null)
                 {
-                    await Task.Delay(delay.Value, stoppingToken).ConfigureAwait(false);
+                    // Stop retrying a record whose partition this member no longer owns: its next
+                    // owner processes it too. The backoff ends early when the partition is revoked.
+                    if (!await WaitForRetryBackoffAsync(result, delay.Value, stoppingToken).ConfigureAwait(false)
+                        || AbandonIfOwnershipChanged(result))
+                    {
+                        return;
+                    }
+
                     continue;
                 }
 
@@ -593,8 +610,16 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                     return;
                 }
 
+                if (retryTopicOutcome.Result == RetryTopicRouteResult.OwnershipEnded)
+                    return;
+
                 if (ShouldRouteToDeadLetter(result, ex, deadLetterFailureCount, retryTopicOutcome.Result))
                 {
+                    // The partition's next owner routes the record itself; a copy from here
+                    // would be a duplicate.
+                    if (AbandonIfOwnershipChanged(result))
+                        return;
+
                     var deadLetterException = await RouteToDeadLetterAsync(
                             result,
                             ex,
@@ -622,7 +647,12 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                 }
 
                 if (_retryPolicy is null && attempt < maxAttemptsWithoutPolicy)
+                {
+                    if (AbandonIfOwnershipChanged(result))
+                        return;
+
                     continue;
+                }
 
                 await ResolveUnhandledFailureAsync(
                         result,
@@ -690,8 +720,169 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                 HasConsumerGroup: true
             })
         {
+            // Once the partition's revocation is pending or done, the revocation commit has run
+            // or is running: an offset stored now would be committed after it, over the progress
+            // of the partition's next owner. Routing checked ownership before producing, but a
+            // revocation can land while the copy is produced: the offset is then not stored, the
+            // next owner redelivers the record, and a second DLQ/retry copy is possible
+            // (at-least-once). The consumer applies the same check to the store itself, so a
+            // revocation between this check and the store is ignored too.
+            if (GetOwnership(result) != RecordOwnership.Owned)
+            {
+                LogResolvedOffsetNotStoredForRevokedPartition(result.Topic, result.Partition, result.Offset);
+                return;
+            }
+
             _consumer.StoreOffset(result);
         }
+    }
+
+    /// <summary>
+    /// The one ownership predicate of every failure path (retry, backoff, postponement, routing,
+    /// offset storage): whether the member still owns the record's partition under the ownership
+    /// the record was fetched in. The consumer decides it from the record's fetch generation and
+    /// its own assignment state, so a revocation or reassignment at any point after the fetch,
+    /// including before processing started, is seen. Failure paths only.
+    /// </summary>
+    /// <remarks>
+    /// A consumer the service cannot ask (an application's decorator around a Dekaf consumer, or
+    /// another implementation) is judged by its public <see cref="IKafkaConsumer{TKey,TValue}.Assignment"/>
+    /// only: a partition missing from it has Ended. Such a consumer gets no RevocationPending and
+    /// no detection of a partition revoked and assigned back. Offset storage and commits stay
+    /// protected by the wrapped Dekaf consumer itself, which checks the record's ownership in
+    /// StoreOffset and commits only owned partitions with the epoch ownership was decided under.
+    /// </remarks>
+    // Deterministic test seam: runs after a failure path checked ownership and before it acts on it.
+    internal static Action<object>? AfterOwnershipCheckedForTest;
+
+    private RecordOwnership GetOwnership(in ConsumeResult<TKey, TValue> result)
+    {
+        if (_recordOwnership is { } recordOwnership)
+            return recordOwnership.GetRecordOwnership(in result);
+
+        return _consumer.Assignment is { } assignment
+               && !AssignmentContains(assignment, new TopicPartition(result.Topic, result.Partition))
+            ? RecordOwnership.Ended
+            : RecordOwnership.Owned;
+    }
+
+    /// <summary>
+    /// Asks the assignment itself: before .NET 9 it is typed as a read-only collection, whose
+    /// LINQ <c>Contains</c> would enumerate it rather than use a set's own lookup.
+    /// </summary>
+    private static bool AssignmentContains(IEnumerable<TopicPartition> assignment, TopicPartition partition)
+        => assignment switch
+        {
+            IReadOnlySet<TopicPartition> set => set.Contains(partition),
+            ICollection<TopicPartition> collection => collection.Contains(partition),
+            _ => assignment.Contains(partition)
+        };
+
+    /// <summary>
+    /// Ends the in-flight record's local handling when its partition was revoked, lost or
+    /// reassigned since it arrived: no further attempt and no DLQ or retry-topic copy, since the
+    /// partition's next owner processes the record again. The record stays uncommitted: while
+    /// the consumer has not yet synchronized a revocation the member still owns the position, so
+    /// it is rewound to the record. The handler invocation that failed is not affected.
+    /// Failure paths only.
+    /// </summary>
+    private bool AbandonIfOwnershipChanged(ConsumeResult<TKey, TValue> result)
+    {
+        var ownership = GetOwnership(result);
+        AfterOwnershipCheckedForTest?.Invoke(this);
+        switch (ownership)
+        {
+            case RecordOwnership.Owned:
+                return false;
+            case RecordOwnership.RevocationPending:
+                lock (_postponementsLock)
+                    RewindForPendingRevocation(result);
+                break;
+        }
+
+        LogProcessingAbandonedForRevokedPartition(result.Topic, result.Partition, result.Offset);
+        return true;
+    }
+
+    /// <summary>
+    /// The member owns the partition until the consumer synchronizes the revocation, which drops
+    /// the pause and position: rewind so nothing commits past the record meanwhile. Called
+    /// under <see cref="_postponementsLock"/>.
+    /// </summary>
+    private void RewindForPendingRevocation(ConsumeResult<TKey, TValue> result)
+        => TryRewind(result, result.Offset, result.LeaderEpoch ?? -1, whileRevocationPending: true);
+
+    /// <summary>
+    /// Pauses the record's partition and seeks it to <paramref name="offset"/> if the record's
+    /// ownership allows it. A Dekaf consumer checks and applies in one step, so a rebalance cannot
+    /// fall between them; for another consumer the pause is undone when the partition left its
+    /// assignment meanwhile. Returns whether the rewind stands. Failure paths only.
+    /// </summary>
+    private bool TryRewind(
+        ConsumeResult<TKey, TValue> result,
+        long offset,
+        int leaderEpoch,
+        bool whileRevocationPending)
+    {
+        if (_recordOwnership is { } recordOwnership)
+        {
+            var ownership = recordOwnership.RewindIfOwned(
+                in result,
+                new TopicPartitionOffset(result.Topic, result.Partition, offset, leaderEpoch),
+                whileRevocationPending);
+            return ownership == RecordOwnership.Owned
+                   || ownership == RecordOwnership.RevocationPending && whileRevocationPending;
+        }
+
+        PauseAndSeek(new TopicPartition(result.Topic, result.Partition), offset, leaderEpoch);
+        return !UndoPauseIfOwnershipEndedDuringPauseAndSeek(result);
+    }
+
+    /// <summary>
+    /// Waits out a local retry backoff. Returns false, without waiting the rest of the delay,
+    /// when the record's partition is revoked, lost or reassigned before or during the backoff;
+    /// the record is then abandoned as in <see cref="AbandonIfOwnershipChanged"/>. Shutdown
+    /// still throws. Failure path only.
+    /// </summary>
+    private async ValueTask<bool> WaitForRetryBackoffAsync(
+        ConsumeResult<TKey, TValue> result, TimeSpan delay, CancellationToken stoppingToken)
+    {
+        if (AbandonIfOwnershipChanged(result))
+            return false;
+
+        // Completed by the rebalance callback; continuations never run on its thread.
+        var ownershipChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var partition = new TopicPartition(result.Topic, result.Partition);
+        lock (_postponementsLock)
+        {
+            // A callback between the check above and this registration cannot wake the backoff.
+            if (GetOwnership(result) != RecordOwnership.Owned)
+                ownershipChanged.TrySetResult();
+
+            _retryBackoff = new RetryBackoff(partition, ownershipChanged);
+        }
+
+        using var delayCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        try
+        {
+            var backoff = Task.Delay(delay, delayCancellation.Token);
+            if (await Task.WhenAny(backoff, ownershipChanged.Task).ConfigureAwait(false) == backoff)
+            {
+                // Throws when shutdown cancelled the backoff.
+                await backoff.ConfigureAwait(false);
+                return true;
+            }
+
+            // Stops the timer; nothing awaits the cancelled delay.
+            delayCancellation.Cancel();
+        }
+        finally
+        {
+            lock (_postponementsLock)
+                _retryBackoff = null;
+        }
+
+        return !AbandonIfOwnershipChanged(result);
     }
 
     private static int GetNextRetryTopicFailureCount(int previousFailureCount) =>
@@ -834,7 +1025,8 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     /// <summary>
     /// Pauses the record's partition and seeks it back to the record, resuming after
     /// <paramref name="delay"/>. Returns false when an earlier postponement already covers it;
-    /// the partition is then rewound to that postponement's record instead.
+    /// the partition is then rewound to that postponement's record instead. Also returns false,
+    /// without scheduling anything, when the partition was revoked while the record was processed.
     /// </summary>
     private bool PostponePartition(
         ConsumeResult<TKey, TValue> result,
@@ -846,8 +1038,26 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         PartitionPostponement postponement;
         lock (_postponementsLock)
         {
+            switch (GetOwnership(result))
+            {
+                case RecordOwnership.Ended:
+                    // Pausing or seeking would stage state for a partition another member (or a
+                    // newer ownership) consumes: a seek stores the offset for the next commit.
+                    // The record is uncommitted, so its next owner delivers it again.
+                    LogPostponementSkippedForRevokedPartition(result.Topic, result.Partition, result.Offset);
+                    return false;
+                case RecordOwnership.RevocationPending:
+                    // The revocation callback may already have run, so a postponement recorded
+                    // now would outlive it. The member owns the partition until the consumer
+                    // synchronizes the revocation, which drops the pause and position: rewind
+                    // only, so nothing commits past the record meanwhile.
+                    RewindForPendingRevocation(result);
+                    LogPostponementSkippedForRevokedPartition(result.Topic, result.Partition, result.Offset);
+                    return false;
+            }
+
             postponement = new PartitionPostponement(
-                result.Offset, result.LeaderEpoch ?? -1, dueAt, delay, _assignmentEpoch);
+                result.Offset, result.LeaderEpoch ?? -1, dueAt, delay, _rebalanceEpoch);
             if (_postponements.TryGetValue(partition, out var pending)
                 && !IsEarlierPartitionPostponement(postponement, pending))
             {
@@ -855,14 +1065,20 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                 // partition was resumed elsewhere or a rebalance went unobserved (a decorated
                 // consumer cannot forward rebalance events). Returning without a seek would let
                 // the loop move past both records; rewind to the earlier one and keep its schedule.
-                PauseAndSeek(partition, pending.Offset, pending.LeaderEpoch);
+                if (!TryRewind(result, pending.Offset, pending.LeaderEpoch, whileRevocationPending: false))
+                    _postponements.Remove(partition);
                 return false;
             }
 
             _postponements[partition] = postponement;
             // Serialize the pause/seek with revocation and delayed resume. None of this runs
             // for ordinary records or retry records whose due time has already passed.
-            PauseAndSeek(partition, result.Offset, result.LeaderEpoch ?? -1);
+            if (!TryRewind(result, result.Offset, result.LeaderEpoch ?? -1, whileRevocationPending: false))
+            {
+                _postponements.Remove(partition);
+                LogPostponementSkippedForRevokedPartition(result.Topic, result.Partition, result.Offset);
+                return false;
+            }
         }
 
         _ = ResumePartitionAfterDelayAsync(partition, postponement, cancellationToken);
@@ -875,14 +1091,39 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         _consumer.Positions.Seek(new TopicPartitionOffset(partition.Topic, partition.Partition, offset, leaderEpoch));
     }
 
-    private void InvalidatePostponements(IEnumerable<TopicPartition> partitions)
+    /// <summary>
+    /// For a consumer the service cannot ask (see <see cref="GetOwnership"/>): the consumer
+    /// publishes a revocation's assignment snapshot before it drops the partition's pause state,
+    /// so a pause that raced the synchronization is seen here and undone. Without
+    /// this, the partition would come back paused if it is assigned to this member again. The
+    /// seek's stored offset needs no undo: a group consumer does not commit stored offsets of
+    /// partitions it does not own.
+    /// </summary>
+    private bool UndoPauseIfOwnershipEndedDuringPauseAndSeek(ConsumeResult<TKey, TValue> result)
+    {
+        if (GetOwnership(result) != RecordOwnership.Ended)
+            return false;
+
+        _consumer.Partitions.Resume(new TopicPartition(result.Topic, result.Partition));
+        return true;
+    }
+
+    /// <summary>
+    /// A revocation, loss or new assignment of these partitions: drops the postponements and
+    /// redelivery counts of their earlier ownership (a delayed resume must not resume the new
+    /// ownership's pause) and ends a pending retry backoff of the in-flight record, whose
+    /// ownership the next check then decides. Rebalance callbacks only.
+    /// </summary>
+    private void OnOwnershipChanged(IEnumerable<TopicPartition> partitions)
     {
         lock (_postponementsLock)
         {
-            // The epoch also distinguishes an identical offset/due time replay after reassignment.
-            _assignmentEpoch++;
+            _rebalanceEpoch++;
             foreach (var partition in partitions)
             {
+                if (_retryBackoff is { } backoff && backoff.Partition == partition)
+                    backoff.OwnershipChanged.TrySetResult();
+
                 _postponements.Remove(partition);
                 _redeliveries.Remove(partition);
             }
@@ -892,17 +1133,20 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     private sealed class PostponementRebalanceListener(KafkaConsumerService<TKey, TValue> service) : IRebalanceListener
     {
         public ValueTask OnPartitionsAssignedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)
-            => default;
+        {
+            service.OnOwnershipChanged(partitions);
+            return default;
+        }
 
         public ValueTask OnPartitionsRevokedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)
         {
-            service.InvalidatePostponements(partitions);
+            service.OnOwnershipChanged(partitions);
             return default;
         }
 
         public ValueTask OnPartitionsLostAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)
         {
-            service.InvalidatePostponements(partitions);
+            service.OnOwnershipChanged(partitions);
             return default;
         }
     }
@@ -986,6 +1230,8 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
     private readonly record struct Redelivery(long Offset, int Attempt);
 
+    private sealed record RetryBackoff(TopicPartition Partition, TaskCompletionSource OwnershipChanged);
+
     private void CaptureRawBytesOnFirstFailure(int attempt, ref byte[]? rawKey, ref byte[]? rawValue)
     {
         if (attempt == 1 &&
@@ -1060,6 +1306,10 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         if (!_retryTopicOptions.TryGetRetryTopic(sourceTopic, failureCount, out var retryTopic, out var delay))
             return new RetryTopicRouteOutcome(RetryTopicRouteResult.Exhausted, null);
 
+        // The partition's next owner routes the record itself; a copy from here would be a duplicate.
+        if (AbandonIfOwnershipChanged(result))
+            return new RetryTopicRouteOutcome(RetryTopicRouteResult.OwnershipEnded, null);
+
         try
         {
             var dueAt = DateTimeOffset.UtcNow + delay;
@@ -1099,7 +1349,10 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         Disabled,
         Routed,
         Exhausted,
-        Failed
+        Failed,
+
+        /// <summary>The record's partition was revoked, lost or reassigned; nothing was produced.</summary>
+        OwnershipEnded
     }
 
     private IKafkaProducer<byte[]?, byte[]?> BuildDlqProducer()
@@ -1198,6 +1451,15 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Delaying retry topic message {Topic}[{Partition}]@{Offset} for {Delay}")]
     private partial void LogRetryTopicDelay(string topic, int partition, long offset, TimeSpan delay);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Partition {Topic}[{Partition}] was revoked while message @{Offset} was processed; its next owner redelivers it, so it is not postponed here")]
+    private partial void LogPostponementSkippedForRevokedPartition(string topic, int partition, long offset);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Partition {Topic}[{Partition}] was revoked while message @{Offset} was processed; its next owner redelivers it, so it is not retried or routed here")]
+    private partial void LogProcessingAbandonedForRevokedPartition(string topic, int partition, long offset);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Partition {Topic}[{Partition}] was revoked while message @{Offset} was processed; its offset is not stored")]
+    private partial void LogResolvedOffsetNotStoredForRevokedPartition(string topic, int partition, long offset);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Resumed partition {Topic}[{Partition}] after {Delay}")]
     private partial void LogPartitionResumed(string topic, int partition, TimeSpan delay);

@@ -1243,9 +1243,9 @@ public sealed class OffsetStoreTimingTests
         GetField("_lastManualAssignmentEnsureVersion").SetValue(consumer, assignmentVersion.GetValue(consumer));
     }
 
-    private static ConcurrentDictionary<TopicPartition, long> GetDirtyStoredOffsets(
+    private static IReadOnlyDictionary<TopicPartition, long> GetDirtyStoredOffsets(
         KafkaConsumer<string, string> consumer)
-        => (ConcurrentDictionary<TopicPartition, long>)GetField("_dirtyStoredOffsets").GetValue(consumer)!;
+        => consumer.DirtyStoredOffsetsForTest;
 
     private static ConcurrentDictionary<TopicPartition, long> GetPositions(
         KafkaConsumer<string, string> consumer)

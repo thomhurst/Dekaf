@@ -6,7 +6,10 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
-/// <summary>Measures the complete hosted-consumer processing chain before and after wrapper removal.</summary>
+/// <summary>
+/// Measures the complete hosted-consumer processing chain before and after wrapper removal,
+/// including the per-record capture of the ownership epoch that failure handling checks.
+/// </summary>
 [MemoryDiagnoser(displayGenColumns: false)]
 [ShortRunJob]
 public class HostedConsumerProcessingBenchmarks

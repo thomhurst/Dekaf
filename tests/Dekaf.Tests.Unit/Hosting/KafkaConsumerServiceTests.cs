@@ -1214,7 +1214,26 @@ public sealed partial class KafkaConsumerServiceTests
         configuration.EnableAutoOffsetStore.Returns(true);
         configuration.HasConsumerGroup.Returns(true);
         configuration.StoresOffsetsOnDelivery.Returns(false);
+        // The service judges a consumer it cannot ask about record ownership by its assignment.
+        consumer.Assignment.Returns(EveryPartition.Instance);
         return consumer;
+    }
+
+    /// <summary>An assignment that holds every partition the test's records come from.</summary>
+    private sealed class EveryPartition : IReadOnlySet<TopicPartition>
+    {
+        public static readonly EveryPartition Instance = new();
+
+        public int Count => 0;
+        public bool Contains(TopicPartition item) => true;
+        public bool IsProperSubsetOf(IEnumerable<TopicPartition> other) => false;
+        public bool IsProperSupersetOf(IEnumerable<TopicPartition> other) => true;
+        public bool IsSubsetOf(IEnumerable<TopicPartition> other) => false;
+        public bool IsSupersetOf(IEnumerable<TopicPartition> other) => true;
+        public bool Overlaps(IEnumerable<TopicPartition> other) => other.Any();
+        public bool SetEquals(IEnumerable<TopicPartition> other) => false;
+        public IEnumerator<TopicPartition> GetEnumerator() => Enumerable.Empty<TopicPartition>().GetEnumerator();
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
     private static void ConfigureStrictManualOffsetStore(IKafkaConsumer<string, string> consumer)

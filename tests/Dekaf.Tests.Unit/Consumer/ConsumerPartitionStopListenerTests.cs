@@ -274,8 +274,7 @@ public sealed class ConsumerPartitionStopListenerTests
         var lost = new TopicPartition("topic-a", 1);
         consumer.Assign(reassigned, lost);
         consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 42));
-        var dirty = (System.Collections.IDictionary)GetField(consumer, "_dirtyStoredOffsets");
-        await Assert.That(dirty.Contains(reassigned)).IsTrue();
+        await Assert.That(consumer.DirtyStoredOffsetsForTest.ContainsKey(reassigned)).IsTrue();
 
         // Both partitions are lost to a fence, and partition 0 is assigned again before the
         // consumer synchronizes. Its stored offset was taken before the loss.
@@ -296,7 +295,7 @@ public sealed class ConsumerPartitionStopListenerTests
         await Assert.That(listener.StoppedPartitions[0]).IsEquivalentTo([reassigned]);
 
         // The offset from before the loss is dropped, so no shutdown commit can send it.
-        await Assert.That(dirty.Contains(reassigned)).IsFalse();
+        await Assert.That(consumer.DirtyStoredOffsetsForTest.ContainsKey(reassigned)).IsFalse();
     }
 
     [Test]

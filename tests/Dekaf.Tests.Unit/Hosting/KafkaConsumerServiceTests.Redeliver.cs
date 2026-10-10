@@ -160,7 +160,7 @@ public sealed partial class KafkaConsumerServiceTests
             MaxPollRetryBackoff = TimeSpan.FromHours(1)
         });
 
-    private static List<(TopicPartition Partition, long Offset, int Attempt)> GetRedeliveries(FailingConsumerService service)
+    private static List<(TopicPartition Partition, long Offset, int Attempt)> GetRedeliveries(Dekaf.Extensions.Hosting.KafkaConsumerService<string, string> service)
     {
         var redeliveries = (System.Collections.IDictionary)typeof(Dekaf.Extensions.Hosting.KafkaConsumerService<string, string>)
             .GetField("_redeliveries", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
