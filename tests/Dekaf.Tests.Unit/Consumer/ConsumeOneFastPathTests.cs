@@ -1403,7 +1403,9 @@ public sealed partial class ConsumeOneFastPathTests
         var fetch = PendingFetchData.Create(Topic, Partition, [CreateBatch(20)]);
         await using var consumer = CreateInitializedConsumer(fetch);
         MarkManualAssignmentCurrent(consumer);
-        GetPendingEofEvents(consumer).Enqueue((new TopicPartition(Topic, Partition), 20L));
+        // The empty batch at 20 covers offset 20, so the partition end it reveals is 21. An EOF
+        // below the consumed position would be superseded and skipped.
+        GetPendingEofEvents(consumer).Enqueue((new TopicPartition(Topic, Partition), 21L));
 
         var resultTask = consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
 
@@ -1411,7 +1413,7 @@ public sealed partial class ConsumeOneFastPathTests
         var result = await resultTask;
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.IsPartitionEof).IsTrue();
-        await Assert.That(result.Value.Offset).IsEqualTo(20L);
+        await Assert.That(result.Value.Offset).IsEqualTo(21L);
     }
 
     private static KafkaConsumer<string, string> CreateInitializedGroupedConsumer(

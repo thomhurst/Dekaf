@@ -130,6 +130,10 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <remarks>
     /// This is an intentionally long-lived stream. <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>
     /// does not apply; use <paramref name="cancellationToken"/> to bound its lifetime.
+    /// Requesting the next batch proves only the records enumerated from the current one. A batch
+    /// that is not enumerated at all is released: its partition is rewound to its position and the
+    /// records are redelivered after a refetch while other partitions continue. Use
+    /// <c>Pause</c> to hold a partition's records instead.
     /// </remarks>
     IAsyncEnumerable<ConsumeBatch<TKey, TValue>> ConsumeBatchAsync(CancellationToken cancellationToken = default);
 
@@ -143,6 +147,8 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <remarks>
     /// This is an intentionally long-lived stream. <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>
     /// does not apply; use <paramref name="cancellationToken"/> to bound its lifetime.
+    /// As with <see cref="ConsumeBatchAsync"/>, a batch that is not enumerated before the next one is
+    /// requested is rewound and redelivered rather than proven.
     /// </remarks>
     IAsyncEnumerable<ConsumeRawBatch> ConsumeRawBatchAsync(CancellationToken cancellationToken = default);
 

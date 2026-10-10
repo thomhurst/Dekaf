@@ -221,6 +221,35 @@ internal sealed class PendingFetchData : IDisposable
         => Math.Min(limit, _maximumRecordCount);
 
     internal bool IsExhausted { get; private set; }
+
+    // Iteration cursor captured when this fetch is yielded as a batch. Kept on the pooled
+    // instance so the batch iterators' state machines carry no extra per-stream state.
+    private int _yieldBatchIndex;
+    private int _yieldRecordIndex;
+    private bool _yieldBuffered;
+    private bool _yieldExhausted;
+
+    /// <summary>
+    /// Captures where record iteration stands just before the fetch is yielded as a batch.
+    /// Once per batch, never per record.
+    /// </summary>
+    internal void CaptureYieldCursor()
+    {
+        _yieldBatchIndex = _batchIndex;
+        _yieldRecordIndex = _recordIndex;
+        _yieldBuffered = _hasBufferedCurrent;
+        _yieldExhausted = IsExhausted;
+    }
+
+    /// <summary>
+    /// Whether no record has been read since <see cref="CaptureYieldCursor"/>: the caller
+    /// skipped the batch. Creating an enumerator without calling MoveNext does not move it.
+    /// </summary>
+    internal bool IsAtYieldCursor =>
+        _batchIndex == _yieldBatchIndex
+        && _recordIndex == _yieldRecordIndex
+        && _hasBufferedCurrent == _yieldBuffered
+        && IsExhausted == _yieldExhausted;
     internal long FetchEndOffsetExclusive
     {
         get => _fetchEndOffsetExclusive;
@@ -1078,6 +1107,10 @@ internal sealed class PendingFetchData : IDisposable
         _fallbackCurrentRecord = default;
         _eagerParsed = false;
         _hasBufferedCurrent = false;
+        _yieldBatchIndex = -1;
+        _yieldRecordIndex = -1;
+        _yieldBuffered = false;
+        _yieldExhausted = false;
         _error = null;
         unchecked
         {
@@ -1694,6 +1727,27 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // here preserves its iterator, pooled storage, offsets, and per-partition order.
     private readonly Queue<PendingFetchData> _pausedPendingFetches = new();
     private readonly Queue<PendingFetchData> _pendingFetchScratch = new();
+    // Reused by the consume loop to rewind a skipped batch without allocating a set.
+    private readonly HashSet<TopicPartition> _skippedBatchPartitions = [];
+    // Partitions whose skipped batch could not be released. Their fetches wait in
+    // _heldSkippedFetches during a batch loop and are offered again after a bounded wait.
+    private readonly HashSet<TopicPartition> _heldSkippedPartitions = [];
+    private readonly Queue<PendingFetchData> _heldSkippedFetches = new();
+    // Partitions with a queued fetch, built only when an EOF drain starts with fetches queued.
+    private readonly HashSet<TopicPartition> _eofHoldPartitions = [];
+    // Batch-loop state kept on the consumer, not hoisted into the async iterators, so the
+    // per-stream iterator allocation does not grow. Only the consume loop touches them.
+    private int _eofDrainRemaining;
+    // Per partition: queued EOFs below this offset were superseded by records published after
+    // them. Written under the invalidation lock (or on the consumer thread for direct fetches).
+    private readonly ConcurrentDictionary<TopicPartition, long> _eofSupersededBelow = new();
+    // Set after a bound is written to _eofSupersededBelow, cleared before a full clear. The EOF
+    // drain reads it instead of ConcurrentDictionary.IsEmpty, which takes every bucket lock when
+    // the dictionary is empty: the normal path's case, and it ran once per delivered EOF.
+    private volatile bool _hasEofSupersededBounds;
+    // Set by CompleteBatchPoll and reset by BeginBatchStream. Safe as a consumer field only
+    // because the batch APIs are single-consumer: one stream enumerates at a time.
+    private bool _batchLoopExitRequested;
     private int _observedPausedSnapshotVersion;
     private int _recordIterationEpochSeed;
     private int _pendingFetchDepth;
@@ -4215,7 +4269,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             // Yield any pending EOF events (thread-safe with ConcurrentQueue)
-            while (_pendingEofEvents.TryDequeue(out var eofEvent))
+            while (TryDequeueCurrentEof(out var eofEvent))
             {
                 yield return ConsumeResult<TKey, TValue>.CreatePartitionEof(
                     eofEvent.Partition.Topic,
@@ -4250,6 +4304,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             await StartAutoCommitAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        BeginBatchStream();
+
         // Start background prefetch if enabled (QueuedMinMessages > 1)
         bool prefetchEnabled = _options.QueuedMinMessages > 1;
         _prefetchEnabled = prefetchEnabled;
@@ -4274,7 +4330,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             PreparePendingFetchesForDelivery();
 
             // Get pending data - either from prefetch channel or direct fetch
-            if (_pendingFetches.Count == 0)
+            if (_heldSkippedPartitions.Count > 0
+                && _pendingFetches.Count > 0
+                && _heldSkippedPartitions.Contains(_pendingFetches.Peek().TopicPartition))
+            {
+                // Only skipped fetches that could not be released remain at the head.
+                await WaitForSkippedFetchRetryAsync(prefetchEnabled, cancellationToken).ConfigureAwait(false);
+            }
+            else if (_pendingFetches.Count == 0)
             {
                 if (prefetchEnabled)
                 {
@@ -4324,75 +4387,96 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             bool metricsEnabled = Diagnostics.DekafMetrics.MessagesReceived.Enabled
                                   || Diagnostics.DekafMetrics.BytesReceived.Enabled;
 
-            while (_pendingFetches.Count > 0)
+            try
             {
-                PreparePendingFetchesForDelivery();
-                if (_pendingFetches.Count == 0)
-                    break;
-
-                if (ClearFetchBufferForPendingCoordinatorRevocations())
-                    continue;
-
-                if (TryDiscardExhaustedPendingFetch())
-                    continue;
-
-                PendingFetchData pending = _pendingFetches.Peek();
-                pending.MarkYieldedProcessed();
-                int pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
-                var resumedAfterYield = false;
-                ConsumeBatch<TKey, TValue>? batch = null;
-                long? batchProcessingStarted = _adaptiveFetchSizer is not null
-                    ? Stopwatch.GetTimestamp() : null;
-
-                // User callbacks can seek or revoke this fetch during synchronous batch
-                // iteration. Retain once across the yield, including its final cleanup.
-                using var interceptorRetention = _onBatchConsume is null
-                    ? (PendingFetchData.RetentionLease?)null
-                    : pending.RetainForIteration();
-                try
+                while (_pendingFetches.Count > 0)
                 {
-                    // Eagerly parse all records upfront for cache-friendly access
-                    pending.EagerParseAll(_recordHeaderRoutingPlan);
+                    PreparePendingFetchesForDelivery();
+                    if (_pendingFetches.Count == 0)
+                        break;
 
-                    // Yield the batch to the caller for synchronous iteration
-                    var batchIterationVersion = Volatile.Read(ref _batchIterationEpoch.Version);
-                    batch = new ConsumeBatch<TKey, TValue>(
-                        pending,
-                        _keyDeserializer,
-                        _valueDeserializer,
-                        new BatchIterationGuard(
-                            _batchIterationEpoch,
-                            batchIterationVersion,
-                            GetBatchIterationStatus),
-                        _storeOffsetOnDelivery,
-                        _options.MaxPollRecords,
-                        _rewindBatchAfterDeliveryFailure,
-                        _options.RecordFilter,
-                        _recordHeaderRoutingPlan,
-                        _tryRecordPollFast,
-                        _onBatchConsume);
-                    yield return batch;
-                    pending.EndCheckpointWindow(batch);
-                    // Resumption = the caller requested the next batch, proving this one was
-                    // processed. Enumerator disposal skips straight to the finally block.
-                    resumedAfterYield = true;
-                    await RecordPollAsync(cancellationToken).ConfigureAwait(false);
-                }
-                finally
-                {
-                    if (!resumedAfterYield)
+                    if (ClearFetchBufferForPendingCoordinatorRevocations())
+                        continue;
+
+                    if (TryDiscardExhaustedPendingFetch()
+                        || TryDiscardReleasedPendingFetch()
+                        || TrySetAsideHeldPendingFetch())
+                    {
+                        continue;
+                    }
+
+                    PendingFetchData pending = _pendingFetches.Peek();
+
+                    pending.MarkYieldedProcessed();
+                    int pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
+                    var resumedAfterYield = false;
+                    ConsumeBatch<TKey, TValue>? batch = null;
+                    long? batchProcessingStarted = _adaptiveFetchSizer is not null
+                        ? Stopwatch.GetTimestamp() : null;
+
+                    // User callbacks can seek or revoke this fetch during synchronous batch
+                    // iteration. Retain once across the yield, including its final cleanup.
+                    using var interceptorRetention = _onBatchConsume is null
+                        ? (PendingFetchData.RetentionLease?)null
+                        : pending.RetainForIteration();
+                    try
+                    {
+                        // Eagerly parse all records upfront for cache-friendly access
+                        pending.EagerParseAll(_recordHeaderRoutingPlan);
+
+                        // Yield the batch to the caller for synchronous iteration
+                        var batchIterationVersion = Volatile.Read(ref _batchIterationEpoch.Version);
+                        batch = new ConsumeBatch<TKey, TValue>(
+                            pending,
+                            _keyDeserializer,
+                            _valueDeserializer,
+                            new BatchIterationGuard(
+                                _batchIterationEpoch,
+                                batchIterationVersion,
+                                GetBatchIterationStatus),
+                            _storeOffsetOnDelivery,
+                            _options.MaxPollRecords,
+                            _rewindBatchAfterDeliveryFailure,
+                            _options.RecordFilter,
+                            _recordHeaderRoutingPlan,
+                            _tryRecordPollFast,
+                            _onBatchConsume);
+                        pending.CaptureYieldCursor();
+                        yield return batch;
                         pending.EndCheckpointWindow(batch);
-                    CompleteBatchPoll(
-                        pending,
-                        pendingFetchesVersion,
-                        metricsEnabled,
-                        batchProcessingStarted,
-                        disposePending: batch is null,
-                        yieldedBatchProcessed: resumedAfterYield);
+                        // Resumption = the caller requested the next batch, proving this one was
+                        // processed. Enumerator disposal skips straight to the finally block.
+                        resumedAfterYield = true;
+                        await RecordPollAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        if (!resumedAfterYield)
+                            pending.EndCheckpointWindow(batch);
+                        _batchLoopExitRequested = CompleteBatchPoll(
+                            pending,
+                            pendingFetchesVersion,
+                            metricsEnabled,
+                            batchProcessingStarted,
+                            disposePending: batch is null,
+                            yieldedBatchProcessed: resumedAfterYield);
+                    }
+
+                    // A skipped batch that could not be released returns to the outer loop, so
+                    // pause parking, revocation handling or the held-fetch wait run before any
+                    // further delivery instead of spinning on the same queued fetch.
+                    if (_batchLoopExitRequested)
+                        break;
                 }
             }
+            finally
+            {
+                ReleaseSkippedPartitions();
+                RestoreHeldSkippedFetches();
+            }
 
-            while (_pendingEofEvents.TryDequeue(out var eofEvent))
+            PrepareEofDelivery();
+            while (TryDequeueDeliverableEof(out var eofEvent))
             {
                 using var eofPending = PendingFetchData.CreatePartitionEof(
                     eofEvent.Partition.Topic,
@@ -4423,6 +4507,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             await StartAutoCommitAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        BeginBatchStream();
+
         // Start background prefetch if enabled (QueuedMinMessages > 1)
         bool prefetchEnabled = _options.QueuedMinMessages > 1;
         _prefetchEnabled = prefetchEnabled;
@@ -4447,7 +4533,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             PreparePendingFetchesForDelivery();
 
             // Get pending data - either from prefetch channel or direct fetch
-            if (_pendingFetches.Count == 0)
+            if (_heldSkippedPartitions.Count > 0
+                && _pendingFetches.Count > 0
+                && _heldSkippedPartitions.Contains(_pendingFetches.Peek().TopicPartition))
+            {
+                // Only skipped fetches that could not be released remain at the head.
+                await WaitForSkippedFetchRetryAsync(prefetchEnabled, cancellationToken).ConfigureAwait(false);
+            }
+            else if (_pendingFetches.Count == 0)
             {
                 if (prefetchEnabled)
                 {
@@ -4497,63 +4590,84 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             bool metricsEnabled = Diagnostics.DekafMetrics.MessagesReceived.Enabled
                                   || Diagnostics.DekafMetrics.BytesReceived.Enabled;
 
-            while (_pendingFetches.Count > 0)
+            try
             {
-                PreparePendingFetchesForDelivery();
-                if (_pendingFetches.Count == 0)
-                    break;
-
-                if (ClearFetchBufferForPendingCoordinatorRevocations())
-                    continue;
-
-                if (TryDiscardExhaustedPendingFetch())
-                    continue;
-
-                PendingFetchData pending = _pendingFetches.Peek();
-                pending.MarkYieldedProcessed();
-                int pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
-                var resumedAfterYield = false;
-                ConsumeRawBatch? batch = null;
-                long? batchProcessingStarted = _adaptiveFetchSizer is not null
-                    ? Stopwatch.GetTimestamp() : null;
-
-                try
+                while (_pendingFetches.Count > 0)
                 {
-                    // Eagerly parse all records upfront for cache-friendly access
-                    pending.EagerParseAll();
+                    PreparePendingFetchesForDelivery();
+                    if (_pendingFetches.Count == 0)
+                        break;
 
-                    // Yield the raw batch to the caller for synchronous iteration
-                    var batchIterationVersion = Volatile.Read(ref _batchIterationEpoch.Version);
-                    batch = new ConsumeRawBatch(
-                        pending,
-                        new BatchIterationGuard(
-                            _batchIterationEpoch,
-                            batchIterationVersion,
-                            GetBatchIterationStatus),
-                        _storeOffsetOnDelivery,
-                        _options.MaxPollRecords);
-                    yield return batch;
-                    pending.EndCheckpointWindow(batch);
-                    // Resumption = the caller requested the next batch, proving this one was
-                    // processed. Enumerator disposal skips straight to the finally block.
-                    resumedAfterYield = true;
-                    await RecordPollAsync(cancellationToken).ConfigureAwait(false);
-                }
-                finally
-                {
-                    if (!resumedAfterYield)
+                    if (ClearFetchBufferForPendingCoordinatorRevocations())
+                        continue;
+
+                    if (TryDiscardExhaustedPendingFetch()
+                        || TryDiscardReleasedPendingFetch()
+                        || TrySetAsideHeldPendingFetch())
+                    {
+                        continue;
+                    }
+
+                    PendingFetchData pending = _pendingFetches.Peek();
+
+                    pending.MarkYieldedProcessed();
+                    int pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
+                    var resumedAfterYield = false;
+                    ConsumeRawBatch? batch = null;
+                    long? batchProcessingStarted = _adaptiveFetchSizer is not null
+                        ? Stopwatch.GetTimestamp() : null;
+
+                    try
+                    {
+                        // Eagerly parse all records upfront for cache-friendly access
+                        pending.EagerParseAll();
+
+                        // Yield the raw batch to the caller for synchronous iteration
+                        var batchIterationVersion = Volatile.Read(ref _batchIterationEpoch.Version);
+                        batch = new ConsumeRawBatch(
+                            pending,
+                            new BatchIterationGuard(
+                                _batchIterationEpoch,
+                                batchIterationVersion,
+                                GetBatchIterationStatus),
+                            _storeOffsetOnDelivery,
+                            _options.MaxPollRecords);
+                        pending.CaptureYieldCursor();
+                        yield return batch;
                         pending.EndCheckpointWindow(batch);
-                    CompleteBatchPoll(
-                        pending,
-                        pendingFetchesVersion,
-                        metricsEnabled,
-                        batchProcessingStarted,
-                        disposePending: batch is null,
-                        yieldedBatchProcessed: resumedAfterYield);
+                        // Resumption = the caller requested the next batch, proving this one was
+                        // processed. Enumerator disposal skips straight to the finally block.
+                        resumedAfterYield = true;
+                        await RecordPollAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        if (!resumedAfterYield)
+                            pending.EndCheckpointWindow(batch);
+                        _batchLoopExitRequested = CompleteBatchPoll(
+                            pending,
+                            pendingFetchesVersion,
+                            metricsEnabled,
+                            batchProcessingStarted,
+                            disposePending: batch is null,
+                            yieldedBatchProcessed: resumedAfterYield);
+                    }
+
+                    // A skipped batch that could not be released returns to the outer loop, so
+                    // pause parking, revocation handling or the held-fetch wait run before any
+                    // further delivery instead of spinning on the same queued fetch.
+                    if (_batchLoopExitRequested)
+                        break;
                 }
             }
+            finally
+            {
+                ReleaseSkippedPartitions();
+                RestoreHeldSkippedFetches();
+            }
 
-            while (_pendingEofEvents.TryDequeue(out var eofEvent))
+            PrepareEofDelivery();
+            while (TryDequeueDeliverableEof(out var eofEvent))
             {
                 using var eofPending = PendingFetchData.CreatePartitionEof(
                     eofEvent.Partition.Topic,
@@ -4565,7 +4679,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    private void CompleteBatchPoll(
+    /// <returns>
+    /// <see langword="true"/> when the caller skipped this batch and it can be neither released
+    /// nor held (paused, or owned by a staged seek or revocation). The batch loop must then
+    /// return to its outer poll loop before delivering again. A released or held skip returns
+    /// false, and the loop keeps delivering other partitions.
+    /// </returns>
+    private bool CompleteBatchPoll(
         PendingFetchData pending,
         int pendingFetchesVersion,
         bool metricsEnabled,
@@ -4578,10 +4698,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             0) != 0;
 
         if (Volatile.Read(ref _pendingFetchesVersion) != pendingFetchesVersion)
-            return;
+            return false;
 
         if (_pendingFetches.Count == 0 || !ReferenceEquals(_pendingFetches.Peek(), pending))
-            return;
+            return false;
 
         if (exhaustionProbePending)
             pending.TryBufferNext();
@@ -4607,7 +4727,293 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             || !IsCurrentlyAssigned(pending.TopicPartition))
         {
             DisposeQueuedFetch(DequeuePendingFetch());
+            return false;
         }
+
+        // Checked once per batch. An unmoved iteration cursor means the caller never read a
+        // record: it skipped the batch. Iteration the consumer itself stopped after a read
+        // (pause during delivery) moved the cursor and keeps its buffered redelivery path.
+        if (!yieldedBatchProcessed || !pending.IsAtYieldCursor)
+            return false;
+
+        return !TryReleaseSkippedBatch(pending);
+    }
+
+    /// <summary>
+    /// Releases a batch the caller resumed past without consuming, so its records are
+    /// redelivered from the partition position. Re-yielding the queued fetch instead would
+    /// spin on it forever, starving the fetches queued behind it and the assignment sync
+    /// that only runs between deliveries. The skip proved nothing, so neither the position
+    /// nor the stored offset moves.
+    /// The skipped fetch is dropped now, and the partition is recorded. Its later queued
+    /// fetches are dropped as they reach the queue head, and
+    /// <see cref="ReleaseSkippedPartitions"/> sweeps the remaining buffers and rewinds every
+    /// recorded partition once when the batch loop exits. Skipping K of N partitions is
+    /// therefore O(N + K), not one buffer sweep per skip. Runs only on a skip, never per record.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private bool TryReleaseSkippedBatch(PendingFetchData pending)
+    {
+        var partition = pending.TopicPartition;
+
+        // Paused data stays parked for Resume; the next delivery boundary moves it aside.
+        if (_paused.ContainsKey(partition))
+            return false;
+
+        // Snapshot reads own their bounded positions, and Seek rejects changes during them.
+        if (pending.IsSnapshotEnd || Volatile.Read(ref _snapshotOperationActive) != 0)
+        {
+            HoldSkippedFetch();
+            return true;
+        }
+
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            // A staged seek or revocation owns this partition's queued data.
+            if (HasPendingFetchClear(partition))
+                return false;
+
+            // Prefetch runs ahead of the consumed position. Without a known position the
+            // queued data cannot be refetched safely, so it stays queued for redelivery.
+            if (_prefetchEnabled
+                && (!_positions.TryGetValue(partition, out var position) || position < 0))
+            {
+                HoldSkippedFetch();
+                return true;
+            }
+        }
+
+        _skippedBatchPartitions.Add(partition);
+        DisposeQueuedFetch(DequeuePendingFetch());
+        return true;
+    }
+
+    /// <summary>
+    /// Drops a queued fetch of a partition released earlier in this batch loop. One set lookup
+    /// per batch, and only while a release is pending.
+    /// </summary>
+    private bool TryDiscardReleasedPendingFetch()
+    {
+        if (_skippedBatchPartitions.Count == 0
+            || _pendingFetches.Count == 0
+            || !_skippedBatchPartitions.Contains(_pendingFetches.Peek().TopicPartition))
+        {
+            return false;
+        }
+
+        DisposeQueuedFetch(DequeuePendingFetch());
+        return true;
+    }
+
+    /// <summary>
+    /// Completes every skipped-batch release recorded by this batch loop, in one pass. Under
+    /// the invalidation lock that Seek and RewindAfterDeliveryFailure use, it invalidates the
+    /// partitions' fetch epochs and drops their queued, paused, prefetched and EOF data.
+    /// It then rewinds each fetch position to the consumer position. Fetches started before
+    /// this point carry an older epoch and are dropped at publication. Runs when the loop exits,
+    /// including on disposal or an exception; with no release pending it is one count check.
+    /// </summary>
+    private void ReleaseSkippedPartitions()
+    {
+        if (_skippedBatchPartitions.Count == 0)
+            return;
+
+        var partitions = _skippedBatchPartitions;
+        try
+        {
+            lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+            {
+                ClearFetchBufferForPartitions(partitions);
+
+                foreach (var partition in partitions)
+                {
+                    // A seek or revocation staged since the skip owns the replacement position.
+                    if (HasPendingFetchClear(partition) || !IsCurrentlyAssigned(partition))
+                        continue;
+
+                    // Direct fetches already resume from the consumed position.
+                    if (_positions.TryGetValue(partition, out var position) && position >= 0)
+                        SetFetchPosition(partition, position);
+                    _eofEmitted.TryRemove(partition, out _);
+                }
+            }
+        }
+        finally
+        {
+            partitions.Clear();
+        }
+    }
+
+    /// <summary>
+    /// Starts one EOF drain and records how many queued events it may check. A skip leaves the
+    /// batch loop with fetches still queued, and prefetch reports EOF at its fetch position,
+    /// ahead of those records. Only then is the set of partitions with a queued fetch built,
+    /// once per drain, so each EOF check is O(1). On the normal path the queue is empty and
+    /// this reads two counts.
+    /// </summary>
+    private void PrepareEofDelivery()
+    {
+        if (_eofHoldPartitions.Count > 0)
+            _eofHoldPartitions.Clear();
+
+        if (_pendingEofEvents.IsEmpty)
+        {
+            _eofDrainRemaining = 0;
+            return;
+        }
+
+        if (_pendingFetches.Count > 0)
+        {
+            foreach (var queued in _pendingFetches)
+                _eofHoldPartitions.Add(queued.TopicPartition);
+        }
+
+        _eofDrainRemaining = _pendingEofEvents.Count;
+    }
+
+    /// <summary>
+    /// Per delivered EOF: one lock-free position lookup. The superseded-bound lookup runs only
+    /// once records have superseded a queued EOF; before that it is one field read.
+    /// </summary>
+    private bool IsSupersededEof(TopicPartition partition, long offset) =>
+        (_hasEofSupersededBounds
+            && _eofSupersededBelow.TryGetValue(partition, out var below)
+            && offset < below)
+        || (_positions.TryGetValue(partition, out var position) && offset < position);
+
+    /// <summary>
+    /// Dequeues the next partition EOF for the record-at-a-time APIs, skipping any superseded
+    /// while queued. The batch APIs use <see cref="TryDequeueDeliverableEof"/>, which also
+    /// holds an EOF behind its partition's queued fetches.
+    /// </summary>
+    private bool TryDequeueCurrentEof(out (TopicPartition Partition, long Offset) eofEvent)
+    {
+        while (_pendingEofEvents.TryDequeue(out eofEvent))
+        {
+            if (!IsSupersededEof(eofEvent.Partition, eofEvent.Offset))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Dequeues the next partition EOF the batch APIs may deliver. An EOF for a partition that
+    /// still had a queued fetch when the drain started is put back until those records are
+    /// delivered. Released partitions already had their EOF dropped and re-derive it after
+    /// the refetch.
+    /// </summary>
+    private bool TryDequeueDeliverableEof(out (TopicPartition Partition, long Offset) eofEvent)
+    {
+        while (_eofDrainRemaining-- > 0 && _pendingEofEvents.TryDequeue(out eofEvent))
+        {
+            if (_eofHoldPartitions.Count == 0 || !_eofHoldPartitions.Contains(eofEvent.Partition))
+            {
+                // Superseded while queued: records past this EOF were published or consumed.
+                if (IsSupersededEof(eofEvent.Partition, eofEvent.Offset))
+                    continue;
+
+                return true;
+            }
+
+            _pendingEofEvents.Enqueue(eofEvent);
+        }
+
+        if (_eofHoldPartitions.Count > 0)
+            _eofHoldPartitions.Clear();
+        eofEvent = default;
+        return false;
+    }
+
+    /// <summary>
+    /// Keeps a skipped fetch at the queue head that cannot be refetched. Its partition is
+    /// recorded as held and the fetch is set aside. Later fetches of the partition are set
+    /// aside as they reach the head, so other partitions are delivered first. When the batch
+    /// loop exits, <see cref="RestoreHeldSkippedFetches"/> queues them again behind everything
+    /// else, in order, and the poll loop waits before re-offering them. O(1) per skip.
+    /// </summary>
+    private void HoldSkippedFetch()
+    {
+        _heldSkippedPartitions.Add(_pendingFetches.Peek().TopicPartition);
+        _heldSkippedFetches.Enqueue(_pendingFetches.Dequeue());
+    }
+
+    /// <summary>
+    /// Sets aside a queued fetch of a held partition. One count check per batch on the normal
+    /// path; one set lookup per batch while a hold is active.
+    /// </summary>
+    private bool TrySetAsideHeldPendingFetch()
+    {
+        if (_heldSkippedPartitions.Count == 0
+            || _pendingFetches.Count == 0
+            || !_heldSkippedPartitions.Contains(_pendingFetches.Peek().TopicPartition))
+        {
+            return false;
+        }
+
+        _heldSkippedFetches.Enqueue(_pendingFetches.Dequeue());
+        return true;
+    }
+
+    /// <summary>
+    /// Queues set-aside held fetches again when the batch loop exits, behind every other queued
+    /// fetch. If the loop exited early, later fetches of held partitions may still be queued.
+    /// One stable pass moves them behind the set-aside ones so per-partition order holds. Uses
+    /// only reused queues. With no held fetch it is one count check.
+    /// </summary>
+    private void RestoreHeldSkippedFetches()
+    {
+        if (_heldSkippedFetches.Count == 0)
+            return;
+
+        if (_pendingFetches.Count > 0)
+        {
+            var count = _pendingFetches.Count;
+            for (var i = 0; i < count; i++)
+            {
+                var queued = _pendingFetches.Dequeue();
+                if (_heldSkippedPartitions.Contains(queued.TopicPartition))
+                    _heldSkippedFetches.Enqueue(queued);
+                else
+                    _pendingFetches.Enqueue(queued);
+            }
+        }
+
+        while (_heldSkippedFetches.TryDequeue(out var held))
+            _pendingFetches.Enqueue(held);
+    }
+
+    /// <summary>
+    /// Runs when only held (skipped, unreleasable) fetches remain at the head: waits a bounded
+    /// poll interval instead of re-yielding immediately, pulls in newly prefetched data, then
+    /// re-offers the held fetches. Bounds a skip-everything caller to a few batches per second.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private async ValueTask WaitForSkippedFetchRetryAsync(bool prefetchEnabled, CancellationToken cancellationToken)
+    {
+        await DelayForForegroundPollAsync(
+            Math.Min(AllPartitionsPausedDelayMs, Math.Max(1, _options.FetchMaxWaitMs)),
+            cancellationToken).ConfigureAwait(false);
+
+        // New data for other partitions queues behind the held fetches and is offered first
+        // once the held partition is skipped again.
+        if (prefetchEnabled)
+            DrainPrefetchBuffer();
+
+        _heldSkippedPartitions.Clear();
+    }
+
+    /// <summary>
+    /// Resets batch-loop state when a batch stream starts. Releases and set-aside held fetches
+    /// are always completed by the batch loop's <c>finally</c>, including on break, exception or
+    /// cancellation. Only the hold marks outlive a stream, until the next retry wait. A new
+    /// stream offers held fetches again immediately instead of inheriting that wait.
+    /// </summary>
+    private void BeginBatchStream()
+    {
+        _heldSkippedPartitions.Clear();
+        _batchLoopExitRequested = false;
+        _eofDrainRemaining = 0;
     }
 
     private bool TryDiscardExhaustedPendingFetch()
@@ -5319,8 +5725,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         if (records is { Count: > 0 })
                         {
                             _stuckFetchPositionTracker.Reset(tp);
-                            // We have new records - reset EOF state for this partition
-                            _eofEmitted.TryRemove(tp, out _);
+                            // EOF is re-armed when these records are published, under the lock
+                            // that serializes publication with EOF reporting.
 
                             var pending = PendingFetchData.Create(
                                 topic,
@@ -5337,7 +5743,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         }
                         else
                         {
-                            var stuckError = HandleEmptyFetchResponse(tp, records, partitionResponse.HighWatermark);
+                            var stuckError = HandleEmptyFetchResponse(tp, records, partitionResponse.HighWatermark, fetchBufferEpoch);
                             if (stuckError is not null)
                             {
                                 DisposePendingFetches(pendingItems);
@@ -6171,10 +6577,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    private Errors.ConsumeException? HandleEmptyFetchResponse(
+    internal Errors.ConsumeException? HandleEmptyFetchResponse(
         TopicPartition partition,
         IReadOnlyList<RecordBatch>? records,
-        long highWatermark)
+        long highWatermark,
+        int fetchBufferEpoch)
     {
         // FetchResponsePartition creates Records only when record bytes were present.
         // A non-null empty list therefore means parsing produced no complete batches.
@@ -6192,14 +6599,76 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             return stuckError;
         }
 
-        if (_options.EnablePartitionEof
-            && fetchPosition >= highWatermark
-            && _eofEmitted.TryAdd(partition, 0))
-        {
-            _pendingEofEvents.Enqueue((partition, fetchPosition));
-        }
+        if (_options.EnablePartitionEof && fetchPosition >= highWatermark)
+            TryQueuePartitionEof(partition, highWatermark, fetchBufferEpoch);
 
         return null;
+    }
+
+    /// <summary>
+    /// Re-arms partition EOF because records for the partition are being published. Prefetch
+    /// calls it under the invalidation lock, which <see cref="TryQueuePartitionEof"/> also
+    /// holds, after the publication's stale-epoch check; direct fetches call it on the consumer
+    /// thread after every response of the cycle has been handled. Overlapping responses (replica routing, connection
+    /// changes) therefore cannot interleave: an EOF reported before these records loses its
+    /// marker here, so the next real EOF is reported; an EOF reported after them sees the
+    /// advanced fetch position. A stale response is dropped before reaching this point and can
+    /// never clear a current marker. Once per published partition response, never per record;
+    /// with EOF disabled it is one field read.
+    /// </summary>
+    private void RearmPartitionEofForPublishedRecords(
+        TopicPartition partition,
+        bool hasRecords,
+        long publishedEndExclusive)
+    {
+        // An EOF reported before these records is superseded by them: its offset is at most the
+        // publication floor, below the records' end. Record that bound instead of searching the
+        // EOF queue; the drain skips queued EOFs below it. O(1), and only when a marker existed.
+        // A response fully covered by earlier publications (RaiseStartOffset sets its end to -1)
+        // adds no records past the reported EOF, so the marker stays and no duplicate follows.
+        if (!hasRecords
+            || publishedEndExclusive < 0
+            || !_options.EnablePartitionEof
+            || !_eofEmitted.TryRemove(partition, out _))
+        {
+            return;
+        }
+
+        if (!_eofSupersededBelow.TryGetValue(partition, out var below) || below < publishedEndExclusive)
+            _eofSupersededBelow[partition] = publishedEndExclusive;
+        _hasEofSupersededBounds = true;
+    }
+
+    /// <summary>
+    /// Queues a partition EOF from a fetch response. Seek, revocation and skipped-batch release
+    /// invalidate the partition's fetch epoch and drop its queued EOF under this lock. An EOF
+    /// from a response that passed its stale check before that invalidation must not be queued
+    /// afterwards, ahead of the records the new position refetches. Revalidating here, and
+    /// reading the position here, closes that window as prefetched record publication does.
+    /// Runs only when a response reaches the high watermark, never per record, and takes the
+    /// lock only until the partition's EOF has been reported.
+    /// </summary>
+    private void TryQueuePartitionEof(TopicPartition partition, long highWatermark, int fetchBufferEpoch)
+    {
+        // Lock-free fast path for partitions idling at the high watermark: their EOF is already
+        // reported, so unrelated fetch handlers never serialize here. A clear (seek, revocation,
+        // release) that races this read only defers the EOF to the next empty response, which
+        // derives it again; once the marker is gone the locked path below runs.
+        if (_eofEmitted.ContainsKey(partition))
+            return;
+
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            var fetchPosition = _fetchPositions.GetValueOrDefault(partition, 0);
+            if (ShouldDropStaleFetchPartition(partition, fetchBufferEpoch)
+                || fetchPosition < highWatermark
+                || !_eofEmitted.TryAdd(partition, 0))
+            {
+                return;
+            }
+
+            _pendingEofEvents.Enqueue((partition, fetchPosition));
+        }
     }
 
     private PendingFetchData? TryCreateSnapshotEndMarker(
@@ -6655,7 +7124,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private bool TryDequeuePendingEofResult(out ConsumeResult<TKey, TValue> result)
     {
-        if (_pendingEofEvents.TryDequeue(out var eofEvent))
+        if (TryDequeueCurrentEof(out var eofEvent))
         {
             result = ConsumeResult<TKey, TValue>.CreatePartitionEof(
                 eofEvent.Partition.Topic,
@@ -9397,6 +9866,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             _pendingFetchScratch.Enqueue(activePending);
 
         var count = _pausedPendingFetches.Count;
+        // Fetches set aside by a held skip during this batch loop are older than any of their
+        // partition's fetches still queued, so they rejoin ahead of the active queue. Held
+        // partitions stay held, and the loop sets them aside again when they reach the head.
+        var heldCount = _heldSkippedFetches.Count;
         for (var i = 0; i < count; i++)
         {
             var pending = _pausedPendingFetches.Dequeue();
@@ -9405,6 +9878,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             else
                 _pendingFetches.Enqueue(pending);
         }
+
+        for (var i = 0; i < heldCount; i++)
+            _pendingFetches.Enqueue(_heldSkippedFetches.Dequeue());
 
         while (_pendingFetchScratch.TryDequeue(out var retainedPending))
             _pendingFetches.Enqueue(retainedPending);
@@ -9583,6 +10059,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             StagePendingFetchClear(pausedPending.TopicPartition);
             DisposeQueuedFetch(pausedPending);
         }
+        while (_heldSkippedFetches.TryDequeue(out var heldPending))
+        {
+            Interlocked.Decrement(ref _pendingFetchDepth);
+            StagePendingFetchClear(heldPending.TopicPartition);
+            DisposeQueuedFetch(heldPending);
+        }
+        _heldSkippedPartitions.Clear();
         // Also drain prefetched items that haven't been moved to _pendingFetches yet.
         // Without this, stale data from old partitions would surface after reassignment.
         while (_prefetchBuffer.TryRead(out var prefetched))
@@ -9592,6 +10075,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
         // Clear pending EOF events as they are stale after buffer clear
         _pendingEofEvents.Clear();
+        // Flag first: a bound written concurrently either survives with the flag set again, or
+        // is cleared with it. The flag may stay set over an empty dictionary, never the reverse.
+        _hasEofSupersededBounds = false;
+        _eofSupersededBelow.Clear();
     }
 
     private void ClearFetchBufferForPartitions(
@@ -9617,6 +10104,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             ClearActiveConsumedPosition(partition);
             _stuckFetchPositionTracker.Reset(partition);
+            // The partition's held data is dropped below; a reassignment must not inherit the hold.
+            _heldSkippedPartitions.Remove(partition);
         }
 
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
@@ -9624,7 +10113,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (invalidateAllFetches)
                 InvalidateAllFetchesLocked();
             else
-                InvalidateFetchesForPartitionsLocked(removeSet);
+                InvalidateFetchesForPartitionSetLocked(removeSet);
 
             if (!preserveDivergingEpochResets)
             {
@@ -9651,6 +10140,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             else
             {
                 // Dispose removed items to release pooled memory
+                if (stagePendingClear)
+                    StagePendingFetchClear(pending.TopicPartition);
+                DisposeQueuedFetch(pending);
+            }
+        }
+
+        count = _heldSkippedFetches.Count;
+        for (var i = 0; i < count; i++)
+        {
+            var pending = _heldSkippedFetches.Dequeue();
+            if (!removeSet.Contains(pending.TopicPartition))
+            {
+                _heldSkippedFetches.Enqueue(pending);
+            }
+            else
+            {
+                Interlocked.Decrement(ref _pendingFetchDepth);
                 if (stagePendingClear)
                     StagePendingFetchClear(pending.TopicPartition);
                 DisposeQueuedFetch(pending);
@@ -9685,19 +10191,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private void ClearPendingEofEventsForPartitions(HashSet<TopicPartition> partitionsToRemove)
     {
-        List<(TopicPartition Partition, long Offset)>? retained = null;
-        while (_pendingEofEvents.TryDequeue(out var eofEvent))
+        // A replaced position (seek, revocation, release) starts a new EOF history.
+        if (_hasEofSupersededBounds)
         {
-            if (!partitionsToRemove.Contains(eofEvent.Partition))
-                (retained ??= []).Add(eofEvent);
+            foreach (var partition in partitionsToRemove)
+                _eofSupersededBelow.TryRemove(partition, out _);
         }
 
-        if (retained is null)
+        // Seek, revocation and every skipped-batch release land here: once per control operation
+        // or batch loop, never per publication. With no queued EOF this is one read; otherwise
+        // rotate the queue once in place instead of copying it out.
+        if (_pendingEofEvents.IsEmpty)
             return;
 
-        foreach (var eofEvent in retained)
+        var count = _pendingEofEvents.Count;
+        for (var i = 0; i < count && _pendingEofEvents.TryDequeue(out var eofEvent); i++)
         {
-            _pendingEofEvents.Enqueue(eofEvent);
+            if (!partitionsToRemove.Contains(eofEvent.Partition))
+                _pendingEofEvents.Enqueue(eofEvent);
         }
     }
 
@@ -10112,6 +10623,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _minimumFetchBufferEpochsByPartition.Clear();
     }
 
+    // Set variant: the struct enumerator keeps seek and skipped-batch release allocation-free.
+    private void InvalidateFetchesForPartitionSetLocked(HashSet<TopicPartition> partitions)
+    {
+        var minimumEpoch = Interlocked.Increment(ref _fetchBufferEpoch);
+        foreach (var partition in partitions)
+            _minimumFetchBufferEpochsByPartition[partition] = minimumEpoch;
+    }
+
     private void InvalidateFetchesForPartitionsLocked(IEnumerable<TopicPartition> partitions)
     {
         var minimumEpoch = Interlocked.Increment(ref _fetchBufferEpoch);
@@ -10159,8 +10678,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         pending.RaiseStartOffset(_fetchPositions.GetValueOrDefault(partition, -1));
                         var nextOffset = pending.FetchEndOffsetExclusive;
                         var nextOffsetLeaderEpoch = pending.FetchEndLeaderEpoch;
+                        var hasRecords = pending.GetBatches().Count > 0;
                         if (_prefetchBuffer.TryWrite(pending))
                         {
+                            RearmPartitionEofForPublishedRecords(partition, hasRecords, nextOffset);
                             // The reader can dispose pending immediately after TryWrite.
                             // Use captured values, and never advance for an unpublished item.
                             UpdateFetchPositionsFromPrefetch(
@@ -11829,6 +12350,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     continue;
                                 }
 
+                                // Direct fetches complete before this loop, so no EOF report can
+                                // interleave with this publication on the consumer thread.
+                                RearmPartitionEofForPublishedRecords(
+                                    pending.TopicPartition,
+                                    pending.GetBatches().Count > 0,
+                                    pending.FetchEndOffsetExclusive);
                                 EnqueuePendingFetch(pending);
                             }
                         }
@@ -12897,8 +13424,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     if (records is { Count: > 0 })
                     {
                         _stuckFetchPositionTracker.Reset(tp);
-                        // We have new records - reset EOF state for this partition
-                        _eofEmitted.TryRemove(tp, out _);
+                        // EOF is re-armed when these records are queued for delivery.
 
                         // Collect pending fetch data for lazy record iteration
                         pendingItems ??= ConsumerFetchPools.RentPendingFetchDataList();
@@ -12914,7 +13440,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     }
                     else
                     {
-                        var stuckError = HandleEmptyFetchResponse(tp, records, partitionResponse.HighWatermark);
+                        var stuckError = HandleEmptyFetchResponse(tp, records, partitionResponse.HighWatermark, fetchBufferEpoch);
                         if (stuckError is not null)
                         {
                             if (pendingItems is not null)
@@ -14981,6 +15507,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             Interlocked.Decrement(ref _pendingFetchDepth);
             pausedPending.Dispose();
         }
+        while (_heldSkippedFetches.TryDequeue(out var heldPending))
+        {
+            Interlocked.Decrement(ref _pendingFetchDepth);
+            heldPending.Dispose();
+        }
         while (_prefetchBuffer.TryRead(out var prefetched))
         {
             TrackPrefetchedBytes(prefetched, release: true);
@@ -15399,6 +15930,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             Interlocked.Decrement(ref _pendingFetchDepth);
             pausedPending.Dispose();
+        }
+        while (_heldSkippedFetches.TryDequeue(out var heldPending))
+        {
+            Interlocked.Decrement(ref _pendingFetchDepth);
+            heldPending.Dispose();
         }
 
         // Drain and dispose prefetch buffer items

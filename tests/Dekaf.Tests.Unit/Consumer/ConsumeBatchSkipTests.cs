@@ -1,0 +1,1394 @@
+using System.Collections.Concurrent;
+using System.Reflection;
+using System.Text;
+using Dekaf.Consumer;
+using Dekaf.Protocol.Records;
+using Dekaf.Serialization;
+
+namespace Dekaf.Tests.Unit.Consumer;
+
+/// <summary>
+/// A batch the caller resumes past without enumerating proves nothing, so it must be
+/// redelivered. It must not be re-yielded from the head of the queue forever: that spun
+/// one core, starved every partition queued behind it and skipped assignment sync.
+/// </summary>
+public sealed class ConsumeBatchSkipTests
+{
+    private const string Topic = "skip-topic";
+    private static readonly TopicPartition Partition0 = new(Topic, 0);
+    private static readonly TopicPartition Partition1 = new(Topic, 1);
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task SkippedBatch_DoesNotBlockOtherPartitions(bool raw)
+    {
+        await using var consumer = CreateConsumer(
+            CreatePendingFetch(Partition0, 10, 2),
+            CreatePendingFetch(Partition1, 20, 2));
+        await using var batches = Open(consumer, raw);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(Partition0);
+
+        // Skip partition 0 without enumerating. Partition 1 must be delivered next.
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
+        await Assert.That(batches.Current.Offsets()).IsEquivalentTo([20L, 21L]);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task SkippedBatch_RewindsToConsumedPositionWithoutStagingOffsets(bool raw)
+    {
+        await using var consumer = CreateConsumer(
+            CreatePendingFetch(Partition0, 10, 2),
+            CreatePendingFetch(Partition1, 20, 1));
+        await using var batches = Open(consumer, raw);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+
+        await Assert.That(GetPendingFetches(consumer).Any(static f => f.TopicPartition == Partition0)).IsFalse();
+        await Assert.That(GetDictionary(consumer, "_fetchPositions")[Partition0]).IsEqualTo(10L);
+        await Assert.That(GetDictionary(consumer, "_positions")[Partition0]).IsEqualTo(10L);
+        await Assert.That(GetDictionary(consumer, "_dirtyStoredOffsets").ContainsKey(Partition0)).IsFalse();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task SkippedRemainderAfterPartialProgress_RewindsToFirstUndeliveredRecord(bool raw)
+    {
+        await using var consumer = CreateConsumer(
+            maxPollRecords: 1,
+            CreatePendingFetch(Partition0, 10, 3),
+            CreatePendingFetch(Partition1, 20, 1));
+        await using var batches = Open(consumer, raw);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Offsets()).IsEquivalentTo([10L]);
+
+        // Progress keeps the same fetch at the head for its next window.
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(Partition0);
+
+        // Skipping that window releases it; offset 11 was never delivered.
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
+        await Assert.That(GetDictionary(consumer, "_fetchPositions")[Partition0]).IsEqualTo(11L);
+        await Assert.That(GetDictionary(consumer, "_positions")[Partition0]).IsEqualTo(11L);
+        await Assert.That(GetDictionary(consumer, "_dirtyStoredOffsets")[Partition0]).IsEqualTo(11L);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task SkippedOnlyBatch_IsNotReyieldedFromTheQueue(bool raw)
+    {
+        // Prefetch is marked started but never runs, so after the release the stream waits on
+        // the empty prefetch buffer: no broker I/O, and only cancellation ends the wait.
+        await using var consumer = CreateConsumer(
+            500, null, prefetch: true, unknownPosition: null,
+            CreatePendingFetch(Partition0, 10, 2));
+        using var cts = new CancellationTokenSource();
+        await using var batches = Open(consumer, raw, cts.Token);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+
+        var next = batches.MoveNextAsync().AsTask();
+        // The release happens synchronously inside MoveNextAsync, before it waits for data.
+        await Assert.That(GetPendingFetches(consumer)).IsEmpty();
+        await Assert.That(next.IsCompleted).IsFalse();
+
+        await cts.CancelAsync();
+        var reyielded = false;
+        try
+        {
+            reyielded = await next;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+
+        await Assert.That(reyielded).IsFalse();
+        await Assert.That(GetPendingFetches(consumer)).IsEmpty();
+        await Assert.That(GetDictionary(consumer, "_fetchPositions")[Partition0]).IsEqualTo(10L);
+    }
+
+    [Test]
+    public async Task SkippedBatch_WithInterceptor_ReleasesRetainedFetch()
+    {
+        var interceptor = new PassThroughInterceptor();
+        await using var consumer = CreateConsumer(
+            maxPollRecords: 500,
+            interceptors: [interceptor],
+            CreatePendingFetch(Partition0, 10, 2),
+            CreatePendingFetch(Partition1, 20, 1));
+        await using var batches = consumer.ConsumeBatchAsync().GetAsyncEnumerator();
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.TopicPartition).IsEqualTo(Partition0);
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.TopicPartition).IsEqualTo(Partition1);
+        await Assert.That(batches.Current.Select(static r => r.Offset).ToArray()).IsEquivalentTo([20L]);
+        await Assert.That(interceptor.Calls).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task SkippedBatch_PausedDuringYield_StaysParkedForResume(bool raw)
+    {
+        await using var consumer = CreateConsumer(
+            CreatePendingFetch(Partition0, 10, 2),
+            CreatePendingFetch(Partition1, 20, 1));
+        await using var batches = Open(consumer, raw);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        consumer.Pause(Partition0);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
+        _ = batches.Current.Offsets();
+
+        consumer.Resume(Partition0);
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(Partition0);
+        await Assert.That(batches.Current.Offsets()).IsEquivalentTo([10L, 11L]);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task SkippedBatch_SeekDuringYield_KeepsSeekPosition(bool raw)
+    {
+        await using var consumer = CreateConsumer(
+            CreatePendingFetch(Partition0, 10, 2),
+            CreatePendingFetch(Partition1, 20, 1));
+        await using var batches = Open(consumer, raw);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        consumer.Seek(new TopicPartitionOffset(Topic, 0, 5));
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
+        await Assert.That(GetDictionary(consumer, "_fetchPositions")[Partition0]).IsEqualTo(5L);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task UnreleasableSkip_PositionUnknownUnderPrefetch_RotatesBehindOtherPartitions(bool raw)
+    {
+        await using var consumer = CreateConsumer(
+            500, null, prefetch: true, unknownPosition: Partition0,
+            CreatePendingFetch(Partition0, 10, 2),
+            CreatePendingFetch(Partition1, 20, 1),
+            CreatePendingFetch(Partition0, 12, 1));
+        await using var batches = Open(consumer, raw);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(Partition0);
+
+        // The skipped fetch cannot be refetched, so it is kept, but partition 1 goes first.
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
+        await Assert.That(batches.Current.Offsets()).IsEquivalentTo([20L]);
+
+        // Partition 0 is then redelivered in order, without loss.
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Offsets()).IsEquivalentTo([10L, 11L]);
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Offsets()).IsEquivalentTo([12L]);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task UnreleasableSkip_SnapshotReadActive_RotatesBehindOtherPartitions(bool raw)
+    {
+        await using var consumer = CreateConsumer(
+            CreatePendingFetch(Partition0, 10, 2),
+            CreatePendingFetch(Partition1, 20, 1));
+        var snapshotActive = GetField("_snapshotOperationActive");
+        snapshotActive.SetValue(consumer, 1);
+        try
+        {
+            await using var batches = Open(consumer, raw);
+
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            await Assert.That(batches.Current.Partition).IsEqualTo(Partition0);
+
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
+            _ = batches.Current.Offsets();
+
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            await Assert.That(batches.Current.Partition).IsEqualTo(Partition0);
+            await Assert.That(batches.Current.Offsets()).IsEquivalentTo([10L, 11L]);
+        }
+        finally
+        {
+            snapshotActive.SetValue(consumer, 0);
+        }
+    }
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    [Arguments(true, true)]
+    public async Task UnreleasableSkip_SkipEverythingCaller_IsRateLimited(bool raw, bool snapshot)
+    {
+        await using var consumer = snapshot
+            ? CreateConsumer(CreatePendingFetch(Partition0, 10, 2))
+            : CreateConsumer(500, null, prefetch: true, unknownPosition: Partition0,
+                CreatePendingFetch(Partition0, 10, 2));
+        var snapshotActive = GetField("_snapshotOperationActive");
+        if (snapshot)
+            snapshotActive.SetValue(consumer, 1);
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+            var yields = 0;
+            try
+            {
+                await using var batches = Open(consumer, raw, cts.Token);
+                while (await batches.MoveNextAsync())
+                    yields++;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+
+            // The held batch is re-offered after a bounded poll wait (50 ms here), never in a
+            // tight loop. A spinning loop yields many thousands of times per second.
+            await Assert.That(yields).IsGreaterThan(0);
+            await Assert.That(yields).IsLessThanOrEqualTo(40);
+            await Assert.That(GetPendingFetches(consumer).Count).IsEqualTo(1);
+        }
+        finally
+        {
+            snapshotActive.SetValue(consumer, 0);
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task DiscardedEnumeratorWithoutMoveNext_CountsAsSkip(bool raw)
+    {
+        await using var consumer = CreateConsumer(
+            CreatePendingFetch(Partition0, 10, 2),
+            CreatePendingFetch(Partition1, 20, 1));
+        await using var batches = Open(consumer, raw);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(Partition0);
+        batches.Current.CreateEnumeratorOnly();
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
+        await Assert.That(GetDictionary(consumer, "_fetchPositions")[Partition0]).IsEqualTo(10L);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task HeldSkip_DefersPartitionEofUntilRecordsAreRedelivered(bool raw)
+    {
+        await using var consumer = CreateConsumer(CreatePendingFetch(Partition0, 10, 2));
+        var snapshotActive = GetField("_snapshotOperationActive");
+        snapshotActive.SetValue(consumer, 1);
+        try
+        {
+            // Prefetch reports EOF at its fetch position, ahead of the held records.
+            GetEofEvents(consumer).Enqueue((Partition0, 12L));
+            await using var batches = Open(consumer, raw);
+
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            await Assert.That(batches.Current.IsEof).IsFalse();
+
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            await Assert.That(batches.Current.IsEof).IsFalse();
+            await Assert.That(batches.Current.Offsets()).IsEquivalentTo([10L, 11L]);
+
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            await Assert.That(batches.Current.IsEof).IsTrue();
+            await Assert.That(batches.Current.Partition).IsEqualTo(Partition0);
+        }
+        finally
+        {
+            snapshotActive.SetValue(consumer, 0);
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ReleasedSkip_DoesNotDeliverAnotherPartitionsEofBeforeItsRecords(bool raw)
+    {
+        await using var consumer = CreateConsumer(
+            CreatePendingFetch(Partition0, 10, 2),
+            CreatePendingFetch(Partition1, 20, 1));
+        GetEofEvents(consumer).Enqueue((Partition1, 21L));
+        await using var batches = Open(consumer, raw);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(Partition0);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.IsEof).IsFalse();
+        await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
+        await Assert.That(batches.Current.Offsets()).IsEquivalentTo([20L]);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.IsEof).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ReleasedSkip_DropsEofQueuedFromTheOldFetchPosition(bool raw)
+    {
+        await using var consumer = CreateConsumer(
+            500, null, prefetch: true, unknownPosition: null,
+            CreatePendingFetch(Partition0, 10, 2),
+            CreatePendingFetch(Partition1, 20, 1));
+        GetEofEvents(consumer).Enqueue((Partition0, 12L));
+        using var cts = new CancellationTokenSource();
+        await using var batches = Open(consumer, raw, cts.Token);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
+
+        // The release completes when the batch loop exits, before any EOF is delivered.
+        var waiting = LeaveBatchLoop(batches);
+        try
+        {
+            // The refetch re-derives EOF for partition 0; the stale one must not be delivered.
+            await Assert.That(GetEofEvents(consumer).Any(static e => e.Partition == Partition0)).IsFalse();
+        }
+        finally
+        {
+            await StopWaitingAsync(cts, waiting);
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ReleasedSkip_ManyPartitions_DefersEachEofBehindItsOwnRecords(bool raw)
+    {
+        const int partitionCount = 64;
+        var fetches = new PendingFetchData[partitionCount];
+        for (var i = 0; i < partitionCount; i++)
+            fetches[i] = CreatePendingFetch(new TopicPartition(Topic, i), 100L * i, 1);
+        await using var consumer = CreateConsumer(fetches);
+        var eofEvents = GetEofEvents(consumer);
+        for (var i = 0; i < partitionCount; i++)
+            eofEvents.Enqueue((new TopicPartition(Topic, i), 100L * i + 1));
+        await using var batches = Open(consumer, raw);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition.Partition).IsEqualTo(0);
+
+        // Partition 0 is released (its stale EOF dropped). Every other partition's records
+        // come before any EOF, and each EOF arrives exactly once.
+        var delivered = new HashSet<int>();
+        var eofs = new HashSet<int>();
+        for (var i = 0; i < 2 * (partitionCount - 1); i++)
+        {
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            var partition = batches.Current.Partition.Partition;
+            if (batches.Current.IsEof)
+            {
+                await Assert.That(delivered.Contains(partition)).IsTrue();
+                await Assert.That(eofs.Add(partition)).IsTrue();
+            }
+            else
+            {
+                _ = batches.Current.Offsets();
+                await Assert.That(delivered.Add(partition)).IsTrue();
+            }
+        }
+
+        await Assert.That(delivered.Count).IsEqualTo(partitionCount - 1);
+        await Assert.That(eofs.Count).IsEqualTo(partitionCount - 1);
+        await Assert.That(eofs.Contains(0)).IsFalse();
+        // The per-drain hold set is released once the drain finishes.
+        await Assert.That(((HashSet<TopicPartition>)GetField("_eofHoldPartitions").GetValue(consumer)!).Count)
+            .IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task StaleEmptyResponseAfterSeek_DoesNotQueuePartitionEof()
+    {
+        await using var consumer = CreateConsumer(
+            500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true,
+            CreatePendingFetch(Partition0, 10, 2));
+        // A response captured its fetch epoch and passed the stale check, then the seek ran.
+        var staleEpoch = GetFetchBufferEpoch(consumer);
+        consumer.Seek(new TopicPartitionOffset(Topic, 0, 100));
+
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 50, staleEpoch);
+        await Assert.That(GetEofEvents(consumer)).IsEmpty();
+
+        // Once the consume loop applies the seek, a response fetched afterwards reports EOF.
+        typeof(KafkaConsumer<string, string>)
+            .GetMethod("RecoverAndClearFetchBufferForPendingCoordinatorRevocations", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(consumer, null);
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 50, GetFetchBufferEpoch(consumer));
+        await Assert.That(GetEofEvents(consumer).Single()).IsEqualTo((Partition0, 100L));
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task StaleEmptyResponseAfterRelease_DoesNotQueuePartitionEofAheadOfRefetch(bool raw)
+    {
+        await using var consumer = CreateConsumer(
+            500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true,
+            CreatePendingFetch(Partition0, 10, 2),
+            CreatePendingFetch(Partition1, 20, 1));
+        using var cts = new CancellationTokenSource();
+        await using var batches = Open(consumer, raw, cts.Token);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        var staleEpoch = GetFetchBufferEpoch(consumer);
+        // Simulate the prefetch position having already reached the end before the skip.
+        GetDictionary(consumer, "_fetchPositions")[Partition0] = 12;
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
+
+        var waiting = LeaveBatchLoop(batches);
+        try
+        {
+            await Assert.That(GetDictionary(consumer, "_fetchPositions")[Partition0]).IsEqualTo(10L);
+
+            // The old response's EOF lands after the release: it must be dropped, not delivered
+            // ahead of offsets 10 and 11, which still have to be refetched.
+            _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, staleEpoch);
+            await Assert.That(GetEofEvents(consumer)).IsEmpty();
+        }
+        finally
+        {
+            await StopWaitingAsync(cts, waiting);
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ManySkipsWithManyEofs_DropReleasedEofsAndKeepTheRestInOrder(bool raw)
+    {
+        const int partitionCount = 32;
+        const int skipped = partitionCount / 2;
+        var fetches = new PendingFetchData[partitionCount];
+        for (var i = 0; i < partitionCount; i++)
+            fetches[i] = CreatePendingFetch(new TopicPartition(Topic, i), 100L * i, 1);
+        await using var consumer = CreateConsumer(fetches);
+        var eofEvents = GetEofEvents(consumer);
+        for (var i = 0; i < partitionCount; i++)
+            eofEvents.Enqueue((new TopicPartition(Topic, i), 100L * i + 1));
+        await using var batches = Open(consumer, raw);
+
+        var dataOrder = new List<int>();
+        var eofOrder = new List<int>();
+        for (var i = 0; i < skipped + 2 * (partitionCount - skipped); i++)
+        {
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            var partition = batches.Current.Partition.Partition;
+            if (batches.Current.IsEof)
+            {
+                eofOrder.Add(partition);
+            }
+            else if (partition >= skipped)
+            {
+                _ = batches.Current.Offsets();
+                dataOrder.Add(partition);
+            }
+        }
+
+        var expected = Enumerable.Range(skipped, partitionCount - skipped).ToArray();
+        await Assert.That(dataOrder.SequenceEqual(expected)).IsTrue();
+        await Assert.That(eofOrder.SequenceEqual(expected)).IsTrue();
+        await Assert.That(eofEvents).IsEmpty();
+    }
+
+    [Test]
+    public async Task StaleRecordResponse_DoesNotRearmCurrentEof()
+    {
+        await using var consumer = CreateConsumer(
+            500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true,
+            CreatePendingFetch(Partition0, 0, 1));
+        GetPendingFetches(consumer).Clear();
+        // An older records response passed its stale check, then a seek repositioned.
+        var staleEpoch = GetFetchBufferEpoch(consumer);
+        consumer.Seek(new TopicPartitionOffset(Topic, 0, 10));
+        ApplyStagedClears(consumer);
+
+        // A current empty response reports EOF for the new position.
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, GetFetchBufferEpoch(consumer));
+        await Assert.That(GetEofEvents(consumer).Count).IsEqualTo(1);
+
+        // The old response publishes: it is dropped and must not clear the current marker...
+        await PublishPrefetchedAsync(consumer, CreatePendingFetch(Partition0, 3, 2), staleEpoch);
+        // ...so the next current empty response does not queue a duplicate.
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, GetFetchBufferEpoch(consumer));
+        await Assert.That(GetEofEvents(consumer).Count).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(false, 1)]
+    [Arguments(true, 1)]
+    [Arguments(false, 64)]
+    [Arguments(true, 64)]
+    public async Task OverlappingResponses_SupersededEofsSkippedInO1_OneEofPerPartitionAtRealEnd(
+        bool raw,
+        int partitionCount)
+    {
+        var fetches = new PendingFetchData[partitionCount];
+        for (var i = 0; i < partitionCount; i++)
+            fetches[i] = CreatePendingFetch(new TopicPartition(Topic, i), 10, 1);
+        await using var consumer = CreateConsumer(
+            500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true, fetches);
+        GetPendingFetches(consumer).Clear();
+        var fetchPositions = GetDictionary(consumer, "_fetchPositions");
+        var epoch = GetFetchBufferEpoch(consumer);
+        var eofEvents = GetEofEvents(consumer);
+        var supersededBelow = GetDictionary(consumer, "_eofSupersededBelow");
+
+        // Responses routed to a lagging replica report EOF at 10 for every idle partition while
+        // records 10..11 from the leader are still being parsed.
+        for (var i = 0; i < partitionCount; i++)
+        {
+            var partition = new TopicPartition(Topic, i);
+            fetchPositions[partition] = 10;
+            _ = consumer.HandleEmptyFetchResponse(partition, null, highWatermark: 10, epoch);
+        }
+
+        // The records publish after those EOFs. Each publication supersedes its partition's
+        // queued EOF in O(1) by recording a bound; the EOF queue is never searched or rotated.
+        for (var i = 0; i < partitionCount; i++)
+        {
+            var partition = new TopicPartition(Topic, i);
+            await PublishPrefetchedAsync(consumer, CreatePendingFetch(partition, 10, 2), epoch);
+            await Assert.That(eofEvents.Count).IsEqualTo(partitionCount);
+            await Assert.That(supersededBelow[partition]).IsEqualTo(12L);
+            await Assert.That(fetchPositions[partition]).IsEqualTo(12L);
+        }
+
+        // The real end after the records is reported once per partition.
+        for (var i = 0; i < partitionCount; i++)
+            _ = consumer.HandleEmptyFetchResponse(new TopicPartition(Topic, i), null, highWatermark: 12, epoch);
+        await Assert.That(eofEvents.Count).IsEqualTo(2 * partitionCount);
+
+        using var cts = new CancellationTokenSource();
+        await using var batches = Open(consumer, raw, cts.Token);
+        var records = new Dictionary<int, List<long>>();
+        var eofs = new Dictionary<int, List<long>>();
+        for (var i = 0; i < 2 * partitionCount; i++)
+        {
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            var partition = batches.Current.Partition.Partition;
+            if (batches.Current.IsEof)
+            {
+                (eofs.TryGetValue(partition, out var list) ? list : eofs[partition] = []).Add(batches.Current.EofOffset!.Value);
+                await Assert.That(records.ContainsKey(partition)).IsTrue();
+            }
+            else
+            {
+                (records.TryGetValue(partition, out var list) ? list : records[partition] = []).AddRange(batches.Current.Offsets());
+            }
+        }
+
+        var waiting = LeaveBatchLoop(batches);
+        try
+        {
+            for (var i = 0; i < partitionCount; i++)
+            {
+                await Assert.That(records[i].SequenceEqual([10L, 11L])).IsTrue();
+                await Assert.That(eofs[i].SequenceEqual([12L])).IsTrue();
+            }
+
+            await Assert.That(eofEvents).IsEmpty();
+        }
+        finally
+        {
+            await StopWaitingAsync(cts, waiting);
+        }
+    }
+
+    private static void ApplyStagedClears(KafkaConsumer<string, string> consumer) =>
+        typeof(KafkaConsumer<string, string>)
+            .GetMethod("RecoverAndClearFetchBufferForPendingCoordinatorRevocations", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(consumer, null);
+
+    private static async Task PublishPrefetchedAsync(
+        KafkaConsumer<string, string> consumer,
+        PendingFetchData pending,
+        int fetchBufferEpoch)
+    {
+        var write = (ValueTask)typeof(KafkaConsumer<string, string>)
+            .GetMethod("WritePrefetchedItemsAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(consumer, [new List<PendingFetchData> { pending }, fetchBufferEpoch, CancellationToken.None])!;
+        await write;
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task KOfNSkips_EachReleasedOnceInOneSweep_OthersInOrder(bool raw)
+    {
+        // The stubbed prefetch loop keeps the wait after the batch loop free of broker I/O.
+        const bool prefetch = true;
+        const int partitionCount = 48;
+        var fetches = new List<PendingFetchData>();
+        for (var i = 0; i < partitionCount; i++)
+            fetches.Add(CreatePendingFetch(new TopicPartition(Topic, i), 100L * i, 1));
+        // A second fetch per partition: skipped partitions' later fetches must be dropped too.
+        for (var i = 0; i < partitionCount; i++)
+            fetches.Add(CreatePendingFetch(new TopicPartition(Topic, i), 100L * i + 1, 1));
+        await using var consumer = CreateConsumer(500, null, prefetch, unknownPosition: null, [.. fetches]);
+        var fetchPositions = GetDictionary(consumer, "_fetchPositions");
+        for (var i = 0; i < partitionCount; i++)
+            fetchPositions[new TopicPartition(Topic, i)] = 100L * i + 2;
+        var epochBefore = GetFetchBufferEpoch(consumer);
+        using var cts = new CancellationTokenSource();
+        await using var batches = Open(consumer, raw, cts.Token);
+
+        // Skip every third partition's first batch; process everything else.
+        static bool Skips(int partition) => partition % 3 == 0;
+        var skippedYields = new List<int>();
+        var processed = new List<long>();
+        for (var i = 0; i < partitionCount / 3 + 2 * (partitionCount - partitionCount / 3); i++)
+        {
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            var partition = batches.Current.Partition.Partition;
+            if (Skips(partition))
+                skippedYields.Add(partition);
+            else
+                processed.AddRange(batches.Current.Offsets());
+        }
+
+        var waiting = LeaveBatchLoop(batches);
+        try
+        {
+            // Each skipped partition was offered once, then released; its second fetch dropped.
+            await Assert.That(skippedYields.SequenceEqual(
+                Enumerable.Range(0, partitionCount).Where(Skips))).IsTrue();
+            var expected = Enumerable.Range(0, partitionCount).Where(static p => !Skips(p))
+                .Select(static p => 100L * p)
+                .Concat(Enumerable.Range(0, partitionCount).Where(static p => !Skips(p)).Select(static p => 100L * p + 1))
+                .ToArray();
+            await Assert.That(processed.SequenceEqual(expected)).IsTrue();
+            await Assert.That(GetPendingFetches(consumer)).IsEmpty();
+            for (var i = 0; i < partitionCount; i++)
+            {
+                var position = fetchPositions[new TopicPartition(Topic, i)];
+                await Assert.That(position).IsEqualTo(Skips(i) ? 100L * i : 100L * i + 2);
+            }
+
+            // One sweep: a single fetch-epoch invalidation covers every released partition.
+            await Assert.That(GetFetchBufferEpoch(consumer)).IsEqualTo(epochBefore + 1);
+            await Assert.That(((HashSet<TopicPartition>)GetField("_skippedBatchPartitions").GetValue(consumer)!).Count)
+                .IsEqualTo(0);
+        }
+        finally
+        {
+            await StopWaitingAsync(cts, waiting);
+        }
+    }
+
+    /// <summary>
+    /// Requests the next batch when nothing deliverable is queued. The batch loop exits and its
+    /// releases complete synchronously; with the stubbed prefetch loop (or the delayed direct
+    /// fetch) the request then waits until cancelled.
+    /// </summary>
+    private static Task<bool> LeaveBatchLoop(IAsyncEnumerator<BatchView> batches) =>
+        batches.MoveNextAsync().AsTask();
+
+    private static async Task StopWaitingAsync(CancellationTokenSource cts, Task<bool> waiting)
+    {
+        await cts.CancelAsync();
+        try
+        {
+            await waiting;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ManyHeldSkips_SetAsideOnceEach_RedeliveredInOrderAfterOthers(bool raw)
+    {
+        const int partitionCount = 24;
+        var fetches = new List<PendingFetchData>();
+        for (var round = 0; round < 2; round++)
+        {
+            for (var i = 0; i < partitionCount; i++)
+                fetches.Add(CreatePendingFetch(new TopicPartition(Topic, i), 100L * i + round, 1));
+        }
+
+        await using var consumer = CreateConsumer([.. fetches]);
+        var snapshotActive = GetField("_snapshotOperationActive");
+        snapshotActive.SetValue(consumer, 1);
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await using var batches = Open(consumer, raw, cts.Token);
+            static bool Holds(int partition) => partition % 2 == 0;
+
+            // First pass: even partitions are skipped once (held), odd ones processed in order.
+            var processed = new List<long>();
+            var heldYields = new List<int>();
+            for (var i = 0; i < partitionCount / 2 + partitionCount; i++)
+            {
+                await Assert.That(await batches.MoveNextAsync()).IsTrue();
+                var partition = batches.Current.Partition.Partition;
+                if (Holds(partition))
+                    heldYields.Add(partition);
+                else
+                    processed.AddRange(batches.Current.Offsets());
+            }
+
+            var odd = Enumerable.Range(0, partitionCount).Where(static p => !Holds(p)).ToArray();
+            var even = Enumerable.Range(0, partitionCount).Where(Holds).ToArray();
+            await Assert.That(heldYields.SequenceEqual(even)).IsTrue();
+            await Assert.That(processed.SequenceEqual(
+                odd.Select(static p => 100L * p).Concat(odd.Select(static p => 100L * p + 1)))).IsTrue();
+
+            // The batch loop exits and restores the held fetches once, in their original
+            // queue order (no per-skip rotation), then waits before re-offering them.
+            var next = batches.MoveNextAsync().AsTask();
+            var queued = GetPendingFetches(consumer)
+                .Select(static f => f.GetBatches()[0].BaseOffset)
+                .ToArray();
+            await Assert.That(queued.SequenceEqual(
+                even.Select(static p => 100L * p).Concat(even.Select(static p => 100L * p + 1)))).IsTrue();
+            await Assert.That(((Queue<PendingFetchData>)GetField("_heldSkippedFetches").GetValue(consumer)!).Count)
+                .IsEqualTo(0);
+
+            // After the wait each held partition is redelivered once, in per-partition order.
+            var redelivered = new List<long>();
+            await Assert.That(await next).IsTrue();
+            redelivered.AddRange(batches.Current.Offsets());
+            for (var i = 1; i < partitionCount; i++)
+            {
+                await Assert.That(await batches.MoveNextAsync()).IsTrue();
+                redelivered.AddRange(batches.Current.Offsets());
+            }
+
+            await Assert.That(redelivered.SequenceEqual(queued)).IsTrue();
+        }
+        finally
+        {
+            snapshotActive.SetValue(consumer, 0);
+        }
+    }
+
+    [Test]
+    public async Task IdlePartitionAtHighWatermark_EmptyResponsesTakeNoLockAfterEof()
+    {
+        await using var consumer = CreateConsumer(
+            500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true,
+            CreatePendingFetch(Partition0, 10, 1));
+        GetDictionary(consumer, "_fetchPositions")[Partition0] = 11;
+        var epoch = GetFetchBufferEpoch(consumer);
+
+        // The first empty response at the high watermark reports EOF under the lock.
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 11, epoch);
+        await Assert.That(GetEofEvents(consumer).Count).IsEqualTo(1);
+
+        // With the invalidation lock held elsewhere, later empty responses for the idle
+        // partition still complete: they take no lock.
+        var lockObject = GetField("_coordinatorRevokedPartitionsPendingFetchClearLock").GetValue(consumer)!;
+        using var held = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var holder = Task.Factory.StartNew(() =>
+        {
+            lock (lockObject)
+            {
+                held.Set();
+                release.Wait();
+            }
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        held.Wait();
+        try
+        {
+            var idle = Task.Run(() =>
+            {
+                for (var i = 0; i < 1000; i++)
+                {
+                    _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 11, epoch);
+                }
+            });
+            var completed = await Task.WhenAny(idle, Task.Delay(TimeSpan.FromSeconds(10)));
+            await Assert.That(completed).IsSameReferenceAs(idle);
+            await idle;
+        }
+        finally
+        {
+            release.Set();
+            await holder;
+        }
+
+        await Assert.That(GetEofEvents(consumer).Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ClearedEofMarker_NextEmptyResponseReportsEofAgain()
+    {
+        await using var consumer = CreateConsumer(
+            500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true,
+            CreatePendingFetch(Partition0, 10, 1));
+        GetDictionary(consumer, "_fetchPositions")[Partition0] = 11;
+
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 11, GetFetchBufferEpoch(consumer));
+        // The fast path skips while the marker exists...
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 11, GetFetchBufferEpoch(consumer));
+        await Assert.That(GetEofEvents(consumer).Count).IsEqualTo(1);
+
+        // ...and a seek that clears it (and drops the queued EOF) lets the next current
+        // empty response report EOF again, so a skip racing the clear never loses it.
+        consumer.Seek(new TopicPartitionOffset(Topic, 0, 11));
+        await Assert.That(GetEofEvents(consumer)).IsEmpty();
+        typeof(KafkaConsumer<string, string>)
+            .GetMethod("RecoverAndClearFetchBufferForPendingCoordinatorRevocations", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(consumer, null);
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 11, GetFetchBufferEpoch(consumer));
+        await Assert.That(GetEofEvents(consumer).Single()).IsEqualTo((Partition0, 11L));
+    }
+
+    public enum StreamExit
+    {
+        Break,
+        Throw,
+        Cancel
+    }
+
+    [Test]
+    [Arguments(false, StreamExit.Break)]
+    [Arguments(true, StreamExit.Break)]
+    [Arguments(false, StreamExit.Throw)]
+    [Arguments(true, StreamExit.Throw)]
+    [Arguments(false, StreamExit.Cancel)]
+    [Arguments(true, StreamExit.Cancel)]
+    public async Task StreamEndedAfterReleasedSkip_CompletesReleaseAndLeavesNoState(bool raw, StreamExit exit)
+    {
+        await using var consumer = CreateConsumer(
+            CreatePendingFetch(Partition0, 10, 2),
+            CreatePendingFetch(Partition1, 20, 1),
+            CreatePendingFetch(Partition0, 12, 1));
+        await EndStreamAfterSkipAsync(consumer, raw, exit);
+
+        // The release sweep ran in the batch loop's finally: partition 0's later fetch is
+        // gone, its position is rewound, and no release state is left behind.
+        await Assert.That(GetPendingFetches(consumer).Any(static f => f.TopicPartition == Partition0)).IsFalse();
+        await Assert.That(GetDictionary(consumer, "_fetchPositions")[Partition0]).IsEqualTo(10L);
+        await AssertNoSkipStateAsync(consumer);
+
+        if (exit == StreamExit.Cancel)
+        {
+            await Assert.That(GetPendingFetches(consumer)).IsEmpty();
+            return;
+        }
+
+        // A record-at-a-time consumer on the same instance continues with partition 1.
+        var next = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+        await Assert.That(next).IsNotNull();
+        await Assert.That(next!.Value.Partition).IsEqualTo(Partition1.Partition);
+        await Assert.That(next.Value.Offset).IsEqualTo(20L);
+    }
+
+    [Test]
+    [Arguments(false, StreamExit.Break)]
+    [Arguments(true, StreamExit.Break)]
+    [Arguments(false, StreamExit.Throw)]
+    [Arguments(true, StreamExit.Throw)]
+    [Arguments(false, StreamExit.Cancel)]
+    [Arguments(true, StreamExit.Cancel)]
+    public async Task StreamEndedAfterHeldSkip_NextStreamDeliversHeldRecordsOnceInOrder(bool raw, StreamExit exit)
+    {
+        await using var consumer = CreateConsumer(
+            CreatePendingFetch(Partition0, 10, 2),
+            CreatePendingFetch(Partition1, 20, 1),
+            CreatePendingFetch(Partition0, 12, 1));
+        var snapshotActive = GetField("_snapshotOperationActive");
+        snapshotActive.SetValue(consumer, 1);
+        try
+        {
+            await EndStreamAfterSkipAsync(consumer, raw, exit);
+
+            // Set-aside fetches were restored in order by the loop's finally.
+            await Assert.That(((Queue<PendingFetchData>)GetField("_heldSkippedFetches").GetValue(consumer)!).Count)
+                .IsEqualTo(0);
+            await Assert.That(GetPendingFetches(consumer)
+                .Where(static f => f.TopicPartition == Partition0)
+                .Select(static f => f.GetBatches()[0].BaseOffset)
+                .SequenceEqual([10L, 12L])).IsTrue();
+
+            // A new stream does not inherit the hold: it delivers partition 1 (still queued
+            // from the ended stream) and then partition 0's records exactly once, in order.
+            var offsets = new List<long>();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await using var batches = Open(consumer, raw, timeout.Token);
+            var partition1Pending = exit != StreamExit.Cancel;
+            for (var i = 0; i < (partition1Pending ? 3 : 2); i++)
+            {
+                await Assert.That(await batches.MoveNextAsync()).IsTrue();
+                offsets.AddRange(batches.Current.Offsets());
+            }
+
+            await Assert.That(offsets.Where(static o => o < 20).SequenceEqual([10L, 11L, 12L])).IsTrue();
+            await Assert.That(offsets.Count(static o => o == 20)).IsEqualTo(partition1Pending ? 1 : 0);
+            await Assert.That(((HashSet<TopicPartition>)GetField("_heldSkippedPartitions").GetValue(consumer)!).Count)
+                .IsEqualTo(0);
+        }
+        finally
+        {
+            snapshotActive.SetValue(consumer, 0);
+        }
+    }
+
+    [Test]
+    public async Task PooledFetch_YieldCursorIsResetWhenReturnedToThePool()
+    {
+        var pending = CreatePendingFetch(Partition0, 10, 2);
+        _ = pending.MoveNext();
+        pending.CaptureYieldCursor();
+        await Assert.That((int)typeof(PendingFetchData)
+            .GetField("_yieldBatchIndex", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(pending)!).IsEqualTo(0);
+        pending.Dispose();
+
+        static object Field(PendingFetchData p, string name) =>
+            typeof(PendingFetchData).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(p)!;
+
+        await Assert.That((int)Field(pending, "_yieldBatchIndex")).IsEqualTo(-1);
+        await Assert.That((int)Field(pending, "_yieldRecordIndex")).IsEqualTo(-1);
+        await Assert.That((bool)Field(pending, "_yieldBuffered")).IsFalse();
+        await Assert.That((bool)Field(pending, "_yieldExhausted")).IsFalse();
+    }
+
+    /// <summary>
+    /// Yields partition 0 and skips it, yields partition 1, then ends the stream by breaking,
+    /// throwing out of the loop body, or cancelling the next request.
+    /// </summary>
+    private static async Task EndStreamAfterSkipAsync(KafkaConsumer<string, string> consumer, bool raw, StreamExit exit)
+    {
+        using var cts = new CancellationTokenSource();
+        var batches = Open(consumer, raw, cts.Token);
+        try
+        {
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            await Assert.That(batches.Current.Partition).IsEqualTo(Partition0);
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            await Assert.That(batches.Current.Partition).IsEqualTo(Partition1);
+
+            switch (exit)
+            {
+                case StreamExit.Throw:
+                    throw new InvalidOperationException("processing failed");
+                case StreamExit.Cancel:
+                    // Partition 1 is processed, so the cancelled request ends the stream
+                    // instead of counting as a skip of partition 1.
+                    _ = batches.Current.Offsets();
+                    await cts.CancelAsync();
+                    try
+                    {
+                        _ = await batches.MoveNextAsync();
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+
+                    break;
+            }
+        }
+        catch (InvalidOperationException) when (exit == StreamExit.Throw)
+        {
+        }
+        finally
+        {
+            await batches.DisposeAsync();
+        }
+    }
+
+    private static async Task AssertNoSkipStateAsync(KafkaConsumer<string, string> consumer)
+    {
+        await Assert.That(((HashSet<TopicPartition>)GetField("_skippedBatchPartitions").GetValue(consumer)!).Count)
+            .IsEqualTo(0);
+        await Assert.That(((Queue<PendingFetchData>)GetField("_heldSkippedFetches").GetValue(consumer)!).Count)
+            .IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task SupersededEofStillQueued_IsNotDeliveredAfterLaterRecords(bool raw)
+    {
+        // An EOF at 10 slipped into the queue after the drain removed nothing (for example it
+        // was dequeued concurrently), and records 10..11 were then consumed.
+        await using var consumer = CreateConsumer(CreatePendingFetch(Partition0, 10, 2));
+        GetEofEvents(consumer).Enqueue((Partition0, 10L));
+        GetEofEvents(consumer).Enqueue((Partition0, 12L));
+        await using var batches = Open(consumer, raw);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Offsets()).IsEquivalentTo([10L, 11L]);
+
+        // Offsets never go backwards: the EOF at 10 is dropped, the real end at 12 delivered.
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.IsEof).IsTrue();
+        await Assert.That(GetEofEvents(consumer)).IsEmpty();
+    }
+
+    [Test]
+    public async Task FullyCoveredRecordResponse_KeepsEofMarker_NoDuplicateEof()
+    {
+        await using var consumer = CreateConsumer(
+            500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true,
+            CreatePendingFetch(Partition0, 10, 1));
+        GetPendingFetches(consumer).Clear();
+        var fetchPositions = GetDictionary(consumer, "_fetchPositions");
+        fetchPositions[Partition0] = 12;
+        var epoch = GetFetchBufferEpoch(consumer);
+
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 12, epoch);
+        await Assert.That(GetEofEvents(consumer).Count).IsEqualTo(1);
+
+        // An overlapping same-epoch response for 10..11 is fully covered by the earlier
+        // publication: it adds nothing past the reported EOF and must not re-arm it.
+        await PublishPrefetchedAsync(consumer, CreatePendingFetch(Partition0, 10, 2), epoch);
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 12, epoch);
+        await Assert.That(GetEofEvents(consumer).Single()).IsEqualTo((Partition0, 12L));
+    }
+
+    [Test]
+    public async Task ConsumeAsync_SkipsSupersededEof()
+    {
+        await using var consumer = CreateSupersededEofConsumer();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using var records = consumer.ConsumeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+
+        await Assert.That(await records.MoveNextAsync()).IsTrue();
+        await Assert.That(records.Current.IsPartitionEof).IsTrue();
+        await Assert.That(records.Current.Offset).IsEqualTo(12L);
+        await Assert.That(GetEofEvents(consumer)).IsEmpty();
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_SkipsSupersededEof()
+    {
+        await using var consumer = CreateSupersededEofConsumer();
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.IsPartitionEof).IsTrue();
+        await Assert.That(result.Value.Offset).IsEqualTo(12L);
+        await Assert.That(GetEofEvents(consumer)).IsEmpty();
+    }
+
+    /// <summary>
+    /// Partition 0 was consumed to 12. A stale EOF at 10 is still queued ahead of the real one.
+    /// </summary>
+    private static KafkaConsumer<string, string> CreateSupersededEofConsumer()
+    {
+        var consumer = CreateConsumer(
+            500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true,
+            CreatePendingFetch(Partition0, 10, 1));
+        GetPendingFetches(consumer).Clear();
+        GetDictionary(consumer, "_positions")[Partition0] = 12;
+        GetEofEvents(consumer).Enqueue((Partition0, 10L));
+        GetEofEvents(consumer).Enqueue((Partition0, 12L));
+        return consumer;
+    }
+
+    public enum EofApi
+    {
+        Batch,
+        RawBatch,
+        ConsumeAsync,
+        ConsumeOne
+    }
+
+    /// <summary>
+    /// An EOF at offset X means the next offset to fetch is X. It is superseded only when the
+    /// consumed position is past X: records 10..19 leave the position at 20, so EOF 20 is real;
+    /// records 10..20 leave it at 21, so EOF 20 is stale.
+    /// </summary>
+    [Test]
+    [Arguments(EofApi.Batch, 10)]
+    [Arguments(EofApi.Batch, 11)]
+    [Arguments(EofApi.RawBatch, 10)]
+    [Arguments(EofApi.RawBatch, 11)]
+    [Arguments(EofApi.ConsumeAsync, 10)]
+    [Arguments(EofApi.ConsumeAsync, 11)]
+    [Arguments(EofApi.ConsumeOne, 10)]
+    [Arguments(EofApi.ConsumeOne, 11)]
+    public async Task EofAtConsumedPositionIsDelivered_EofBelowItIsDropped(EofApi api, int recordCount)
+    {
+        await using var consumer = CreateConsumer(
+            500, null, prefetch: true, unknownPosition: null, enablePartitionEof: true,
+            CreatePendingFetch(Partition0, 10, recordCount));
+        GetEofEvents(consumer).Enqueue((Partition0, 20L));
+        var expectEof = recordCount == 10;
+
+        var offsets = new List<long>();
+        long? eofOffset = null;
+        using var cts = new CancellationTokenSource();
+        switch (api)
+        {
+            case EofApi.Batch:
+            case EofApi.RawBatch:
+            {
+                await using var batches = Open(consumer, api == EofApi.RawBatch, cts.Token);
+                await Assert.That(await batches.MoveNextAsync()).IsTrue();
+                offsets.AddRange(batches.Current.Offsets());
+                cts.CancelAfter(TimeSpan.FromMilliseconds(300));
+                try
+                {
+                    if (await batches.MoveNextAsync() && batches.Current.IsEof)
+                        eofOffset = batches.Current.EofOffset;
+                }
+                catch (OperationCanceledException)
+                {
+                }
+
+                break;
+            }
+            case EofApi.ConsumeAsync:
+            {
+                await using var records = consumer.ConsumeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+                try
+                {
+                    while (await records.MoveNextAsync())
+                    {
+                        if (records.Current.IsPartitionEof)
+                        {
+                            eofOffset = records.Current.Offset;
+                            break;
+                        }
+
+                        offsets.Add(records.Current.Offset);
+                        if (offsets.Count == recordCount)
+                            cts.CancelAfter(TimeSpan.FromMilliseconds(300));
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                }
+
+                break;
+            }
+            case EofApi.ConsumeOne:
+            {
+                while (true)
+                {
+                    var result = await consumer.ConsumeOneAsync(TimeSpan.FromMilliseconds(300), CancellationToken.None);
+                    if (result is null)
+                        break;
+                    if (result.Value.IsPartitionEof)
+                    {
+                        eofOffset = result.Value.Offset;
+                        break;
+                    }
+
+                    offsets.Add(result.Value.Offset);
+                }
+
+                break;
+            }
+        }
+
+        await Assert.That(offsets.SequenceEqual(Enumerable.Range(10, recordCount).Select(static o => (long)o))).IsTrue();
+        await Assert.That(GetDictionary(consumer, "_positions")[Partition0]).IsEqualTo(10L + recordCount);
+        if (expectEof)
+            await Assert.That(eofOffset).IsEqualTo(20L);
+        else
+            await Assert.That(eofOffset).IsNull();
+        await Assert.That(GetEofEvents(consumer)).IsEmpty();
+    }
+
+    private sealed class TypedEnumerator(IAsyncEnumerator<ConsumeBatch<string, string>> inner)
+        : IAsyncEnumerator<BatchView>
+    {
+        public BatchView Current => new(
+            inner.Current.TopicPartition,
+            () => inner.Current.Select(static r => r.Offset).ToArray(),
+            () => _ = inner.Current.GetEnumerator(),
+            inner.Current.IsPartitionEof,
+            inner.Current.PartitionEofOffset);
+        public ValueTask<bool> MoveNextAsync() => inner.MoveNextAsync();
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
+    }
+
+    private sealed class RawEnumerator(IAsyncEnumerator<ConsumeRawBatch> inner)
+        : IAsyncEnumerator<BatchView>
+    {
+        public BatchView Current => new(
+            inner.Current.TopicPartition,
+            () => inner.Current.Select(static r => r.Offset).ToArray(),
+            () => _ = inner.Current.GetEnumerator(),
+            inner.Current.IsPartitionEof,
+            inner.Current.PartitionEofOffset);
+        public ValueTask<bool> MoveNextAsync() => inner.MoveNextAsync();
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
+    }
+
+    private sealed class BatchView(
+        TopicPartition partition,
+        Func<long[]> offsets,
+        Action createEnumerator,
+        bool isEof,
+        long? eofOffset)
+    {
+        public TopicPartition Partition { get; } = partition;
+        public bool IsEof { get; } = isEof;
+        public long? EofOffset { get; } = eofOffset;
+        public long[] Offsets() => offsets();
+        public void CreateEnumeratorOnly() => createEnumerator();
+    }
+
+    private static IAsyncEnumerator<BatchView> Open(
+        KafkaConsumer<string, string> consumer,
+        bool raw,
+        CancellationToken cancellationToken = default) =>
+        raw
+            ? new RawEnumerator(consumer.ConsumeRawBatchAsync(cancellationToken).GetAsyncEnumerator(CancellationToken.None))
+            : new TypedEnumerator(consumer.ConsumeBatchAsync(cancellationToken).GetAsyncEnumerator(CancellationToken.None));
+
+    private sealed class PassThroughInterceptor : IConsumerInterceptor<string, string>
+    {
+        public int Calls;
+        public ConsumeResult<string, string> OnConsume(ConsumeResult<string, string> result)
+        {
+            Calls++;
+            return result;
+        }
+
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+    }
+
+    private static KafkaConsumer<string, string> CreateConsumer(params PendingFetchData[] fetches) =>
+        CreateConsumer(500, null, fetches);
+
+    private static KafkaConsumer<string, string> CreateConsumer(int maxPollRecords, params PendingFetchData[] fetches) =>
+        CreateConsumer(maxPollRecords, null, fetches);
+
+    private static KafkaConsumer<string, string> CreateConsumer(
+        int maxPollRecords,
+        IConsumerInterceptor<string, string>[]? interceptors,
+        params PendingFetchData[] fetches) =>
+        CreateConsumer(maxPollRecords, interceptors, prefetch: false, unknownPosition: null, fetches);
+
+    private static KafkaConsumer<string, string> CreateConsumer(
+        int maxPollRecords,
+        IConsumerInterceptor<string, string>[]? interceptors,
+        bool prefetch,
+        TopicPartition? unknownPosition,
+        params PendingFetchData[] fetches) =>
+        CreateConsumer(maxPollRecords, interceptors, prefetch, unknownPosition, enablePartitionEof: false, fetches);
+
+    /// <summary>
+    /// With <paramref name="prefetch"/>, the prefetch loop is marked started without running,
+    /// so only the seeded fetches exist. <paramref name="unknownPosition"/> has no consumer
+    /// position, which leaves a prefetching consumer unable to refetch it.
+    /// </summary>
+    private static KafkaConsumer<string, string> CreateConsumer(
+        int maxPollRecords,
+        IConsumerInterceptor<string, string>[]? interceptors,
+        bool prefetch,
+        TopicPartition? unknownPosition,
+        bool enablePartitionEof,
+        params PendingFetchData[] fetches)
+    {
+        var options = new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            QueuedMinMessages = prefetch ? 100 : 1,
+            FetchMaxWaitMs = 50,
+            MaxPollRecords = maxPollRecords,
+            Interceptors = interceptors,
+            EnablePartitionEof = enablePartitionEof
+        };
+
+        var consumer = new KafkaConsumer<string, string>(options, Serializers.String, Serializers.String);
+        var partitions = fetches.Select(static f => f.TopicPartition).Distinct().ToArray();
+        consumer.Assign(partitions);
+
+        GetField("_initialized").SetValue(consumer, true);
+        var fetchPositions = GetDictionary(consumer, "_fetchPositions");
+        var positions = GetDictionary(consumer, "_positions");
+        var pendingFetches = GetPendingFetches(consumer);
+        foreach (var fetch in fetches)
+        {
+            var start = fetch.GetBatches()[0].BaseOffset;
+            fetchPositions.TryAdd(fetch.TopicPartition, start);
+            if (fetch.TopicPartition != unknownPosition)
+                positions.TryAdd(fetch.TopicPartition, start);
+            pendingFetches.Enqueue(fetch);
+        }
+        GetField("_pendingFetchDepth").SetValue(consumer, fetches.Length);
+        if (prefetch)
+            GetField("_prefetchTask").SetValue(consumer, Task.CompletedTask);
+        return consumer;
+    }
+
+    private static PendingFetchData CreatePendingFetch(TopicPartition partition, long baseOffset, int recordCount)
+    {
+        var records = new Record[recordCount];
+        for (var i = 0; i < records.Length; i++)
+        {
+            records[i] = new Record
+            {
+                OffsetDelta = i,
+                Key = Encoding.UTF8.GetBytes($"key-{i}"),
+                Value = Encoding.UTF8.GetBytes($"value-{i}"),
+                IsKeyNull = false,
+                IsValueNull = false
+            };
+        }
+
+        return PendingFetchData.Create(partition.Topic, partition.Partition,
+        [
+            new RecordBatch
+            {
+                BaseOffset = baseOffset,
+                BaseTimestamp = 1_700_000_000_000,
+                LastOffsetDelta = recordCount - 1,
+                Records = records
+            }
+        ]);
+    }
+
+    private static ConcurrentQueue<(TopicPartition Partition, long Offset)> GetEofEvents(
+        KafkaConsumer<string, string> consumer) =>
+        (ConcurrentQueue<(TopicPartition Partition, long Offset)>)GetField("_pendingEofEvents").GetValue(consumer)!;
+
+    private static int GetFetchBufferEpoch(KafkaConsumer<string, string> consumer) =>
+        (int)GetField("_fetchBufferEpoch").GetValue(consumer)!;
+
+    private static Queue<PendingFetchData> GetPendingFetches(KafkaConsumer<string, string> consumer) =>
+        (Queue<PendingFetchData>)GetField("_pendingFetches").GetValue(consumer)!;
+
+    private static ConcurrentDictionary<TopicPartition, long> GetDictionary(
+        KafkaConsumer<string, string> consumer,
+        string name) =>
+        (ConcurrentDictionary<TopicPartition, long>)GetField(name).GetValue(consumer)!;
+
+    private static FieldInfo GetField(string name) =>
+        typeof(KafkaConsumer<string, string>).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException($"{name} field not found");
+}
