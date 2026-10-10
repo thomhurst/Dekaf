@@ -321,12 +321,36 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
+        await using (var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync())
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = "key",
+                Value = "value"
+            }, CancellationToken.None);
+        }
+
         consumer.Subscribe(topic);
         await Assert.That(consumer.Subscription).Count().IsEqualTo(1);
+        var record = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30));
+        await Assert.That(record).IsNotNull();
+
+        await using var admin = new Dekaf.Admin.AdminClientBuilder()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .Build();
+        await Assert.That(await ConsumerUnsubscribeTests.CountMembersAsync(admin, groupId)).IsEqualTo(1);
 
         consumer.Unsubscribe();
 
+        // KIP-848 leave heartbeat: the broker drops the member at once, not after a session timeout.
         await Assert.That(consumer.Subscription).Count().IsEqualTo(0);
+        await Assert.That(async () => await ConsumerUnsubscribeTests.CountMembersAsync(admin, groupId))
+            .Eventually(count => count.IsEqualTo(0), TimeSpan.FromSeconds(15));
     }
 
     [Test]

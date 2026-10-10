@@ -7,7 +7,9 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// <summary>
 /// The stable-member <see cref="ConsumerCoordinator.EnsureActiveGroupAsync(IReadOnlySet{string}, string?, CancellationToken)"/>
 /// check that every prefetch loop iteration and poll makes: a joined member with an unchanged
-/// subscription and no queued rebalance callbacks returns without touching the network.
+/// subscription and no queued rebalance callbacks returns without touching the network. The
+/// check includes the membership state reads that decide whether a leave (Unsubscribe or a switch
+/// to manual assignment) is in progress; both entry points of the stable path are measured.
 /// </summary>
 [MemoryDiagnoser]
 public class ConsumerCoordinatorStablePollBenchmarks
@@ -39,4 +41,8 @@ public class ConsumerCoordinatorStablePollBenchmarks
     [Benchmark]
     public ValueTask EnsureActiveGroup() =>
         _coordinator.EnsureActiveGroupAsync(_topics, null, CancellationToken.None);
+
+    [Benchmark]
+    public ValueTask EnsureActiveGroupTopicsOnly() =>
+        _coordinator.EnsureActiveGroupAsync(_topics, CancellationToken.None);
 }

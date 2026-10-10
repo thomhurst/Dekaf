@@ -916,10 +916,10 @@ public sealed partial class ConsumerAssignmentFastPathTests
     }
 
     /// <summary>
-    /// A steady heartbeat is in flight when the application abandons the group assignment; its
-    /// response then publishes a new assignment and the heartbeat loop delivers OnPartitionsAssigned
-    /// (the coordinator is not told about the abandon). That callback belongs to the abandoned
-    /// assignment: its seek and pause act on the consumer directly and nothing is staged.
+    /// A steady heartbeat is in flight when the application abandons the group assignment. The
+    /// abandon leaves the group, which stops that heartbeat: its response (a new assignment of the
+    /// abandoned membership) never delivers OnPartitionsAssigned, not even after a resubscription
+    /// has joined again, and nothing is staged for it.
     /// </summary>
     [Test]
     [Timeout(60_000)]
@@ -945,7 +945,7 @@ public sealed partial class ConsumerAssignmentFastPathTests
                 Arg.Any<ConsumerGroupHeartbeatRequest>(),
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>())
-            .Returns(_ => Interlocked.Increment(ref calls) switch
+            .Returns(call => Interlocked.Increment(ref calls) switch
             {
                 // The join: the steady heartbeat follows almost at once.
                 1 => ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
@@ -956,7 +956,7 @@ public sealed partial class ConsumerAssignmentFastPathTests
                     HeartbeatIntervalMs = 10,
                     Assignment = CreateAssignment(0)
                 }),
-                2 => HeldHeartbeatAsync(heartbeatInFlight, releaseHeartbeat),
+                2 => HeldHeartbeatAsync(heartbeatInFlight, releaseHeartbeat, call.ArgAt<CancellationToken>(2)),
                 _ => ValueTask.FromResult(CreateHeartbeatResponse(CreateAssignment(0, 1), 2))
             });
         SetupOffsetFetch(connection);
@@ -964,9 +964,11 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await using var consumer = CreateGroupConsumer(connectionPool, metadataManager, rebalanceListener: listener);
         var coordinator = GetCoordinator(consumer);
         var callbackRan = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var abandoned = false;
         listener.OnAssigned = partitions =>
         {
-            if (!partitions.Contains(Partition1))
+            // Only a delivery after the abandon (and any resubscription's own join) is the stale one.
+            if (!Volatile.Read(ref abandoned) || !partitions.Contains(Partition1))
                 return;
 
             var staging = coordinator.TryGetAssignedCallbackRevocationSequence(Partition1, out _);
@@ -990,21 +992,24 @@ public sealed partial class ConsumerAssignmentFastPathTests
             await consumer.EnsureAssignmentAsync(testTimeout);
         }
 
+        Volatile.Write(ref abandoned, true);
         releaseHeartbeat.TrySetResult();
 
-        var stagingInCallback = await callbackRan.Task.WaitAsync(testTimeout);
+        // The leave stopped the in-flight heartbeat before it completed.
+        await GetCoordinatorField<Task>(coordinator, "_pendingLeave").WaitAsync(testTimeout);
 
-        await Assert.That(stagingInCallback).IsFalse();
+        await Assert.That(callbackRan.Task.IsCompleted).IsFalse();
         await Assert.That(consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
         await Assert.That(consumer.RebalancePausedPartitionCountForTest).IsEqualTo(0);
     }
 
     private static async ValueTask<ConsumerGroupHeartbeatResponse> HeldHeartbeatAsync(
         TaskCompletionSource inFlight,
-        TaskCompletionSource release)
+        TaskCompletionSource release,
+        CancellationToken cancellationToken)
     {
         inFlight.TrySetResult();
-        await release.Task;
+        await release.Task.WaitAsync(cancellationToken);
         return CreateHeartbeatResponse(CreateAssignment(0, 1), 2);
     }
 
@@ -1207,9 +1212,9 @@ public sealed partial class ConsumerAssignmentFastPathTests
 
     /// <summary>
     /// An assignment names a topic this client's metadata does not know yet, so part of it stays
-    /// pending; the application then abandons and re-subscribes before metadata resolves it. When a
-    /// later heartbeat publishes the rest, it is still the abandoned subscription's assignment: its
-    /// callback must not stage.
+    /// pending; the application then abandons and re-subscribes before metadata resolves it. The
+    /// abandon left the group, so the pending part belongs to a membership that ended: once
+    /// metadata resolves it, it is never published, and its callback never runs or stages.
     /// </summary>
     [Test]
     [Timeout(60_000)]
@@ -1283,8 +1288,7 @@ public sealed partial class ConsumerAssignmentFastPathTests
         });
         await harness.HeartbeatAsync();
 
-        await Assert.That(staging).IsNotNull();
-        await Assert.That(staging!.Value).IsFalse();
+        await Assert.That(staging).IsNull();
         await Assert.That(consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
     }
 

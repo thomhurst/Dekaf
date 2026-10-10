@@ -369,7 +369,11 @@ public sealed partial class ConsumerAssignmentFastPathTests
 
         await Assert.That(harness.Consumer.GetRebalancePosition(Partition1)).IsNull();
 
-        // A later subscription assigned the same partition starts at the committed offset.
+        // A later subscription assigned the same partition starts at the committed offset. The
+        // abandon left the group, so that subscription joins afresh and is announced partition 1
+        // again: the listener no longer seeks, so only an inherited seek could move it.
+        listener.OnAssigned = null;
+        listener.OnAssignedConsumer = null;
         harness.Consumer.Subscribe("test-topic");
         await harness.Consumer.EnsureAssignmentAsync(CancellationToken.None);
         await Assert.That(harness.Consumer.GetPosition(Partition1)).IsEqualTo(20L);
