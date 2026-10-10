@@ -19,7 +19,9 @@ public class ObjectPoolMigrationBenchmarks
 {
     private ConcurrentStackPool _concurrentStack = null!;
     private ObjectPool<PooledItem, PooledItemPolicy> _reservoir = null!;
+    private ObjectPool<PooledItem, PooledItemPolicy> _reservoirShared = null!;
     private TrackedPool _tracked = null!;
+    private TrackedPool _trackedShared = null!;
 
     [Params(32, 128, 256)]
     public int Capacity { get; set; }
@@ -29,13 +31,18 @@ public class ObjectPoolMigrationBenchmarks
     {
         _concurrentStack = new ConcurrentStackPool(Capacity);
         _reservoir = new ObjectPool<PooledItem, PooledItemPolicy>(Capacity);
+        _reservoirShared = new ObjectPool<PooledItem, PooledItemPolicy>(default, Capacity, threadLocalFastPath: false);
         _tracked = new TrackedPool(Capacity);
+        _trackedShared = new TrackedPool(Capacity, threadLocalFastPath: false);
 
         var concurrentStackItem = _concurrentStack.Rent();
         _concurrentStack.Return(concurrentStackItem);
         var item = _reservoir.Rent();
         _reservoir.Return(item);
+        var sharedItem = _reservoirShared.Rent();
+        _reservoirShared.Return(sharedItem);
         _tracked.PreWarm(1);
+        _trackedShared.PreWarm(1);
     }
 
     [Benchmark(Baseline = true)]
@@ -60,6 +67,29 @@ public class ObjectPoolMigrationBenchmarks
         var item = _tracked.Rent();
         _tracked.Return(item);
         return item;
+    }
+
+    [Benchmark]
+    public PooledItem ReservoirSharedPool()
+    {
+        var item = _reservoirShared.Rent();
+        _reservoirShared.Return(item);
+        return item;
+    }
+
+    [Benchmark]
+    public PooledItem DekafTrackedSharedPool()
+    {
+        var item = _trackedShared.Rent();
+        _trackedShared.Return(item);
+        return item;
+    }
+
+    [GlobalCleanup]
+    public void Cleanup()
+    {
+        _reservoir.Dispose();
+        _reservoirShared.Dispose();
     }
 
     public sealed class PooledItem;
@@ -90,8 +120,8 @@ public class ObjectPoolMigrationBenchmarks
         }
     }
 
-    private sealed class TrackedPool(int capacity)
-        : Dekaf.Producer.ObjectPool<PooledItem>(capacity)
+    private sealed class TrackedPool(int capacity, bool threadLocalFastPath = true)
+        : Dekaf.Producer.ObjectPool<PooledItem>(capacity, threadLocalFastPath)
     {
         protected override PooledItem Create() => new();
 
