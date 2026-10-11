@@ -1,4 +1,6 @@
-# Dekaf - A .NET Kafka Client
+# Dekaf - A .NET Kafka Client. Taking the Java out of Kafka.
+
+
 
 **Kafka in pure C#, without librdkafka**
 
