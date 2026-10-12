@@ -292,6 +292,16 @@ offset.
 Runtime-managed revoke and shutdown commits may batch completed offsets for
 multiple partitions into one `CommitAsync` call.
 
+Runtime-managed commits skip partitions whose completed offset has not moved
+since the last successful commit, so an idle partition does not send a commit
+every `CommitInterval`. When the group has fenced or expired the member (for
+example after a network outage longer than the session timeout), a
+runtime-managed commit is rejected with a `GroupException`. The runtime logs a
+warning and keeps running: the consumer reports the partitions through
+`OnPartitionsLost` and rejoins. No offset changes, and the new owner resumes
+from the last successful commit. A commit you request with
+`CommitProcessedAsync` still throws the `GroupException` to your handler.
+
 Auto commit mode with automatic offset store (`OffsetCommitMode.Auto` +
 `EnableAutoOffsetStore = true`, the consumer defaults) stages offsets based on
 consume-loop progress. The partitioned runtime pulls records off the loop and

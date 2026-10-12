@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
@@ -285,6 +286,118 @@ public sealed class ConsumerNetworkFaultTests(TransactionFaultKafkaContainer kaf
         var taken = await ConsumeNextAsync(successor, TimeSpan.FromSeconds(60), cancellationToken);
         await Assert.That(successorStarted.Elapsed).IsLessThan(TimeSpan.FromSeconds(25));
         await Assert.That(taken.Value).IsNotNull();
+    }
+
+    [Test]
+    public async Task RunPartitionedAsync_PeriodicCommitAfterTheMemberExpired_RejoinsInsteadOfFaulting()
+    {
+        using var testTimeout = new CancellationTokenSource(TestTimeout);
+        var cancellationToken = testTimeout.Token;
+        var topic = await kafka.CreateTestTopicAsync();
+        var groupId = $"network-fault-partitioned-{Guid.NewGuid():N}";
+        await UseShortSessionAsync(groupId, cancellationToken);
+        await SeedAsync(topic, ["first"], cancellationToken);
+
+        var listener = new LossRecordingListener();
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.ConsumerBootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithRebalanceListener(listener)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        consumer.Subscribe(topic);
+
+        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondProcessed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var stopRun = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var run = consumer.RunPartitionedAsync(
+            async (_, message, handlerCancellation) =>
+            {
+                if (message.Value == "first" && firstStarted.TrySetResult())
+                    await releaseFirst.Task.WaitAsync(handlerCancellation);
+                if (message.Value == "second")
+                    secondProcessed.TrySetResult();
+            },
+            new PartitionedProcessingOptions
+            {
+                CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
+                CommitInterval = TimeSpan.FromMilliseconds(200)
+            },
+            stopRun.Token).AsTask();
+
+        try
+        {
+            await firstStarted.Task.WaitAsync(cancellationToken);
+            try
+            {
+                // The record completes inside the outage, so a periodic commit is pending when the
+                // connection returns. The outage outlasts the 6 s session, so the broker expires
+                // the member before that commit can reach it.
+                await kafka.DisableLaneAsync(ToxiproxyLane.Consumer, cancellationToken);
+                releaseFirst.SetResult();
+                await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
+            }
+            finally
+            {
+                await kafka.HealNetworkFaultsAsync(CancellationToken.None);
+            }
+
+            await listener.Lost.Task.WaitAsync(TimeSpan.FromSeconds(60), cancellationToken);
+
+            // A run that survived the fence rejoins and keeps processing new records.
+            await SeedAsync(topic, ["second"], cancellationToken);
+            await secondProcessed.Task.WaitAsync(TimeSpan.FromSeconds(60), cancellationToken);
+            await Assert.That(run.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            await stopRun.CancelAsync();
+            try
+            {
+                await run;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+    }
+
+    private async Task UseShortSessionAsync(string groupId, CancellationToken cancellationToken)
+    {
+        // Under KIP-848 the coordinator owns the session timeout; the client setting is ignored.
+        await using var admin = kafka.CreateAdminClient();
+        await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+        {
+            [new ConfigResource { Type = ConfigResourceType.Group, Name = groupId }] =
+            [
+                ConfigAlter.Set("consumer.session.timeout.ms", "6000"),
+                ConfigAlter.Set("consumer.heartbeat.interval.ms", "1000")
+            ]
+        }, cancellationToken: cancellationToken);
+    }
+
+    private sealed class LossRecordingListener : IRebalanceListener
+    {
+        public TaskCompletionSource Lost { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ValueTask OnPartitionsAssignedAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public ValueTask OnPartitionsRevokedAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public ValueTask OnPartitionsLostAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken)
+        {
+            Lost.TrySetResult();
+            return ValueTask.CompletedTask;
+        }
     }
 
     private static async Task<ConsumeResult<string, string>> ConsumeNextAsync(
