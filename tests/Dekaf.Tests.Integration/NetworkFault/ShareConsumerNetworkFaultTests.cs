@@ -81,6 +81,112 @@ public sealed class ShareConsumerNetworkFaultTests(ShareFaultKafkaContainer kafk
         await consumer.CloseAsync(cancellationToken);
     }
 
+    [Test]
+    public async Task MemberExpired_WithAcknowledgementsPending_RejoinsAndKeepsConsuming()
+    {
+        using var testTimeout = new CancellationTokenSource(TestTimeout);
+        var cancellationToken = testTimeout.Token;
+        var topic = await kafka.CreateTestTopicAsync(partitions: 1);
+        var groupId = $"network-fault-share-expiry-{Guid.NewGuid():N}";
+        await kafka.UseShortGroupSessionAsync(groupId, cancellationToken, shareGroup: true);
+
+        await using var consumer = await Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers(kafka.ConsumerBootstrapServers)
+            .WithGroupId(groupId)
+            .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit)
+            .WithRequestTimeoutMs(5_000)
+            .WithConnectionTimeout(TimeSpan.FromSeconds(2))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        consumer.Subscribe(topic);
+        await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
+
+        await SeedAsync(topic, "before", 5, cancellationToken);
+
+        // Their acknowledgements are still pending when the coordinator expires the member.
+        await PollUntilAsync(consumer, "before-", 5, cancellationToken);
+        await kafka.ExpireConsumerMemberAsync(cancellationToken);
+
+        // The pending acknowledgements belong to the expired membership and may be rejected,
+        // but the same consumer instance must rejoin and keep fetching new records.
+        await SeedAsync(topic, "after", 5, cancellationToken);
+        await PollUntilAsync(consumer, "after-", 5, cancellationToken);
+
+        await consumer.CommitAsync(cancellationToken);
+        await consumer.CloseAsync(cancellationToken);
+    }
+
+    [Test]
+    public async Task MemberExpired_WhilePolling_RejoinsAndKeepsConsuming()
+    {
+        using var testTimeout = new CancellationTokenSource(TestTimeout);
+        var cancellationToken = testTimeout.Token;
+        var topic = await kafka.CreateTestTopicAsync(partitions: 1);
+        var groupId = $"network-fault-share-expiry-polling-{Guid.NewGuid():N}";
+        await kafka.UseShortGroupSessionAsync(groupId, cancellationToken, shareGroup: true);
+
+        await using var consumer = await Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers(kafka.ConsumerBootstrapServers)
+            .WithGroupId(groupId)
+            .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit)
+            .WithRequestTimeoutMs(5_000)
+            .WithConnectionTimeout(TimeSpan.FromSeconds(2))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        consumer.Subscribe(topic);
+        await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
+
+        var firstReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var stopPolling = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        // Polls the way a long-running service does: a failed poll is reported and retried, so
+        // the loop keeps polling straight through the outage and the member's expiry.
+        var polling = Task.Run(async () =>
+        {
+            while (!stopPolling.IsCancellationRequested)
+            {
+                try
+                {
+                    await foreach (var record in consumer.PollAsync(stopPolling.Token))
+                    {
+                        consumer.Acknowledge(record);
+                        if (record.Value == "first-0")
+                            firstReceived.TrySetResult();
+                        else if (record.Value == "second-0")
+                            secondReceived.TrySetResult();
+                    }
+                }
+                catch (Exception) when (!stopPolling.IsCancellationRequested)
+                {
+                    await Task.Delay(500, CancellationToken.None);
+                }
+            }
+        }, CancellationToken.None);
+
+        try
+        {
+            await SeedAsync(topic, "first", 1, cancellationToken);
+            await firstReceived.Task.WaitAsync(TimeSpan.FromSeconds(90), cancellationToken);
+
+            await kafka.ExpireConsumerMemberAsync(cancellationToken);
+
+            await SeedAsync(topic, "second", 1, cancellationToken);
+            await secondReceived.Task.WaitAsync(TimeSpan.FromSeconds(90), cancellationToken);
+        }
+        finally
+        {
+            await stopPolling.CancelAsync();
+            try
+            {
+                await polling;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+    }
+
     /// <summary>
     /// Polls and acknowledges records, without committing, until <paramref name="count"/> distinct
     /// records whose value starts with <paramref name="prefix"/> have arrived. Records from before

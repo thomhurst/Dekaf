@@ -171,6 +171,50 @@ public class TransactionFaultKafkaContainer : KafkaTestContainer
     }
 
     /// <summary>
+    /// Gives the group a 6 s session (the broker minimum this topology allows) so that an outage
+    /// from <see cref="DisableLaneAsync"/> longer than that expires the member. Under KIP-848 and
+    /// KIP-932 the coordinator owns the session timeout and ignores the client setting.
+    /// </summary>
+    public async Task UseShortGroupSessionAsync(
+        string groupId,
+        CancellationToken cancellationToken,
+        bool shareGroup = false)
+    {
+        var prefix = shareGroup ? "share" : "consumer";
+        await using var admin = CreateAdminClient();
+        await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+        {
+            [new ConfigResource { Type = ConfigResourceType.Group, Name = groupId }] =
+            [
+                ConfigAlter.Set($"{prefix}.session.timeout.ms", "6000"),
+                ConfigAlter.Set($"{prefix}.heartbeat.interval.ms", "1000")
+            ]
+        }, cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Takes the consumer lane offline for longer than the session set by
+    /// <see cref="UseShortGroupSessionAsync"/>, then heals it, so the coordinator expires the
+    /// member while the client cannot reach it. <paramref name="whileOffline"/> runs once the
+    /// lane is down.
+    /// </summary>
+    public async Task ExpireConsumerMemberAsync(
+        CancellationToken cancellationToken,
+        Action? whileOffline = null)
+    {
+        try
+        {
+            await DisableLaneAsync(ToxiproxyLane.Consumer, cancellationToken).ConfigureAwait(false);
+            whileOffline?.Invoke();
+            await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            await HealNetworkFaultsAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
     /// Removes every toxic added through <see cref="AddResetPeerAsync"/>,
     /// <see cref="AddTimeoutAsync"/> and <see cref="AddLimitDataAsync"/>, and re-enables every lane
     /// taken offline through <see cref="DisableLaneAsync"/>. Safe to call when none is active.
