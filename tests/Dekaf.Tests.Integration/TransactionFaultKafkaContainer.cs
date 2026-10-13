@@ -181,15 +181,30 @@ public class TransactionFaultKafkaContainer : KafkaTestContainer
         bool shareGroup = false)
     {
         var prefix = shareGroup ? "share" : "consumer";
+        var sessionTimeout = $"{prefix}.session.timeout.ms";
+        var resource = new ConfigResource { Type = ConfigResourceType.Group, Name = groupId };
         await using var admin = CreateAdminClient();
         await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
         {
-            [new ConfigResource { Type = ConfigResourceType.Group, Name = groupId }] =
+            [resource] =
             [
-                ConfigAlter.Set($"{prefix}.session.timeout.ms", "6000"),
+                ConfigAlter.Set(sessionTimeout, "6000"),
                 ConfigAlter.Set($"{prefix}.heartbeat.interval.ms", "1000")
             ]
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        // The controller can acknowledge the change before the group coordinator observes it, and
+        // a member that joins first keeps the 45 s default, which no test outage outlasts.
+        for (var attempt = 0; ; attempt++)
+        {
+            var configs = await admin.DescribeConfigsAsync([resource], cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+            if (configs[resource].Any(entry => entry.Name == sessionTimeout && entry.Value == "6000"))
+                return;
+            if (attempt == 20)
+                throw new TimeoutException($"Group {groupId} did not report {sessionTimeout}=6000.");
+            await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
+        }
     }
 
     /// <summary>

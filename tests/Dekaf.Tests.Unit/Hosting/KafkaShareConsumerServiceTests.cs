@@ -163,9 +163,56 @@ public sealed class KafkaShareConsumerServiceTests
     }
 
     [Test]
-    public async Task RetriableAcknowledgementFailure_RemainsTerminal()
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    [Arguments(3)]
+    [Arguments(4)]
+    [Arguments(5)]
+    [Arguments(6)]
+    public async Task RecoverableAcknowledgementFailure_DoesNotStopService(int kind)
     {
-        var error = new KafkaException(ErrorCode.CoordinatorLoadInProgress, "acknowledgement failed");
+        // The consumer keeps transient failures pending for retry, and the broker redelivers
+        // records acquired by a member or share session that no longer exists.
+        Exception error = kind switch
+        {
+            0 => new KafkaException(ErrorCode.CoordinatorLoadInProgress, "coordinator loading"),
+            1 => new KafkaException(ErrorCode.NetworkException, "Connection closed by remote peer (EOF)", isRetriable: true),
+            2 => new KafkaException(ErrorCode.UnknownMemberId, "member expired"),
+            3 => new KafkaException(ErrorCode.FencedMemberEpoch, "member fenced"),
+            4 => new KafkaException(ErrorCode.ShareSessionNotFound, "session gone"),
+            5 => new KafkaException(ErrorCode.InvalidShareSessionEpoch, "stale session epoch"),
+            _ => new TimeoutException("request timed out"),
+        };
+        var consumer = new TestConsumer(Record(0), Record(1))
+        {
+            InlineFailure = error,
+            FinalCommitFailure = new KafkaException("CommitAsync partially failed", error),
+            ReportCommitFailure = true,
+            ThrowCommitFailure = true
+        };
+        var processed = 0;
+        await using var service = new TestService(consumer, (_, _) => { processed++; return ValueTask.CompletedTask; });
+        await RunAsync(service);
+        await Assert.That(processed).IsEqualTo(2);
+        await Assert.That(consumer.Acknowledgements.Select(x => x.Type)).IsEquivalentTo([AcknowledgeType.Accept, AcknowledgeType.Accept]);
+        await Assert.That(service.ExecuteTask!.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(service.Errors).IsEmpty();
+    }
+
+    [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    public async Task NonRecoverableAcknowledgementFailure_RemainsTerminal(int kind)
+    {
+        Exception error = kind switch
+        {
+            0 => new KafkaException(ErrorCode.UnsupportedVersion, "unsupported"),
+            1 => new KafkaException(ErrorCode.GroupAuthorizationFailed, "denied"),
+            _ => new KafkaException("CommitAsync partially failed",
+                new KafkaException(ErrorCode.UnsupportedVersion, "unsupported")),
+        };
         var consumer = new TestConsumer(Record(0)) { InlineFailure = error };
         await using var service = new TestService(consumer);
         await Assert.That(async () => await RunAsync(service)).Throws<KafkaException>();
@@ -581,6 +628,25 @@ public sealed class KafkaShareConsumerServiceTests
         await RunAsync(service);
         await Assert.That(consumer.Acknowledgements.First().Type).IsEqualTo(AcknowledgeType.Renew);
         await Assert.That(consumer.Acknowledgements.Last().Type).IsEqualTo(AcknowledgeType.Accept);
+    }
+
+    [Test]
+    public async Task RecoverableRenewalFailure_KeepsProcessingAndAccepts()
+    {
+        // Every commit, including the renewal, fails with a transport error the consumer retries.
+        var consumer = new TestConsumer(Record(0))
+        {
+            CommitFailure = new KafkaException(ErrorCode.NetworkException, "Connection closed by remote peer (EOF)", isRetriable: true),
+            CommitFailurePartitions = [0]
+        };
+        await using var service = new TestService(consumer, async (_, token) =>
+            await consumer.Renewed.Task.WaitAsync(token),
+            options: new KafkaShareConsumerServiceOptions { RenewalInterval = TimeSpan.FromMilliseconds(5) });
+        await RunAsync(service);
+        await Assert.That(consumer.Acknowledgements.First().Type).IsEqualTo(AcknowledgeType.Renew);
+        await Assert.That(consumer.Acknowledgements.Last().Type).IsEqualTo(AcknowledgeType.Accept);
+        await Assert.That(service.ExecuteTask!.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(service.Errors).IsEmpty();
     }
 
     [Test]

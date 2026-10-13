@@ -51,6 +51,11 @@ internal sealed class ShareSessionManager
     }
 
     /// <summary>
+    /// Whether a session was ever opened on this broker. With epoch 0, that session has been reset.
+    /// </summary>
+    internal bool HadSession(int brokerId) => _sessionEpochs.ContainsKey(brokerId);
+
+    /// <summary>
     /// Returns the close epoch (-1) for session teardown.
     /// </summary>
     internal const int CloseEpoch = -1;

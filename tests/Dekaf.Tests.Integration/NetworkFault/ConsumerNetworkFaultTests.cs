@@ -428,11 +428,13 @@ public sealed class ConsumerNetworkFaultTests(TransactionFaultKafkaContainer kaf
         await kafka.UseShortGroupSessionAsync(groupId, cancellationToken);
         await SeedAsync(topic, ["first", "second"], cancellationToken);
 
+        var listener = new LossRecordingListener();
         await using (var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.ConsumerBootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithRebalanceListener(listener)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync(cancellationToken))
         {
@@ -441,6 +443,7 @@ public sealed class ConsumerNetworkFaultTests(TransactionFaultKafkaContainer kaf
             await Assert.That(first.Value).IsEqualTo("first");
 
             await kafka.ExpireConsumerMemberAsync(cancellationToken);
+            await listener.Lost.Task.WaitAsync(TimeSpan.FromSeconds(60), cancellationToken);
 
             // The documented contract: a commit outside an active membership is refused with a
             // non-retriable GroupException, never committed under the expired membership and

@@ -856,7 +856,10 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                 catch (GroupException ex) when (ex.ErrorCode == ErrorCode.UnknownMemberId)
                 {
                     LogRetriableCoordinatorError(ex.ErrorCode);
-                    ResetMemberState();
+                    // The coordinator expired this member. Rejoin under the same client-generated
+                    // ID: share sessions and acquisitions are keyed by it, and a new ID would leave
+                    // the consumer's session epochs pointing at another member's sessions.
+                    FenceMemberEpoch();
                 }
                 catch (GroupException ex) when (IsRetriableCoordinatorError(ex.ErrorCode))
                 {
@@ -973,7 +976,8 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                             break;
 
                         case ErrorCode.UnknownMemberId:
-                            ResetMemberState();
+                            // Rejoin under the same member ID; see the join loop.
+                            FenceMemberEpoch();
                             break;
 
                         case var c when IsRetriableCoordinatorError(c):
