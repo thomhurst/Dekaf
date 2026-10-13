@@ -120,3 +120,6 @@ StrykerOutput/
 benchmark-results/
 BenchmarkResults/
 .performance/
+
+# Local SDK installs (dotnet-install.ps1 -InstallDir .dotnet)
+/.dotnet/

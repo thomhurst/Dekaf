@@ -254,8 +254,11 @@ try {
         }
     }
 
+    # Removals that a busy directory interrupted, whatever started them.
+    $pendingRemoved = Complete-PendingWorktreeRemovals -Repo $mainRepo -WhatIf:$WhatIf
+
     if (-not $WhatIf) { git -C $mainRepo worktree prune }
-    Write-Host "sweep: removed $removed merged worktree(s), preserved $orphansPreserved orphaned dir(s)."
+    Write-Host "sweep: removed $removed merged worktree(s), preserved $orphansPreserved orphaned dir(s), finished $pendingRemoved pending removal(s)."
 }
 catch {
     Warn "unexpected sweep error (ignored, loop continues): $_"
