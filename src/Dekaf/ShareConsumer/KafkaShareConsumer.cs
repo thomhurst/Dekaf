@@ -755,10 +755,16 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         ThrowIfDisposed();
         ThrowIfNotInitialized();
 
-        await CommitCoreAsync(cancellationToken).ConfigureAwait(false);
+        await CommitCoreAsync(cancellationToken, deferWithoutSession: true).ConfigureAwait(false);
     }
 
-    private async ValueTask CommitCoreAsync(CancellationToken cancellationToken, bool releaseImplicit = false)
+    // deferWithoutSession: a commit outside the poll loop leaves acknowledgements for a reset
+    // session pending for the ShareFetch that reopens it. The poll loop's own commits keep
+    // sending, because they run before that fetch and would otherwise wait for it forever.
+    private async ValueTask CommitCoreAsync(
+        CancellationToken cancellationToken,
+        bool releaseImplicit = false,
+        bool deferWithoutSession = false)
     {
         if (!HasPendingAcknowledgements)
             return;
@@ -777,6 +783,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             tasks.Add(SendAcknowledgeForCommitAsync(
                 brokerId,
                 acknowledgements,
+                deferWithoutSession,
                 cancellationToken));
         }
 
@@ -784,7 +791,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         // recovery allocates additional state only when a leader is unresolved.
         var results = await (unresolvedAcknowledgements is null
             ? Task.WhenAll(tasks)
-            : RefreshUnresolvedAcknowledgementsAsync(tasks, unresolvedAcknowledgements, cancellationToken))
+            : RefreshUnresolvedAcknowledgementsAsync(tasks, unresolvedAcknowledgements, deferWithoutSession, cancellationToken))
             .ConfigureAwait(false);
 
         // Re-queue failed partitions so they can be retried on the next commit
@@ -842,6 +849,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     private async Task<AcknowledgeBrokerResult[]> RefreshUnresolvedAcknowledgementsAsync(
         List<Task<AcknowledgeBrokerResult>> tasks,
         Dictionary<TopicPartition, List<AcknowledgementBatchData>> unresolved,
+        bool deferWithoutSession,
         CancellationToken cancellationToken)
     {
         // Observe every existing request before another acknowledgement can use the
@@ -870,13 +878,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 unresolved.Add(partition, batches);
         }
         foreach (var (brokerId, acknowledgements) in resolved)
-            tasks.Add(SendAcknowledgeForCommitAsync(brokerId, acknowledgements, cancellationToken));
+            tasks.Add(SendAcknowledgeForCommitAsync(brokerId, acknowledgements, deferWithoutSession, cancellationToken));
         return await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
     private async Task<AcknowledgeBrokerResult> SendAcknowledgeForCommitAsync(
         int brokerId,
         Dictionary<TopicPartition, List<AcknowledgementBatchData>> acknowledgements,
+        bool deferWithoutSession,
         CancellationToken cancellationToken)
     {
         try
@@ -885,7 +894,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     brokerId,
                     acknowledgements,
                     retryRetriableFailures: true,
-                    cancellationToken: cancellationToken)
+                    cancellationToken: cancellationToken,
+                    deferWithoutSession: deferWithoutSession)
                 .ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -914,7 +924,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         {
             try
             {
-                await CommitCoreAsync(cancellationToken, releaseImplicit: true).ConfigureAwait(false);
+                await CommitCoreAsync(cancellationToken, releaseImplicit: true, deferWithoutSession: true).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -1129,12 +1139,18 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     ShareFetchRequest.LowestSupportedVersion,
                     ShareFetchRequest.HighestSupportedVersion);
                 EnsureRenewalSupported(ApiKey.ShareFetch, version, isRenewAck);
+                // Read the epoch once. The poll checked it before selecting acknowledgements, but
+                // another request can reset the session while this one waits for its connection,
+                // and the request that opens a session cannot carry acknowledgements.
+                var sessionEpoch = _sessionManager.GetSessionEpoch(brokerId);
+                if (sessionEpoch == 0 && brokerAcks is not null && _sessionManager.HadSession(brokerId))
+                    return new ShareFetchBrokerResult(brokerId, 0, null, brokerAcks, null, CreateNoShareSessionException(brokerId));
                 var maxRecords = !isRenewAck && version >= 1 ? _options.MaxPollRecords : 0;
                 var request = new ShareFetchRequest
                 {
                     GroupId = _options.GroupId,
                     MemberId = _coordinator.MemberId!,
-                    ShareSessionEpoch = _sessionManager.GetSessionEpoch(brokerId),
+                    ShareSessionEpoch = sessionEpoch,
                     MaxWaitMs = isRenewAck ? 0 : _options.FetchMaxWaitMs,
                     MinBytes = isRenewAck ? 0 : _options.FetchMinBytes,
                     MaxBytes = isRenewAck ? 0 : _options.FetchMaxBytes,
@@ -1233,6 +1249,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         }
     }
 
+    private static KafkaException CreateNoShareSessionException(int brokerId) => new(
+        ErrorCode.ShareSessionNotFound,
+        $"No share session is open on broker {brokerId}; acknowledgements wait for the ShareFetch that opens one.",
+        isRetriable: true);
+
     private async ValueTask<Exception?> PrepareShareFetchRetryAsync(
         int zeroBasedAttempt,
         CancellationToken cancellationToken)
@@ -1319,7 +1340,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         Dictionary<TopicPartition, List<AcknowledgementBatchData>> topicAcks,
         bool retryRetriableFailures,
         CancellationToken cancellationToken,
-        bool closeSession = false)
+        bool closeSession = false,
+        bool deferWithoutSession = false)
     {
         var requestContext = GetHostedRequestContext(brokerId);
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? successfulAcknowledgements = null;
@@ -1346,11 +1368,29 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     ShareAcknowledgeRequest.HighestSupportedVersion);
                 EnsureRenewalSupported(ApiKey.ShareAcknowledge, shareAckVersion, isRenewAck);
 
+                // Read the epoch once: another request can reset the session while this one waits.
+                var sessionEpoch = closeSession ? ShareSessionManager.CloseEpoch : _sessionManager.GetSessionEpoch(brokerId);
+                if (deferWithoutSession && sessionEpoch == 0 && _sessionManager.HadSession(brokerId))
+                {
+                    // The session these acknowledgements were acquired in is gone, for example
+                    // after a transport failure or an expired membership. A ShareAcknowledge cannot
+                    // open a new one: the broker rejects epoch 0 with INVALID_REQUEST. Keep them
+                    // pending for the ShareFetch that opens the next session.
+                    var noSession = CreateNoShareSessionException(brokerId);
+                    MergeAcknowledgements(ref failedAcknowledgements, pendingAcknowledgements);
+                    AddAcknowledgementErrors(ref acknowledgementErrors, pendingAcknowledgements, noSession);
+                    return new AcknowledgeBrokerResult(
+                        successfulAcknowledgements,
+                        failedAcknowledgements,
+                        firstError ?? noSession,
+                        acknowledgementErrors);
+                }
+
                 var request = new ShareAcknowledgeRequest
                 {
                     GroupId = _options.GroupId,
                     MemberId = _coordinator.MemberId!,
-                    ShareSessionEpoch = closeSession ? ShareSessionManager.CloseEpoch : _sessionManager.GetSessionEpoch(brokerId),
+                    ShareSessionEpoch = sessionEpoch,
                     IsRenewAck = isRenewAck,
                     Topics = topics
                 };

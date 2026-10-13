@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Dekaf.Consumer;
 using Dekaf.Extensions.Hosting;
 using Dekaf.Producer;
@@ -72,6 +73,49 @@ public sealed class HostedConsumerServiceNetworkFaultTests(TransactionFaultKafka
         await Assert.That(service.ExecuteTask!.IsCompletedSuccessfully).IsTrue();
     }
 
+    [Test]
+    public async Task MemberExpiredWhileRunning_KeepsRunningAndConsumesAfterRejoin()
+    {
+        using var testTimeout = new CancellationTokenSource(TestTimeout);
+        var cancellationToken = testTimeout.Token;
+        var topic = await kafka.CreateTestTopicAsync();
+        var groupId = $"hosted-member-expiry-{Guid.NewGuid():N}";
+        await kafka.UseShortGroupSessionAsync(groupId, cancellationToken);
+        await SeedAsync(topic, "first", cancellationToken);
+
+        var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.ConsumerBootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithAutoCommitInterval(TimeSpan.FromMilliseconds(200))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .Build();
+        await using var service = new RecordingConsumerService(
+            consumer,
+            GlobalTestSetup.GetLoggerFactory().CreateLogger(nameof(RecordingConsumerService)),
+            topic,
+            new KafkaConsumerServiceOptions
+            {
+                DrainOnShutdown = false,
+                PollRetryBackoff = TimeSpan.FromMilliseconds(500),
+                MaxPollRetryBackoff = TimeSpan.FromSeconds(1)
+            });
+
+        await service.StartAsync(cancellationToken);
+        await service.WaitForAsync("first").WaitAsync(TimeSpan.FromSeconds(60), cancellationToken);
+
+        // The consumer's commits and polls during and right after the outage run under the
+        // expired membership; none of them may fault ExecuteTask.
+        await kafka.ExpireConsumerMemberAsync(cancellationToken);
+
+        await SeedAsync(topic, "second", cancellationToken);
+        await service.WaitForAsync("second").WaitAsync(TimeSpan.FromSeconds(90), cancellationToken);
+        await Assert.That(service.ExecuteTask!.IsCompleted).IsFalse();
+
+        await service.StopAsync(cancellationToken);
+        await Assert.That(service.ExecuteTask!.IsCompletedSuccessfully).IsTrue();
+    }
+
     private async Task SeedAsync(string topic, string value, CancellationToken cancellationToken)
     {
         await using var producer = await Kafka.CreateProducer<string, string>()
@@ -95,11 +139,21 @@ public sealed class HostedConsumerServiceNetworkFaultTests(TransactionFaultKafka
 
         protected override IEnumerable<string> Topics => [topic];
 
+        private readonly ConcurrentDictionary<string, TaskCompletionSource> _values = new(StringComparer.Ordinal);
+
+        public Task WaitForAsync(string value) => GetSignal(value).Task;
+
+        private TaskCompletionSource GetSignal(string value) => _values.GetOrAdd(
+            value,
+            static _ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+
         protected override ValueTask ProcessAsync(
             ConsumeResult<string, string> result,
             CancellationToken cancellationToken)
         {
             Received.TrySetResult(result.Value);
+            if (result.Value is not null)
+                GetSignal(result.Value).TrySetResult();
             return ValueTask.CompletedTask;
         }
     }

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net.Sockets;
 using System.Runtime.ExceptionServices;
 using Dekaf.Consumer;
 using Dekaf.Consumer.DeadLetter;
@@ -260,6 +261,14 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                                                 _lastRenewal = renewalStarted;
                                             LogStaleAcquisition(exception, record.Topic, record.Partition);
                                         }
+                                        catch (Exception exception) when (IsRecoverableAcknowledgementFailure(exception))
+                                        {
+                                            // The consumer keeps the renewal pending and the next attempt resends
+                                            // it; until one is confirmed the lock keeps its previous deadline.
+                                            if (_consumer is IHostedShareConsumer && _renewalConfirmed && !_acquisitionLost)
+                                                _lastRenewal = renewalStarted;
+                                            LogRecoverableAcknowledgementFailure(exception, record.Topic, record.Partition);
+                                        }
                                         catch (Exception exception)
                                         {
                                             renewalFailure ??= exception;
@@ -355,6 +364,11 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                 {
                     LogStaleAcquisition(exception, null, null);
                 }
+                catch (Exception exception) when (IsRecoverableAcknowledgementFailure(exception))
+                {
+                    // Unsent decisions leave their records locked until the broker redelivers them.
+                    LogRecoverableAcknowledgementFailure(exception, null, null);
+                }
                 catch (Exception exception)
                 {
                     _acknowledgementFailure ??= exception;
@@ -415,6 +429,11 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                 LogStaleAcquisition(exception, result.TopicPartition.Topic, result.TopicPartition.Partition);
                 continue;
             }
+            if (IsRecoverableAcknowledgementFailure(exception))
+            {
+                LogRecoverableAcknowledgementFailure(exception, result.TopicPartition.Topic, result.TopicPartition.Partition);
+                continue;
+            }
             _acknowledgementFailure ??= exception;
             _pollCancellation.Cancel();
         }
@@ -448,6 +467,28 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
     private static bool IsStaleAcquisitionFailure(Exception exception) =>
         exception is KafkaException { ErrorCode: ErrorCode.InvalidRecordState } or
             KafkaException { ErrorCode: null, InnerException: KafkaException { ErrorCode: ErrorCode.InvalidRecordState } };
+
+    // A failure no acknowledgement decision is lost to. The consumer keeps the acknowledgements of a
+    // transient failure pending and resends them. Once the member or share session that acquired the
+    // records is gone, the broker redelivers them when their locks expire. CommitAsync reports a
+    // partition failure as the inner exception.
+    private static bool IsRecoverableAcknowledgementFailure(Exception exception)
+    {
+        if (exception is KafkaException { ErrorCode: null, IsRetriable: false, InnerException: { } inner })
+            exception = inner;
+
+        return exception switch
+        {
+            KafkaException { IsRetriable: true } or KafkaTimeoutException => true,
+            KafkaException
+            {
+                ErrorCode: ErrorCode.UnknownMemberId or ErrorCode.FencedMemberEpoch
+                    or ErrorCode.ShareSessionNotFound or ErrorCode.InvalidShareSessionEpoch
+            } => true,
+            TimeoutException or IOException or SocketException => true,
+            _ => false
+        };
+    }
 
     private ValueTask BeginProcessingAsync(ShareConsumeResult<TKey, TValue> record, CancellationToken cancellationToken)
     {
@@ -747,4 +788,7 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "The broker rejected acknowledgements for {Topic}[{Partition}] because it no longer holds their acquisitions; the records will be redelivered")]
     private partial void LogStaleAcquisition(Exception exception, string? topic, int? partition);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Acknowledgements for {Topic}[{Partition}] failed with a recoverable error; they stay pending for retry or the broker redelivers the records")]
+    private partial void LogRecoverableAcknowledgementFailure(Exception exception, string? topic, int? partition);
 }

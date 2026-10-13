@@ -130,6 +130,74 @@ public sealed partial class ShareConsumerRenewalTests
         await Assert.That(AcknowledgedOffsets(connection.ShareFetchRequests[1])).IsEquivalentTo([42L]);
     }
 
+    [Test]
+    public async Task Commit_WithoutAnOpenSession_KeepsAcknowledgementsForTheFetchThatOpensOne()
+    {
+        // After a transport failure or an expired membership the broker has no session for this
+        // member, so the next request must be a ShareFetch at epoch 0. A ShareAcknowledge at
+        // epoch 0 is rejected as INVALID_REQUEST and would leave the epoch out of step.
+        using var cancellation = new CancellationTokenSource();
+        var broker = new ShareSessionBroker();
+        var connection = new CapturingConnection(
+            ApiKey.ShareAcknowledge,
+            2,
+            supportShareFetch: true)
+        {
+            ShareFetchHandler = (request, _) => broker.Fetch(request, cancelAfter: 2, cancellation),
+            ShareAcknowledgeHandler = (request, _) => broker.Acknowledge(request)
+        };
+        await using var fixture = CreateFixture(connection, retryBackoffMs: 1);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Subscribe("topic");
+        SetSessionEpoch(fixture.Consumer, brokerId: 1, epoch: 3);
+        SetSessionEpoch(fixture.Consumer, brokerId: 1, epoch: 0);
+        fixture.Consumer.Acknowledge(CreateRecord(0, 42));
+
+        var rejected = await Assert.ThrowsAsync<Dekaf.Errors.KafkaException>(
+            async () => await fixture.Consumer.CommitAsync(CancellationToken.None));
+
+        await Assert.That(rejected!.InnerException).IsTypeOf<Dekaf.Errors.KafkaException>();
+        var inner = (Dekaf.Errors.KafkaException)rejected.InnerException!;
+        await Assert.That(inner.ErrorCode).IsEqualTo(ErrorCode.ShareSessionNotFound);
+        await Assert.That(inner.IsRetriable).IsTrue();
+        await Assert.That(connection.ShareAcknowledgeRequests).IsEmpty();
+        await Assert.That(GetSessionEpoch(fixture.Consumer, 1)).IsEqualTo(0);
+        await Assert.That(HasPendingAcknowledgements(fixture.Consumer)).IsTrue();
+
+        await DrainPollAsync(fixture.Consumer, cancellation.Token);
+
+        await Assert.That(broker.Rejections).IsEmpty();
+        await Assert.That(connection.ShareFetchRequests[0].ShareSessionEpoch).IsEqualTo(0);
+        await Assert.That(AcknowledgedOffsets(connection.ShareFetchRequests[0])).IsEmpty();
+        await Assert.That(connection.ShareFetchRequests[1].ShareSessionEpoch).IsEqualTo(1);
+        await Assert.That(AcknowledgedOffsets(connection.ShareFetchRequests[1])).IsEquivalentTo([42L]);
+        await Assert.That(HasPendingAcknowledgements(fixture.Consumer)).IsFalse();
+    }
+
+    [Test]
+    public async Task Fetch_SessionResetAfterAcknowledgementsWereSelected_DoesNotSendThemAtEpochZero()
+    {
+        // The poll selects acknowledgements while the session is open, but another request can
+        // reset it before this fetch is written. The request that opens the next session cannot
+        // carry them, so they stay pending instead of being rejected with INVALID_REQUEST.
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2);
+        await using var fixture = CreateFixture(connection);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Subscribe("topic");
+        SetSessionEpoch(fixture.Consumer, brokerId: 1, epoch: 3);
+        SetSessionEpoch(fixture.Consumer, brokerId: 1, epoch: 0);
+        var partition = new TopicPartition("topic", 0);
+        var acknowledgements = new Dictionary<TopicPartition, List<AcknowledgementBatchData>>
+        {
+            [partition] = [new AcknowledgementBatchData(42, 42, [(byte)AcknowledgeType.Accept])]
+        };
+
+        await (Task)InvokePrivate(fixture.Consumer, "SendShareFetchForPartitionsAsync", 1,
+            new List<TopicPartition> { partition }, acknowledgements, CancellationToken.None)!;
+
+        await Assert.That(connection.ShareFetchRequests).IsEmpty();
+    }
+
     private static async Task DrainPollAsync(
         Dekaf.ShareConsumer.KafkaShareConsumer<string, string> consumer,
         CancellationToken cancellationToken)
@@ -250,8 +318,9 @@ public sealed partial class ShareConsumerRenewalTests
 
         public ValueTask<ShareAcknowledgeResponse> Acknowledge(ShareAcknowledgeRequest request)
         {
+            // A ShareAcknowledge cannot open a session; Kafka 4.x rejects epoch 0 as a malformed request.
             var error = request.ShareSessionEpoch == 0
-                ? ErrorCode.InvalidShareSessionEpoch
+                ? ErrorCode.InvalidRequest
                 : Advance(request.ShareSessionEpoch);
             if (error != ErrorCode.None)
             {

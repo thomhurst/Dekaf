@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 
 namespace Dekaf.Tests.Integration.NetworkFault;
 
@@ -285,6 +286,280 @@ public sealed class ConsumerNetworkFaultTests(TransactionFaultKafkaContainer kaf
         var taken = await ConsumeNextAsync(successor, TimeSpan.FromSeconds(60), cancellationToken);
         await Assert.That(successorStarted.Elapsed).IsLessThan(TimeSpan.FromSeconds(25));
         await Assert.That(taken.Value).IsNotNull();
+    }
+
+    [Test]
+    public async Task RunPartitionedAsync_PeriodicCommitAfterTheMemberExpired_RejoinsInsteadOfFaulting()
+    {
+        using var testTimeout = new CancellationTokenSource(TestTimeout);
+        var cancellationToken = testTimeout.Token;
+        var topic = await kafka.CreateTestTopicAsync();
+        var groupId = $"network-fault-partitioned-{Guid.NewGuid():N}";
+        await kafka.UseShortGroupSessionAsync(groupId, cancellationToken);
+        await SeedAsync(topic, ["first"], cancellationToken);
+
+        var listener = new LossRecordingListener();
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.ConsumerBootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithRebalanceListener(listener)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        consumer.Subscribe(topic);
+
+        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondProcessed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var stopRun = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var run = consumer.RunPartitionedAsync(
+            async (_, message, handlerCancellation) =>
+            {
+                if (message.Value == "first" && firstStarted.TrySetResult())
+                    await releaseFirst.Task.WaitAsync(handlerCancellation);
+                if (message.Value == "second")
+                    secondProcessed.TrySetResult();
+            },
+            new PartitionedProcessingOptions
+            {
+                CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
+                CommitInterval = TimeSpan.FromMilliseconds(200)
+            },
+            stopRun.Token).AsTask();
+
+        try
+        {
+            await firstStarted.Task.WaitAsync(cancellationToken);
+
+            // The record completes inside the outage, so a periodic commit is pending when the
+            // connection returns, and the broker has expired the member before it can arrive.
+            await kafka.ExpireConsumerMemberAsync(cancellationToken, () => releaseFirst.SetResult());
+
+            await listener.Lost.Task.WaitAsync(TimeSpan.FromSeconds(60), cancellationToken);
+
+            // A run that survived the fence rejoins and keeps processing new records.
+            await SeedAsync(topic, ["second"], cancellationToken);
+            await secondProcessed.Task.WaitAsync(TimeSpan.FromSeconds(60), cancellationToken);
+            await Assert.That(run.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            await stopRun.CancelAsync();
+            try
+            {
+                await run;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+    }
+
+    [Test]
+    public async Task ConsumeAsync_AutoCommitAfterTheMemberExpired_KeepsConsumingAfterRejoin()
+    {
+        using var testTimeout = new CancellationTokenSource(TestTimeout);
+        var cancellationToken = testTimeout.Token;
+        var topic = await kafka.CreateTestTopicAsync();
+        var groupId = $"network-fault-autocommit-{Guid.NewGuid():N}";
+        await kafka.UseShortGroupSessionAsync(groupId, cancellationToken);
+        await SeedAsync(topic, ["first"], cancellationToken);
+
+        var listener = new LossRecordingListener();
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.ConsumerBootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Auto)
+            .WithAutoCommitInterval(TimeSpan.FromMilliseconds(200))
+            .WithRebalanceListener(listener)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        consumer.Subscribe(topic);
+
+        var firstReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var stopConsuming = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var consuming = Task.Run(async () =>
+        {
+            await foreach (var record in consumer.ConsumeAsync(stopConsuming.Token))
+            {
+                if (record.Value == "first")
+                    firstReceived.TrySetResult();
+                else if (record.Value == "second")
+                    secondReceived.TrySetResult();
+            }
+        }, CancellationToken.None);
+
+        try
+        {
+            await firstReceived.Task.WaitAsync(TimeSpan.FromSeconds(60), cancellationToken);
+
+            // Auto-commits fire throughout the outage and right after it, racing the heartbeat
+            // that discovers the expired membership.
+            await kafka.ExpireConsumerMemberAsync(cancellationToken);
+            await listener.Lost.Task.WaitAsync(TimeSpan.FromSeconds(60), cancellationToken);
+
+            await SeedAsync(topic, ["second"], cancellationToken);
+            await secondReceived.Task.WaitAsync(TimeSpan.FromSeconds(60), cancellationToken);
+            await Assert.That(consuming.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            await stopConsuming.CancelAsync();
+            try
+            {
+                await consuming;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+    }
+
+    [Test]
+    public async Task CommitAsync_AfterTheMemberExpired_ThrowsNonRetriableGroupExceptionThenCommitsAfterPoll()
+    {
+        using var testTimeout = new CancellationTokenSource(TestTimeout);
+        var cancellationToken = testTimeout.Token;
+        var topic = await kafka.CreateTestTopicAsync();
+        var groupId = $"network-fault-expired-commit-{Guid.NewGuid():N}";
+        await kafka.UseShortGroupSessionAsync(groupId, cancellationToken);
+        await SeedAsync(topic, ["first", "second"], cancellationToken);
+
+        var listener = new LossRecordingListener();
+        await using (var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.ConsumerBootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithRebalanceListener(listener)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken))
+        {
+            consumer.Subscribe(topic);
+            var first = await ConsumeNextAsync(consumer, TimeSpan.FromSeconds(60), cancellationToken);
+            await Assert.That(first.Value).IsEqualTo("first");
+
+            await kafka.ExpireConsumerMemberAsync(cancellationToken);
+            await listener.Lost.Task.WaitAsync(TimeSpan.FromSeconds(60), cancellationToken);
+
+            // The documented contract: a commit outside an active membership is refused with a
+            // non-retriable GroupException, never committed under the expired membership and
+            // never surfaced as a transport or timeout error.
+            var rejected = await Assert.ThrowsAsync<GroupException>(async () => await consumer.CommitAsync(
+                [new TopicPartitionOffset(topic, 0, first.Offset + 1)],
+                cancellationToken));
+            await Assert.That(rejected!.IsRetriable).IsFalse();
+            await Assert.That(rejected.ErrorCode is ErrorCode.FencedMemberEpoch
+                or ErrorCode.UnknownMemberId
+                or ErrorCode.StaleMemberEpoch).IsTrue();
+
+            // Polling rejoins. Nothing was committed, so the group resumes from the start.
+            var redelivered = await ConsumeNextAsync(consumer, TimeSpan.FromSeconds(60), cancellationToken);
+            await Assert.That(redelivered.Value).IsEqualTo("first");
+            await consumer.CommitAsync(
+                [new TopicPartitionOffset(topic, 0, redelivered.Offset + 1)],
+                cancellationToken);
+        }
+
+        await using var successor = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.ConsumerBootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        successor.Subscribe(topic);
+
+        var resumed = await ConsumeNextAsync(successor, TimeSpan.FromSeconds(90), cancellationToken);
+        await Assert.That(resumed.Value).IsEqualTo("second");
+    }
+
+    [Test]
+    [Arguments(PartitionCommitPolicy.CommitCompletedOnRevoke)]
+    [Arguments(PartitionCommitPolicy.UserManaged)]
+    public async Task RunPartitionedAsync_MemberExpiredWithCompletedWorkUncommitted_RejoinsInsteadOfFaulting(
+        PartitionCommitPolicy commitPolicy)
+    {
+        using var testTimeout = new CancellationTokenSource(TestTimeout);
+        var cancellationToken = testTimeout.Token;
+        var topic = await kafka.CreateTestTopicAsync();
+        var groupId = $"network-fault-partitioned-{commitPolicy}-{Guid.NewGuid():N}";
+        await kafka.UseShortGroupSessionAsync(groupId, cancellationToken);
+        await SeedAsync(topic, ["first"], cancellationToken);
+
+        var listener = new LossRecordingListener();
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.ConsumerBootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithRebalanceListener(listener)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        consumer.Subscribe(topic);
+
+        var firstProcessed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondProcessed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var stopRun = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var run = consumer.RunPartitionedAsync(
+            (_, message, _) =>
+            {
+                if (message.Value == "first")
+                    firstProcessed.TrySetResult();
+                else if (message.Value == "second")
+                    secondProcessed.TrySetResult();
+                return ValueTask.CompletedTask;
+            },
+            new PartitionedProcessingOptions { CommitPolicy = commitPolicy },
+            stopRun.Token).AsTask();
+
+        try
+        {
+            await firstProcessed.Task.WaitAsync(TimeSpan.FromSeconds(60), cancellationToken);
+
+            // The lost partition stops without the revoke commit, and the reassigned lane starts
+            // from scratch; neither path may fault the run.
+            await kafka.ExpireConsumerMemberAsync(cancellationToken);
+            await listener.Lost.Task.WaitAsync(TimeSpan.FromSeconds(60), cancellationToken);
+
+            await SeedAsync(topic, ["second"], cancellationToken);
+            await secondProcessed.Task.WaitAsync(TimeSpan.FromSeconds(60), cancellationToken);
+            await Assert.That(run.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            await stopRun.CancelAsync();
+            try
+            {
+                await run;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+    }
+
+    private sealed class LossRecordingListener : IRebalanceListener
+    {
+        public TaskCompletionSource Lost { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ValueTask OnPartitionsAssignedAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public ValueTask OnPartitionsRevokedAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public ValueTask OnPartitionsLostAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken)
+        {
+            Lost.TrySetResult();
+            return ValueTask.CompletedTask;
+        }
     }
 
     private static async Task<ConsumeResult<string, string>> ConsumeNextAsync(

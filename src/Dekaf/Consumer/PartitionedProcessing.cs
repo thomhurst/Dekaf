@@ -2,7 +2,9 @@ using System.Collections.Concurrent;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Threading.Channels;
+using Dekaf.Errors;
 using Dekaf.Internal;
+using Dekaf.Protocol;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 #if !NET9_0_OR_GREATER
@@ -1544,7 +1546,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         try
         {
             if (commitProcessed)
-                await CommitLaneAsync(lane, cancellationToken).ConfigureAwait(false);
+                await CommitStoppedLaneAsync(lane, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -1722,23 +1724,70 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
 
         _nextPeriodicCommit = now.Add(_options.CommitInterval);
 
-        var offsets = _lanes.Values
-            .Select(static lane => lane.GetCommitOffset())
-            .OfType<TopicPartitionOffset>()
-            .ToArray();
+        List<(PartitionLane<TKey, TValue> Lane, TopicPartitionOffset Offset)>? pending = null;
+        foreach (var lane in _lanes.Values)
+        {
+            if (lane.GetUncommittedOffset() is { } offset)
+                (pending ??= []).Add((lane, offset));
+        }
 
-        if (offsets.Length > 0)
+        if (pending is null)
+            return;
+
+        var offsets = new TopicPartitionOffset[pending.Count];
+        for (var i = 0; i < offsets.Length; i++)
+            offsets[i] = pending[i].Offset;
+
+        try
+        {
             await _consumer.CommitAsync(offsets, cancellationToken).ConfigureAwait(false);
+        }
+        catch (GroupException exception) when (IsMembershipLoss(exception))
+        {
+            // The heartbeat path reports the lost partitions and rejoins; a fenced commit
+            // changed nothing, so the run continues instead of faulting.
+            LogRuntimeCommitRejected(exception);
+            return;
+        }
+
+        foreach (var (lane, offset) in pending)
+            lane.MarkCommitted(offset.Offset);
     }
 
+    // skipUnchanged applies only to runtime-managed commits. A handler's CommitProcessedAsync always
+    // reaches the consumer, so it reports a fenced membership even when the offset is unchanged.
     private async ValueTask CommitLaneAsync(
+        PartitionLane<TKey, TValue> lane,
+        CancellationToken cancellationToken,
+        bool skipUnchanged = false)
+    {
+        if ((skipUnchanged ? lane.GetUncommittedOffset() : lane.GetCommitOffset()) is not { } offset)
+            return;
+
+        await _consumer.CommitAsync([offset], cancellationToken).ConfigureAwait(false);
+        lane.MarkCommitted(offset.Offset);
+    }
+
+    private async ValueTask CommitStoppedLaneAsync(
         PartitionLane<TKey, TValue> lane,
         CancellationToken cancellationToken)
     {
-        var offset = lane.GetCommitOffset();
-        if (offset.HasValue)
-            await _consumer.CommitAsync([offset.Value], cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await CommitLaneAsync(lane, cancellationToken, skipUnchanged: true).ConfigureAwait(false);
+        }
+        catch (GroupException exception) when (IsMembershipLoss(exception))
+        {
+            LogRuntimeCommitRejected(exception);
+        }
     }
+
+    // CommitAsync reports a commit attempted outside an active membership with these codes.
+    // The coordinator rejected it before anything changed, and polling rejoins the group.
+    private static bool IsMembershipLoss(GroupException exception) =>
+        exception.ErrorCode is ErrorCode.FencedMemberEpoch
+            or ErrorCode.UnknownMemberId
+            or ErrorCode.StaleMemberEpoch;
 
     private bool ShouldCommitOnPartitionStop() => _options.IsRuntimeManagedCommitPolicy;
 
@@ -1811,6 +1860,14 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             partition.Partition);
     }
 
+    private void LogRuntimeCommitRejected(GroupException exception)
+    {
+        _logger.LogWarning(
+            exception,
+            "Partitioned consumer commit rejected with {ErrorCode} because the consumer is not an active group member; continuing so the consumer can rejoin.",
+            exception.ErrorCode);
+    }
+
     private void LogStartingLaneForUnroutedBatch(TopicPartition partition)
     {
         if (!_logger.IsEnabled(LogLevel.Debug))
@@ -1856,6 +1913,7 @@ internal sealed class PartitionLane<TKey, TValue>
     private long? _completedOffset;
     private long? _lastProcessedOffset;
     private int _lastCommittedLeaderEpoch = -1;
+    private long _committedOffset = -1;
     private AutomaticPartitionProgress? _automaticProgress;
 
     public PartitionLane(
@@ -2050,6 +2108,32 @@ internal sealed class PartitionLane<TKey, TValue>
                 _completedOffset = completed + 1;
                 _lastCommittedLeaderEpoch = epoch;
             }
+        }
+    }
+
+    /// <summary>
+    /// Returns the commit offset when it is ahead of the last offset this lane committed.
+    /// </summary>
+    public TopicPartitionOffset? GetUncommittedOffset()
+    {
+        var offset = GetCommitOffset();
+        return offset is { } value && value.Offset > Volatile.Read(ref _committedOffset)
+            ? offset
+            : null;
+    }
+
+    /// <summary>
+    /// Records a successful commit. Commits may finish out of order, so only advance.
+    /// </summary>
+    public void MarkCommitted(long offset)
+    {
+        var current = Volatile.Read(ref _committedOffset);
+        while (offset > current)
+        {
+            var observed = Interlocked.CompareExchange(ref _committedOffset, offset, current);
+            if (observed == current)
+                return;
+            current = observed;
         }
     }
 

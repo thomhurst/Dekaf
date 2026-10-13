@@ -503,6 +503,44 @@ public sealed partial class ShareConsumerCoordinatorTests
         await Assert.That(sentEpochs.ToArray()).IsEquivalentTo([0, 1, 0]);
     }
 
+    // KIP-932 member IDs are client-generated and kept for the consumer's lifetime. Share
+    // sessions and acquisitions are keyed by the ID, so an expired member rejoins under it.
+    [Test]
+    public async Task HeartbeatLoop_UnknownMemberId_RejoinsFromEpochZeroUnderTheSameMemberId(CancellationToken cancellationToken)
+    {
+        var heartbeatCount = 0;
+        var sent = new System.Collections.Concurrent.ConcurrentQueue<(string? MemberId, int Epoch)>();
+        await using var harness = CoordinatorHarness.Create(
+            new ShareConsumerOptions { BootstrapServers = ["broker-0:9092"], GroupId = "share-member-expired" },
+            Guid.Parse("00000000-0000-0000-0000-000000000001"),
+            request =>
+            {
+                sent.Enqueue((request.MemberId, request.MemberEpoch));
+                return Interlocked.Increment(ref heartbeatCount) switch
+                {
+                    1 => Success(epoch: 1, new ShareGroupHeartbeatAssignment { TopicPartitions = [] }, heartbeatIntervalMs: 1),
+                    2 => new ShareGroupHeartbeatResponse { ErrorCode = ErrorCode.UnknownMemberId },
+                    _ => Success(epoch: 2, new ShareGroupHeartbeatAssignment { TopicPartitions = [] })
+                };
+            });
+        var coordinator = harness.Coordinator;
+
+        await coordinator.EnsureActiveGroupAsync(cancellationToken);
+        var changed = coordinator.GetAssignmentChangeTask();
+        if (coordinator.State == CoordinatorState.Stable)
+            await changed.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+        await Assert.That(coordinator.MemberId).IsEqualTo("member-1");
+
+        await coordinator.EnsureActiveGroupAsync(cancellationToken);
+
+        var requests = sent.ToArray();
+        await Assert.That(requests.Select(static r => r.Epoch).ToArray()).IsEquivalentTo([0, 1, 0]);
+        await Assert.That(requests[2].MemberId).IsEqualTo("member-1");
+        await Assert.That(coordinator.MemberEpoch).IsEqualTo(2);
+    }
+
     [Test]
     public async Task TelemetryMemberId_OmitsUnjoinedFencedAndDisposedIdentities()
     {

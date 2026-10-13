@@ -405,7 +405,12 @@ default), and a delivered record resets it. Configure both through
 cancels the delay. Processing failures are not retried by this policy; they follow the terminal
 disposition, which defaults to `Redeliver` (release the record and keep polling). A lapsed
 acquisition lock, or an acknowledgement the broker rejects with `INVALID_RECORD_STATE`, leaves the
-record for broker redelivery without stopping the service. Every other failure, such as
+record for broker redelivery without stopping the service. So does an acknowledgement or lock
+renewal that fails with a retriable error, a timeout or a transport error, or because the member
+or share session that acquired the record no longer exists (`UNKNOWN_MEMBER_ID`,
+`FENCED_MEMBER_EPOCH`, `SHARE_SESSION_NOT_FOUND`, `INVALID_SHARE_SESSION_EPOCH`): the consumer
+keeps the acknowledgement pending and resends it, or the broker redelivers the record once its
+lock expires. The service logs a warning and keeps running. Every other failure, such as
 misconfiguration, authentication errors, or a non-retriable Kafka error, stops the service.
 
 Repeated join timeouts need investigation. On a single-broker development cluster, verify

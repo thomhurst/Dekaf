@@ -20,6 +20,8 @@ public sealed class ShareFaultKafkaContainer : TransactionFaultKafkaContainer
         .WithEnvironment("KAFKA_GROUP_SHARE_RECORD_LOCK_DURATION_MS", "15000")
         .WithEnvironment("KAFKA_GROUP_SHARE_MIN_RECORD_LOCK_DURATION_MS", "5000")
         .WithEnvironment("KAFKA_GROUP_SHARE_MAX_RECORD_LOCK_DURATION_MS", "60000")
+        .WithEnvironment("KAFKA_GROUP_SHARE_MIN_SESSION_TIMEOUT_MS", "6000")
+        .WithEnvironment("KAFKA_GROUP_SHARE_MIN_HEARTBEAT_INTERVAL_MS", "1000")
         .WithEnvironment("KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR", "1")
         .WithEnvironment("KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR", "1")
         .WithEnvironment("KAFKA_SHARE_COORDINATOR_STATE_TOPIC_NUM_PARTITIONS", "3");

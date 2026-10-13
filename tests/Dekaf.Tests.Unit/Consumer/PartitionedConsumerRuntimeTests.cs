@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using Dekaf.Consumer;
+using Dekaf.Errors;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 using Dekaf.Telemetry;
@@ -1500,6 +1502,175 @@ public sealed class PartitionedConsumerRuntimeTests
         await StopRuntimeAsync(cts, runTask);
     }
 
+    [Test]
+    [Arguments(ErrorCode.FencedMemberEpoch)]
+    [Arguments(ErrorCode.UnknownMemberId)]
+    [Arguments(ErrorCode.StaleMemberEpoch)]
+    public async Task RunPartitionedAsync_PeriodicCommitRejectedByMembershipLoss_KeepsRunningAndRetries(ErrorCode errorCode)
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.SetAssignment(partition);
+        consumer.CommitFailures.Enqueue(new GroupException(errorCode, "fenced"));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            static (_, _, _) => ValueTask.CompletedTask,
+            new PartitionedProcessingOptions
+            {
+                CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
+                CommitInterval = TimeSpan.FromMilliseconds(20)
+            },
+            cts.Token).AsTask();
+
+        consumer.Enqueue(CreateResult(partition, 0));
+
+        // The rejected commit changed nothing, so the next interval commits the same offset.
+        await Assert.That(() => consumer.CommitCalls.SelectMany(static offsets => offsets).ToArray())
+            .Eventually(offsets => offsets.IsEquivalentTo(new[] { new TopicPartitionOffset("topic-a", 0, 1) }), TimeSpan.FromSeconds(5));
+        await Assert.That(consumer.CommitAttempts).IsEqualTo(2);
+        await Assert.That(runTask.IsCompleted).IsFalse();
+
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+    }
+
+    [Test]
+    public async Task RunPartitionedAsync_PeriodicCommitFailsForOtherReason_FaultsRun()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.SetAssignment(partition);
+        consumer.CommitFailures.Enqueue(new GroupException(ErrorCode.GroupAuthorizationFailed, "denied"));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            static (_, _, _) => ValueTask.CompletedTask,
+            new PartitionedProcessingOptions
+            {
+                CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
+                CommitInterval = TimeSpan.FromMilliseconds(20)
+            },
+            cts.Token).AsTask();
+
+        consumer.Enqueue(CreateResult(partition, 0));
+
+        var exception = await Assert.ThrowsAsync<GroupException>(async () => await runTask.WaitAsync(cts.Token).ConfigureAwait(false));
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.GroupAuthorizationFailed);
+    }
+
+    [Test]
+    public async Task RunPartitionedAsync_PeriodicCommit_SkipsUnchangedOffsets()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.SetAssignment(partition);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            static (_, _, _) => ValueTask.CompletedTask,
+            new PartitionedProcessingOptions
+            {
+                CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
+                CommitInterval = TimeSpan.FromMilliseconds(20)
+            },
+            cts.Token).AsTask();
+
+        consumer.Enqueue(CreateResult(partition, 0));
+        await Assert.That(() => consumer.CommitAttempts).Eventually(attempts => attempts.IsEqualTo(1), TimeSpan.FromSeconds(5));
+
+        // Many intervals pass with no new completion; none of them commits again.
+        await Task.Delay(250, cts.Token).ConfigureAwait(false);
+        await Assert.That(consumer.CommitAttempts).IsEqualTo(1);
+
+        consumer.Enqueue(CreateResult(partition, 1));
+        await Assert.That(() => consumer.CommitCalls.SelectMany(static offsets => offsets).ToArray())
+            .Eventually(offsets => offsets.IsEquivalentTo(new[]
+            {
+                new TopicPartitionOffset("topic-a", 0, 1),
+                new TopicPartitionOffset("topic-a", 0, 2)
+            }), TimeSpan.FromSeconds(5));
+
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+    }
+
+    [Test]
+    public async Task CommitProcessedAsync_UnchangedOffsetAfterFence_StillReachesTheConsumer()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.SetAssignment(partition);
+        var secondCommit = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, cancellationToken) =>
+            {
+                await foreach (var message in context.Messages.WithCancellation(cancellationToken))
+                {
+                    context.MarkProcessed(message);
+                    await context.CommitProcessedAsync(cancellationToken).ConfigureAwait(false);
+
+                    // The offset is already committed; the membership is fenced before the repeat.
+                    consumer.CommitFailures.Enqueue(new GroupException(ErrorCode.FencedMemberEpoch, "fenced"));
+                    try
+                    {
+                        await context.CommitProcessedAsync(cancellationToken).ConfigureAwait(false);
+                        secondCommit.TrySetResult(null);
+                    }
+                    catch (GroupException exception)
+                    {
+                        secondCommit.TrySetResult(exception);
+                    }
+                }
+            },
+            new PartitionedProcessingOptions { CommitPolicy = PartitionCommitPolicy.UserManaged },
+            cts.Token).AsTask();
+
+        consumer.Enqueue(CreateResult(partition, 0));
+
+        var failure = await secondCommit.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        await Assert.That(failure).IsNotNull();
+        await Assert.That(((GroupException)failure!).ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
+        await Assert.That(consumer.CommitAttempts).IsEqualTo(2);
+
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+    }
+
+    [Test]
+    public async Task RunPartitionedAsync_RevokeCommitRejectedByMembershipLoss_KeepsRunning()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.SetAssignment(partition);
+        consumer.CommitFailures.Enqueue(new GroupException(ErrorCode.FencedMemberEpoch, "fenced"));
+        var processed = NewCompletionSource();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            (_, _, _) =>
+            {
+                processed.TrySetResult();
+                return ValueTask.CompletedTask;
+            },
+            new PartitionedProcessingOptions
+            {
+                CommitPolicy = PartitionCommitPolicy.CommitCompletedOnRevoke
+            },
+            cts.Token).AsTask();
+
+        consumer.Enqueue(CreateResult(partition, 0));
+        await processed.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+
+        consumer.RevokeFromCoordinator(partition);
+
+        await Assert.That(() => consumer.CommitAttempts).Eventually(attempts => attempts.IsEqualTo(1), TimeSpan.FromSeconds(5));
+        await Task.Delay(100, cts.Token).ConfigureAwait(false);
+        await Assert.That(runTask.IsCompleted).IsFalse();
+        await Assert.That(consumer.CommitCalls).IsEmpty();
+
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+    }
+
     private static async ValueTask StopRuntimeAsync(
         CancellationTokenSource cancellationTokenSource,
         Task runTask)
@@ -1611,6 +1782,7 @@ public sealed class PartitionedConsumerRuntimeTests
         private int _consumeOneCalls;
         private int _consumeBatchCalls;
         private int _assignmentReads;
+        private int _commitAttempts;
 
         public IReadOnlySet<string> Subscription => _subscription;
 
@@ -1663,6 +1835,11 @@ public sealed class PartitionedConsumerRuntimeTests
         public List<TopicPartition[]> ResumeCalls { get; } = [];
 
         public List<TopicPartitionOffset[]> CommitCalls { get; } = [];
+
+        /// <summary>Failures thrown, one per call, by the next offset commits.</summary>
+        public ConcurrentQueue<Exception> CommitFailures { get; } = new();
+
+        public int CommitAttempts => Volatile.Read(ref _commitAttempts);
 
         public List<TopicPartitionOffset> StoredOffsets { get; } = [];
 
@@ -1845,6 +2022,10 @@ public sealed class PartitionedConsumerRuntimeTests
             // registers. A completed task bypasses WaitAsync's cancellation check;
             // the fake must still observe cancellation before recording a commit.
             cancellationToken.ThrowIfCancellationRequested();
+
+            Interlocked.Increment(ref _commitAttempts);
+            if (CommitFailures.TryDequeue(out var failure))
+                throw failure;
 
             lock (_gate)
                 CommitCalls.Add(offsets.ToArray());

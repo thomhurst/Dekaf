@@ -40,6 +40,7 @@ public class TransactionFaultKafkaContainer : KafkaTestContainer
     };
     private readonly object _activeToxicsLock = new();
     private readonly List<(string Proxy, string Toxic)> _activeToxics = [];
+    private readonly HashSet<string> _disabledProxies = [];
     private IContainer? _kafka;
     private bool _faultActive;
 
@@ -152,11 +153,104 @@ public class TransactionFaultKafkaContainer : KafkaTestContainer
         AddToxicAsync(lane, "limit_data", direction, new ToxiproxyToxicAttributes(Bytes: bytes), cancellationToken);
 
     /// <summary>
+    /// Takes the lane offline: the proxy closes its listener and every connection through it while
+    /// the broker keeps running, so the broker's session clock keeps ticking. Unlike pausing the
+    /// broker container, this lets the coordinator expire a group member.
+    /// </summary>
+    public async Task DisableLaneAsync(ToxiproxyLane lane, CancellationToken cancellationToken)
+    {
+        var proxy = GetProxyName(lane);
+
+        // Tracked before the request so a request that fails after the proxy applied it is still healed.
+        lock (_activeToxicsLock)
+        {
+            _disabledProxies.Add(proxy);
+        }
+
+        await SetProxyEnabledAsync(proxy, enabled: false, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Gives the group a 6 s session (the broker minimum this topology allows) so that an outage
+    /// from <see cref="DisableLaneAsync"/> longer than that expires the member. Under KIP-848 and
+    /// KIP-932 the coordinator owns the session timeout and ignores the client setting.
+    /// </summary>
+    public async Task UseShortGroupSessionAsync(
+        string groupId,
+        CancellationToken cancellationToken,
+        bool shareGroup = false)
+    {
+        var prefix = shareGroup ? "share" : "consumer";
+        var sessionTimeout = $"{prefix}.session.timeout.ms";
+        var resource = new ConfigResource { Type = ConfigResourceType.Group, Name = groupId };
+        await using var admin = CreateAdminClient();
+        await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+        {
+            [resource] =
+            [
+                ConfigAlter.Set(sessionTimeout, "6000"),
+                ConfigAlter.Set($"{prefix}.heartbeat.interval.ms", "1000")
+            ]
+        }, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        // The controller can acknowledge the change before the group coordinator observes it, and
+        // a member that joins first keeps the 45 s default, which no test outage outlasts.
+        for (var attempt = 0; ; attempt++)
+        {
+            var configs = await admin.DescribeConfigsAsync([resource], cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+            if (configs[resource].Any(entry => entry.Name == sessionTimeout && entry.Value == "6000"))
+                return;
+            if (attempt == 20)
+                throw new TimeoutException($"Group {groupId} did not report {sessionTimeout}=6000.");
+            await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Takes the consumer lane offline for longer than the session set by
+    /// <see cref="UseShortGroupSessionAsync"/>, then heals it, so the coordinator expires the
+    /// member while the client cannot reach it. <paramref name="whileOffline"/> runs once the
+    /// lane is down.
+    /// </summary>
+    public async Task ExpireConsumerMemberAsync(
+        CancellationToken cancellationToken,
+        Action? whileOffline = null)
+    {
+        try
+        {
+            await DisableLaneAsync(ToxiproxyLane.Consumer, cancellationToken).ConfigureAwait(false);
+            whileOffline?.Invoke();
+            await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            await HealNetworkFaultsAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
     /// Removes every toxic added through <see cref="AddResetPeerAsync"/>,
-    /// <see cref="AddTimeoutAsync"/> and <see cref="AddLimitDataAsync"/>. Safe to call when none is active.
+    /// <see cref="AddTimeoutAsync"/> and <see cref="AddLimitDataAsync"/>, and re-enables every lane
+    /// taken offline through <see cref="DisableLaneAsync"/>. Safe to call when none is active.
     /// </summary>
     public async Task HealNetworkFaultsAsync(CancellationToken cancellationToken = default)
     {
+        string[] disabled;
+        lock (_activeToxicsLock)
+        {
+            disabled = [.. _disabledProxies];
+        }
+
+        foreach (var proxy in disabled)
+        {
+            await SetProxyEnabledAsync(proxy, enabled: true, cancellationToken).ConfigureAwait(false);
+            lock (_activeToxicsLock)
+            {
+                _disabledProxies.Remove(proxy);
+            }
+        }
+
         (string Proxy, string Toxic)[] toxics;
         lock (_activeToxicsLock)
         {
@@ -186,7 +280,7 @@ public class TransactionFaultKafkaContainer : KafkaTestContainer
         ToxiproxyToxicAttributes attributes,
         CancellationToken cancellationToken)
     {
-        var proxy = lane == ToxiproxyLane.Producer ? ProducerProxyName : ConsumerProxyName;
+        var proxy = GetProxyName(lane);
         var streamName = direction == ToxiproxyDirection.Upstream ? "upstream" : "downstream";
         var name = $"{type}-{streamName}";
 
@@ -201,6 +295,19 @@ public class TransactionFaultKafkaContainer : KafkaTestContainer
             $"proxies/{proxy}/toxics",
             new ToxiproxyToxicConfiguration(name, type, streamName, 1, attributes),
             ToxiproxyJsonContext.Default.ToxiproxyToxicConfiguration,
+            cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+    }
+
+    private static string GetProxyName(ToxiproxyLane lane) =>
+        lane == ToxiproxyLane.Producer ? ProducerProxyName : ConsumerProxyName;
+
+    private async Task SetProxyEnabledAsync(string proxy, bool enabled, CancellationToken cancellationToken)
+    {
+        using var response = await _toxiproxyClient.PostAsJsonAsync(
+            $"proxies/{proxy}",
+            new ToxiproxyProxyState(enabled),
+            ToxiproxyJsonContext.Default.ToxiproxyProxyState,
             cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
     }
@@ -262,6 +369,9 @@ public class TransactionFaultKafkaContainer : KafkaTestContainer
             .WithEnvironment("KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR", "1")
             .WithEnvironment("KAFKA_TRANSACTION_STATE_LOG_MIN_ISR", "1")
             .WithEnvironment("KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS", "0")
+            // Lets a group opt into a session short enough for a test outage to expire its member.
+            .WithEnvironment("KAFKA_GROUP_CONSUMER_MIN_SESSION_TIMEOUT_MS", "6000")
+            .WithEnvironment("KAFKA_GROUP_CONSUMER_MIN_HEARTBEAT_INTERVAL_MS", "1000")
             .WithEnvironment("CLUSTER_ID", "4L6g3nShT-eMCtK--X86sw")
             .WithWaitStrategy(Wait.ForUnixContainer()
                 .UntilMessageIsLogged(".*Transitioning from RECOVERY to RUNNING.*"));
@@ -306,6 +416,8 @@ internal sealed record ToxiproxyProxyConfiguration(
     string Upstream,
     bool Enabled);
 
+internal sealed record ToxiproxyProxyState(bool Enabled);
+
 internal sealed record ToxiproxyLatencyConfiguration(
     string Name,
     string Type,
@@ -343,6 +455,7 @@ public enum ToxiproxyDirection
 
 [JsonSourceGenerationOptions(JsonSerializerDefaults.Web)]
 [JsonSerializable(typeof(ToxiproxyProxyConfiguration))]
+[JsonSerializable(typeof(ToxiproxyProxyState))]
 [JsonSerializable(typeof(ToxiproxyLatencyConfiguration))]
 [JsonSerializable(typeof(ToxiproxyToxicConfiguration))]
 internal sealed partial class ToxiproxyJsonContext : JsonSerializerContext;
