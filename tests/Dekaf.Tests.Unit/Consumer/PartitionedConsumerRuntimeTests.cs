@@ -1594,6 +1594,49 @@ public sealed class PartitionedConsumerRuntimeTests
     }
 
     [Test]
+    public async Task CommitProcessedAsync_UnchangedOffsetAfterFence_StillReachesTheConsumer()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.SetAssignment(partition);
+        var secondCommit = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, cancellationToken) =>
+            {
+                await foreach (var message in context.Messages.WithCancellation(cancellationToken))
+                {
+                    context.MarkProcessed(message);
+                    await context.CommitProcessedAsync(cancellationToken).ConfigureAwait(false);
+
+                    // The offset is already committed; the membership is fenced before the repeat.
+                    consumer.CommitFailures.Enqueue(new GroupException(ErrorCode.FencedMemberEpoch, "fenced"));
+                    try
+                    {
+                        await context.CommitProcessedAsync(cancellationToken).ConfigureAwait(false);
+                        secondCommit.TrySetResult(null);
+                    }
+                    catch (GroupException exception)
+                    {
+                        secondCommit.TrySetResult(exception);
+                    }
+                }
+            },
+            new PartitionedProcessingOptions { CommitPolicy = PartitionCommitPolicy.UserManaged },
+            cts.Token).AsTask();
+
+        consumer.Enqueue(CreateResult(partition, 0));
+
+        var failure = await secondCommit.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        await Assert.That(failure).IsNotNull();
+        await Assert.That(((GroupException)failure!).ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
+        await Assert.That(consumer.CommitAttempts).IsEqualTo(2);
+
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+    }
+
+    [Test]
     public async Task RunPartitionedAsync_RevokeCommitRejectedByMembershipLoss_KeepsRunning()
     {
         var partition = new TopicPartition("topic-a", 0);

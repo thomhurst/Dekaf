@@ -1754,11 +1754,14 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             lane.MarkCommitted(offset.Offset);
     }
 
+    // skipUnchanged applies only to runtime-managed commits. A handler's CommitProcessedAsync always
+    // reaches the consumer, so it reports a fenced membership even when the offset is unchanged.
     private async ValueTask CommitLaneAsync(
         PartitionLane<TKey, TValue> lane,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool skipUnchanged = false)
     {
-        if (lane.GetUncommittedOffset() is not { } offset)
+        if ((skipUnchanged ? lane.GetUncommittedOffset() : lane.GetCommitOffset()) is not { } offset)
             return;
 
         await _consumer.CommitAsync([offset], cancellationToken).ConfigureAwait(false);
@@ -1771,7 +1774,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     {
         try
         {
-            await CommitLaneAsync(lane, cancellationToken).ConfigureAwait(false);
+            await CommitLaneAsync(lane, cancellationToken, skipUnchanged: true).ConfigureAwait(false);
         }
         catch (GroupException exception) when (IsMembershipLoss(exception))
         {
