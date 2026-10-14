@@ -15,12 +15,13 @@ public sealed partial class AdminClient : IGroupListingAdminClient
     public ValueTask<IReadOnlyList<GroupListing>> ListGroupsAsync(
         ListGroupsOptions? options = null,
         CancellationToken cancellationToken = default) =>
-        ListGroupsCoreAsync(options?.States, options?.Types, options?.ProtocolTypes, cancellationToken);
+        ListGroupsCoreAsync(options?.States, options?.Types, options?.ProtocolTypes, typesOptional: false, cancellationToken);
 
     private async ValueTask<IReadOnlyList<GroupListing>> ListGroupsCoreAsync(
         IReadOnlyList<string>? states,
         IReadOnlyList<string>? types,
         IReadOnlyList<string>? protocols,
+        bool typesOptional,
         CancellationToken cancellationToken,
         int? timeoutMs = null,
         [CallerMemberName] string operationName = "")
@@ -37,7 +38,7 @@ public sealed partial class AdminClient : IGroupListingAdminClient
             // Listing is an administrative operation. Fan out once per broker, not per group.
             var pending = new Task<ListGroupsResponse>[brokers.Count];
             for (var i = 0; i < brokers.Count; i++)
-                pending[i] = ListBrokerGroupsAsync(brokers[i].NodeId, states, types, attemptToken);
+                pending[i] = ListBrokerGroupsAsync(brokers[i].NodeId, states, types, typesOptional, attemptToken);
             var responses = await Task.WhenAll(pending).ConfigureAwait(false);
 
             var capacity = 0;
@@ -60,7 +61,10 @@ public sealed partial class AdminClient : IGroupListingAdminClient
                     // Filter before deduplication: a stale nonmatching coordinator response
                     // must not hide a matching response from the current coordinator.
                     if (!MatchesGroupFilter(states, group.GroupState, StringComparison.OrdinalIgnoreCase) ||
-                        !MatchesGroupFilter(types, group.GroupType, StringComparison.OrdinalIgnoreCase) ||
+                        // Brokers below ListGroups v5 report no group type. An optional type
+                        // filter then relies on the protocol filter alone.
+                        !((typesOptional && group.GroupType is null) ||
+                          MatchesGroupFilter(types, group.GroupType, StringComparison.OrdinalIgnoreCase)) ||
                         !MatchesGroupFilter(protocols, group.ProtocolType, StringComparison.Ordinal) ||
                         !seen.Add(group.GroupId))
                         continue;
@@ -79,7 +83,8 @@ public sealed partial class AdminClient : IGroupListingAdminClient
     }
 
     private async Task<ListGroupsResponse> ListBrokerGroupsAsync(int brokerId,
-        IReadOnlyList<string>? states, IReadOnlyList<string>? types, CancellationToken cancellationToken)
+        IReadOnlyList<string>? states, IReadOnlyList<string>? types, bool typesOptional,
+        CancellationToken cancellationToken)
     {
         using var lease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
         var connection = lease.Connection;
@@ -89,8 +94,13 @@ public sealed partial class AdminClient : IGroupListingAdminClient
             throw new KafkaException(ErrorCode.UnsupportedVersion,
                 $"Group state filtering requires ListGroups v4; broker {brokerId} negotiated v{version}.");
         if (types is { Count: > 0 } && version < 5)
-            throw new KafkaException(ErrorCode.UnsupportedVersion,
-                $"Group type filtering requires ListGroups v5; broker {brokerId} negotiated v{version}.");
+        {
+            // Brokers below v5 predate group types, so an optional type filter is dropped.
+            if (!typesOptional)
+                throw new KafkaException(ErrorCode.UnsupportedVersion,
+                    $"Group type filtering requires ListGroups v5; broker {brokerId} negotiated v{version}.");
+            types = null;
+        }
 
         var response = await connection.SendAsync<ListGroupsRequest, ListGroupsResponse>(new ListGroupsRequest
         {

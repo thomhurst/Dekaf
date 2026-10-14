@@ -97,6 +97,29 @@ public class AdminClientGroupListingTests
     }
 
     [Test]
+    [Arguments((short)3)]
+    [Arguments((short)4)]
+    public async Task ConsumerListing_OnBrokersBeforeGroupTypes_FiltersByProtocolOnly(short version)
+    {
+        var (admin, connections) = CreateAdmin(version, secondVersion: 5);
+        await using var adminDisposal = admin;
+        Respond(connections[1],
+        [
+            Group("classic", null, "consumer"), Group("simple", null, ""), Group("connect", null, "connect")
+        ]);
+        Respond(connections[2], [Group("modern", "Consumer", "consumer"), Group("share", "Share", "share")]);
+
+        var result = await admin.ListConsumerGroupsAsync();
+
+        await Assert.That(result.Select(static group => group.GroupId))
+            .IsEquivalentTo(["classic", "simple", "modern"]);
+        await connections[1].Received(1).SendAsync<ListGroupsRequest, ListGroupsResponse>(
+            Arg.Is<ListGroupsRequest>(request => request.TypesFilter == null), version, Arg.Any<CancellationToken>());
+        await connections[2].Received(1).SendAsync<ListGroupsRequest, ListGroupsResponse>(
+            Arg.Is<ListGroupsRequest>(request => request.TypesFilter!.Count == 2), 5, Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task ProtocolFilters_AreExactAndDistinguishEmptyFromUnavailable()
     {
         var (admin, connections) = CreateAdmin();
@@ -172,11 +195,10 @@ public class AdminClientGroupListingTests
     [Test]
     [Arguments((short)3)]
     [Arguments((short)4)]
-    public async Task ConvenienceTypeFilters_RejectOlderResponses(short version)
+    public async Task ShareAndStreamsConveniences_RejectOlderResponses(short version)
     {
         var (admin, _) = CreateAdmin(version);
         await using var adminDisposal = admin;
-        await Assert.That(async () => await admin.ListConsumerGroupsAsync()).Throws<KafkaException>();
         await Assert.That(async () => await admin.ListShareGroupsAsync()).Throws<KafkaException>();
         await Assert.That(async () => await admin.ListStreamsGroupsAsync()).Throws<KafkaException>();
     }

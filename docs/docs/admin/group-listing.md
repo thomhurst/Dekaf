@@ -71,10 +71,14 @@ The existing convenience methods use the same filtering and aggregation rules:
 - `ListShareGroupsAsync` selects type `share`.
 - `ListStreamsGroupsAsync` selects type `streams`.
 
-These convenience methods require version 5 because their group-type selection
-must be reliable. Use an unfiltered `ListGroupsAsync` inventory to inspect an
-older response. Filters are also applied locally, protecting callers from
-nonmatching rows in a broker response.
+`ListShareGroupsAsync` and `ListStreamsGroupsAsync` require version 5 because
+their group-type selection must be reliable. `ListConsumerGroupsAsync` also
+works with brokers below version 5, such as Redpanda: those brokers have only
+classic groups, so the call sends no type filter and selects by protocol alone.
+Returned `GroupType` stays null for those rows. Use an unfiltered
+`ListGroupsAsync` inventory to inspect any other older response. Filters are
+also applied locally, protecting callers from nonmatching rows in a broker
+response.
 
 `IGroupListingAdminClient` is an optional capability implemented by Dekaf's
 `AdminClient` and `InMemoryAdminClient`. Existing third-party `IAdminClient`

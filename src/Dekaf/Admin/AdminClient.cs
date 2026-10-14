@@ -1526,6 +1526,7 @@ public sealed partial class AdminClient :
             options?.States,
             ConsumerGroupTypes,
             ConsumerProtocolTypes,
+            typesOptional: true,
             cancellationToken,
             timeoutMs,
             nameof(ListConsumerGroupsAsync));
@@ -5243,7 +5244,7 @@ public sealed partial class AdminClient :
     public ValueTask<IReadOnlyList<GroupListing>> ListStreamsGroupsAsync(
         ListStreamsGroupsOptions? options = null,
         CancellationToken cancellationToken = default) =>
-        ListGroupsCoreAsync(options?.States, StreamsGroupTypes, null, cancellationToken);
+        ListGroupsCoreAsync(options?.States, StreamsGroupTypes, null, typesOptional: false, cancellationToken);
 
     private static StreamsGroupDescription MapStreamsGroupDescription(StreamsGroupDescribeGroup group)
     {
@@ -5457,7 +5458,7 @@ public sealed partial class AdminClient :
     public ValueTask<IReadOnlyList<GroupListing>> ListShareGroupsAsync(
         ListShareGroupsOptions? options = null,
         CancellationToken cancellationToken = default) =>
-        ListGroupsCoreAsync(options?.States, ShareGroupTypes, null, cancellationToken);
+        ListGroupsCoreAsync(options?.States, ShareGroupTypes, null, typesOptional: false, cancellationToken);
 
     public async ValueTask<IReadOnlyDictionary<string, DeleteShareGroupResult>> DeleteShareGroupsAsync(
         IEnumerable<string> groupIds,
