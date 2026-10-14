@@ -80,6 +80,7 @@
     <PackageReference Include="TUnit" />
     <PackageReference Include="TUnit.Logging.Microsoft" />
     <PackageReference Include="Testcontainers.Kafka" />
+    <PackageReference Include="Testcontainers.Redpanda" />
     <PackageReference Include="Testcontainers.Toxiproxy" />
     <PackageReference Include="Microsoft.Testing.Extensions.HangDump" />
   </ItemGroup>

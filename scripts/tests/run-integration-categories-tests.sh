@@ -112,7 +112,7 @@ fi
 : > "$CALLS_FILE"
 INTEGRATION_TEST_MATRIX_JSON='{"groups":["produce","core","other","future","catch-all"],"categories":{"produce":"Producer","core":"ShareConsumerCore","other":"ShareConsumerOther","future":"FutureCategory","catch-all":"CatchAll"}}' \
   bash scripts/run-integration-categories.sh net10.0 "CatchAll" --list-tests
-grep -Fq -- '--treenode-filter /**[(Category!=EventHubs)&(Category!=Producer)&(Category!=ShareConsumer)&(Category!=FutureCategory)]' "$CALLS_FILE"
+grep -Fq -- '--treenode-filter /**[(Category!=EventHubs)&(Category!=Redpanda)&(Category!=Producer)&(Category!=ShareConsumer)&(Category!=FutureCategory)]' "$CALLS_FILE"
 grep -Fq -- '--ignore-exit-code 8' "$CALLS_FILE"
 if INTEGRATION_TEST_MATRIX_JSON= bash scripts/run-integration-categories.sh net10.0 "CatchAll"; then
   echo "Catch-all accepted a missing matrix category map" >&2
