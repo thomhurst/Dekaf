@@ -15,7 +15,8 @@ namespace Dekaf.Tests.Integration;
 /// Kafka-protocol listener plays the cluster: it answers ApiVersions and the bootstrap Metadata
 /// request with an empty broker list, then leaves every later Metadata request unanswered. The
 /// refresh InitProducerId starts for the empty list is therefore still waiting on the socket
-/// when max.block.ms expires.
+/// when max.block.ms expires. In recovery mode the refresh instead names the listener itself as
+/// the broker, and InitProducerId to it stays unanswered.
 /// </summary>
 [Category("Producer")]
 [Category("Resilience")]
@@ -51,28 +52,66 @@ public sealed class IdempotentInitializationTimeoutCauseIntegrationTests
         await Assert.That(((KafkaException)exception.InnerException!).ErrorCode).IsEqualTo(ErrorCode.BrokerNotAvailable);
     }
 
+    [Test]
+    [Timeout(30_000)]
+    public async Task InitializeAsync_RefreshFindsBrokersThenInitProducerIdStalls_TimeoutDoesNotBlameMissingBrokers(
+        CancellationToken cancellationToken)
+    {
+        // The refresh finds a broker, so the no-brokers cause recorded before it is withdrawn:
+        // a stall against that broker must not be reported as BrokerNotAvailable.
+        await using var cluster = new NoBrokerCluster(recoverOnRefresh: true);
+        var stopwatch = Stopwatch.StartNew();
+
+        var exception = await Assert.That(async () =>
+            {
+                await using var producer = await Kafka.CreateProducer<string, string>()
+                    .WithBootstrapServers(cluster.BootstrapServers)
+                    .WithIdempotence(true)
+                    .WithAcks(Acks.All)
+                    .WithMaxBlock(TimeSpan.FromMilliseconds(1500))
+                    .BuildAsync(cancellationToken);
+            })
+            .Throws<KafkaTimeoutException>();
+
+        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(15));
+        await Assert.That(cluster.MetadataRequests).IsGreaterThanOrEqualTo(2);
+        await Assert.That(cluster.InitProducerIdRequests).IsGreaterThanOrEqualTo(1);
+        await Assert.That(exception!.Message).Contains("InitProducerId");
+        await Assert.That(exception.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+        await Assert.That(exception.InnerException is KafkaException { ErrorCode: ErrorCode.BrokerNotAvailable })
+            .IsFalse();
+    }
+
     private sealed class NoBrokerCluster : IAsyncDisposable
     {
         private const short ApiVersionsKey = (short)ApiKey.ApiVersions;
         private const short MetadataKey = (short)ApiKey.Metadata;
+        private const short InitProducerIdKey = (short)ApiKey.InitProducerId;
         private const short MetadataVersion = 12;
 
         private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
         private readonly CancellationTokenSource _stop = new();
         private readonly List<Socket> _sockets = [];
         private readonly Task _acceptLoop;
+        private readonly bool _recoverOnRefresh;
+        private readonly int _port;
         private int _metadataRequests;
+        private int _initProducerIdRequests;
 
-        public NoBrokerCluster()
+        public NoBrokerCluster(bool recoverOnRefresh = false)
         {
+            _recoverOnRefresh = recoverOnRefresh;
             _listener.Start();
-            BootstrapServers = $"127.0.0.1:{((IPEndPoint)_listener.LocalEndpoint).Port}";
+            _port = ((IPEndPoint)_listener.LocalEndpoint).Port;
+            BootstrapServers = $"127.0.0.1:{_port}";
             _acceptLoop = AcceptLoopAsync();
         }
 
         public string BootstrapServers { get; }
 
         public int MetadataRequests => Volatile.Read(ref _metadataRequests);
+
+        public int InitProducerIdRequests => Volatile.Read(ref _initProducerIdRequests);
 
         private async Task AcceptLoopAsync()
         {
@@ -112,12 +151,20 @@ public sealed class IdempotentInitializationTimeoutCauseIntegrationTests
                     {
                         await stream.WriteAsync(Frame(correlationId, flexibleHeader: false, WriteApiVersions), _stop.Token);
                     }
-                    else if (apiKey == MetadataKey && Interlocked.Increment(ref _metadataRequests) == 1)
+                    else if (apiKey == MetadataKey)
                     {
-                        await stream.WriteAsync(Frame(correlationId, flexibleHeader: true, WriteNoBrokerMetadata), _stop.Token);
+                        if (Interlocked.Increment(ref _metadataRequests) == 1)
+                            await stream.WriteAsync(Frame(correlationId, flexibleHeader: true, WriteNoBrokerMetadata), _stop.Token);
+                        else if (_recoverOnRefresh)
+                            await stream.WriteAsync(Frame(correlationId, flexibleHeader: true, WriteSelfAsBrokerMetadata), _stop.Token);
+                    }
+                    else if (apiKey == InitProducerIdKey)
+                    {
+                        Interlocked.Increment(ref _initProducerIdRequests);
                     }
 
-                    // Every later request stays unanswered: the brokers are still restarting.
+                    // Every other request stays unanswered: the brokers are still restarting, or
+                    // in recovery mode InitProducerId stalls against the broker that came back.
                 }
             }
             catch (Exception) when (_stop.IsCancellationRequested)
@@ -154,6 +201,21 @@ public sealed class IdempotentInitializationTimeoutCauseIntegrationTests
             writer.WriteUnsignedVarInt(1); // Brokers: empty compact array
             writer.WriteCompactString("no-broker-cluster");
             writer.WriteInt32(-1); // ControllerId
+            writer.WriteUnsignedVarInt(1); // Topics: empty compact array
+            writer.WriteEmptyTaggedFields();
+        }
+
+        private void WriteSelfAsBrokerMetadata(ref KafkaProtocolWriter writer)
+        {
+            writer.WriteInt32(0); // ThrottleTimeMs
+            writer.WriteUnsignedVarInt(2); // Brokers: one entry, compact array
+            writer.WriteInt32(1); // NodeId
+            writer.WriteCompactString("127.0.0.1");
+            writer.WriteInt32(_port);
+            writer.WriteCompactNullableString(null); // Rack
+            writer.WriteEmptyTaggedFields();
+            writer.WriteCompactString("no-broker-cluster");
+            writer.WriteInt32(1); // ControllerId
             writer.WriteUnsignedVarInt(1); // Topics: empty compact array
             writer.WriteEmptyTaggedFields();
         }
