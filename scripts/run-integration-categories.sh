@@ -73,10 +73,11 @@ ensure_gdb() {
   command -v gdb >/dev/null 2>&1
 }
 
-# Worst case about 6 minutes: gdb install 105 s, a backtrace per process (90 s
-# cap, normally seconds), one core of the test process 120 s, gzip 60 s.
+# Worst case about 6 minutes: gdb install 105 s, backtraces of the test process
+# and any children sharing one 90 s budget (normally seconds each), one core of
+# the test process 120 s, gzip 60 s.
 capture_native_diagnostics() {
-  local root_pid="$1" out_dir="$2" pids pid
+  local root_pid="$1" out_dir="$2" pids pid stacks_deadline remaining
   mkdir -p "$out_dir"
   # The test process is normally the root; include descendants in case an
   # extension launched a separate test host.
@@ -86,10 +87,13 @@ capture_native_diagnostics() {
     echo "::warning::gdb is unavailable; no native stacks captured for $category"
     return 0
   fi
+  stacks_deadline=$(( $(date +%s) + 90 ))
   for pid in $pids; do
     kill -0 "$pid" 2>/dev/null || continue
+    remaining=$(( stacks_deadline - $(date +%s) ))
+    [ "$remaining" -gt 0 ] || break
     echo "Capturing native thread stacks of process $pid into $out_dir"
-    timeout 90s sudo gdb -p "$pid" -batch -nx \
+    timeout "${remaining}s" sudo gdb -p "$pid" -batch -nx \
       -ex "set debuginfod enabled off" \
       -ex "set pagination off" \
       -ex "set print frame-arguments none" \

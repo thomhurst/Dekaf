@@ -120,7 +120,7 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
                 resourceId,
                 resourceType: "topic",
                 associationTypes: ["value"],
-                cancellationToken: cancellationToken);
+                cancellationToken: CancellationToken.None);
         }
 
         var remaining = await client.GetAssociationsByResourceNameAsync(resourceName, resourceNamespace, cancellationToken: cancellationToken);

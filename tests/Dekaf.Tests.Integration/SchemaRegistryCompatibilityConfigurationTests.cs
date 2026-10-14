@@ -52,7 +52,8 @@ public sealed class SchemaRegistryCompatibilityConfigurationTests(KafkaWithSchem
         }
         finally
         {
-            await client.UpdateCompatibilityAsync(originalGlobal, cancellationToken: cancellationToken);
+            // Restore the shared registry's global policy even when the test timed out.
+            await client.UpdateCompatibilityAsync(originalGlobal, cancellationToken: CancellationToken.None);
         }
     }
 }
