@@ -46,15 +46,19 @@ export TUNIT_OTEL_MAX_EXTERNAL_SPANS="${TUNIT_OTEL_MAX_EXTERNAL_SPANS:-5000}"
 # NativeAOT has no diagnostics IPC server, so MTP's --hangdump can never dump an
 # AOT test process (run 38631204581 failed with ServerNotAvailableException and
 # left only the list of running tests). AOT lanes use a watchdog instead: when a
-# category passes its deadline, or the whole run passes its budget (set it below
-# the job timeout), it captures native thread stacks with gdb and a core with
-# gcore into TestResults/<category>/, then kills the process so the job fails
-# with evidence instead of timing out. The executable's .dbg file sits next to
-# it, so gdb resolves managed method names.
+# category passes its deadline, or the run reaches its absolute deadline, it
+# captures native thread stacks with gdb (plus a capped gcore core) into
+# TestResults/<category>/, then kills the process so the job fails with
+# evidence instead of timing out. The executable's .dbg file sits next to it,
+# so gdb resolves managed method names.
+#
+# Workflows set INTEGRATION_WATCHDOG_DEADLINE_EPOCH from the job's start time
+# and timeout, minus a reserve for the diagnostics (bounded at about 6 minutes)
+# and the artifact uploads. Without it, the run budget counts from this
+# script's start.
 watchdog_category_seconds="${INTEGRATION_WATCHDOG_CATEGORY_SECONDS:-720}"
-watchdog_total_seconds="${INTEGRATION_WATCHDOG_TOTAL_SECONDS:-1080}"
 watchdog_poll_seconds="${INTEGRATION_WATCHDOG_POLL_SECONDS:-5}"
-run_started=$SECONDS
+watchdog_run_deadline="${INTEGRATION_WATCHDOG_DEADLINE_EPOCH:-$(( $(date +%s) + ${INTEGRATION_WATCHDOG_TOTAL_SECONDS:-1080} ))}"
 if [ "$tfm" = "aot" ]; then
   # Let a crashing (SIGABRT/SIGSEGV) AOT process leave a core where the
   # workflow's kernel.core_pattern points.
@@ -64,11 +68,13 @@ fi
 ensure_gdb() {
   command -v gdb >/dev/null 2>&1 && command -v gcore >/dev/null 2>&1 && return 0
   echo "Installing gdb for native stack capture..."
-  timeout 120s sudo apt-get update -qq >/dev/null 2>&1 || true
-  timeout 180s sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq gdb >/dev/null 2>&1 || true
+  timeout 45s sudo apt-get update -qq >/dev/null 2>&1 || true
+  timeout 60s sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends gdb >/dev/null 2>&1 || true
   command -v gdb >/dev/null 2>&1
 }
 
+# Worst case about 6 minutes: gdb install 105 s, a backtrace per process (90 s
+# cap, normally seconds), one core of the test process 120 s, gzip 60 s.
 capture_native_diagnostics() {
   local root_pid="$1" out_dir="$2" pids pid
   mkdir -p "$out_dir"
@@ -83,34 +89,36 @@ capture_native_diagnostics() {
   for pid in $pids; do
     kill -0 "$pid" 2>/dev/null || continue
     echo "Capturing native thread stacks of process $pid into $out_dir"
-    timeout 300s sudo gdb -p "$pid" -batch -nx \
+    timeout 90s sudo gdb -p "$pid" -batch -nx \
       -ex "set debuginfod enabled off" \
       -ex "set pagination off" \
       -ex "set print frame-arguments none" \
       -ex "info threads" \
       -ex "thread apply all bt" \
       > "$out_dir/native-stacks-$pid.txt" 2>&1 || true
-    echo "Capturing core of process $pid"
-    if timeout 300s sudo gcore -o "$out_dir/core" "$pid" > "$out_dir/gcore-$pid.log" 2>&1; then
-      sudo chmod a+r "$out_dir/core.$pid" 2>/dev/null || true
-      gzip -1 "$out_dir/core.$pid" || true
-    fi
   done
+  # The core supplements the stacks: only the test process, and capped.
+  echo "Capturing core of process $root_pid"
+  if timeout 120s sudo gcore -o "$out_dir/core" "$root_pid" > "$out_dir/gcore-$root_pid.log" 2>&1; then
+    sudo chmod a+r "$out_dir/core.$root_pid" 2>/dev/null || true
+    timeout 60s gzip -1 "$out_dir/core.$root_pid" || rm -f "$out_dir/core.$root_pid.gz"
+  fi
 }
 
-# Runs the test executable, enforcing the category and total deadlines.
+# Runs the test executable, enforcing the category and run deadlines.
 run_with_watchdog() {
   local out_dir="$1"; shift
-  local category_started=$SECONDS deadline total_deadline status
+  local category_started deadline status now
+  category_started=$(date +%s)
   deadline=$((category_started + watchdog_category_seconds))
-  total_deadline=$((run_started + watchdog_total_seconds))
-  [ "$total_deadline" -lt "$deadline" ] && deadline=$total_deadline
+  [ "$watchdog_run_deadline" -lt "$deadline" ] && deadline=$watchdog_run_deadline
 
   "$@" &
   local pid=$!
   while kill -0 "$pid" 2>/dev/null; do
-    if [ "$SECONDS" -ge "$deadline" ]; then
-      echo "::error::Category $category exceeded its watchdog deadline after $((SECONDS - category_started))s; capturing native diagnostics before killing process $pid"
+    now=$(date +%s)
+    if [ "$now" -ge "$deadline" ]; then
+      echo "::error::Category $category hit its watchdog deadline after $((now - category_started))s; capturing native diagnostics before killing process $pid"
       capture_native_diagnostics "$pid" "$out_dir"
       pkill -KILL -P "$pid" 2>/dev/null || true
       kill -KILL "$pid" 2>/dev/null || true

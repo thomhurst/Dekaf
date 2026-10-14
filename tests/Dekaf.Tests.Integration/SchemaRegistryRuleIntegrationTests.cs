@@ -420,7 +420,10 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         ]);
 
         const string jsonSchemaText = """{ "type": "string", "title": "JsonWriteRule" }""";
-        await registryClient.RegisterSchemaAsync($"{jsonTopic}-value", CreateSchema(SchemaType.Json, jsonSchemaText), cancellationToken);
+        await registryClient.RegisterSchemaAsync(
+            $"{jsonTopic}-value",
+            CreateSchema(SchemaType.Json, jsonSchemaText),
+            cancellationToken);
         await using var jsonSerializer = new JsonSchemaRegistrySerializer<string>(
             registryClient,
             jsonSchemaText,
@@ -443,7 +446,10 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             }
             """;
         var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(avroSchemaText);
-        await registryClient.RegisterSchemaAsync($"{avroTopic}-value", CreateSchema(SchemaType.Avro, avroSchema.ToString()), cancellationToken);
+        await registryClient.RegisterSchemaAsync(
+            $"{avroTopic}-value",
+            CreateSchema(SchemaType.Avro, avroSchema.ToString()),
+            cancellationToken);
         await using var avroSerializer = new AvroSchemaRegistrySerializer<GenericRecord>(
             registryClient,
             new AvroSerializerConfig
@@ -476,7 +482,9 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         var latestAvroOutput = new ArrayBufferWriter<byte>();
         latestAvroSerializer.Serialize(record, ref latestAvroOutput, CreateContext(avroTopic));
 
-        await registryClient.RegisterSchemaAsync($"{protobufTopic}-value", CreateSchema(
+        await registryClient.RegisterSchemaAsync(
+            $"{protobufTopic}-value",
+            CreateSchema(
                 SchemaType.Protobuf,
                 SchemaRuleMessage.Descriptor.File.SerializedData.ToBase64()), cancellationToken);
         await using var protobufSerializer = new ProtobufSchemaRegistrySerializer<SchemaRuleMessage>(

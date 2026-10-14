@@ -174,6 +174,15 @@ if [ -d TestResults/Producer ]; then
   echo "Watchdog failure did not stop the category loop" >&2
   exit 1
 fi
+# The job-level deadline wins over a longer category deadline.
+rm -rf TestResults
+status=0
+PATH="$temp_root/watchdog-bin:$PATH" \
+  INTEGRATION_WATCHDOG_DEADLINE_EPOCH="$(date +%s)" \
+  INTEGRATION_WATCHDOG_CATEGORY_SECONDS=600 \
+  bash scripts/run-integration-categories.sh aot "Consumer" || status=$?
+[ "$status" -eq 124 ]
+ls TestResults/Consumer/native-stacks-*.txt >/dev/null
 printf '%s\n' "$fake_runner" > "$temp_root/artifacts/aot/integration/Dekaf.Tests.Integration"
 
 grep -Fq "\"$ryuk_image\"" "$repo_root/.github/workflows/ci.yml"

@@ -47,7 +47,10 @@ public sealed class SchemaIdentityFramingIntegrationTests(
     {
         var topic = await testInfra.CreateTestTopicAsync();
         using var registry = CreateRegistryClient();
-        var schemaId = await registry.RegisterSchemaAsync($"{topic}-value", new Schema { SchemaType = SchemaType.Avro, SchemaString = AvroSchemaText }, cancellationToken);
+        var schemaId = await registry.RegisterSchemaAsync(
+            $"{topic}-value",
+            new Schema { SchemaType = SchemaType.Avro, SchemaString = AvroSchemaText },
+            cancellationToken);
         await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
             registry,
             new AvroSerializerConfig
@@ -104,7 +107,10 @@ public sealed class SchemaIdentityFramingIntegrationTests(
     {
         var topic = await testInfra.CreateTestTopicAsync();
         using var registry = CreateRegistryClient();
-        var schemaId = await registry.RegisterSchemaAsync($"{topic}-value", new Schema { SchemaType = SchemaType.Json, SchemaString = JsonSchemaText }, cancellationToken);
+        var schemaId = await registry.RegisterSchemaAsync(
+            $"{topic}-value",
+            new Schema { SchemaType = SchemaType.Json, SchemaString = JsonSchemaText },
+            cancellationToken);
         var order = new TestOrder
         {
             OrderId = 5005,
@@ -171,7 +177,10 @@ public sealed class SchemaIdentityFramingIntegrationTests(
                 SchemaIdStrategy = SchemaIdSerializerStrategy.Header
             });
         var schemaId = await serializer.WarmupAsync(topic, cancellationToken: cancellationToken);
-        var registered = await registry.GetSchemaBySubjectAsync($"{topic}-value", "latest", cancellationToken);
+        var registered = await registry.GetSchemaBySubjectAsync(
+            $"{topic}-value",
+            "latest",
+            cancellationToken);
         await Assert.That(registered.Id).IsEqualTo(schemaId);
         var schemaGuid = Guid.Parse(registered.Guid!);
         await using var deserializer = BatchIdentityRecord.CreateAvroDeserializer(

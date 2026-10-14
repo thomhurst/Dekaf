@@ -65,7 +65,13 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
         var created = await client.CreateAssociationAsync(request, cancellationToken);
         try
         {
-            var found = await client.GetAssociationsByResourceNameAsync(resourceName, resourceNamespace: "-", resourceType: "topic", associationTypes: ["value"], lifecycle: "WEAK", cancellationToken: cancellationToken);
+            var found = await client.GetAssociationsByResourceNameAsync(
+                resourceName,
+                resourceNamespace: "-",
+                resourceType: "topic",
+                associationTypes: ["value"],
+                lifecycle: "WEAK",
+                cancellationToken: cancellationToken);
 
             await Assert.That(created.ResourceId).IsEqualTo(resourceId);
             await Assert.That(created.Associations).Count().IsEqualTo(1);
@@ -110,7 +116,11 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
         }
         finally
         {
-            await client.DeleteAssociationsAsync(resourceId, resourceType: "topic", associationTypes: ["value"], cancellationToken: cancellationToken);
+            await client.DeleteAssociationsAsync(
+                resourceId,
+                resourceType: "topic",
+                associationTypes: ["value"],
+                cancellationToken: cancellationToken);
         }
 
         var remaining = await client.GetAssociationsByResourceNameAsync(resourceName, resourceNamespace, cancellationToken: cancellationToken);
@@ -185,7 +195,10 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
 
             var avroPrepared = await avro.PrepareAsync(avroTopic, avroValue, cancellationToken: cancellationToken);
             var jsonPrepared = await json.PrepareAsync(jsonTopic, new AssociatedJsonRecord { Id = 42 }, cancellationToken: cancellationToken);
-            var protobufPrepared = await protobuf.PrepareAsync(protobufTopic, new TestPerson { Id = 42, Name = "Associated" }, cancellationToken: cancellationToken);
+            var protobufPrepared = await protobuf.PrepareAsync(
+                protobufTopic,
+                new TestPerson { Id = 42, Name = "Associated" },
+                cancellationToken: cancellationToken);
 
             await Assert.That(avroPrepared.Subject).IsEqualTo(avroSubject);
             await Assert.That(jsonPrepared.Subject).IsEqualTo(jsonSubject);

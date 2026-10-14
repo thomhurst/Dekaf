@@ -829,6 +829,11 @@ jobs:
       KAFKA_TEST_IMAGE_TAG: '4.3.1'
 
     steps:
+      # Watchdog deadline: job start + 25 min timeout - 8 min reserve for the
+      # native diagnostics (about 6 min worst case) and the artifact uploads.
+      - name: Set NativeAOT watchdog deadline
+        run: echo "INTEGRATION_WATCHDOG_DEADLINE_EPOCH=$(( $(date +%s) + (25 - 8) * 60 ))" >> "$GITHUB_ENV"
+
       - name: Add Swap Space
         run: |
           sudo fallocate -l 8G /mnt/extra-swapfile
@@ -864,9 +869,10 @@ jobs:
       # Schema Registry fixtures otherwise pull these inside the test process,
       # with no timeout and no mirror fallback (run 38631204581 stalled there).
       - name: Pre-pull Schema Registry images
+        timeout-minutes: 5
         env:
-          PREPULL_TIMEOUT: 240s
-          PREPULL_MIRROR_TIMEOUT: 240s
+          PREPULL_TIMEOUT: 120s
+          PREPULL_MIRROR_TIMEOUT: 90s
         run: |
           bash scripts/prepull-kafka-images.sh \
             "confluentinc/cp-schema-registry:7.9.0" \
@@ -878,10 +884,9 @@ jobs:
           echo "$GITHUB_WORKSPACE/TestResults/cores/core.%e.%p" | sudo tee /proc/sys/kernel/core_pattern
 
       # NativeAOT cannot use --hangdump; the runner's watchdog captures native
-      # stacks instead. Keep its budget below the job timeout.
+      # stacks instead. INTEGRATION_WATCHDOG_DEADLINE_EPOCH (first step) leaves
+      # time for them and the uploads before the job timeout.
       - name: Run NativeAOT integration smoke tests
-        env:
-          INTEGRATION_WATCHDOG_TOTAL_SECONDS: '1020'
         run: bash scripts/run-integration-categories.sh aot "Producer,Consumer,Messaging,Serialization"
 
       - name: Upload Test Results

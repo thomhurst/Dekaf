@@ -19,7 +19,9 @@ public sealed class SchemaRegistryCompatibilityConfigurationTests(KafkaWithSchem
 
         try
         {
-            var globalAcknowledged = await client.UpdateCompatibilityAsync(SchemaCompatibilityLevel.BackwardTransitive, cancellationToken: cancellationToken);
+            var globalAcknowledged = await client.UpdateCompatibilityAsync(
+                SchemaCompatibilityLevel.BackwardTransitive,
+                cancellationToken: cancellationToken);
             await Assert.That(globalAcknowledged).IsEqualTo(SchemaCompatibilityLevel.BackwardTransitive);
             await Assert.That(await client.GetCompatibilityAsync(cancellationToken: cancellationToken))
                 .IsEqualTo(SchemaCompatibilityLevel.BackwardTransitive);
@@ -37,7 +39,10 @@ public sealed class SchemaRegistryCompatibilityConfigurationTests(KafkaWithSchem
                     """
             }, cancellationToken);
 
-            var subjectAcknowledged = await client.UpdateCompatibilityAsync(SchemaCompatibilityLevel.FullTransitive, subject, cancellationToken);
+            var subjectAcknowledged = await client.UpdateCompatibilityAsync(
+                SchemaCompatibilityLevel.FullTransitive,
+                subject,
+                cancellationToken);
 
             await Assert.That(subjectAcknowledged).IsEqualTo(SchemaCompatibilityLevel.FullTransitive);
             await Assert.That(await client.GetCompatibilityAsync(subject, cancellationToken))
