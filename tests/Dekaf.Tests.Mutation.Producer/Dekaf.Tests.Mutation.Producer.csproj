@@ -12,6 +12,7 @@
   <ItemGroup>
     <!-- MTP cannot yet select covering tests per mutant, so link only direct core-producer suites. -->
     <Compile Include="..\Dekaf.Tests.Unit\AssemblyInfo.cs" Link="AssemblyInfo.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\GcSafeSpin.cs" Link="GcSafeSpin.cs" />
     <Compile Include="..\Dekaf.Tests.Unit\TestWait.cs" Link="TestWait.cs" />
     <Compile Include="..\Dekaf.Tests.Unit\ThreadPoolConfiguration.cs" Link="ThreadPoolConfiguration.cs" />
     <!-- Shared helpers the linked suites below depend on; without them this project does not build. -->
