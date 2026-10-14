@@ -6749,8 +6749,6 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     // backoff below with nothing to try this round. The cause is recorded
                     // before the refresh: max.block.ms can expire inside it, and the timeout
                     // must then still name the missing brokers rather than the cancellation.
-                    // A refresh that finds brokers withdraws that cause again, so a later stall
-                    // against those brokers does not blame brokers that existed.
                     LogIdempotentInitializationNoBrokers();
                     if (lastFailure is null)
                     {
@@ -6762,9 +6760,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     await RetryHelper.RefreshMetadataForRetryAsync(_metadataManager, initializationToken)
                         .ConfigureAwait(false);
                     brokers = _metadataManager.Metadata.GetBrokers();
-                    if (brokers.Count > 0 && ReferenceEquals(lastFailure, noBrokers))
-                        lastFailure = null;
                 }
+
+                // Brokers are known again, whether this round's refresh or a background one
+                // found them: withdraw the no-brokers cause, so a later stall against those
+                // brokers does not blame brokers that existed. A real failure is kept.
+                if (brokers.Count > 0 && ReferenceEquals(lastFailure, noBrokers))
+                    lastFailure = null;
 
                 var refreshMetadata = false;
                 for (var brokerIndex = 0; brokerIndex < brokers.Count; brokerIndex++)
