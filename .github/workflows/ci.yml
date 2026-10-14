@@ -664,6 +664,70 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  redpanda-integration:
+    name: Redpanda Integration
+    needs: [changes, build]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Download test binaries
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: test-binaries-integration-net10.0
+
+      - name: Extract test binaries
+        run: tar -xzf integration-net10.0.tar.gz
+
+      - name: Expose GitHub Actions Runtime
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env['ACTIONS_RUNTIME_TOKEN']);
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env['ACTIONS_RESULTS_URL']);
+
+      - name: Pre-pull Redpanda image
+        run: |
+          bash scripts/prepull-kafka-images.sh \
+            "docker.redpanda.com/redpandadata/redpanda:v26.2.4@sha256:c98c2f04a751e6646012cc701bac5183252cee44c88ba1dfa412e4c7124f2e89" \
+            "testcontainers/ryuk:0.14.0@sha256:7c1a8a9a47c780ed0f983770a662f80deb115d95cce3e2daa3d12115b8cd28f0"
+
+      - name: Run Redpanda integration tests
+        run: bash scripts/run-integration-categories.sh net10.0 "Redpanda"
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: test-results-redpanda-net10.0
+          path: |
+            **/TestResults/**
+            **/test-results/**
+          retention-days: 7
+
+      - name: Upload HangDump artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: hangdump-artifacts-redpanda-net10.0
+          path: |
+            **/*.dmp
+          if-no-files-found: ignore
+          retention-days: 7
+
   # Release gate: a NuGet publish dispatch must pass the full matrix — both
   # frameworks across every supported broker version, plus the complete AOT
   # sweep on floor and current — before the publish job below pushes packages.
@@ -907,7 +971,7 @@ jobs:
   # build job computed.
   publish:
     name: Publish NuGet
-    needs: [build, gssapi-packages, unit-net8, unit-net10, aspire-hosting, leak-gates-debug, eventhubs-integration, aot-smoke, aot-integration-publish, release-matrix, release-matrix-aot, code-quality, nuget-audit]
+    needs: [build, gssapi-packages, unit-net8, unit-net10, aspire-hosting, leak-gates-debug, eventhubs-integration, redpanda-integration, aot-smoke, aot-integration-publish, release-matrix, release-matrix-aot, code-quality, nuget-audit]
     if: github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -988,7 +1052,7 @@ jobs:
   # release-only jobs skip on PR runs).
   ci-passed:
     name: CI Passed
-    needs: [changes, doc-snippets, build, gssapi-packages, unit-net8, unit-net10, aspire-hosting, leak-gates-debug, integration, eventhubs-integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality, nuget-audit]
+    needs: [changes, doc-snippets, build, gssapi-packages, unit-net8, unit-net10, aspire-hosting, leak-gates-debug, integration, eventhubs-integration, redpanda-integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality, nuget-audit]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

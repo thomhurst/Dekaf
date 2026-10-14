@@ -60,7 +60,7 @@ for category in "${categories[@]}"; do
       filter="/**[(Category=ShareConsumer)&(Category!=ShareConsumerCore)]"
       ;;
     CatchAll)
-      # EventHubs has a dedicated CI lane outside this matrix. Expand virtual
+      # EventHubs and Redpanda have dedicated CI lanes outside this matrix. Expand virtual
       # ShareConsumer shards to their parent so uncategorized/new tests remain
       # selected without rerunning anything assigned to another job.
       covered_categories="$(python3 -c 'import json, sys
@@ -71,7 +71,7 @@ if not groups or len(groups) != len(set(groups)) or set(groups) != set(categorie
 print(",".join(categories[group] for group in groups))' \
         <<< "${INTEGRATION_TEST_MATRIX_JSON:?CatchAll requires the matrix category map}")"
       IFS=',' read -ra covered <<< "$covered_categories"
-      filter="/**[(Category!=EventHubs)"
+      filter="/**[(Category!=EventHubs)&(Category!=Redpanda)"
       for excluded in "${covered[@]}"; do
         case "$excluded" in
           CatchAll) continue ;;

@@ -283,8 +283,10 @@ public sealed partial class ShareConsumerCoordinatorTests
         var topicId = Guid.Parse("00000000-0000-0000-0000-000000000001");
         var heartbeatCount = 0;
         await using var harness = CoordinatorHarness.Create(
-            // The join deadline passes long before the broker cadence would deliver anything.
-            new ShareConsumerOptions { BootstrapServers = ["broker-0:9092"], GroupId = "share-idle", SessionTimeoutMs = 1 },
+            // The join deadline (30 s) passes before the broker cadence (60 s) would deliver the
+            // assignment, so a join that waited for partitions would time out. A tighter deadline
+            // can expire before the first heartbeat on a loaded machine.
+            new ShareConsumerOptions { BootstrapServers = ["broker-0:9092"], GroupId = "share-idle", SessionTimeoutMs = 30_000 },
             topicId,
             _ => Interlocked.Increment(ref heartbeatCount) == 1
                 ? Success(epoch: 1, joinCarriesEmptyAssignment ? new ShareGroupHeartbeatAssignment { TopicPartitions = [] } : null)
