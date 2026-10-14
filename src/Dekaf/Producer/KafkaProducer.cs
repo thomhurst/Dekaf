@@ -44,6 +44,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             .ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Test seam: when set, receives the max.block.ms budget source of an idempotent
+    /// InitProducerId instead of arming its timer, so a test expires the budget at a point it
+    /// observed rather than racing a wall-clock timer against scheduling stalls.
+    /// </summary>
+    internal Action<CancellationTokenSource>? ArmIdempotentInitializationBudgetForTesting { get; set; }
+
     private readonly ProducerOptions _options;
     private readonly ISerializer<TKey> _keySerializer;
     private readonly ISerializer<TValue> _valueSerializer;
@@ -6717,7 +6724,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     {
         var startedAt = Stopwatch.GetTimestamp();
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(_options.MaxBlockMs);
+        if (ArmIdempotentInitializationBudgetForTesting is { } armBudget)
+            armBudget(timeoutCts);
+        else
+            timeoutCts.CancelAfter(_options.MaxBlockMs);
         var initializationToken = timeoutCts.Token;
         Exception? lastFailure = null;
         var consecutiveFailures = 0;
@@ -6735,17 +6745,16 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 {
                     // Metadata can transiently name no broker (for example while every broker
                     // restarts). Refresh and re-read; a still-empty list falls through to the
-                    // backoff below with nothing to try this round.
+                    // backoff below with nothing to try this round. The cause is recorded
+                    // before the refresh: max.block.ms can expire inside it, and the timeout
+                    // must then still name the missing brokers rather than the cancellation.
                     LogIdempotentInitializationNoBrokers();
+                    lastFailure ??= new KafkaException(
+                        ErrorCode.BrokerNotAvailable,
+                        "No brokers available for idempotent producer initialization");
                     await RetryHelper.RefreshMetadataForRetryAsync(_metadataManager, initializationToken)
                         .ConfigureAwait(false);
                     brokers = _metadataManager.Metadata.GetBrokers();
-                    if (brokers.Count == 0)
-                    {
-                        lastFailure ??= new KafkaException(
-                            ErrorCode.BrokerNotAvailable,
-                            "No brokers available for idempotent producer initialization");
-                    }
                 }
 
                 var refreshMetadata = false;
