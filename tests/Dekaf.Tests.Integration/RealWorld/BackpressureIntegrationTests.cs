@@ -328,4 +328,57 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
         await Assert.That(results.Count).IsEqualTo(messageCount);
         await Assert.That(sw.Elapsed.TotalSeconds).IsLessThan(120);
     }
+
+    /// <summary>
+    /// Batch arenas created while live arenas exceed the live-arena allowance are charged against
+    /// BufferMemory. Through the public producer, the charge back-pressures appends until the
+    /// sender delivers batches and frees their arenas; every record is delivered and the charge
+    /// returns to zero.
+    /// </summary>
+    [Test, NotInParallel]
+    public async Task LiveArenaBound_ChargesArenasToBufferMemory_AndDeliversEveryRecord()
+    {
+        const int partitionCount = 6;
+        const int messageCount = 600;
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: partitionCount);
+
+        await using var producer = (KafkaProducer<string, string>)await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer-live-arena-bound")
+            .WithBufferMemory(128UL * 1024)
+            .WithBatchSize(16 * 1024)
+            .WithMaxBlock(TimeSpan.FromSeconds(60))
+            .WithLinger(TimeSpan.FromMilliseconds(100))
+            .WithIdempotence(false)
+            .WithAcks(Acks.Leader)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        // Every arena is over an allowance of zero, so each new batch charges BufferMemory with
+        // its arena (BatchSize + 12.5%): a few open batches fill the 128 KiB buffer.
+        var accumulator = producer.RecordAccumulator;
+        var budget = new LiveArenaBudget(0);
+        accumulator.UseLiveArenaBudgetForTest(budget);
+
+        // Warm metadata so the appends below take the synchronous fast path.
+        await producer.ProduceAsync(topic, "warmup-key", "warmup-value");
+
+        var payload = new string('x', 200);
+        var produceTasks = new List<Task<RecordMetadata>>(messageCount);
+        for (var i = 0; i < messageCount; i++)
+            produceTasks.Add(producer.ProduceAsync(topic, $"key-{i}", payload).AsTask());
+
+        // Batches linger for 100 ms, so the arenas of the batches just opened are still charged.
+        await Assert.That(accumulator.ArenaChargedBytes).IsGreaterThan(0);
+
+        var results = await Task.WhenAll(produceTasks).WaitAsync(TimeSpan.FromSeconds(90));
+        await Assert.That(results).Count().IsEqualTo(messageCount);
+        await Assert.That(results.All(static metadata => metadata.Offset >= 0)).IsTrue();
+
+        await producer.FlushAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+        await WaitForConditionAsync(
+            () => accumulator.ArenaChargedBytes == 0 && budget.LiveBytes == 0 && accumulator.BufferedBytes == 0,
+            TimeSpan.FromSeconds(10),
+            description: "arena charges were not released after every batch was delivered");
+    }
 }

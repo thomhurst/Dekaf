@@ -18,6 +18,8 @@ public class AccumulatorAppendBenchmarks
 {
     private RecordAccumulator _accumulator = null!;
     private RecordAccumulator _secondAccumulator = null!;
+    private RecordAccumulator _rotationAccumulator = null!;
+    private readonly TopicPartition _rotationPartition = new("bench-topic", 0);
     private byte[] _keyBytes = null!;
     private byte[] _valueBytes = null!;
     private CancellationTokenSource _drainerCts = null!;
@@ -60,6 +62,18 @@ public class AccumulatorAppendBenchmarks
             FillAndDrain(_secondAccumulator, partition: p, batchCount: 1, msgsPerBatch, ts);
         }
 
+        // Batches hold exactly one record, so every append rotates: it seals the previous batch
+        // and rents a new one (arena included), and the inline drain recycles the sealed batch.
+        _rotationAccumulator = new RecordAccumulator(new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            BatchSize = MessageSize + 128,
+            BufferMemory = 256L * 1024 * 1024,
+            LingerMs = 0,
+        });
+        for (var i = 0; i < 10_000; i++)
+            AppendAndRecycleOneBatch(ts);
+
         // Start background drainer to prevent buffer from filling
         _drainerCts = new CancellationTokenSource();
         _drainerTask = Task.Run(() => DrainLoop(_drainerCts.Token));
@@ -72,6 +86,7 @@ public class AccumulatorAppendBenchmarks
         try { await _drainerTask.ConfigureAwait(false); } catch (OperationCanceledException) { }
         await _accumulator.DisposeAsync().ConfigureAwait(false);
         await _secondAccumulator.DisposeAsync().ConfigureAwait(false);
+        await _rotationAccumulator.DisposeAsync().ConfigureAwait(false);
     }
 
     /// <summary>
@@ -123,6 +138,36 @@ public class AccumulatorAppendBenchmarks
                 "bench-topic", i % 10, ts,
                 _keyBytes, false, _valueBytes, false,
                 null, 0, null, CancellationToken.None));
+        }
+    }
+
+    /// <summary>
+    /// One batch lifecycle per operation through the accumulator: the append seals the previous
+    /// single-record batch and rents a new batch and arena (RentBatch), and the inline drain
+    /// completes and recycles the sealed batch the way the sender does (memory release, ack,
+    /// pipeline exit, pool return). Per-batch costs therefore show up at full weight.
+    /// </summary>
+    [Benchmark(OperationsPerInvoke = 100)]
+    public void AppendRotatingBatches()
+    {
+        var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        for (var i = 0; i < 100; i++)
+            AppendAndRecycleOneBatch(ts);
+    }
+
+    private void AppendAndRecycleOneBatch(long ts)
+    {
+        AwaitSync(_rotationAccumulator.AppendFromSpansAsync(
+            "bench-topic", 0, ts,
+            _keyBytes, false, _valueBytes, false,
+            null, 0, null, CancellationToken.None));
+
+        while (_rotationAccumulator.TryDrainBatch(_rotationPartition, out var batch))
+        {
+            _rotationAccumulator.ReleaseBatchMemory(batch);
+            batch.CompleteSend(0, DateTimeOffset.UnixEpoch);
+            _rotationAccumulator.OnBatchExitsPipeline(batch);
+            _rotationAccumulator.ReturnReadyBatch(batch);
         }
     }
 

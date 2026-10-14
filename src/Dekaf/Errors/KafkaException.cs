@@ -385,7 +385,13 @@ public enum ProduceErrorKind
     /// The produce belonged to a transaction that was aborted before its batch was sent, so its
     /// records were never written. Java's <c>TransactionAbortedException</c>.
     /// </summary>
-    TransactionAborted
+    TransactionAborted,
+
+    /// <summary>
+    /// The producer could not allocate a batch arena because the GC heap is at its limit, and no
+    /// batch of this producer was in flight whose completion could free one.
+    /// </summary>
+    ArenaAllocationFailed
 }
 
 /// <summary>
