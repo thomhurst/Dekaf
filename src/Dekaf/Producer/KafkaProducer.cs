@@ -6730,6 +6730,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             timeoutCts.CancelAfter(_options.MaxBlockMs);
         var initializationToken = timeoutCts.Token;
         Exception? lastFailure = null;
+        KafkaException? noBrokers = null;
         var consecutiveFailures = 0;
 
         try
@@ -6748,13 +6749,21 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     // backoff below with nothing to try this round. The cause is recorded
                     // before the refresh: max.block.ms can expire inside it, and the timeout
                     // must then still name the missing brokers rather than the cancellation.
+                    // A refresh that finds brokers withdraws that cause again, so a later stall
+                    // against those brokers does not blame brokers that existed.
                     LogIdempotentInitializationNoBrokers();
-                    lastFailure ??= new KafkaException(
-                        ErrorCode.BrokerNotAvailable,
-                        "No brokers available for idempotent producer initialization");
+                    if (lastFailure is null)
+                    {
+                        lastFailure = noBrokers ??= new KafkaException(
+                            ErrorCode.BrokerNotAvailable,
+                            "No brokers available for idempotent producer initialization");
+                    }
+
                     await RetryHelper.RefreshMetadataForRetryAsync(_metadataManager, initializationToken)
                         .ConfigureAwait(false);
                     brokers = _metadataManager.Metadata.GetBrokers();
+                    if (brokers.Count > 0 && ReferenceEquals(lastFailure, noBrokers))
+                        lastFailure = null;
                 }
 
                 var refreshMetadata = false;

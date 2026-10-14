@@ -374,6 +374,49 @@ public sealed class IdempotentInitializationTests
     }
 
     [Test]
+    public async Task InitializeAsync_NoKnownBrokersThenRefreshFindsThem_StallDoesNotBlameMissingBrokers(
+        CancellationToken cancellationToken)
+    {
+        // The refresh finds brokers, then the InitProducerId send to them stalls until
+        // max.block.ms. Brokers existed, so the timeout must not name BrokerNotAvailable.
+        await using var harness = new ProducerInitializationHarness(maxBlockMs: 1000, manualMaxBlock: true);
+        var brokers = harness.Metadata.Metadata.GetBrokers()
+            .Select(broker => new BrokerMetadata { NodeId = broker.NodeId, Host = broker.Host, Port = broker.Port })
+            .ToArray();
+        harness.Metadata.Metadata.Update(new MetadataResponse { Brokers = [], Topics = [] });
+        var refreshAttempted = false;
+        harness.Connect = (id, _) =>
+        {
+            if (!refreshAttempted)
+            {
+                // The refresh reaches the bootstrap endpoint first; restore the brokers as a
+                // successful refresh would have.
+                refreshAttempted = true;
+                harness.Metadata.Metadata.Update(new MetadataResponse { Brokers = brokers, Topics = [] });
+                return ValueTask.FromException<IKafkaConnection>(
+                    new SocketException((int)SocketError.ConnectionRefused));
+            }
+
+            return ValueTask.FromResult(harness.Connections[id]);
+        };
+        var stalled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.Send = async (_, token) =>
+        {
+            stalled.TrySetResult();
+            await Task.Delay(Timeout.Infinite, token);
+            return Success();
+        };
+
+        var exception = await TimeOutAfterAsync(harness, stalled.Task, cancellationToken);
+
+        await Assert.That(refreshAttempted).IsTrue();
+        await Assert.That(harness.Requests.Count).IsEqualTo(1);
+        await Assert.That(exception.InnerException is KafkaException { ErrorCode: ErrorCode.BrokerNotAvailable })
+            .IsFalse();
+        await Assert.That(exception.InnerException).IsAssignableTo<OperationCanceledException>();
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task InitializeAsync_StalledOperation_RespectsMaxBlock(bool duringConnect, CancellationToken cancellationToken)
