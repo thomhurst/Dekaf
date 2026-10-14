@@ -210,13 +210,21 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // The OnPartitionsAssigned delivery in progress, so the owner can end its staging from any thread.
     private AssignedCallbackContext? _currentAssignedCallback;
     // Changes under _lock each time a join publishes a new membership and each time a fence ends
-    // one. A fence observed by a request sent under an earlier membership must not clear the
-    // assignment of a newer one, and a commit must not send offsets taken under an earlier one.
+    // one. A commit must not send offsets taken under an earlier membership. A join that resumes
+    // the membership it already had (a rejoin after a coordinator failover, which the broker
+    // answers with the member id and epoch it was sent) does not change it, so a commit in flight
+    // across the failover still goes out. A rejoin answered with a newer epoch may carry a changed
+    // assignment, so it publishes a new membership.
     // Seqlock-style: odd while a join is publishing (from before the new member id and epoch are
     // written until the new assignment is published), even otherwise; a fence adds 2. A commit
     // captures only an even value (MembershipVersion waits out a publication), so its snapshot
     // is never taken half-way through one.
     private int _membershipVersion;
+    // Changes under _lock with every join publication, resumed or new, and every fence and leave
+    // (each change of _membershipVersion). A heartbeat response or a fence observed by a request
+    // sent under an earlier value describes state that a later join has since replaced: it must
+    // not publish an assignment or clear the assignment the join published.
+    private int _joinStateVersion;
     // The coordinator whose join publication this thread is running (the odd-version section
     // is synchronous). A hook it calls that starts a commit must not wait for it.
     [ThreadStatic]
@@ -476,6 +484,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     private MembershipChangeScope BeginMembershipChange()
     {
+        Interlocked.Increment(ref _joinStateVersion);
         Interlocked.Increment(ref _membershipVersion);
         var previous = t_publishingCoordinator;
         t_publishingCoordinator = this;
@@ -2272,12 +2281,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         });
                     }
 
-                    // A fence or rejoin changes the member id, epoch and membership version
+                    // A fence or rejoin changes the member id, epoch and join state version
                     // together under the state lock; snapshot them the same way, so a fence this
                     // request reports is applied to the membership it was sent under.
                     string? memberId;
                     int memberEpoch;
-                    int membershipVersion;
+                    int joinStateVersion;
                     await _lock.WaitAsync(operationToken).ConfigureAwait(false);
                     try
                     {
@@ -2287,7 +2296,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         var leaving = Volatile.Read(ref _leaveRequested) != 0;
                         memberId = leaving ? null : _memberId;
                         memberEpoch = leaving ? -1 : _generationId;
-                        membershipVersion = _membershipVersion;
+                        joinStateVersion = _joinStateVersion;
                     }
                     finally
                     {
@@ -2370,7 +2379,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             {
                                 var isRetriable = await HandleOffsetFetchMembershipErrorAsync(
                                         group.ErrorCode,
-                                        membershipVersion).ConfigureAwait(false)
+                                        joinStateVersion).ConfigureAwait(false)
                                     || group.ErrorCode.IsRetriable();
                                 throw new GroupException(
                                     group.ErrorCode,
@@ -2499,7 +2508,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private async ValueTask<bool> HandleOffsetFetchMembershipErrorAsync(
         ErrorCode errorCode,
-        int membershipVersion)
+        int joinStateVersion)
     {
         switch (errorCode)
         {
@@ -2516,7 +2525,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 await _lock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
                 try
                 {
-                    FenceMembershipIfCurrent(membershipVersion, forgetMember: true);
+                    FenceMembershipIfCurrent(joinStateVersion, forgetMember: true);
                 }
                 finally
                 {
@@ -2739,21 +2748,21 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// <see cref="_coordinatorId"/> here: a heartbeat loop that fails concurrently invalidates
     /// that field, and leasing broker -1 would surface as an unknown-broker failure.
     /// </param>
-    /// <param name="sentMembershipVersion">
-    /// Steady heartbeat only: receives the membership version the request was built under, so a
-    /// fence the response reports is applied to exactly the membership that sent it.
+    /// <param name="sentJoinStateVersion">
+    /// Steady heartbeat only: receives the join state version the request was built under, so a
+    /// fence the response reports is applied to exactly the membership state that sent it.
     /// </param>
     private async ValueTask<ConsumerHeartbeatResult> SendConsumerGroupHeartbeatAsync(
         int coordinatorId,
         bool isInitial,
         bool discardIfMembershipChanged,
-        StrongBox<int>? sentMembershipVersion,
+        StrongBox<int>? sentJoinStateVersion,
         CancellationToken cancellationToken)
     {
         var maxPollExpirationVersion = discardIfMembershipChanged
             ? Volatile.Read(ref _maxPollExpirationVersion)
             : 0;
-        int membershipVersion;
+        int joinStateVersion;
         string? memberIdSnapshot;
         int memberEpochSnapshot;
         ConsumerGroupHeartbeatResponse response;
@@ -2770,7 +2779,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             if (discardIfMembershipChanged)
             {
                 // A rejoin can replace the membership while this heartbeat discovers or leases a
-                // connection. Snapshot the member id, epoch and membership version together under
+                // connection. Snapshot the member id, epoch and join state version together under
                 // the state lock, where every change to them is made, so the request and any fence
                 // it reports describe the same membership.
                 await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -2783,21 +2792,21 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                     memberIdSnapshot = _memberId;
                     memberEpochSnapshot = _generationId;
-                    membershipVersion = _membershipVersion;
+                    joinStateVersion = _joinStateVersion;
                 }
                 finally
                 {
                     _lock.Release();
                 }
 
-                sentMembershipVersion!.Value = membershipVersion;
+                sentJoinStateVersion!.Value = joinStateVersion;
             }
             else
             {
                 // The join path holds the state lock.
                 memberIdSnapshot = _memberId;
                 memberEpochSnapshot = _generationId;
-                membershipVersion = Volatile.Read(ref _membershipVersion);
+                joinStateVersion = Volatile.Read(ref _joinStateVersion);
             }
 
             if (!_metadataManager.HasApiKey(connection, ApiKey.ConsumerGroupHeartbeat))
@@ -2883,13 +2892,27 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             response = WithAssignment(response, pendingAssignment);
         }
 
-        // A successful join replaces the membership. The version turns odd before the response's
-        // member id and epoch are written and even again once the new assignment is published
-        // (below), so a commit that started under the previous membership is rejected, and one
-        // that starts during the publication waits for it before taking its snapshot. A join
-        // error leaves the membership as it was, and commits under it stay valid.
-        var publishingMembership = !discardIfMembershipChanged && response.ErrorCode == ErrorCode.None;
+        // A successful initial join, or one the broker answers with a different member id or
+        // member epoch than it was sent, replaces the membership. The version turns odd before
+        // the response's member id and epoch are written and even again once the new assignment
+        // is published (below), so a commit that started under the previous membership is
+        // rejected, and one that starts during the publication waits for it before taking its
+        // snapshot. A join error leaves the membership as it was, and commits under it stay valid.
+        // A non-initial join the broker answers with the member id and epoch it was sent (a
+        // rejoin after a coordinator failover that resumes the same membership) publishes like a
+        // steady heartbeat, so a commit in flight across the failover is not rejected. A newer
+        // epoch may carry a changed assignment, and an unpinned commit would otherwise be sent
+        // under it with offsets taken for partitions the rejoin revoked. A resumed join still
+        // advances the join state version, so a heartbeat response or fence for a request sent
+        // before it is discarded.
+        var joinSucceeded = !discardIfMembershipChanged && response.ErrorCode == ErrorCode.None;
+        var publishingMembership = joinSucceeded &&
+            (isInitial ||
+             response.MemberEpoch != memberEpochSnapshot ||
+             (response.MemberId is { } joinedMemberId && joinedMemberId != memberIdSnapshot));
         var membershipChange = publishingMembership ? BeginMembershipChange() : default;
+        if (joinSucceeded && !publishingMembership)
+            Interlocked.Increment(ref _joinStateVersion);
 
         // A steady heartbeat reports a fence without waiting for the locks, so stopping the loop
         // cannot discard it: the loop applies it under the state lock, checked against the
@@ -2951,7 +2974,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     // preserves callback ordering after this lock is released without blocking
                     // re-entrant APIs.
                     if (_state != CoordinatorState.Stable ||
-                        _membershipVersion != membershipVersion ||
+                        _joinStateVersion != joinStateVersion ||
                         Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
                         IsCurrentPollGenerationExpired())
                         return default;
@@ -3655,7 +3678,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             coordinatorId,
                             isInitial: _memberId is null || _generationId <= 0,
                             discardIfMembershipChanged: false,
-                            sentMembershipVersion: null,
+                            sentJoinStateVersion: null,
                             joinToken).ConfigureAwait(false);
                     }
                     catch (Exception ex) when (
@@ -3665,7 +3688,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         throw;
                     }
 
-                    // The membership version was advanced before the response was processed.
+                    // The join state version (and, for a new membership, the membership version)
+                    // was advanced before the response was processed.
                     _state = CoordinatorState.Stable;
                     // With a consumer that synchronizes its assignment, _membershipFenced stays
                     // set until AcknowledgeAssignmentSync: the consumer has not yet dropped the
@@ -3807,9 +3831,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // loop re-discovers the coordinator itself and beats on the retry backoff.
         var transientFailureCount = 0;
         var heartbeatCoordinatorId = -1;
-        // The membership version each request is built under; a fence it reports applies only
-        // to that membership. Allocated once per loop.
-        var membershipVersion = new StrongBox<int>(Volatile.Read(ref _membershipVersion));
+        // The join state version each request is built under; a fence it reports applies only
+        // to that state. Allocated once per loop.
+        var joinStateVersion = new StrongBox<int>(Volatile.Read(ref _joinStateVersion));
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -3853,7 +3877,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     heartbeatCoordinatorId,
                     isInitial: false,
                     discardIfMembershipChanged: true,
-                    membershipVersion,
+                    joinStateVersion,
                     cancellationToken).ConfigureAwait(false);
                 transientFailureCount = 0;
             }
@@ -3894,7 +3918,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         case ErrorCode.UnknownMemberId:
                             // The next EnsureActiveGroup rejoins with MemberEpoch=0 (or -2 for static).
                             if (!await TryFenceFromHeartbeatAsync(
-                                    membershipVersion.Value,
+                                    joinStateVersion.Value,
                                     forgetMember: ge.ErrorCode == ErrorCode.UnknownMemberId).ConfigureAwait(false))
                                 return;
 
@@ -4342,14 +4366,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Applies a fence observed by a request sent under membership
-    /// <paramref name="membershipVersion"/>. Caller holds <c>_lock</c>. Ignored when a foreground
-    /// poll already expired or fenced the member, or when a later join replaced it: the fence
-    /// then belongs to a membership that is already gone.
+    /// Applies a fence observed by a request sent under join state
+    /// <paramref name="joinStateVersion"/>. Caller holds <c>_lock</c>. Ignored when a foreground
+    /// poll already expired or fenced the member, or when a later join (new or resumed) published
+    /// since: the fence then answers a request that join's state has replaced.
     /// </summary>
-    private void FenceMembershipIfCurrent(int membershipVersion, bool forgetMember)
+    private void FenceMembershipIfCurrent(int joinStateVersion, bool forgetMember)
     {
-        if (_state == CoordinatorState.Stable && _membershipVersion == membershipVersion)
+        if (_state == CoordinatorState.Stable && _joinStateVersion == joinStateVersion)
             FenceMembership(forgetMember);
     }
 
@@ -4363,7 +4387,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// partitions queued as lost, whatever the stop's owner does next. Nothing that holds the
     /// state lock waits for the heartbeat loop. Returns false only when the coordinator is disposed.
     /// </summary>
-    private async ValueTask<bool> TryFenceFromHeartbeatAsync(int membershipVersion, bool forgetMember)
+    private async ValueTask<bool> TryFenceFromHeartbeatAsync(int joinStateVersion, bool forgetMember)
     {
         try
         {
@@ -4376,7 +4400,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         try
         {
-            FenceMembershipIfCurrent(membershipVersion, forgetMember);
+            FenceMembershipIfCurrent(joinStateVersion, forgetMember);
         }
         finally
         {
