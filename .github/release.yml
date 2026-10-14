@@ -1,0 +1,7 @@
+# Configures GitHub's auto-generated release notes, which CreateReleaseModule
+# (tools/Dekaf.Pipeline) requests when a NuGet publish creates a release.
+# https://docs.github.com/repositories/releasing-projects-on-github/automatically-generated-release-notes
+changelog:
+  exclude:
+    labels:
+      - ignore-release
