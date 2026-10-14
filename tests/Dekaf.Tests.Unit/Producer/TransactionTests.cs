@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Net.Sockets;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics.Arm;
+using System.Runtime.Intrinsics.X86;
 using System.Threading.Tasks.Sources;
 using Dekaf.Errors;
 using Dekaf.Internal;
@@ -481,8 +483,7 @@ public sealed class TransactionTests
         {
             for (var i = 1; i <= rounds; i++)
             {
-                while (Volatile.Read(ref round) < i)
-                    Thread.SpinWait(1);
+                SpinUntilAtLeast(ref round, i);
                 Thread.SpinWait((i / 16) % 16);
                 second();
                 Volatile.Write(ref secondDone, i);
@@ -496,8 +497,7 @@ public sealed class TransactionTests
             Volatile.Write(ref round, i);
             Thread.SpinWait(i % 16);
             first();
-            while (Volatile.Read(ref secondDone) < i)
-                Thread.SpinWait(1);
+            SpinUntilAtLeast(ref secondDone, i);
             if (!isValid())
                 lost++;
         }
@@ -505,6 +505,25 @@ public sealed class TransactionTests
         cancellationToken.ThrowIfCancellationRequested();
         secondThread.Join();
         return lost;
+    }
+
+    /// <summary>
+    /// Busy-waits for the partner thread without <see cref="Thread.SpinWait(int)"/>. On .NET 8 that
+    /// call is an FCall that spins in cooperative mode without polling for a GC or leaving a return
+    /// address the runtime can hijack, so a loop around it is never stopped for a GC. Once a GC parks
+    /// the partner thread, this thread spins for a write that cannot arrive and the GC cannot finish
+    /// suspending the runtime: every other thread in the process, timers included, stays blocked.
+    /// A loop without calls is compiled fully interruptible, so a GC can stop it at any instruction.
+    /// </summary>
+    private static void SpinUntilAtLeast(ref int location, int value)
+    {
+        while (Volatile.Read(ref location) < value)
+        {
+            if (X86Base.IsSupported)
+                X86Base.Pause();
+            else if (ArmBase.IsSupported)
+                ArmBase.Yield();
+        }
     }
 
     /// <summary>
