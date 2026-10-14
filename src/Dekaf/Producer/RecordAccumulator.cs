@@ -950,7 +950,18 @@ internal sealed class BatchArena
             // Same protocol as ReturnToPool: a limit reduction between reserving and pooling
             // has already released the pool, so release again rather than keep this arena.
             var epoch = Volatile.Read(ref s_releaseEpoch);
-            var arena = s_retainedBytes.ReserveThenCreate(capacity, static capacity => new BatchArena(capacity));
+            BatchArena? arena;
+            try
+            {
+                arena = s_retainedBytes.ReserveThenCreate(capacity, static capacity => new BatchArena(capacity));
+            }
+            catch (OutOfMemoryException)
+            {
+                // Pre-warming is an optimization: a heap too full for another arena only means
+                // later batches allocate on demand (and back-pressure there).
+                return;
+            }
+
             if (arena is null)
                 return;
 
@@ -1006,6 +1017,52 @@ internal sealed class BatchArena
     }
 
     /// <summary>
+    /// <see cref="RentOrCreate(int, int)"/> for the cold arena swaps (an oversized first record,
+    /// a split batch's normal arena), with the out-of-memory fallback: release the idle pooled
+    /// arenas, retry once, then throw a <see cref="ProduceException"/> of kind
+    /// <see cref="ProduceErrorKind.ArenaAllocationFailed"/> instead of a raw
+    /// <see cref="OutOfMemoryException"/>. Batch rentals take the same fallback in
+    /// RecordAccumulator.TryRentBatch, which keeps <see cref="RentOrCreate(int, int)"/> itself
+    /// free of exception handling and test seams.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static BatchArena RentOrCreateWithFallback(int capacity, int maxPooledCapacity)
+    {
+        try
+        {
+            BeforeArenaSwapRentForTest?.Invoke(capacity);
+            return RentOrCreate(capacity, maxPooledCapacity);
+        }
+        catch (OutOfMemoryException)
+        {
+            // Fall through to the single retry below.
+        }
+
+        ReleaseIdleArenasAfterOutOfMemory();
+        try
+        {
+            BeforeArenaSwapRentForTest?.Invoke(capacity);
+            return RentOrCreate(capacity, maxPooledCapacity);
+        }
+        catch (OutOfMemoryException ex)
+        {
+            throw CreateAllocationFailedException(capacity, ex);
+        }
+    }
+
+    /// <summary>
+    /// After an arena allocation threw <see cref="OutOfMemoryException"/>: the failed allocation
+    /// already ran a full blocking GC, but pooled arenas are still referenced. Dropping them lets
+    /// the retry's GC reclaim their pinned pages. Out-of-memory path only.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void ReleaseIdleArenasAfterOutOfMemory()
+    {
+        s_pool.Clear();
+        AfterReleasingIdleArenasForTest?.Invoke();
+    }
+
+    /// <summary>
     /// Returns an arena to the pool for reuse, or drops the reference for GC collection if the pool is full.
     /// The POH buffer is never returned to ArrayPool.
     /// </summary>
@@ -1030,6 +1087,55 @@ internal sealed class BatchArena
         // been reserved under the old limit and pooled after the release, so release again.
         if (Volatile.Read(ref s_releaseEpoch) != epoch)
             s_pool.Clear();
+    }
+
+    // Test seams, read only on the cold arena paths (swaps, growth, the retry after an
+    // out-of-memory failure), never in RentOrCreate or per record. Batch-rental failures are
+    // tested with real allocation failures instead.
+    internal static Action<int>? BeforeArenaSwapRentForTest;
+    internal static Action<int>? BeforeArenaGrowForTest;
+    internal static Action? AfterReleasingIdleArenasForTest;
+
+    /// <summary>
+    /// Allocates the pinned buffer for a growing arena, with the same out-of-memory fallback as
+    /// <see cref="RentOrCreateWithFallback"/>. Arena growth only.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static byte[] AllocateGrowthBuffer(int capacity)
+    {
+        try
+        {
+            BeforeArenaGrowForTest?.Invoke(capacity);
+            return GC.AllocateUninitializedArray<byte>(capacity, pinned: true);
+        }
+        catch (OutOfMemoryException)
+        {
+            // Fall through to the single retry below.
+        }
+
+        ReleaseIdleArenasAfterOutOfMemory();
+        try
+        {
+            BeforeArenaGrowForTest?.Invoke(capacity);
+            return GC.AllocateUninitializedArray<byte>(capacity, pinned: true);
+        }
+        catch (OutOfMemoryException ex)
+        {
+            throw CreateAllocationFailedException(capacity, ex);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static ProduceException CreateAllocationFailedException(int capacity, OutOfMemoryException innerException)
+    {
+        var message =
+            $"Batch arena allocation failed: could not allocate a {capacity}-byte producer batch arena " +
+            $"because the GC heap is at its limit (GC heap limit / available memory: " +
+            $"{GC.GetGCMemoryInfo().TotalAvailableMemoryBytes} bytes, in use: {System.GC.GetTotalMemory(forceFullCollection: false)} bytes). " +
+            $"Live batch arenas: {LiveArenaBudget.Shared.LiveBytes} bytes. Idle pooled arenas were released " +
+            $"and the allocation retried. Consider reducing BatchSize, BufferMemory or the number of " +
+            $"partitions written concurrently, or raising the container memory limit.";
+        return new ProduceException(ProduceErrorKind.ArenaAllocationFailed, message, innerException);
     }
 
     // Append threads rent arenas that sender cleanup can return. Shared storage also
@@ -1088,7 +1194,7 @@ internal sealed class BatchArena
         }
 
         var position = Volatile.Read(ref _position);
-        var expanded = GC.AllocateUninitializedArray<byte>(capacity, pinned: true);
+        var expanded = AllocateGrowthBuffer(capacity);
         _buffer.AsSpan(0, position).CopyTo(expanded);
         _buffer = expanded;
         _maxPooledCapacity = maxPooledCapacity;
@@ -1318,6 +1424,28 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private BatchArena.ArenaPoolRegistration? _arenaPoolRegistration;
     private readonly Lock _arenaPoolRegistrationLock = new();
     private bool _arenaPoolReleased; // guarded by _arenaPoolRegistrationLock
+
+    // Live batch-arena accounting (Full strategy only). Every batch rented for an append counts
+    // its arena in _liveArenaBudget; one created while live arenas exceed the budget's allowance
+    // also charges the arena against this producer's BufferMemory until the arena is released.
+    // Both run once per batch, never per record. See LiveArenaBudget.
+    private readonly bool _accountsLiveArenas;
+    private LiveArenaBudget _liveArenaBudget = LiveArenaBudget.Shared;
+    // BufferMemory bytes currently charged for arenas created over the allowance (diagnostics).
+    private long _arenaChargedBytes;
+    // BufferMemory filled after an arena allocation ran out of GC heap while batches were in
+    // flight, so appends back-pressure until a pipeline batch exits and frees its arena.
+    private long _arenaDebtBytes;
+    private long _arenaAllocationFailures;
+    // Arenas of this producer counted by ChargeLiveArena and not yet released (open, sealed,
+    // in-flight and awaiting cleanup). Arena debt waits only while one exists: its release is
+    // what frees memory, and it releases the debt.
+    private long _liveArenaCount;
+    // Set by the drain owner's own thread when its scan released the arena debt: the scan
+    // suppresses inline drain requests (#2207), so the owner runs another pass instead.
+    private bool _arenaDebtReleasedDuringDrainScan;
+    // 1 while a deferred pending-append drain is queued (QueueDeferredPendingAppendDrain).
+    private int _deferredPendingAppendDrainQueued;
     internal BatchArena.ArenaPoolRegistration? ArenaPoolRegistrationForTest => Volatile.Read(ref _arenaPoolRegistration);
     internal int BatchPoolRetentionLimitForTest => _batchPool.RetentionLimit;
     internal int ReadyBatchPoolMaxSizeForTest => _readyBatchPool.MaxPoolSize;
@@ -1918,6 +2046,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly HashSet<TopicPartition> _blockedPendingPartitions = [];
     private readonly List<QueuedPendingAppend> _pendingAppendScan = [];
     private readonly List<DrainablePendingAppend> _drainablePendingAppends = [];
+    // Drained appends sent back to the head of the queue because a batch arena could not be
+    // allocated (out-of-memory path). Owned by the drain guard; created on first use.
+    private List<QueuedPendingAppend>? _arenaWaitRequeue;
     private int _draining; // CAS guard for DrainPendingAppends
     private long _pendingAppendDrainRequestVersion;
     private long _pendingAppendDrainEntryCount;
@@ -2682,6 +2813,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     sourceRecordBatch.ProducerEpoch,
                     (sourceRecordBatch.Attributes & RecordBatchAttributes.IsTransactional) != 0);
                 building.SetSplitBatchSizeLimit(splitBatchSizeLimit);
+                // Split children hold arenas like any batch: count them (and charge them over
+                // the allowance) so a rejected batch cannot fan out past the live-arena bound.
+                // The charge moves to the child in Complete() and is released with its arena,
+                // or by the discard below when the split fails.
+                if (_accountsLiveArenas)
+                    ChargeLiveArena(building);
 
                 while (recordIndex < source.RecordCount)
                 {
@@ -3047,9 +3184,50 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (s_perRecordTestHooks && madeProgress)
                     AfterPendingAppendDrainReservationForTest?.Invoke();
 
+                var arenaWaitRequired = false;
+                var arenaChargesFilledBuffer = false;
+                var arenaChargedAtPassStart = _accountsLiveArenas ? Volatile.Read(ref _arenaChargedBytes) : 0;
                 foreach (var drainable in _drainablePendingAppends)
                 {
                     var op = drainable.Operation;
+                    // The pass reserved record bytes for every drainable up front, but each
+                    // append that opens a batch over the live-arena allowance also charges a
+                    // whole arena. Once arena charges made during this pass have pushed
+                    // BufferMemory past its limit, stop renting arenas in this pass and keep the
+                    // rest queued, in order, behind ordinary BufferMemory back-pressure: the
+                    // charges' release drains them. This bounds the pass like any single
+                    // appender (one arena past BufferMemory) instead of one arena per drained
+                    // partition. Requiring charge growth keeps a pass whose own reservations
+                    // exceed the limit (an oversized record, a lowered limit) from stalling.
+                    if (!arenaWaitRequired
+                        && !arenaChargesFilledBuffer
+                        && _accountsLiveArenas
+                        && Volatile.Read(ref _arenaChargedBytes) > arenaChargedAtPassStart
+                        && Volatile.Read(ref _bufferedBytes) > Volatile.Read(ref _maxBufferMemory))
+                    {
+                        arenaChargesFilledBuffer = true;
+                    }
+
+                    if (arenaChargesFilledBuffer)
+                    {
+                        ReleaseMemoryWithoutDrain(drainable.ReservedBytes);
+                        ReleaseAdmissionReservation(drainable.AdmissionReservation);
+                        (_arenaWaitRequeue ??= []).Add(new QueuedPendingAppend(op, drainable.Generation));
+                        continue;
+                    }
+
+                    if (arenaWaitRequired)
+                    {
+                        // An earlier append could not get a batch arena. Keep the rest queued, in
+                        // order, behind the arena debt instead of failing them the same way. Their
+                        // reservations join the debt: releasing them would reopen BufferMemory and
+                        // make this drain retry the failed allocation in a loop (#2207 pattern).
+                        Interlocked.Add(ref _arenaDebtBytes, drainable.ReservedBytes);
+                        ReleaseAdmissionReservation(drainable.AdmissionReservation);
+                        (_arenaWaitRequeue ??= []).Add(new QueuedPendingAppend(op, drainable.Generation));
+                        continue;
+                    }
+
                     // Claim the operation with CAS BEFORE touching resources.
                     // This prevents timeout/cancel from cleaning up key/value/headers
                     // while AppendPooledAfterReservationCore is using them. The claim names the
@@ -3069,15 +3247,25 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
                     try
                     {
-                        var result = AppendPooledAfterReservationCore(
+                        var outcome = AppendPooledAfterReservationCore(
                             drainable.Deque,
                             op.Topic, op.Partition, op.Timestamp,
                             op.Key, op.Value, op.Headers, op.HeaderCount,
                             op.CompletionSource, op.Callback, drainable.ReservedBytes, op.PartitionCount,
                             drainable.AdmissionReservation, op.TransactionalGeneration);
 
+                        if (outcome == AppendCoreOutcome.ArenaWaitRequired)
+                        {
+                            // The append moved its reservation into the arena debt and kept the
+                            // record: wait again until an in-flight batch frees its arena.
+                            arenaWaitRequired = true;
+                            if (op.ReturnToPendingAfterClaim(drainable.Generation))
+                                (_arenaWaitRequeue ??= []).Add(new QueuedPendingAppend(op, drainable.Generation));
+                            continue;
+                        }
+
                         op.ReleasePendingCountAfterClaim();
-                        op.CompleteResult(result);
+                        op.CompleteResult(outcome == AppendCoreOutcome.Appended);
                     }
                     catch (Exception ex)
                     {
@@ -3087,6 +3275,25 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     }
                 }
                 _drainablePendingAppends.Clear();
+                if (arenaChargesFilledBuffer && !arenaWaitRequired)
+                    RequeuePendingAppendsAtHead();
+
+                if (arenaWaitRequired)
+                {
+                    RequeuePendingAppendsAtHead();
+                    // Same publish-then-recheck as TryConvertReservationToArenaDebt for the
+                    // reservations added to the debt above.
+                    if (Volatile.Read(ref _liveArenaCount) == 0)
+                        ReleaseArenaDebt();
+                }
+
+                // The scan released the arena debt (an arena freed during it, or the recheck
+                // above): rescan the re-queued appends, which nothing else would wake.
+                if (_arenaDebtReleasedDuringDrainScan)
+                {
+                    _arenaDebtReleasedDuringDrainScan = false;
+                    madeProgress = true;
+                }
 
                 // Release the drain lock before re-checking so a concurrent ReleaseMemory
                 // can enter if we decide not to loop again.
@@ -3166,6 +3373,34 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         var waitMilliseconds = MonotonicClock.GetMilliseconds() - operation.StartTicks;
         budget?.RecordAdmissionWait(waitMilliseconds * Stopwatch.Frequency / 1_000);
+    }
+
+    /// <summary>
+    /// Puts appends the drain could not serve for want of a batch arena back at the head of the
+    /// queue, ahead of what arrived meanwhile, so per-partition order holds. Drain owner only;
+    /// out-of-memory path only.
+    /// </summary>
+    private void RequeuePendingAppendsAtHead()
+    {
+        var requeue = _arenaWaitRequeue;
+        if (requeue is null || requeue.Count == 0)
+            return;
+
+        lock (_pendingAppendQueueLock)
+        {
+            _pendingAppendScan.Clear();
+            while (_pendingAppends.TryDequeue(out var queued))
+                _pendingAppendScan.Add(queued);
+
+            foreach (var entry in requeue)
+                _pendingAppends.Enqueue(entry);
+            foreach (var entry in _pendingAppendScan)
+                _pendingAppends.Enqueue(entry);
+
+            _pendingAppendScan.Clear();
+        }
+
+        requeue.Clear();
     }
 
     /// <summary>
@@ -3291,6 +3526,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Each size is bounded by what its pool actually keeps idle: pooled batches keep only
         // their completion arrays, and idle arenas live in the process-wide arena pool.
         var availableMemoryBytes = GetAvailableMemoryBytes();
+        _accountsLiveArenas = options.BufferMemoryAllocationStrategy == BufferMemoryAllocationStrategy.Full;
+        if (_accountsLiveArenas)
+            LiveArenaBudget.Shared.SetLimitFromAvailableMemory(availableMemoryBytes);
         var arenaPoolSize = ComputePoolSize(options, availableMemoryBytes);
         var batchPoolSize = ComputeBatchPoolSize(options, options.BufferMemory, availableMemoryBytes);
         // Full-arena producers register with the process-wide arena pool last, once nothing
@@ -3935,8 +4173,236 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var batch = _batchPool.Rent(topicPartition, partitionCount);
         batch.SetTransactionState(ProducerId, ProducerEpoch, IsTransactional);
+        if (_accountsLiveArenas)
+            ChargeLiveArena(batch);
         return batch;
     }
+
+    /// <summary>
+    /// Rents a batch for an append that needs one. Returns null with the failure when the
+    /// batch's arena could not be allocated even after releasing idle arenas, so the append loop
+    /// can hand back its rotation and sealed batch before failing or waiting. Per batch.
+    /// </summary>
+    private PartitionBatch? TryRentBatch(
+        TopicPartition topicPartition,
+        int partitionCount,
+        out ProduceException? arenaFailure)
+    {
+        try
+        {
+            arenaFailure = null;
+            var batch = RentBatch(topicPartition, partitionCount);
+            if (s_perRecordTestHooks)
+                AfterRentBatchForTest?.Invoke();
+            return batch;
+        }
+        catch (OutOfMemoryException)
+        {
+            // Fall through to the single retry below.
+        }
+        catch (ProduceException ex) when (ex.Kind == ProduceErrorKind.ArenaAllocationFailed)
+        {
+            arenaFailure = ex;
+            return null;
+        }
+
+        return RetryRentBatchAfterOutOfMemory(topicPartition, partitionCount, out arenaFailure);
+    }
+
+    /// <summary>
+    /// The batch's arena allocation threw <see cref="OutOfMemoryException"/>: releases the idle
+    /// pooled arenas and retries once, then reports the failure as
+    /// <see cref="ProduceErrorKind.ArenaAllocationFailed"/>. Out-of-memory path only.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private PartitionBatch? RetryRentBatchAfterOutOfMemory(
+        TopicPartition topicPartition,
+        int partitionCount,
+        out ProduceException? arenaFailure)
+    {
+        BatchArena.ReleaseIdleArenasAfterOutOfMemory();
+        try
+        {
+            arenaFailure = null;
+            return RentBatch(topicPartition, partitionCount);
+        }
+        catch (OutOfMemoryException ex)
+        {
+            arenaFailure = BatchArena.CreateAllocationFailedException(
+                ProducerOptions.GetEffectiveArenaCapacity(_options.BatchSize, _options.ArenaCapacity),
+                ex);
+            return null;
+        }
+        catch (ProduceException ex) when (ex.Kind == ProduceErrorKind.ArenaAllocationFailed)
+        {
+            arenaFailure = ex;
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Counts a newly rented batch's arena as live. When live arenas exceed the allowance, the
+    /// arena's capacity is also charged against BufferMemory (possibly past the limit: the record
+    /// that needed the batch is already reserved), so later appends back-pressure until arenas are
+    /// released. Once per batch.
+    /// </summary>
+    private void ChargeLiveArena(PartitionBatch batch)
+    {
+        var capacity = batch.ArenaCapacity;
+        if (capacity == 0)
+            return;
+
+        var budget = _liveArenaBudget;
+        Interlocked.Increment(ref _liveArenaCount);
+        batch.SetArenaCharge(this, budget, capacity, AcquireLiveArenaBytes(budget, capacity));
+    }
+
+    /// <summary>
+    /// Counts <paramref name="bytes"/> of arena as live and, when live arenas now exceed the
+    /// allowance, charges them against BufferMemory. Returns the BufferMemory bytes charged, which
+    /// the batch passes back to <see cref="ReleaseLiveArena"/>. Per batch, or per arena growth.
+    /// </summary>
+    internal int AcquireLiveArenaBytes(LiveArenaBudget budget, int bytes)
+    {
+        if (budget.Acquire(bytes))
+            return 0;
+
+        Interlocked.Add(ref _bufferedBytes, bytes);
+        Interlocked.Add(ref _arenaChargedBytes, bytes);
+        return bytes;
+    }
+
+    /// <summary>
+    /// Releases what <see cref="ChargeLiveArena"/> counted, when the batch's arena is released:
+    /// at ReadyBatch cleanup, or when a batch that never sealed is pooled or discarded. Exactly
+    /// once per charged batch, from the same places that already release BufferMemory.
+    /// </summary>
+    /// <param name="drainInline">
+    /// True for ReadyBatch cleanup (the sender's completion path), which drains pending appends
+    /// inline like any BufferMemory release. False for a PartitionBatch that never sealed (an
+    /// unused rental or a discarded batch): append and abort paths return those while they may
+    /// hold a partition's rotation gate or run inside the drain owner's scan, where an inline
+    /// drain could serve an append to that same partition and spin on the gate this thread holds.
+    /// Those releases queue the drain instead. The released bytes are the same either way.
+    /// </param>
+    internal void ReleaseLiveArena(LiveArenaBudget budget, int liveBytes, int chargedBytes, bool drainInline)
+    {
+        budget.Release(liveBytes);
+        // Callers run this after the arena is back in the pool (or dropped), so an append
+        // retried by the debt release below can rent it.
+        Interlocked.Decrement(ref _liveArenaCount);
+        var drainDeferred = false;
+        if (chargedBytes != 0)
+        {
+            Interlocked.Add(ref _arenaChargedBytes, -chargedBytes);
+            if (drainInline)
+            {
+                ReleaseMemory(chargedBytes);
+            }
+            else
+            {
+                ReleaseMemoryWithoutDrain(chargedBytes);
+                drainDeferred = true;
+            }
+        }
+
+        // An arena allocation that ran out of GC heap filled BufferMemory until a live arena
+        // was released (TryConvertReservationToArenaDebt). Read after the decrement: the debt
+        // is published before its owner re-reads the count, so one of the two releases it.
+        // One read per batch; releases on that path only.
+        if (Volatile.Read(ref _arenaDebtBytes) != 0)
+            drainDeferred |= ReleaseArenaDebt(drainInline);
+
+        if (drainDeferred)
+            QueueDeferredPendingAppendDrain();
+    }
+
+    /// <summary>
+    /// Drains pending appends on a thread-pool thread, for a release that must not drain
+    /// inline (see <see cref="ReleaseLiveArena"/>). Coalesced: at most one queued at a time.
+    /// Over-allowance and out-of-memory paths only.
+    /// </summary>
+    private void QueueDeferredPendingAppendDrain()
+    {
+        if (Interlocked.CompareExchange(ref _deferredPendingAppendDrainQueued, 1, 0) != 0)
+            return;
+
+        ThreadPool.UnsafeQueueUserWorkItem(s_deferredPendingAppendDrain, this);
+    }
+
+    private static readonly WaitCallback s_deferredPendingAppendDrain = static state =>
+    {
+        var accumulator = (RecordAccumulator)state!;
+        // Clear before draining: a release that lands during this drain queues another one.
+        Volatile.Write(ref accumulator._deferredPendingAppendDrainQueued, 0);
+        accumulator.DrainPendingAppends();
+        accumulator.SignalBufferSpaceAvailable();
+    };
+
+    /// <summary>
+    /// After an arena allocation ran out of GC heap: while arenas of this producer are live
+    /// (open or in-flight batches), turns the record's BufferMemory reservation into a debt that
+    /// fills BufferMemory, so the record (re-queued by the caller) and every later append
+    /// back-pressure, bounded by max.block.ms and their cancellation tokens, until a batch
+    /// releases its arena. Returns false, leaving the reservation alone, when no live arena can
+    /// be released. Error path only.
+    /// </summary>
+    private bool TryConvertReservationToArenaDebt(int recordSize)
+    {
+        Interlocked.Increment(ref _arenaAllocationFailures);
+        if (Volatile.Read(ref _liveArenaCount) == 0)
+            return false;
+
+        // Fill BufferMemory before publishing the debt, so a concurrent release never subtracts
+        // bytes that were not added yet.
+        var fill = Math.Max(0, Volatile.Read(ref _maxBufferMemory) - Volatile.Read(ref _bufferedBytes));
+        if (fill > 0)
+            Interlocked.Add(ref _bufferedBytes, fill);
+        Interlocked.Add(ref _arenaDebtBytes, recordSize + fill);
+
+        // ReleaseLiveArena decrements the live count before it reads the debt. If the last live
+        // arena was released before the debt was published, nothing would release it.
+        if (Volatile.Read(ref _liveArenaCount) == 0)
+            ReleaseArenaDebt();
+
+        return true;
+    }
+
+    /// <summary>Releases the BufferMemory held by <see cref="TryConvertReservationToArenaDebt"/>.</summary>
+    /// <returns>True when debt was released but not drained (<paramref name="drain"/> false).</returns>
+    private bool ReleaseArenaDebt(bool drain = true)
+    {
+        var debt = Interlocked.Exchange(ref _arenaDebtBytes, 0);
+        if (debt <= 0)
+            return false;
+
+        Interlocked.Add(ref _bufferedBytes, -debt);
+        if (!drain)
+            return true;
+
+        // Inside the drain owner's scan the call below returns without requesting a pass
+        // (#2207); the owner checks this flag and rescans the appends it re-queued.
+        if (t_inPendingAppendDrainScan)
+            _arenaDebtReleasedDuringDrainScan = true;
+        DrainPendingAppends();
+        SignalBufferSpaceAvailable();
+        return false;
+    }
+
+    /// <summary>
+    /// Test hook: runs on the appending thread after an append rented a new batch, before it
+    /// installs the batch. Compiled out unless per-record test hooks are enabled.
+    /// </summary>
+    internal Action? AfterRentBatchForTest;
+
+    /// <summary>Test seam: replaces the live-arena budget before the first append.</summary>
+    internal void UseLiveArenaBudgetForTest(LiveArenaBudget budget) => _liveArenaBudget = budget;
+
+    /// <summary>BufferMemory bytes currently charged for arenas created over the allowance.</summary>
+    internal long ArenaChargedBytes => Volatile.Read(ref _arenaChargedBytes);
+
+    /// <summary>BufferMemory bytes filled until an in-flight batch frees its arena.</summary>
+    internal long ArenaDebtBytes => Volatile.Read(ref _arenaDebtBytes);
 
     // The per-RecordAccumulator L1 makes producer switches O(1) on one thread. A weak per-thread
     // conflict cache keeps partition-affine producer threads isolated without retaining accumulator
@@ -4236,9 +4702,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Hot path: non-blocking gate check + CAS reservation — no async state machine
         // allocated. An over-budget broker applies the same backpressure as a full buffer.
         if (TryAdmitAndReserve(pd, topic, partition, recordSize, out var admissionReservation))
-            return new ValueTask<bool>(AppendPooledAfterReservationCore(pd, topic, partition, timestamp, key, value,
+        {
+            var outcome = AppendPooledAfterReservationCore(pd, topic, partition, timestamp, key, value,
                 headers, headerCount, completionSource, callback, recordSize, partitionCount,
-                admissionReservation, transactionalGeneration));
+                admissionReservation, transactionalGeneration);
+            // ArenaWaitRequired (no arena for a new batch while batches are in flight): the arena
+            // debt fills BufferMemory, so the cold path below queues the record until one frees its arena.
+            if (outcome != AppendCoreOutcome.ArenaWaitRequired)
+                return new ValueTask<bool>(outcome == AppendCoreOutcome.Appended);
+        }
 
         // Cold path: buffer full or broker over budget — enqueue pooled PendingAppend
         // (zero async state machine allocation)
@@ -4247,7 +4719,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             transactionalGeneration);
     }
 
-    private bool AppendPooledAfterReservationCore(
+    /// <summary>
+    /// Result of the append cores. <see cref="ArenaWaitRequired"/> means the record's new batch
+    /// could not get an arena while batches were in flight: the reservation moved into the arena
+    /// debt, the caller still owns the record and queues it behind BufferMemory backpressure.
+    /// </summary>
+    private enum AppendCoreOutcome : byte
+    {
+        /// <summary>Not appended: the accumulator is disposed or appends are closed.</summary>
+        Rejected,
+        Appended,
+        ArenaWaitRequired,
+    }
+
+    private AppendCoreOutcome AppendPooledAfterReservationCore(
         PartitionDeque pd,
         string topic,
         int partition,
@@ -4267,6 +4752,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         ReadyBatch? sealedBatchToEnqueue = null;
         var sealedBatchBytesToRelease = 0;
         PartitionBatch? rentedBatch = null;
+        ProduceException? arenaFailure = null;
         var ownsRotation = false;
         var ownsReservation = true;
         var ownsRecordResources = true;
@@ -4306,6 +4792,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 var actualBytesAdded = 0;
                 var releaseRotationAfterPublish = false;
                 var releaseRotationAfterFail = false;
+                var arenaUnavailable = false;
 
                 {
                     using var guard = new SpinLockGuard(ref pd.Lock);
@@ -4384,7 +4871,23 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         }
                         else if (rentedBatch is null)
                         {
-                            needBatch = true;
+                            if (arenaFailure is null)
+                            {
+                                needBatch = true;
+                            }
+                            else
+                            {
+                                // No arena for the next batch: publish the sealed batch and hand
+                                // the rotation back so this partition's other appenders proceed.
+                                if (ownsRotation)
+                                {
+                                    releaseRotationAfterPublish =
+                                        ClearRotationUnlessPublishPendingUnderLock(pd, batchToPublish);
+                                    ownsRotation = false;
+                                }
+
+                                arenaUnavailable = true;
+                            }
                         }
                         else
                         {
@@ -4393,9 +4896,28 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             pd.CurrentBatch = newBatch;
                             Interlocked.Increment(ref _unsealedBatchCount);
 
-                            if (TryAppendToBatch(newBatch, timestamp, key, value, headers, headerCount,
-                                completionSource, callback, recordSize, out var appendedBytes,
-                                out var firstAwaitedProduceInBatch))
+                            // An oversized first record can need a larger arena than the batch
+                            // rented; when the heap has no room for it, give the batch back and take
+                            // the same back-pressure path as a failed rental.
+                            bool appendedToNewBatch;
+                            int appendedBytes;
+                            bool firstAwaitedProduceInBatch;
+                            try
+                            {
+                                appendedToNewBatch = TryAppendToBatch(newBatch, timestamp, key, value, headers,
+                                    headerCount, completionSource, callback, recordSize, out appendedBytes,
+                                    out firstAwaitedProduceInBatch);
+                            }
+                            catch (ProduceException ex) when (ex.Kind == ProduceErrorKind.ArenaAllocationFailed)
+                            {
+                                arenaFailure = ex;
+                                arenaUnavailable = true;
+                                appendedToNewBatch = false;
+                                appendedBytes = 0;
+                                firstAwaitedProduceInBatch = false;
+                            }
+
+                            if (appendedToNewBatch)
                             {
                                 actualBytesAdded = appendedBytes;
                                 drainPendingAfterAppend = CommitAdmissionReservationUnderLock(
@@ -4428,7 +4950,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                     ClearRotationUnlessPublishPendingUnderLock(pd, batchToPublish);
                                 ownsRotation = false;
                                 batchToReturn = newBatch;
-                                messageTooLarge = true;
+                                messageTooLarge = !arenaUnavailable;
                             }
                         }
                     }
@@ -4464,7 +4986,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 {
                     ReleaseOwnedAppendState();
                     ThrowIfTransactionalAppendRejected();
-                    return false;
+                    return AppendCoreOutcome.Rejected;
                 }
 
                 if (messageTooLarge)
@@ -4472,6 +4994,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     ReleaseOwnedAppendState();
                     throw new KafkaException(ErrorCode.MessageTooLarge,
                         $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
+                }
+
+                if (arenaUnavailable)
+                {
+                    if (TryConvertReservationToArenaDebt(recordSize))
+                    {
+                        // The debt now holds the reservation; the caller keeps the record.
+                        ownsReservation = false;
+                        ownsRecordResources = false;
+                        ReleaseAdmissionReservation(admissionReservation);
+                        return AppendCoreOutcome.ArenaWaitRequired;
+                    }
+
+                    ReleaseOwnedAppendState();
+                    throw arenaFailure!;
                 }
 
                 if (appendSucceeded)
@@ -4485,7 +5022,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     if (drainPendingAfterAppend)
                         DrainPendingAppends();
 
-                    return true;
+                    return AppendCoreOutcome.Appended;
                 }
 
                 if (waitForRotation)
@@ -4518,7 +5055,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
 
                 if (needBatch && rentedBatch is null)
-                    rentedBatch = RentBatch(topicPartition, partitionCount);
+                    rentedBatch = TryRentBatch(topicPartition, partitionCount, out arenaFailure);
             }
         }
         catch
@@ -4653,8 +5190,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (!TryAdmitAndReserve(pd, topic, partition, recordSize, out var admissionReservation))
             return false;
 
+        // On ArenaWaitRequired the caller keeps the record and takes the async path, which waits
+        // behind the arena debt.
         return AppendPooledAfterReservationCore(pd, topic, partition, timestamp, key, value, headers, headerCount,
-            completionSource, callback: null, recordSize, partitionCount, admissionReservation);
+            completionSource, callback: null, recordSize, partitionCount, admissionReservation)
+            == AppendCoreOutcome.Appended;
     }
 
     /// <summary>
@@ -4698,16 +5238,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (!TryAdmitAndReserve(pd, topic, partition, recordSize, out var admissionReservation))
             return false;
 
+        // On ArenaWaitRequired the caller keeps the record and hands it to the slow path, which
+        // waits behind the arena debt until an in-flight batch frees its arena.
         return AppendFromSpansAfterReservationCore(pd, topic, partition, timestamp, keyData, keyIsNull,
             valueData, valueIsNull, headers, headerCount, completionSource, callback: null,
             recordSize, partitionCount, returnHeadersOnFailure: false, admissionReservation,
-            transactionalGeneration);
+            transactionalGeneration) == AppendCoreOutcome.Appended;
     }
 
     /// <summary>
     /// Synchronous append-under-lock logic for span-based append after memory has been reserved.
     /// </summary>
-    private bool AppendFromSpansAfterReservationCore(
+    private AppendCoreOutcome AppendFromSpansAfterReservationCore(
         PartitionDeque pd,
         string topic,
         int partition,
@@ -4754,7 +5296,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     transactionalGeneration,
                     out appendCommitted))
                 {
-                    return true;
+                    return AppendCoreOutcome.Appended;
                 }
             }
             catch
@@ -4772,6 +5314,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         ReadyBatch? sealedBatchToEnqueue = null;
         var sealedBatchBytesToRelease = 0;
         PartitionBatch? rentedBatch = null;
+        ProduceException? arenaFailure = null;
         var ownsRotation = false;
         var ownsReservation = true;
         var ownsHeaderResources = returnHeadersOnFailure;
@@ -4833,6 +5376,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 var reservedFirstAwaitedProduceInBatch = false;
                 var releaseRotationAfterPublish = false;
                 var releaseRotationAfterFail = false;
+                var arenaUnavailable = false;
 
                 {
                     using var guard = new SpinLockGuard(ref pd.Lock);
@@ -4892,7 +5436,23 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         }
                         else if (rentedBatch is null)
                         {
-                            needBatch = true;
+                            if (arenaFailure is null)
+                            {
+                                needBatch = true;
+                            }
+                            else
+                            {
+                                // No arena for the next batch: publish the sealed batch and hand
+                                // the rotation back so this partition's other appenders proceed.
+                                if (ownsRotation)
+                                {
+                                    releaseRotationAfterPublish =
+                                        ClearRotationUnlessPublishPendingUnderLock(pd, batchToPublish);
+                                    ownsRotation = false;
+                                }
+
+                                arenaUnavailable = true;
+                            }
                         }
                         else
                         {
@@ -4901,9 +5461,29 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             pd.CurrentBatch = newBatch;
                             Interlocked.Increment(ref _unsealedBatchCount);
 
-                            if (TryReserveAppendFromSpansToBatch(newBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
-                                headers, headerCount, completionSource, callback, recordSize, out reservedAppend,
-                                out var actualBytesAdded, out var firstAwaitedProduceInBatch))
+                            // An oversized first record can need a larger arena than the batch
+                            // rented; when the heap has no room for it, give the batch back and take
+                            // the same back-pressure path as a failed rental.
+                            bool reservedInNewBatch;
+                            int actualBytesAdded;
+                            bool firstAwaitedProduceInBatch;
+                            try
+                            {
+                                reservedInNewBatch = TryReserveAppendFromSpansToBatch(newBatch, timestamp, keyData,
+                                    keyIsNull, valueData, valueIsNull, headers, headerCount, completionSource, callback,
+                                    recordSize, out reservedAppend, out actualBytesAdded, out firstAwaitedProduceInBatch);
+                            }
+                            catch (ProduceException ex) when (ex.Kind == ProduceErrorKind.ArenaAllocationFailed)
+                            {
+                                arenaFailure = ex;
+                                arenaUnavailable = true;
+                                reservedInNewBatch = false;
+                                reservedAppend = default;
+                                actualBytesAdded = 0;
+                                firstAwaitedProduceInBatch = false;
+                            }
+
+                            if (reservedInNewBatch)
                             {
                                 pd.AppendInProgress = true;
                                 reservedAppendBatch = newBatch;
@@ -4921,7 +5501,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                     ClearRotationUnlessPublishPendingUnderLock(pd, batchToPublish);
                                 ownsRotation = false;
                                 batchToReturn = newBatch;
-                                messageTooLarge = true;
+                                messageTooLarge = !arenaUnavailable;
                             }
                         }
                     }
@@ -5023,7 +5603,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         {
                             ReleaseOwnedAppendState();
                             ThrowIfTransactionalAppendRejected();
-                            return false;
+                            return AppendCoreOutcome.Rejected;
                         }
 
                         NotifyRecordAppended(topic, partition, reservedActualBytesAdded, partitionCount);
@@ -5036,7 +5616,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         ReleaseDetachedBatchBytesIfSafe();
                         if (drainPendingAfterAppend)
                             DrainPendingAppends();
-                        return true;
+                        return AppendCoreOutcome.Appended;
                     }
                     catch
                     {
@@ -5055,7 +5635,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 {
                     ReleaseOwnedAppendState();
                     ThrowIfTransactionalAppendRejected();
-                    return false;
+                    return AppendCoreOutcome.Rejected;
                 }
 
                 if (messageTooLarge)
@@ -5063,6 +5643,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     ReleaseOwnedAppendState();
                     throw new KafkaException(ErrorCode.MessageTooLarge,
                         $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
+                }
+
+                if (arenaUnavailable)
+                {
+                    if (TryConvertReservationToArenaDebt(recordSize))
+                    {
+                        // The debt now holds the reservation; the caller keeps the record.
+                        ownsReservation = false;
+                        ownsHeaderResources = false;
+                        ReleaseAdmissionReservation(admissionReservation);
+                        return AppendCoreOutcome.ArenaWaitRequired;
+                    }
+
+                    ReleaseOwnedAppendState();
+                    throw arenaFailure!;
                 }
 
                 if (waitForRotation)
@@ -5095,7 +5690,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
 
                 if (needBatch && rentedBatch is null)
-                    rentedBatch = RentBatch(topicPartition, partitionCount);
+                    rentedBatch = TryRentBatch(topicPartition, partitionCount, out arenaFailure);
             }
         }
         catch
@@ -5192,10 +5787,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         if (TryAdmitAndReserve(pd, topic, partition, recordSize, out var admissionReservation))
-            return new ValueTask<bool>(AppendFromSpansAfterReservationCore(pd, topic, partition, timestamp,
+        {
+            var outcome = AppendFromSpansAfterReservationCore(pd, topic, partition, timestamp,
                 keyData, keyIsNull, valueData, valueIsNull, headers, headerCount, completionSource: null,
                 callback, recordSize, partitionCount, returnHeadersOnFailure: true, admissionReservation,
-                transactionalGeneration));
+                transactionalGeneration);
+            // ArenaWaitRequired (no arena for a new batch while batches are in flight): queue the
+            // record on the cold path below, behind the arena debt that fills BufferMemory.
+            if (outcome != AppendCoreOutcome.ArenaWaitRequired)
+                return new ValueTask<bool>(outcome == AppendCoreOutcome.Appended);
+        }
 
         // Cold path: buffer full. Copy spans to PooledMemory BEFORE the await boundary
         // (ReadOnlySpan<byte> cannot survive across async suspension points).
@@ -6528,8 +7129,37 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         $"Requested {recordSize} bytes, current usage: {BufferedBytes}/{MaxBufferMemory} bytes, " +
         $"in-flight batches: {InFlightBatchCount}, unsealed batches: {UnsealedBatchCount}, " +
         $"dispatch-queued batches: {DispatchQueuedBatchCount}, ready notifications: {_readyPartitions.Count}. " +
+        BuildArenaBackpressureMessage() +
         $"Producer is generating messages faster than the network can send them. " +
         $"Consider: increasing BufferMemory, increasing MaxBlockMs, reducing production rate, or checking network connectivity.";
+
+    /// <summary>
+    /// Explains BufferMemory held for batch arenas rather than records, or empty when none is.
+    /// Timeout path only.
+    /// </summary>
+    private string BuildArenaBackpressureMessage()
+    {
+        var chargedBytes = ArenaChargedBytes;
+        var debtBytes = ArenaDebtBytes;
+        var allocationFailures = Volatile.Read(ref _arenaAllocationFailures);
+        if (chargedBytes == 0 && debtBytes == 0 && allocationFailures == 0)
+            return string.Empty;
+
+        var budget = _liveArenaBudget;
+        var message =
+            $"Batch arenas hold {budget.LiveBytes} bytes against a live-arena limit of {budget.Limit} bytes " +
+            $"(1/{LiveArenaBudget.AvailableMemoryDivisor} of the GC heap limit, " +
+            $"{GetAvailableMemoryBytes()} bytes); {chargedBytes} bytes of BufferMemory are charged for arenas " +
+            $"created over that limit. ";
+        if (debtBytes > 0 || allocationFailures > 0)
+        {
+            message +=
+                $"Batch arena allocation failed {allocationFailures} time(s) because the GC heap limit was reached; " +
+                $"{debtBytes} bytes of BufferMemory are held until an in-flight batch frees its arena. ";
+        }
+
+        return message;
+    }
 
     /// <summary>
     /// Releases reserved buffer memory when a batch is completed/sent.
@@ -7028,6 +7658,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             batch.AppendDiag('X');
         var count = Interlocked.Decrement(ref _inFlightBatchCount);
         Debug.Assert(count >= 0, $"In-flight batch count went negative ({count}) — mismatched Enter/Exit calls");
+
         if (count <= 0)
         {
             // All batches processed - complete any waiting flush and clear the TCS. Also clears
@@ -9407,6 +10038,14 @@ internal sealed class PartitionBatch
     private IncrementalBatchBuffer? _incrementalBuffer;
     internal bool HasAppendBufferForTest => _arena is not null || _incrementalBuffer is not null;
 
+    // Live-arena accounting set by RecordAccumulator.ChargeLiveArena when an append rents this
+    // batch. Moves to the ReadyBatch with the arena in Complete(); released by ReleaseArena
+    // when the batch is pooled or discarded without handing it over.
+    private RecordAccumulator? _arenaChargeOwner;
+    private LiveArenaBudget? _arenaChargeBudget;
+    private int _arenaLiveBytes;
+    private int _arenaChargedBytes;
+
     // Set while the batch holds a PartitionBatchPool retention slot. Only the pool touches it,
     // and a pooled batch has a single owner at a time.
     private bool _poolRetained;
@@ -9593,13 +10232,17 @@ internal sealed class PartitionBatch
     {
         var arena = _arena;
         _arena = null;
-        if (arena is null)
-            return;
+        if (arena is not null)
+        {
+            if (_recordCount == 0)
+                BatchArena.ReturnToPool(arena);
+            else
+                arena.Return();
+        }
 
-        if (_recordCount == 0)
-            BatchArena.ReturnToPool(arena);
-        else
-            arena.Return();
+        // After the arena is back in the pool: releasing the charge can release arena debt and
+        // retry appends that need an arena.
+        ReleaseArenaCharge();
     }
 
     /// <summary>
@@ -9698,6 +10341,62 @@ internal sealed class PartitionBatch
 
     internal int RetainedBatchBufferCapacity =>
         _arena?.Capacity ?? _incrementalBuffer?.RetainedCapacity ?? 0;
+
+    /// <summary>Capacity of the batch's arena; 0 for incremental storage.</summary>
+    internal int ArenaCapacity => _arena?.Capacity ?? 0;
+
+    /// <summary>
+    /// Records the live-arena accounting for this batch's arena. Called once after renting.
+    /// </summary>
+    internal void SetArenaCharge(RecordAccumulator owner, LiveArenaBudget budget, int liveBytes, int chargedBytes)
+    {
+        _arenaChargeOwner = owner;
+        _arenaChargeBudget = budget;
+        _arenaLiveBytes = liveBytes;
+        _arenaChargedBytes = chargedBytes;
+    }
+
+    /// <summary>
+    /// Re-counts the live-arena accounting after the batch's arena was grown or replaced, so the
+    /// release at cleanup matches the arena actually held. Arena growth and swaps only.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void SyncArenaCharge()
+    {
+        var owner = _arenaChargeOwner;
+        if (owner is null)
+            return;
+
+        var capacity = _arena?.Capacity ?? 0;
+        var delta = capacity - _arenaLiveBytes;
+        if (delta > 0)
+            _arenaChargedBytes += owner.AcquireLiveArenaBytes(_arenaChargeBudget!, delta);
+        else if (delta < 0)
+            _arenaChargeBudget!.Release(-delta);
+
+        _arenaLiveBytes = capacity;
+    }
+
+    private void ReleaseArenaCharge()
+    {
+        var owner = _arenaChargeOwner;
+        if (owner is null)
+            return;
+
+        var budget = _arenaChargeBudget!;
+        var liveBytes = _arenaLiveBytes;
+        var chargedBytes = _arenaChargedBytes;
+        ClearArenaCharge();
+        owner.ReleaseLiveArena(budget, liveBytes, chargedBytes, drainInline: false);
+    }
+
+    private void ClearArenaCharge()
+    {
+        _arenaChargeOwner = null;
+        _arenaChargeBudget = null;
+        _arenaLiveBytes = 0;
+        _arenaChargedBytes = 0;
+    }
 
     public TopicPartition TopicPartition => _topicPartition;
     public int PartitionCount => _partitionCount;
@@ -9824,9 +10523,10 @@ internal sealed class PartitionBatch
         // Rent before returning: if renting throws (e.g. OutOfMemoryException), _arena must
         // still be an arena this batch owns, not one the return pooled or stripped of its buffer.
         var previous = _arena;
-        _arena = BatchArena.RentOrCreate(requiredCapacity);
+        _arena = BatchArena.RentOrCreateWithFallback(requiredCapacity, requiredCapacity);
         if (previous is not null)
             BatchArena.ReturnToPool(previous);
+        SyncArenaCharge();
     }
 
     internal readonly record struct ReservedRecordAppend(
@@ -10349,11 +11049,13 @@ internal sealed class PartitionBatch
 
         // Rent before returning, as in EnsureNormalArenaCapacity: a failed rent leaves the
         // batch holding its own arena rather than one another batch can rent.
-        _arena = BatchArena.RentOrCreate(capacity, normalCapacity);
+        _arena = BatchArena.RentOrCreateWithFallback(capacity, normalCapacity);
         if (arena is not null)
         {
             BatchArena.ReturnToPool(arena);
         }
+
+        SyncArenaCharge();
     }
 
     private void EnsureArenaCanFitNextRecord(int encodedRecordSize)
@@ -10368,7 +11070,28 @@ internal sealed class PartitionBatch
             return;
 
         var doubledCapacity = (int)Math.Min((long)arena.Capacity * 2, maximumCapacity);
-        arena.Grow(Math.Max(requiredCapacity, doubledCapacity), GetNormalArenaCapacity(_options));
+        GrowArena(arena, Math.Max(requiredCapacity, doubledCapacity));
+    }
+
+    /// <summary>
+    /// Grows the arena of a batch that already holds records. Growing is optional: when the GC
+    /// heap has no room for the larger arena, the arena keeps its size, so this append finds the
+    /// batch full, seals it and rents a new batch, whose arena failure (if any) takes the
+    /// back-pressure path in the append loop. Arena growth only.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void GrowArena(BatchArena arena, int capacity)
+    {
+        try
+        {
+            arena.Grow(capacity, GetNormalArenaCapacity(_options));
+        }
+        catch (ProduceException ex) when (ex.Kind == ProduceErrorKind.ArenaAllocationFailed)
+        {
+            return;
+        }
+
+        SyncArenaCharge();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -10565,6 +11288,12 @@ internal sealed class PartitionBatch
                 _admissionBudget = null;
                 _admissionGeneration = 0;
                 _admissionReservedBytes = 0;
+            }
+
+            if (_arenaChargeOwner is not null)
+            {
+                readyBatch.SetArenaCharge(_arenaChargeOwner, _arenaChargeBudget!, _arenaLiveBytes, _arenaChargedBytes);
+                ClearArenaCharge();
             }
 
             _completedBatch = readyBatch;
@@ -10983,6 +11712,11 @@ internal sealed class ReadyBatch
     // Reuse queue for returning working arrays back to PartitionBatch without ArrayPool round-trip
     private BatchArrayReuseQueue? _arrayReuseQueue;
     private BatchArena? _arena; // Arena holding the batch's encoded record bytes
+    // Live-arena accounting moved from the PartitionBatch; released with the arena in cleanup.
+    private RecordAccumulator? _arenaChargeOwner;
+    private LiveArenaBudget? _arenaChargeBudget;
+    private int _arenaLiveBytes;
+    private int _arenaChargedBytes;
     private IncrementalBatchBuffer? _incrementalBuffer;
 
     // Callbacks for Send(message, callback) - inline invocation without ThreadPool
@@ -11688,6 +12422,10 @@ internal sealed class ReadyBatch
         AdmissionGeneration = 0;
         UnackedBudgetPipelineTracked = 0;
         _arena = arena;
+        _arenaChargeOwner = null;
+        _arenaChargeBudget = null;
+        _arenaLiveBytes = 0;
+        _arenaChargedBytes = 0;
         _incrementalBuffer = incrementalBuffer;
         _callbacks = callbacks;
         _callbackCount = callbackCount;
@@ -12220,6 +12958,21 @@ internal sealed class ReadyBatch
         }
     }
 
+    /// <summary>Arena bytes this batch counts as live (0 when it carries no charge).</summary>
+    internal int ArenaCapacityForTest => _arenaLiveBytes;
+
+    /// <summary>
+    /// Takes over a sealing PartitionBatch's live-arena accounting. Called once per batch,
+    /// after <see cref="Initialize"/>.
+    /// </summary>
+    internal void SetArenaCharge(RecordAccumulator owner, LiveArenaBudget budget, int liveBytes, int chargedBytes)
+    {
+        _arenaChargeOwner = owner;
+        _arenaChargeBudget = budget;
+        _arenaLiveBytes = liveBytes;
+        _arenaChargedBytes = chargedBytes;
+    }
+
     private void Cleanup()
     {
         // Guard against double-cleanup request. Actual pooled-resource return may be
@@ -12249,6 +13002,14 @@ internal sealed class ReadyBatch
         var callbacks = _callbacks;
         var callbackIndexes = _callbackIndexes;
         var recordBatch = _recordBatch;
+        var arenaChargeOwner = _arenaChargeOwner;
+        var arenaChargeBudget = _arenaChargeBudget;
+        var arenaLiveBytes = _arenaLiveBytes;
+        var arenaChargedBytes = _arenaChargedBytes;
+        _arenaChargeOwner = null;
+        _arenaChargeBudget = null;
+        _arenaLiveBytes = 0;
+        _arenaChargedBytes = 0;
 
         try
         {
@@ -12308,6 +13069,10 @@ internal sealed class ReadyBatch
         {
             // Reset must not clear fields until every pooled resource return above completes.
             Volatile.Write(ref _resourcesCleanedUp, ResourceCleanupComplete);
+
+            // After completion so Reset does not spin while a charged release drains pending
+            // appends. The locals were taken above, so a re-Initialize cannot lose the release.
+            arenaChargeOwner?.ReleaseLiveArena(arenaChargeBudget!, arenaLiveBytes, arenaChargedBytes, drainInline: true);
         }
     }
 }

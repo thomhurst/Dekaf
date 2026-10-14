@@ -738,3 +738,4 @@ static Dekaf.Admin.AdminClientDetailedShareGroupOffsetExtensions.DeleteShareGrou
 Dekaf.Consumer.ConsumeBatch<TKey, TValue>.TryGetNextOffset(out Dekaf.TopicPartitionOffset checkpoint) -> bool
 Dekaf.Consumer.ConsumeRawBatch.TryGetNextOffset(out Dekaf.TopicPartitionOffset checkpoint) -> bool
 Dekaf.Errors.ProduceErrorKind.TransactionAborted = 2 -> Dekaf.Errors.ProduceErrorKind
+Dekaf.Errors.ProduceErrorKind.ArenaAllocationFailed = 3 -> Dekaf.Errors.ProduceErrorKind

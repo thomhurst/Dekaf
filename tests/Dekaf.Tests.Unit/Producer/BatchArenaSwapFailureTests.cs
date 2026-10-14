@@ -1,4 +1,5 @@
 using System.Reflection;
+using Dekaf.Errors;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -11,7 +12,8 @@ namespace Dekaf.Tests.Unit.Producer;
 /// </summary>
 /// <remarks>
 /// The tests make the rent fail for real: an <see cref="ProducerOptions.ArenaCapacity"/> beyond
-/// the maximum array length makes the replacement allocation throw OutOfMemoryException. The
+/// the maximum array length makes the replacement allocation throw OutOfMemoryException, which
+/// the swap reports as <see cref="ProduceErrorKind.ArenaAllocationFailed"/> after its retry. The
 /// current arena's pooled-capacity cap is below its length, so returning it drops its buffer
 /// deterministically, whatever the shared pool's limits are.
 /// </remarks>
@@ -31,7 +33,9 @@ public class BatchArenaSwapFailureTests
         // Larger than the current arena, so the first append swaps in an expanded one.
         var oversizedValue = new byte[BatchSize * 2];
 
-        await Assert.That(() => Append(batch, oversizedValue)).Throws<OutOfMemoryException>();
+        var exception = await Assert.That(() => Append(batch, oversizedValue)).Throws<ProduceException>();
+        await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.ArenaAllocationFailed);
+        await Assert.That(exception.InnerException).IsTypeOf<OutOfMemoryException>();
 
         await Assert.That(ReferenceEquals(s_arenaField.GetValue(batch), original)).IsTrue();
         await Assert.That(original.Buffer).IsNotNull();
@@ -50,7 +54,9 @@ public class BatchArenaSwapFailureTests
         // An arena below the normal capacity makes EnsureNormalArenaCapacity swap it.
         var batch = CreateBatchWithUnpoolableArena(1024, out var undersized);
 
-        await Assert.That(() => batch.SetSplitBatchSizeLimit(BatchSize)).Throws<OutOfMemoryException>();
+        var exception = await Assert.That(() => batch.SetSplitBatchSizeLimit(BatchSize)).Throws<ProduceException>();
+        await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.ArenaAllocationFailed);
+        await Assert.That(exception.InnerException).IsTypeOf<OutOfMemoryException>();
 
         await Assert.That(ReferenceEquals(s_arenaField.GetValue(batch), undersized)).IsTrue();
         await Assert.That(undersized.Buffer).IsNotNull();

@@ -220,6 +220,42 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     }
 
     /// <summary>
+    /// Re-opens a rental the drain claimed but could not append, because its new batch could
+    /// not get an arena while other batches were in flight. The rental waits again under its
+    /// original max.block.ms deadline and cancellation token, and keeps its FIFO count. Must only
+    /// be called by the drain that claimed <paramref name="generation"/>, before completing it.
+    /// Out-of-memory path only.
+    /// </summary>
+    /// <returns>False when the token was cancelled meanwhile and the rental has been failed.</returns>
+    internal bool ReturnToPendingAfterClaim(int generation)
+    {
+        // Register while the rental still reads as completed: a callback that runs inside
+        // Register (an already-cancelled token) then does nothing, and the check below fails the
+        // rental instead, so no registration can outlive it.
+        var cancellationToken = _cancellationToken;
+        if (cancellationToken.CanBeCanceled)
+        {
+            _cancellationRegistration = cancellationToken.Register(static state =>
+            {
+                var self = (PendingAppend)state!;
+                self.OnCancellation();
+            }, this);
+        }
+
+        Volatile.Write(ref _state, generation);
+        var remainingMs = Volatile.Read(ref _deadlineTickCount) - Dekaf.MonotonicClock.GetMilliseconds();
+        _timer.Change(Math.Max(0, remainingMs), Timeout.Infinite);
+
+        if (cancellationToken.IsCancellationRequested
+            && TryFail(new OperationCanceledException(cancellationToken), generation))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
     /// Releases per-partition FIFO ownership after a claimed append has entered its batch.
     /// Must run before completing the value task, which can return this object to its pool.
     /// </summary>
