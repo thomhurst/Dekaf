@@ -25,6 +25,7 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
     private INetwork? _network;
     private bool _externalKafka;
     private bool _externalRegistry;
+    private Task? _startupTask;
     private string _bootstrapServers = string.Empty;
     private string _registryUrl = string.Empty;
     private readonly ConcurrentDictionary<string, byte> _createdTopics = new();
@@ -96,14 +97,21 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
                 SchemaRegistryImage,
                 static _ => new ContainerImageBootstrapCoordinator());
             startup.Enter("wait for the image bootstrap gate");
-            // WaitAsync returns at the deadline even if a Docker call ignores cancellation.
-            await bootstrapCoordinator
-                .RunAsync(() => StartLocalContainersAsync(startup, deadline.Token), deadline.Token)
-                .WaitAsync(deadline.Token)
-                .ConfigureAwait(false);
+            _startupTask = bootstrapCoordinator.RunAsync(
+                () => StartLocalContainersAsync(startup, deadline.Token),
+                deadline.Token);
+            // WaitAsync returns at the deadline even if a Docker call ignores cancellation;
+            // DisposeAsync then waits (bounded) for the abandoned startup before cleanup.
+            await _startupTask.WaitAsync(deadline.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (deadline.IsCancellationRequested)
         {
+            // Observe the abandoned startup's eventual failure.
+            _ = _startupTask?.ContinueWith(
+                static task => _ = task.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
             var containerDetails = await DescribeSchemaRegistryContainerAsync().ConfigureAwait(false);
             throw new TimeoutException(
                 $"{GetType().Name} ({KafkaImage} + {SchemaRegistryImage}) did not start within " +
@@ -369,6 +377,22 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         {
             GC.SuppressFinalize(this);
             return;
+        }
+
+        // A startup abandoned at the deadline was cancelled; let it unwind so the
+        // containers it created are assigned before they are disposed below. Its
+        // failure was already reported by InitializeAsync. Anything still running
+        // after the bound is left to the Ryuk reaper.
+        if (_startupTask is { IsCompleted: false } startupTask)
+        {
+            try
+            {
+                await startupTask.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                Console.WriteLine($"[KafkaWithSchemaRegistry] Abandoned startup ended with {exception.GetType().Name}");
+            }
         }
 
         if (_schemaRegistryContainer is not null)
