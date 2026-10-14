@@ -469,6 +469,193 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     }
 
     [Test]
+    public async Task CommitOffsetsAsync_OffsetsSnapshottedBeforeACoordinatorFailover_AreSentAfterTheRejoinResumesTheMembership()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetCommit, 9, 9);
+        var script = new HeartbeatScript(this);
+        var (listener, calls) = CreateRecordingListener();
+        var committedIdentities = new List<string>();
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var request = callInfo.Arg<OffsetCommitRequest>()!;
+                lock (committedIdentities)
+                    committedIdentities.Add($"{request.MemberId}@{request.GenerationIdOrMemberEpoch}");
+                return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
+            });
+
+        // The consumer reads the membership version and snapshots its offsets; then the
+        // coordinator dies: the heartbeat loop hands the member, still holding member-1 at epoch
+        // 5 and its partitions, back to the foreground rejoin path.
+        await using var coordinator = await JoinAsync(script, listener, sessionTimeoutMs: 100);
+        await SynchronizeAssignmentAsync(coordinator);
+        var membershipVersion = coordinator.MembershipVersion;
+        script.Respond = (_, _) =>
+            ValueTask.FromException<ConsumerGroupHeartbeatResponse>(new IOException("coordinator connection closed"));
+        await RunHeartbeatLoopUntilItStopsAsync(coordinator);
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+
+        // The new coordinator accepts the member id and epoch it is sent: the same membership.
+        script.Reset();
+        lock (script.Requests)
+            script.Requests.Clear();
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 5, CreateAssignment(TestTopicId, 0, 1));
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        await SynchronizeAssignmentAsync(coordinator);
+
+        ConsumerGroupHeartbeatRequest rejoin;
+        lock (script.Requests)
+            rejoin = script.Requests[0];
+        await Assert.That(rejoin.MemberId).IsEqualTo("member-1");
+        await Assert.That(rejoin.MemberEpoch).IsEqualTo(5);
+        await Assert.That(coordinator.MembershipVersion).IsEqualTo(membershipVersion);
+
+        // Before the fix the resumed join counted as a new membership, and this commit failed
+        // with "the group membership changed while the commit was in progress".
+        await coordinator.CommitOffsetsAsync(
+            [new TopicPartitionOffset("test-topic", 0, 10)],
+            retryUntilApiTimeout: false,
+            membershipVersion,
+            CancellationToken.None);
+
+        await Assert.That(committedIdentities).IsEquivalentTo(["member-1@5"]);
+        string[] recorded;
+        lock (calls)
+            recorded = [.. calls];
+        await Assert.That(recorded.Any(static call => call.StartsWith("lost:", StringComparison.Ordinal))).IsFalse();
+    }
+
+    [Test]
+    public async Task CommitOffsetsAsync_RejoinAnsweredWithTheSameMemberIdAtANewerEpoch_RejectsOffsetsFromTheEarlierMembership()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetCommit, 9, 9);
+        var script = new HeartbeatScript(this);
+        var (listener, _) = CreateRecordingListener();
+        var commitCount = 0;
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref commitCount);
+                return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
+            });
+
+        // An unpinned commit (explicit offsets) reads the membership version and snapshots
+        // offsets for partition 0; then the coordinator dies.
+        await using var coordinator = await JoinAsync(script, listener, sessionTimeoutMs: 100);
+        await SynchronizeAssignmentAsync(coordinator);
+        var membershipVersion = coordinator.MembershipVersion;
+        script.Respond = (_, _) =>
+            ValueTask.FromException<ConsumerGroupHeartbeatResponse>(new IOException("coordinator connection closed"));
+        await RunHeartbeatLoopUntilItStopsAsync(coordinator);
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+
+        // The new coordinator keeps member-1 but answers at a newer epoch with partition 0
+        // revoked. Sent under epoch 6, the commit would be accepted and could overwrite the new
+        // owner's progress.
+        script.Reset();
+        lock (script.Requests)
+            script.Requests.Clear();
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 6, CreateAssignment(TestTopicId, 1));
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        await SynchronizeAssignmentAsync(coordinator);
+
+        ConsumerGroupHeartbeatRequest rejoin;
+        lock (script.Requests)
+            rejoin = script.Requests[0];
+        await Assert.That(rejoin.MemberId).IsEqualTo("member-1");
+        await Assert.That(rejoin.MemberEpoch).IsEqualTo(5);
+        await Assert.That(coordinator.MembershipVersion).IsNotEqualTo(membershipVersion);
+
+        var exception = await Assert.That(async () => await coordinator.CommitOffsetsAsync(
+                [new TopicPartitionOffset("test-topic", 0, 10)],
+                retryUntilApiTimeout: false,
+                membershipVersion,
+                CancellationToken.None))
+            .Throws<GroupException>();
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
+        await Assert.That(Volatile.Read(ref commitCount)).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task CommitOffsetsAsync_RejoinAnsweredWithAnotherMemberId_RejectsOffsetsFromTheEarlierMembership()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetCommit, 9, 9);
+        var script = new HeartbeatScript(this);
+        var (listener, _) = CreateRecordingListener();
+        var commitCount = 0;
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref commitCount);
+                return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
+            });
+
+        await using var coordinator = await JoinAsync(script, listener);
+        await SynchronizeAssignmentAsync(coordinator);
+        var membershipVersion = coordinator.MembershipVersion;
+        coordinator.RequestRejoin();
+
+        // The broker answers the resumed join with a different member id: a new membership.
+        script.Respond = (_, _) => Joined("member-2", memberEpoch: 7, CreateAssignment(TestTopicId, 0, 1));
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        await SynchronizeAssignmentAsync(coordinator);
+
+        await Assert.That(coordinator.MembershipVersion).IsNotEqualTo(membershipVersion);
+        var exception = await Assert.That(async () => await coordinator.CommitOffsetsAsync(
+                [new TopicPartitionOffset("test-topic", 0, 10)],
+                retryUntilApiTimeout: false,
+                membershipVersion,
+                CancellationToken.None))
+            .Throws<GroupException>();
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
+        await Assert.That(Volatile.Read(ref commitCount)).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task MembershipLoss_FenceForARequestSentBeforeAResumedRejoin_IsDiscarded()
+    {
+        var script = new HeartbeatScript(this);
+        var (listener, calls) = CreateRecordingListener();
+        await using var coordinator = await JoinAsync(script, listener);
+        await SynchronizeAssignmentAsync(coordinator);
+
+        // A heartbeat request was built before a requested rejoin, which resumes the membership
+        // at the same epoch; its fence arrives afterwards.
+        var joinStateVersion = (int)typeof(ConsumerCoordinator)
+            .GetField("_joinStateVersion", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(coordinator)!;
+        var membershipVersion = coordinator.MembershipVersion;
+        coordinator.RequestRejoin();
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 5, CreateAssignment(TestTopicId, 0, 1));
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+
+        typeof(ConsumerCoordinator)
+            .GetMethod("FenceMembershipIfCurrent", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(coordinator, [joinStateVersion, false]);
+
+        await Assert.That(coordinator.MembershipVersion).IsEqualTo(membershipVersion);
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(coordinator.Assignment.Count).IsEqualTo(2);
+        string[] recorded;
+        lock (calls)
+            recorded = [.. calls];
+        await Assert.That(recorded.Any(static call => call.StartsWith("lost:", StringComparison.Ordinal))).IsFalse();
+    }
+
+    [Test]
     public async Task MembershipLoss_DrainAbandonedAtDisposal_StartsNoFurtherCallback()
     {
         var script = new HeartbeatScript(this);
@@ -932,9 +1119,12 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
         await coordinator.StopHeartbeatAsync();
 
+        // The rejoin is answered with another member id, so its publication starts a new
+        // membership (a rejoin that resumes member-1 at its epoch publishes like a steady
+        // heartbeat instead).
         coordinator.RequestRejoin();
         Volatile.Write(ref commitFromHook, 1);
-        script.Respond = (_, _) => Joined("member-1", memberEpoch: 6, CreateAssignment(TestTopicId, 1));
+        script.Respond = (_, _) => Joined("member-2", memberEpoch: 6, CreateAssignment(TestTopicId, 1));
         var join = Task.Run(async () =>
             await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None));
 
