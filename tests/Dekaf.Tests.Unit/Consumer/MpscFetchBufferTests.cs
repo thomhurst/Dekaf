@@ -873,7 +873,7 @@ public class MpscFetchBufferTests
                 var item = CreateDummy("topic", i);
                 while (!buffer.TryWrite(item))
                 {
-                    Thread.SpinWait(100);
+                    GcSafeSpin.Pause(100);
                 }
             }
             buffer.Complete();
@@ -901,7 +901,7 @@ public class MpscFetchBufferTests
                 }
                 else
                 {
-                    Thread.SpinWait(10);
+                    GcSafeSpin.Pause(10);
                 }
             }
         });
@@ -938,7 +938,7 @@ public class MpscFetchBufferTests
                     var item = CreateDummy("topic", producerId * itemsPerProducer + i);
                     while (!buffer.TryWrite(item))
                     {
-                        Thread.SpinWait(100);
+                        GcSafeSpin.Pause(100);
                     }
                 }
             });
@@ -958,7 +958,7 @@ public class MpscFetchBufferTests
                 }
                 else
                 {
-                    Thread.SpinWait(10);
+                    GcSafeSpin.Pause(10);
                 }
             }
         });
