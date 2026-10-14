@@ -481,8 +481,7 @@ public sealed class TransactionTests
         {
             for (var i = 1; i <= rounds; i++)
             {
-                while (Volatile.Read(ref round) < i)
-                    Thread.SpinWait(1);
+                GcSafeSpin.UntilAtLeast(ref round, i);
                 Thread.SpinWait((i / 16) % 16);
                 second();
                 Volatile.Write(ref secondDone, i);
@@ -496,8 +495,7 @@ public sealed class TransactionTests
             Volatile.Write(ref round, i);
             Thread.SpinWait(i % 16);
             first();
-            while (Volatile.Read(ref secondDone) < i)
-                Thread.SpinWait(1);
+            GcSafeSpin.UntilAtLeast(ref secondDone, i);
             if (!isValid())
                 lost++;
         }
