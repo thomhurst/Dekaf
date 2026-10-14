@@ -19,13 +19,14 @@ using AvroSchema = Avro.Schema;
 namespace Dekaf.Tests.Integration;
 
 [Category("Serialization")]
+[Timeout(120_000)]
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
     [Test]
     [Arguments("AES256_GCM")]
     [Arguments("AES256_SIV")]
-    public async Task RegisteredAvroCsfleRule_ProduceConsume_RoundTripsTaggedField(string algorithm)
+    public async Task RegisteredAvroCsfleRule_ProduceConsume_RoundTripsTaggedField(string algorithm, CancellationToken cancellationToken)
     {
         const string schemaText = """
             {
@@ -64,7 +65,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             SchemaType = SchemaType.Avro,
             SchemaString = schemaText,
             RuleSet = new SchemaRuleSet { DomainRules = [rule] }
-        });
+        }, cancellationToken);
         var kms = new LocalKmsProvider(new Dictionary<string, byte[]>(StringComparer.Ordinal)
         {
             ["local://integration"] = Enumerable.Range(1, 32).Select(static value => (byte)value).ToArray()
@@ -94,20 +95,20 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithValueSerializer(serializer)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
         await producer.ProduceAsync(new ProducerMessage<string, GenericRecord>
         {
             Topic = topic,
             Key = "key",
             Value = record
-        });
+        }, cancellationToken);
         await using var consumer = await Kafka.CreateConsumer<string, GenericRecord>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithGroupId($"avro-csfle-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(deserializer)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
         consumer.Subscribe(topic);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         GenericRecord? consumed = null;
@@ -122,7 +123,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
     }
 
     [Test]
-    public async Task RegisteredJsonataMigrationRule_UseLatestVersion_TransformsPayload()
+    public async Task RegisteredJsonataMigrationRule_UseLatestVersion_TransformsPayload(CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
         var subject = $"{topic}-value";
@@ -154,8 +155,8 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
                 ]
             }
         };
-        var writerId = await registryClient.RegisterSchemaAsync(subject, v1);
-        await registryClient.RegisterSchemaAsync(subject, v2);
+        var writerId = await registryClient.RegisterSchemaAsync(subject, v1, cancellationToken);
+        await registryClient.RegisterSchemaAsync(subject, v2, cancellationToken);
         var executor = new SchemaRegistryRuleExecutor([new JsonataSchemaRegistryRuleHandler()]);
         await using var deserializer = new JsonSchemaRegistryDeserializer<System.Text.Json.JsonElement>(
             registryClient,
@@ -173,7 +174,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
     }
 
     [Test]
-    public async Task RegisteredJsonataIdentityRule_UseLatestVersion_ValidatesWriterRepresentation()
+    public async Task RegisteredJsonataIdentityRule_UseLatestVersion_ValidatesWriterRepresentation(CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
         var subject = $"{topic}-value";
@@ -181,7 +182,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         {
             Url = testInfra.RegistryUrl
         });
-        await registryClient.UpdateCompatibilityAsync(SchemaCompatibilityLevel.None, subject);
+        await registryClient.UpdateCompatibilityAsync(SchemaCompatibilityLevel.None, subject, cancellationToken);
         var v1 = new Schema
         {
             SchemaType = SchemaType.Json,
@@ -206,8 +207,8 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
                 ]
             }
         };
-        var writerId = await registryClient.RegisterSchemaAsync(subject, v1);
-        await registryClient.RegisterSchemaAsync(subject, v2);
+        var writerId = await registryClient.RegisterSchemaAsync(subject, v1, cancellationToken);
+        await registryClient.RegisterSchemaAsync(subject, v2, cancellationToken);
         var executor = new SchemaRegistryRuleExecutor([new JsonataSchemaRegistryRuleHandler()]);
         var validationOptions = new JsonSchemaValidationOptions
         {
@@ -233,7 +234,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
     [Test]
     [Arguments(-1)]
     [Arguments(0)]
-    public async Task RegisteredMigrationRules_UseLatestVersion_ExecutesUpgradePath(int latestCacheTtlSecs)
+    public async Task RegisteredMigrationRules_UseLatestVersion_ExecutesUpgradePath(int latestCacheTtlSecs, CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
         var subject = $"{topic}-value";
@@ -265,8 +266,8 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
                 ]
             }
         };
-        var writerId = await registryClient.RegisterSchemaAsync(subject, v1);
-        await registryClient.RegisterSchemaAsync(subject, v2);
+        var writerId = await registryClient.RegisterSchemaAsync(subject, v1, cancellationToken);
+        await registryClient.RegisterSchemaAsync(subject, v2, cancellationToken);
         var calls = new ConcurrentQueue<string>();
         var executor = new SchemaRegistryRuleExecutor([new AppendMigrationRuleHandler(calls)]);
         await using var deserializer = SchemaRegistryDeserializer.Create(
@@ -308,7 +309,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
     }
 
     [Test]
-    public async Task RegisteredDomainRules_ProduceAndConsume_RoundTrip()
+    public async Task RegisteredDomainRules_ProduceAndConsume_RoundTrip(CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
         using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
@@ -366,14 +367,14 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithValueSerializer(serializer)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic,
             Key = "key",
             Value = "domain-rule-payload"
-        });
+        }, cancellationToken);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(testInfra.BootstrapServers)
@@ -381,7 +382,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(deserializer)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
         consumer.Subscribe(topic);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -392,8 +393,8 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             break;
         }
 
-        var registered = await registryClient.GetSchemaBySubjectAsync("DomainRulePayload");
-        var registeredById = await registryClient.GetSchemaAsync(registered.Id);
+        var registered = await registryClient.GetSchemaBySubjectAsync("DomainRulePayload", cancellationToken: cancellationToken);
+        var registeredById = await registryClient.GetSchemaAsync(registered.Id, cancellationToken);
         await Assert.That(consumed).IsEqualTo("domain-rule-payload");
         await Assert.That(registeredById.RuleSet!.DomainRules).Count().IsEqualTo(2);
         await Assert.That(calls).IsEquivalentTo([
@@ -403,7 +404,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
     }
 
     [Test]
-    public async Task RegisteredWriteRules_RegistryResolutionModes_JsonAvroAndProtobufExecute()
+    public async Task RegisteredWriteRules_RegistryResolutionModes_JsonAvroAndProtobufExecute(CancellationToken cancellationToken)
     {
         var jsonTopic = await testInfra.CreateTestTopicAsync();
         var avroTopic = await testInfra.CreateTestTopicAsync();
@@ -421,7 +422,8 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         const string jsonSchemaText = """{ "type": "string", "title": "JsonWriteRule" }""";
         await registryClient.RegisterSchemaAsync(
             $"{jsonTopic}-value",
-            CreateSchema(SchemaType.Json, jsonSchemaText));
+            CreateSchema(SchemaType.Json, jsonSchemaText),
+            cancellationToken);
         await using var jsonSerializer = new JsonSchemaRegistrySerializer<string>(
             registryClient,
             jsonSchemaText,
@@ -446,7 +448,8 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(avroSchemaText);
         await registryClient.RegisterSchemaAsync(
             $"{avroTopic}-value",
-            CreateSchema(SchemaType.Avro, avroSchema.ToString()));
+            CreateSchema(SchemaType.Avro, avroSchema.ToString()),
+            cancellationToken);
         await using var avroSerializer = new AvroSchemaRegistrySerializer<GenericRecord>(
             registryClient,
             new AvroSerializerConfig
@@ -461,13 +464,13 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithValueSerializer(avroSerializer)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
         await avroProducer.ProduceAsync(new ProducerMessage<string, GenericRecord>
         {
             Topic = avroTopic,
             Key = "key",
             Value = record
-        });
+        }, cancellationToken);
 
         await using var latestAvroSerializer = new AvroSchemaRegistrySerializer<GenericRecord>(
             registryClient,
@@ -483,7 +486,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             $"{protobufTopic}-value",
             CreateSchema(
                 SchemaType.Protobuf,
-                SchemaRuleMessage.Descriptor.File.SerializedData.ToBase64()));
+                SchemaRuleMessage.Descriptor.File.SerializedData.ToBase64()), cancellationToken);
         await using var protobufSerializer = new ProtobufSchemaRegistrySerializer<SchemaRuleMessage>(
             registryClient,
             new ProtobufSerializerConfig
@@ -505,7 +508,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
     }
 
     [Test]
-    public async Task RegisteredJsonInlineRules_ProduceConsumeAndRejectInvalidPayload()
+    public async Task RegisteredJsonInlineRules_ProduceConsumeAndRejectInvalidPayload(CancellationToken cancellationToken)
     {
         const string schemaText = """
             {
@@ -527,7 +530,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         {
             SchemaType = SchemaType.Json,
             SchemaString = schemaText
-        });
+        }, cancellationToken);
         var validationOptions = new JsonSchemaValidationOptions
         {
             ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registryClient),
@@ -552,7 +555,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         await using var producer = await Kafka.CreateProducer<string, InlineValidationPayload>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithValueSerializer(serializer)
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
         await Assert.That(async () => await producer.ProduceAsync(
             new ProducerMessage<string, InlineValidationPayload>
             {
@@ -566,14 +569,14 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             Topic = topic,
             Key = "key",
             Value = new InlineValidationPayload("valid")
-        });
+        }, cancellationToken);
 
         await using var consumer = await Kafka.CreateConsumer<string, InlineValidationPayload>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithGroupId($"inline-validation-{Guid.NewGuid():N}")
             .WithValueDeserializer(deserializer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
         consumer.Subscribe(topic);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         InlineValidationPayload? consumed = null;
@@ -587,7 +590,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
     }
 
     [Test]
-    public async Task RegisteredProtobufInlineRules_ProduceConsumeAndRejectInvalidPayload()
+    public async Task RegisteredProtobufInlineRules_ProduceConsumeAndRejectInvalidPayload(CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
         using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
@@ -598,7 +601,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         {
             SchemaType = SchemaType.Protobuf,
             SchemaString = ProtobufInlineValidationMessage.Descriptor.File.SerializedData.ToBase64()
-        });
+        }, cancellationToken);
         var serializerConfig = new ProtobufSerializerConfig
         {
             AutoRegisterSchemas = false,
@@ -625,7 +628,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         await using var producer = await Kafka.CreateProducer<string, ProtobufInlineValidationMessage>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithValueSerializer(serializer)
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
         await Assert.That(async () => await producer.ProduceAsync(
             new ProducerMessage<string, ProtobufInlineValidationMessage>
             {
@@ -639,14 +642,14 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             Topic = topic,
             Key = "valid",
             Value = new ProtobufInlineValidationMessage { Value = 7 }
-        });
+        }, cancellationToken);
 
         await using var consumer = await Kafka.CreateConsumer<string, ProtobufInlineValidationMessage>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithGroupId($"protobuf-inline-validation-{Guid.NewGuid():N}")
             .WithValueDeserializer(deserializer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
         consumer.Subscribe(topic);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         ProtobufInlineValidationMessage? consumed = null;

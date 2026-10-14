@@ -43,6 +43,99 @@ export DOTNET_GCConserveMemory=9
 # environment.
 export TUNIT_OTEL_MAX_EXTERNAL_SPANS="${TUNIT_OTEL_MAX_EXTERNAL_SPANS:-5000}"
 
+# NativeAOT has no diagnostics IPC server, so MTP's --hangdump can never dump an
+# AOT test process (run 38631204581 failed with ServerNotAvailableException and
+# left only the list of running tests). AOT lanes use a watchdog instead: when a
+# category passes its deadline, or the run reaches its absolute deadline, it
+# captures native thread stacks with gdb (plus a capped gcore core) into
+# TestResults/<category>/, then kills the process so the job fails with
+# evidence instead of timing out. The executable's .dbg file sits next to it,
+# so gdb resolves managed method names.
+#
+# Workflows set INTEGRATION_WATCHDOG_DEADLINE_EPOCH from the job's start time
+# and timeout, minus a reserve for the diagnostics (bounded at about 6 minutes)
+# and the artifact uploads. Without it, the run budget counts from this
+# script's start.
+watchdog_category_seconds="${INTEGRATION_WATCHDOG_CATEGORY_SECONDS:-720}"
+watchdog_poll_seconds="${INTEGRATION_WATCHDOG_POLL_SECONDS:-5}"
+watchdog_run_deadline="${INTEGRATION_WATCHDOG_DEADLINE_EPOCH:-$(( $(date +%s) + ${INTEGRATION_WATCHDOG_TOTAL_SECONDS:-1080} ))}"
+if [ "$tfm" = "aot" ]; then
+  # Let a crashing (SIGABRT/SIGSEGV) AOT process leave a core where the
+  # workflow's kernel.core_pattern points.
+  ulimit -c unlimited 2>/dev/null || true
+fi
+
+ensure_gdb() {
+  command -v gdb >/dev/null 2>&1 && command -v gcore >/dev/null 2>&1 && return 0
+  echo "Installing gdb for native stack capture..."
+  timeout 45s sudo apt-get update -qq >/dev/null 2>&1 || true
+  timeout 60s sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends gdb >/dev/null 2>&1 || true
+  command -v gdb >/dev/null 2>&1
+}
+
+# Worst case about 6 minutes: gdb install 105 s, backtraces of the test process
+# and any children sharing one 90 s budget (normally seconds each), one core of
+# the test process 120 s, gzip 60 s.
+capture_native_diagnostics() {
+  local root_pid="$1" out_dir="$2" pids pid stacks_deadline remaining
+  mkdir -p "$out_dir"
+  # The test process is normally the root; include descendants in case an
+  # extension launched a separate test host.
+  # pgrep exits 1 without children; pipefail must not turn that into a failure.
+  pids="$root_pid $( { pgrep -P "$root_pid" 2>/dev/null || true; } | tr '\n' ' ')"
+  if ! ensure_gdb; then
+    echo "::warning::gdb is unavailable; no native stacks captured for $category"
+    return 0
+  fi
+  stacks_deadline=$(( $(date +%s) + 90 ))
+  for pid in $pids; do
+    kill -0 "$pid" 2>/dev/null || continue
+    remaining=$(( stacks_deadline - $(date +%s) ))
+    [ "$remaining" -gt 0 ] || break
+    echo "Capturing native thread stacks of process $pid into $out_dir"
+    timeout "${remaining}s" sudo gdb -p "$pid" -batch -nx \
+      -ex "set debuginfod enabled off" \
+      -ex "set pagination off" \
+      -ex "set print frame-arguments none" \
+      -ex "info threads" \
+      -ex "thread apply all bt" \
+      > "$out_dir/native-stacks-$pid.txt" 2>&1 || true
+  done
+  # The core supplements the stacks: only the test process, and capped.
+  echo "Capturing core of process $root_pid"
+  if timeout 120s sudo gcore -o "$out_dir/core" "$root_pid" > "$out_dir/gcore-$root_pid.log" 2>&1; then
+    sudo chmod a+r "$out_dir/core.$root_pid" 2>/dev/null || true
+    timeout 60s gzip -1 "$out_dir/core.$root_pid" || rm -f "$out_dir/core.$root_pid.gz"
+  fi
+}
+
+# Runs the test executable, enforcing the category and run deadlines.
+run_with_watchdog() {
+  local out_dir="$1"; shift
+  local category_started deadline status now
+  category_started=$(date +%s)
+  deadline=$((category_started + watchdog_category_seconds))
+  [ "$watchdog_run_deadline" -lt "$deadline" ] && deadline=$watchdog_run_deadline
+
+  "$@" &
+  local pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    now=$(date +%s)
+    if [ "$now" -ge "$deadline" ]; then
+      echo "::error::Category $category hit its watchdog deadline after $((now - category_started))s; capturing native diagnostics before killing process $pid"
+      capture_native_diagnostics "$pid" "$out_dir"
+      pkill -KILL -P "$pid" 2>/dev/null || true
+      kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      return 124
+    fi
+    sleep "$watchdog_poll_seconds"
+  done
+  status=0
+  wait "$pid" || status=$?
+  return "$status"
+}
+
 for category in "${categories[@]}"; do
   if [ "$tfm" = "aot" ] && [ "$category" = "Interop" ]; then
     echo "Skipping Interop for NativeAOT because Confluent.Kafka requires runtime reflection"
@@ -90,9 +183,11 @@ print(",".join(categories[group] for group in groups))' \
   esac
 
   echo "::group::Category $category"
-  args=(
-    --hangdump
-    --hangdump-timeout 5m
+  args=()
+  if [ "$tfm" != "aot" ]; then
+    args+=(--hangdump --hangdump-timeout 5m)
+  fi
+  args+=(
     --log-level Debug
     --treenode-filter "$filter"
     --results-directory "TestResults/$category"
@@ -105,6 +200,10 @@ print(",".join(categories[group] for group in groups))' \
   if [ "${3:-}" = "--list-tests" ]; then
     args+=(--list-tests --no-ansi)
   fi
-  "$exe" "${args[@]}"
+  if [ "$tfm" = "aot" ] && [ "${3:-}" != "--list-tests" ]; then
+    run_with_watchdog "TestResults/$category" "$exe" "${args[@]}"
+  else
+    "$exe" "${args[@]}"
+  fi
   echo "::endgroup::"
 done

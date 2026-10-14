@@ -11,6 +11,7 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for Schema Registry error paths and caching behavior.
 /// </summary>
 [Category("Serialization")]
+[Timeout(120_000)]
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class SchemaRegistryErrorTests(KafkaWithSchemaRegistryContainer testInfra)
 {
@@ -27,7 +28,7 @@ public sealed class SchemaRegistryErrorTests(KafkaWithSchemaRegistryContainer te
         """;
 
     [Test]
-    public async Task SchemaRegistry_ConnectionFailure_ProducesMeaningfulError()
+    public async Task SchemaRegistry_ConnectionFailure_ProducesMeaningfulError(CancellationToken cancellationToken)
     {
         // Arrange - use an invalid registry URL that will fail to connect
         var topic = await testInfra.CreateTestTopicAsync();
@@ -50,7 +51,7 @@ public sealed class SchemaRegistryErrorTests(KafkaWithSchemaRegistryContainer te
             .WithClientId("error-test-producer")
             .WithValueSerializer(serializer)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
 
         // Act & Assert - producing with a bad registry URL should throw an exception
         await Assert.That(async () =>
@@ -65,7 +66,7 @@ public sealed class SchemaRegistryErrorTests(KafkaWithSchemaRegistryContainer te
     }
 
     [Test]
-    public async Task SchemaRegistry_RequestTimeout_Behavior()
+    public async Task SchemaRegistry_RequestTimeout_Behavior(CancellationToken cancellationToken)
     {
         // Arrange - use an unreachable URL with a very short timeout
         using var timeoutRegistryClient = new SchemaRegistryClient(new SchemaRegistryConfig
@@ -89,7 +90,7 @@ public sealed class SchemaRegistryErrorTests(KafkaWithSchemaRegistryContainer te
     }
 
     [Test]
-    public async Task SchemaRegistry_CacheBehavior_CachedVsUncached()
+    public async Task SchemaRegistry_CacheBehavior_CachedVsUncached(CancellationToken cancellationToken)
     {
         // Arrange - register a schema and verify caching behavior
         var subject = $"cache-test-{Guid.NewGuid():N}-value";
@@ -106,14 +107,14 @@ public sealed class SchemaRegistryErrorTests(KafkaWithSchemaRegistryContainer te
         };
 
         // Act - First call goes to registry
-        var firstId = await registryClient.RegisterSchemaAsync(subject, testSchema);
+        var firstId = await registryClient.RegisterSchemaAsync(subject, testSchema, cancellationToken);
 
         // Second call should use cache (same subject + schema = same cache key)
-        var secondId = await registryClient.RegisterSchemaAsync(subject, testSchema);
+        var secondId = await registryClient.RegisterSchemaAsync(subject, testSchema, cancellationToken);
 
         // Also verify GetSchemaAsync uses cache: first call fetches, second uses cache
-        var fetchedSchema1 = await registryClient.GetSchemaAsync(firstId);
-        var fetchedSchema2 = await registryClient.GetSchemaAsync(firstId);
+        var fetchedSchema1 = await registryClient.GetSchemaAsync(firstId, cancellationToken);
+        var fetchedSchema2 = await registryClient.GetSchemaAsync(firstId, cancellationToken);
 
         // Assert - both calls return the same ID
         await Assert.That(firstId).IsGreaterThan(0);
@@ -125,7 +126,7 @@ public sealed class SchemaRegistryErrorTests(KafkaWithSchemaRegistryContainer te
     }
 
     [Test]
-    public async Task SchemaEvolution_OldConsumerReadsNewSchema()
+    public async Task SchemaEvolution_OldConsumerReadsNewSchema(CancellationToken cancellationToken)
     {
         // Arrange - produce with a v2 schema (has extra optional field),
         // consume using a reader that only knows v1 schema
@@ -165,7 +166,7 @@ public sealed class SchemaRegistryErrorTests(KafkaWithSchemaRegistryContainer te
             .WithClientId("evolution-producer")
             .WithValueSerializer(serializer)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
 
         await producer.ProduceAsync(new ProducerMessage<string, GenericRecord>
         {
@@ -204,7 +205,7 @@ public sealed class SchemaRegistryErrorTests(KafkaWithSchemaRegistryContainer te
             .WithGroupId($"evolution-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(deserializer)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync(cancellationToken);
 
         consumer.Subscribe(topic);
 

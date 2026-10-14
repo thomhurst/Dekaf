@@ -16,11 +16,12 @@ using DekafSerializationContext = Dekaf.Serialization.SerializationContext;
 namespace Dekaf.Tests.Integration;
 
 [Category("Serialization")]
+[Timeout(120_000)]
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class AvroPocoInteropIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
     [Test]
-    public async Task GeneratedPoco_InteroperatesWithConfluentGenericRecordBothDirections()
+    public async Task GeneratedPoco_InteroperatesWithConfluentGenericRecordBothDirections(CancellationToken cancellationToken)
     {
         var topic = $"avro-poco-interop-{Guid.NewGuid():N}";
         using var dekafRegistry = new DekafRegistryClient(new DekafRegistryConfig { Url = testInfra.RegistryUrl });
@@ -40,7 +41,7 @@ public sealed class AvroPocoInteropIntegrationTests(KafkaWithSchemaRegistryConta
         var confluentContext = new ConfluentContext(MessageComponentType.Value, topic);
 
         var poco = new PocoInteropRecord { Id = 42, Name = "Dekaf", Note = "to-confluent", Amount = -123.45m };
-        await dekafSerializer.WarmupAsync(topic);
+        await dekafSerializer.WarmupAsync(topic, cancellationToken: cancellationToken);
         var buffer = new ArrayBufferWriter<byte>();
         dekafSerializer.Serialize(poco, ref buffer, dekafContext);
 
@@ -64,7 +65,7 @@ public sealed class AvroPocoInteropIntegrationTests(KafkaWithSchemaRegistryConta
         var confluentBytes = await confluentSerializer.SerializeAsync(generic, confluentContext);
 
         var confluentSchemaId = BinaryPrimitives.ReadInt32BigEndian(confluentBytes.AsSpan(1, 4));
-        await dekafDeserializer.WarmupAsync(confluentSchemaId);
+        await dekafDeserializer.WarmupAsync(confluentSchemaId, cancellationToken);
         var dekafValue = dekafDeserializer.Deserialize(confluentBytes, dekafContext);
         await Assert.That(dekafValue.Id).IsEqualTo(84);
         await Assert.That(dekafValue.Name).IsEqualTo("Confluent");

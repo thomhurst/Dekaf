@@ -829,6 +829,11 @@ jobs:
       KAFKA_TEST_IMAGE_TAG: '4.3.1'
 
     steps:
+      # Watchdog deadline: job start + 25 min timeout - 8 min reserve for the
+      # native diagnostics (about 6 min worst case) and the artifact uploads.
+      - name: Set NativeAOT watchdog deadline
+        run: echo "INTEGRATION_WATCHDOG_DEADLINE_EPOCH=$(( $(date +%s) + (25 - 8) * 60 ))" >> "$GITHUB_ENV"
+
       - name: Add Swap Space
         run: |
           sudo fallocate -l 8G /mnt/extra-swapfile
@@ -861,6 +866,26 @@ jobs:
             4.0.2 \
             "testcontainers/ryuk:0.14.0@sha256:7c1a8a9a47c780ed0f983770a662f80deb115d95cce3e2daa3d12115b8cd28f0"
 
+      # Schema Registry fixtures otherwise pull these inside the test process,
+      # with no timeout and no mirror fallback (run 38631204581 stalled there).
+      - name: Pre-pull Schema Registry images
+        timeout-minutes: 5
+        env:
+          PREPULL_TIMEOUT: 120s
+          PREPULL_MIRROR_TIMEOUT: 90s
+        run: |
+          bash scripts/prepull-kafka-images.sh \
+            "confluentinc/cp-schema-registry:7.9.0" \
+            "confluentinc/cp-schema-registry:8.2.0"
+
+      - name: Enable core dumps
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/TestResults/cores"
+          echo "$GITHUB_WORKSPACE/TestResults/cores/core.%e.%p" | sudo tee /proc/sys/kernel/core_pattern
+
+      # NativeAOT cannot use --hangdump; the runner's watchdog captures native
+      # stacks instead. INTEGRATION_WATCHDOG_DEADLINE_EPOCH (first step) leaves
+      # time for them and the uploads before the job timeout.
       - name: Run NativeAOT integration smoke tests
         run: bash scripts/run-integration-categories.sh aot "Producer,Consumer,Messaging,Serialization"
 
@@ -872,15 +897,19 @@ jobs:
           path: |
             **/TestResults/**
             **/test-results/**
+            !**/TestResults/**/core.*
           retention-days: 7
 
-      - name: Upload HangDump artifacts
+      # Symbolize a core with the executable and .dbg from native-aot-integration.
+      - name: Upload NativeAOT hang diagnostics
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
-          name: hangdump-artifacts-integration-aot-smoke
+          name: native-diagnostics-integration-aot-smoke
           path: |
-            **/*.dmp
+            **/TestResults/**/native-stacks-*.txt
+            **/TestResults/**/gcore-*.log
+            **/TestResults/**/core.*
           if-no-files-found: ignore
           retention-days: 7
 

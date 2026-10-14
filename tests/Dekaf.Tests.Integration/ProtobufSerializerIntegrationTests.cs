@@ -11,11 +11,12 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for Protobuf serializer with Kafka and Schema Registry.
 /// </summary>
 [Category("Serialization")]
+[Timeout(120_000)]
 [ClassDataSource<KafkaWithAssociationSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class ProtobufSerializerIntegrationTests(KafkaWithAssociationSchemaRegistryContainer testInfra)
 {
     [Test]
-    public async Task ProtobufSerializer_ExplicitSchemaId_RoundTrips()
+    public async Task ProtobufSerializer_ExplicitSchemaId_RoundTrips(CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
         using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
@@ -26,7 +27,7 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithAssociationSchem
         {
             SchemaType = SchemaType.Protobuf,
             SchemaString = TestPerson.Descriptor.File.SerializedData.ToBase64()
-        });
+        }, cancellationToken);
         var person = new TestPerson { Id = 71, Name = "Explicit ID", Email = "id@example.com" };
 
         await using var producer = await Kafka.CreateProducer<string, TestPerson>()
@@ -36,8 +37,8 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithAssociationSchem
                 UseSchemaId = schemaId
             })
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
-        await producer.ProduceAsync(topic, "explicit", person);
+            .BuildAsync(cancellationToken);
+        await producer.ProduceAsync(topic, "explicit", person, cancellationToken);
 
         var consumed = await ConsumeOneAsync(topic, registryClient);
 
@@ -46,7 +47,7 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithAssociationSchem
     }
 
     [Test]
-    public async Task ProtobufSerializer_GuidHeader_RoundTrips()
+    public async Task ProtobufSerializer_GuidHeader_RoundTrips(CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
         using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
@@ -62,8 +63,8 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithAssociationSchem
                 SchemaIdStrategy = SchemaIdSerializerStrategy.Header
             })
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
-        await producer.ProduceAsync(topic, "guid", person);
+            .BuildAsync(cancellationToken);
+        await producer.ProduceAsync(topic, "guid", person, cancellationToken);
 
         var consumed = await ConsumeOneAsync(
             topic,
@@ -80,7 +81,7 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithAssociationSchem
     }
 
     [Test]
-    public async Task ProtobufSerializer_ProduceAndConsume_RoundTrips()
+    public async Task ProtobufSerializer_ProduceAndConsume_RoundTrips(CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
 
@@ -100,7 +101,7 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithAssociationSchem
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseProtobufSchemaRegistry(registryClient)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
 
         await producer.ProduceAsync(new ProducerMessage<string, TestPerson>
         {
@@ -114,7 +115,7 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithAssociationSchem
             .WithGroupId($"proto-test-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .UseProtobufSchemaRegistry(registryClient)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync(cancellationToken);
 
         consumer.Subscribe(topic);
 
@@ -134,7 +135,7 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithAssociationSchem
     }
 
     [Test]
-    public async Task ProtobufSerializer_MultipleMessages_AllRoundTrip()
+    public async Task ProtobufSerializer_MultipleMessages_AllRoundTrip(CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
         const int messageCount = 10;
@@ -148,7 +149,7 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithAssociationSchem
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseProtobufSchemaRegistry(registryClient)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -172,7 +173,7 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithAssociationSchem
             .WithGroupId($"proto-multi-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .UseProtobufSchemaRegistry(registryClient)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync(cancellationToken);
 
         consumer.Subscribe(topic);
 
@@ -196,7 +197,7 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithAssociationSchem
     }
 
     [Test]
-    public async Task ProtobufSerializer_RegistersSchemaInRegistry()
+    public async Task ProtobufSerializer_RegistersSchemaInRegistry(CancellationToken cancellationToken)
     {
         var topic = $"proto-schema-test-{Guid.NewGuid():N}";
         await testInfra.CreateTopicAsync(topic);
@@ -210,7 +211,7 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithAssociationSchem
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseProtobufSchemaRegistry(registryClient)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
 
         await producer.ProduceAsync(new ProducerMessage<string, TestPerson>
         {
@@ -219,12 +220,12 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithAssociationSchem
             Value = new TestPerson { Id = 1, Name = "Schema Test", Email = "schema@test.com" }
         }, CancellationToken.None);
 
-        var subjects = await registryClient.GetAllSubjectsAsync();
+        var subjects = await registryClient.GetAllSubjectsAsync(cancellationToken);
         await Assert.That(subjects).Contains($"{topic}-value");
     }
 
     [Test]
-    public async Task ProtobufSerializer_DefaultFields_HandledCorrectly()
+    public async Task ProtobufSerializer_DefaultFields_HandledCorrectly(CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
 
@@ -245,7 +246,7 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithAssociationSchem
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseProtobufSchemaRegistry(registryClient)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
 
         await producer.ProduceAsync(new ProducerMessage<string, TestPerson>
         {
@@ -259,7 +260,7 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithAssociationSchem
             .WithGroupId($"proto-default-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .UseProtobufSchemaRegistry(registryClient)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync(cancellationToken);
 
         consumer.Subscribe(topic);
 

@@ -4,24 +4,26 @@ namespace Dekaf.Tests.Integration;
 
 [Category("Serialization")]
 [NotInParallel]
+[Timeout(120_000)]
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class SchemaRegistryCompatibilityConfigurationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
     [Test]
-    public async Task CompatibilityConfiguration_GlobalAndSubjectPoliciesRoundTripIndependently()
+    public async Task CompatibilityConfiguration_GlobalAndSubjectPoliciesRoundTripIndependently(CancellationToken cancellationToken)
     {
         using var client = new SchemaRegistryClient(new SchemaRegistryConfig
         {
             Url = testInfra.RegistryUrl
         });
-        var originalGlobal = await client.GetCompatibilityAsync();
+        var originalGlobal = await client.GetCompatibilityAsync(cancellationToken: cancellationToken);
 
         try
         {
             var globalAcknowledged = await client.UpdateCompatibilityAsync(
-                SchemaCompatibilityLevel.BackwardTransitive);
+                SchemaCompatibilityLevel.BackwardTransitive,
+                cancellationToken: cancellationToken);
             await Assert.That(globalAcknowledged).IsEqualTo(SchemaCompatibilityLevel.BackwardTransitive);
-            await Assert.That(await client.GetCompatibilityAsync())
+            await Assert.That(await client.GetCompatibilityAsync(cancellationToken: cancellationToken))
                 .IsEqualTo(SchemaCompatibilityLevel.BackwardTransitive);
 
             var subject = $"compatibility-{Guid.NewGuid():N}-value";
@@ -35,21 +37,23 @@ public sealed class SchemaRegistryCompatibilityConfigurationTests(KafkaWithSchem
                       "fields": [ { "name": "id", "type": "long" } ]
                     }
                     """
-            });
+            }, cancellationToken);
 
             var subjectAcknowledged = await client.UpdateCompatibilityAsync(
                 SchemaCompatibilityLevel.FullTransitive,
-                subject);
+                subject,
+                cancellationToken);
 
             await Assert.That(subjectAcknowledged).IsEqualTo(SchemaCompatibilityLevel.FullTransitive);
-            await Assert.That(await client.GetCompatibilityAsync(subject))
+            await Assert.That(await client.GetCompatibilityAsync(subject, cancellationToken))
                 .IsEqualTo(SchemaCompatibilityLevel.FullTransitive);
-            await Assert.That(await client.GetCompatibilityAsync())
+            await Assert.That(await client.GetCompatibilityAsync(cancellationToken: cancellationToken))
                 .IsEqualTo(SchemaCompatibilityLevel.BackwardTransitive);
         }
         finally
         {
-            await client.UpdateCompatibilityAsync(originalGlobal);
+            // Restore the shared registry's global policy even when the test timed out.
+            await client.UpdateCompatibilityAsync(originalGlobal, cancellationToken: CancellationToken.None);
         }
     }
 }

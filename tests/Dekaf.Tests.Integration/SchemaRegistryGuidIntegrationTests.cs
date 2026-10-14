@@ -4,11 +4,12 @@ namespace Dekaf.Tests.Integration;
 
 [Category("Serialization")]
 [NotInParallel]
+[Timeout(120_000)]
 [ClassDataSource<KafkaWithAssociationSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class SchemaRegistryGuidIntegrationTests(KafkaWithAssociationSchemaRegistryContainer testInfra)
 {
     [Test]
-    public async Task GuidLookup_WhenRegistryExposesGuid_ReturnsRegisteredSchema()
+    public async Task GuidLookup_WhenRegistryExposesGuid_ReturnsRegisteredSchema(CancellationToken cancellationToken)
     {
         using var client = new SchemaRegistryClient(new SchemaRegistryConfig
         {
@@ -28,8 +29,8 @@ public sealed class SchemaRegistryGuidIntegrationTests(KafkaWithAssociationSchem
                 """
         };
 
-        await client.RegisterSchemaAsync(subject, expected);
-        var registered = await client.GetSchemaBySubjectAsync(subject);
+        await client.RegisterSchemaAsync(subject, expected, cancellationToken);
+        var registered = await client.GetSchemaBySubjectAsync(subject, cancellationToken: cancellationToken);
 
         await Assert.That(registered.Guid).IsNotNull();
 
@@ -38,7 +39,7 @@ public sealed class SchemaRegistryGuidIntegrationTests(KafkaWithAssociationSchem
             Url = testInfra.RegistryUrl,
             MaxCachedSchemas = 0
         });
-        var actual = await uncachedClient.GetSchemaByGuidAsync(registered.Guid!);
+        var actual = await uncachedClient.GetSchemaByGuidAsync(registered.Guid!, cancellationToken: cancellationToken);
 
         await Assert.That(actual.SchemaType).IsEqualTo(registered.Schema.SchemaType);
         await Assert.That(actual.SchemaString).IsEqualTo(registered.Schema.SchemaString);

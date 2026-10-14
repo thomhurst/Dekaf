@@ -4,12 +4,13 @@ using Dekaf.Security.Sasl;
 
 namespace Dekaf.Tests.Integration;
 
+[Timeout(120_000)]
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 [Category("Serialization")]
 public sealed class SchemaRegistryOAuthConcurrencyIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
     [Test]
-    public async Task ConcurrentRegistryRequests_ShareOneCustomTokenRefresh()
+    public async Task ConcurrentRegistryRequests_ShareOneCustomTokenRefresh(CancellationToken cancellationToken)
     {
         var response = new TaskCompletionSource<OAuthBearerToken>(TaskCreationOptions.RunContinuationsAsynchronously);
         var providerCalls = 0;
@@ -25,7 +26,7 @@ public sealed class SchemaRegistryOAuthConcurrencyIntegrationTests(KafkaWithSche
         }, handler);
         var requests = new Task[16];
         for (var index = 0; index < requests.Length; index++)
-            requests[index] = client.GetAllSubjectsAsync();
+            requests[index] = client.GetAllSubjectsAsync(cancellationToken);
         var callsBeforeCompletion = Volatile.Read(ref providerCalls);
         var sentBeforeCompletion = handler.Tokens.Count;
         response.SetResult(new OAuthBearerToken
@@ -34,7 +35,7 @@ public sealed class SchemaRegistryOAuthConcurrencyIntegrationTests(KafkaWithSche
             PrincipalName = "integration-test",
             Expiration = DateTimeOffset.UtcNow.AddHours(1)
         });
-        await Task.WhenAll(requests).WaitAsync(TimeSpan.FromSeconds(30));
+        await Task.WhenAll(requests).WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
 
         await Assert.That(callsBeforeCompletion).IsEqualTo(1);
         await Assert.That(providerCalls).IsEqualTo(1);

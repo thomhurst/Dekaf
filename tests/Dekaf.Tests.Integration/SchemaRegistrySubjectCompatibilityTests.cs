@@ -15,6 +15,7 @@ using DekafSubjectNameStrategy = Dekaf.SchemaRegistry.SubjectNameStrategy;
 namespace Dekaf.Tests.Integration;
 
 [Category("Serialization")]
+[Timeout(120_000)]
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegistryContainer testInfra)
 {
@@ -30,7 +31,7 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
         """;
 
     [Test]
-    public async Task Preparation_AllSerializers_ResolvedIdMatchesWireFormat()
+    public async Task Preparation_AllSerializers_ResolvedIdMatchesWireFormat(CancellationToken cancellationToken)
     {
         var prefix = $"prepare-{Guid.NewGuid():N}";
         using var registry = CreateDekafClient();
@@ -51,7 +52,7 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
             () => genericSchema);
         await AssertPreparedIdMatchesWireFormat(
             generic,
-            await generic.PrepareAsync($"{prefix}-generic", 42),
+            await generic.PrepareAsync($"{prefix}-generic", 42, cancellationToken: cancellationToken),
             42,
             $"{prefix}-generic");
 
@@ -61,7 +62,7 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
         await using var avro = new AvroSchemaRegistrySerializer<GenericRecord>(registry);
         await AssertPreparedIdMatchesWireFormat(
             avro,
-            await avro.PrepareAsync($"{prefix}-avro", avroValue),
+            await avro.PrepareAsync($"{prefix}-avro", avroValue, cancellationToken: cancellationToken),
             avroValue,
             $"{prefix}-avro");
 
@@ -69,7 +70,7 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
         await using var protobuf = new ProtobufSchemaRegistrySerializer<TestPerson>(registry);
         await AssertPreparedIdMatchesWireFormat(
             protobuf,
-            await protobuf.PrepareAsync($"{prefix}-protobuf", protobufValue),
+            await protobuf.PrepareAsync($"{prefix}-protobuf", protobufValue, cancellationToken: cancellationToken),
             protobufValue,
             $"{prefix}-protobuf");
 
@@ -79,7 +80,7 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
             "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"}}}");
         await AssertPreparedIdMatchesWireFormat(
             json,
-            await json.PrepareAsync($"{prefix}-json", jsonValue),
+            await json.PrepareAsync($"{prefix}-json", jsonValue, cancellationToken: cancellationToken),
             jsonValue,
             $"{prefix}-json");
     }
@@ -87,7 +88,7 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
     [Test]
     [Arguments(false)]
     [Arguments(true)]
-    public async Task Avro_ConfluentRegisteredSubject_CanBeLookedUpByDekaf(bool topicRecord)
+    public async Task Avro_ConfluentRegisteredSubject_CanBeLookedUpByDekaf(bool topicRecord, CancellationToken cancellationToken)
     {
         var topic = $"avro-subject-compat-{Guid.NewGuid():N}";
         using var confluentRegistry = CreateConfluentClient();
@@ -111,7 +112,7 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
         var expectedSubject = topicRecord
             ? $"{topic}-dekaf.compatibility.CompatibilityRecord"
             : "dekaf.compatibility.CompatibilityRecord";
-        var registered = await dekafRegistry.GetSchemaBySubjectAsync(expectedSubject);
+        var registered = await dekafRegistry.GetSchemaBySubjectAsync(expectedSubject, cancellationToken: cancellationToken);
         await Assert.That(registered.Subject).IsEqualTo(expectedSubject);
 
         await using var dekafSerializer = new AvroSchemaRegistrySerializer<GenericRecord>(
@@ -128,7 +129,7 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
     }
 
     [Test]
-    public async Task Protobuf_ConfluentRegisteredSubject_CanBeLookedUpByDekaf()
+    public async Task Protobuf_ConfluentRegisteredSubject_CanBeLookedUpByDekaf(CancellationToken cancellationToken)
     {
         var topic = $"protobuf-subject-compat-{Guid.NewGuid():N}";
         using var confluentRegistry = CreateConfluentClient();
@@ -147,7 +148,7 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
 
         using var dekafRegistry = CreateDekafClient();
         var expectedSubject = TestPerson.Descriptor.FullName;
-        var registered = await dekafRegistry.GetSchemaBySubjectAsync(expectedSubject);
+        var registered = await dekafRegistry.GetSchemaBySubjectAsync(expectedSubject, cancellationToken: cancellationToken);
         await Assert.That(registered.Subject).IsEqualTo(expectedSubject);
 
         await using var dekafSerializer = new ProtobufSchemaRegistrySerializer<TestPerson>(
@@ -162,7 +163,7 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
     }
 
     [Test]
-    public async Task Protobuf_DekafRegisteredReferences_CanBeConsumedByConfluent()
+    public async Task Protobuf_DekafRegisteredReferences_CanBeConsumedByConfluent(CancellationToken cancellationToken)
     {
         var topic = $"proto-reference-{Guid.NewGuid():N}";
         using var registryClient = CreateDekafClient();
@@ -172,7 +173,7 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
         {
             SchemaType = SchemaType.Protobuf,
             SchemaString = versionOne.ToByteString().ToBase64()
-        });
+        }, cancellationToken);
 
         await using var serializer = new ProtobufSchemaRegistrySerializer<SchemaReferenceEnvelope>(registryClient);
         var destination = new ArrayBufferWriter<byte>();
@@ -183,8 +184,8 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
         };
         serializer.Serialize(value, ref destination, CreateDekafContext(topic));
 
-        var dependency = await registryClient.GetSchemaBySubjectAsync("Protos/reference_common.proto");
-        var root = await registryClient.GetSchemaBySubjectAsync($"{topic}-value");
+        var dependency = await registryClient.GetSchemaBySubjectAsync("Protos/reference_common.proto", cancellationToken: cancellationToken);
+        var root = await registryClient.GetSchemaBySubjectAsync($"{topic}-value", cancellationToken: cancellationToken);
         await Assert.That(dependency.Version).IsEqualTo(2);
         await Assert.That(root.Schema.References).Count().IsEqualTo(1);
         await Assert.That(root.Schema.References![0].Name).IsEqualTo("Protos/reference_common.proto");
@@ -204,7 +205,7 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
     }
 
     [Test]
-    public async Task Json_ConfluentRegisteredSubject_CanBeLookedUpByDekaf()
+    public async Task Json_ConfluentRegisteredSubject_CanBeLookedUpByDekaf(CancellationToken cancellationToken)
     {
         var topic = $"json-subject-compat-{Guid.NewGuid():N}";
         using var confluentRegistry = CreateConfluentClient();
@@ -221,9 +222,9 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
             new Confluent.Kafka.SerializationContext(MessageComponentType.Value, topic));
 
         using var dekafRegistry = CreateDekafClient();
-        var subjects = await dekafRegistry.GetAllSubjectsAsync();
+        var subjects = await dekafRegistry.GetAllSubjectsAsync(cancellationToken);
         var subject = subjects.Single(static candidate => candidate.Contains(nameof(CompatibilityJsonRecord), StringComparison.Ordinal));
-        var registered = await dekafRegistry.GetSchemaBySubjectAsync(subject);
+        var registered = await dekafRegistry.GetSchemaBySubjectAsync(subject, cancellationToken: cancellationToken);
 
         await using var dekafSerializer = new JsonSchemaRegistrySerializer<CompatibilityJsonRecord>(
             dekafRegistry,
@@ -235,7 +236,7 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
     }
 
     [Test]
-    public async Task GenericSerializer_UsesConfluentAvroRuntimeSchemaSubject()
+    public async Task GenericSerializer_UsesConfluentAvroRuntimeSchemaSubject(CancellationToken cancellationToken)
     {
         var topic = $"generic-subject-compat-{Guid.NewGuid():N}";
         using var confluentRegistry = CreateConfluentClient();
@@ -253,7 +254,7 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
             new Confluent.Kafka.SerializationContext(MessageComponentType.Value, topic));
 
         using var dekafRegistry = CreateDekafClient();
-        var registered = await dekafRegistry.GetSchemaBySubjectAsync("dekaf.compatibility.CompatibilityRecord");
+        var registered = await dekafRegistry.GetSchemaBySubjectAsync("dekaf.compatibility.CompatibilityRecord", cancellationToken: cancellationToken);
         await using var dekafSerializer = new SchemaRegistrySerializer<GenericRecord>(
             dekafRegistry,
             static (_, writer) => writer.Advance(0),

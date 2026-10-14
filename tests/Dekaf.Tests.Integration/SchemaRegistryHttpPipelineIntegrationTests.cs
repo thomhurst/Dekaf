@@ -10,6 +10,7 @@ using Dekaf.Security.Sasl;
 
 namespace Dekaf.Tests.Integration;
 
+[Timeout(120_000)]
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 [Category("Serialization")]
 public sealed class SchemaRegistryHttpPipelineIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
@@ -18,7 +19,7 @@ public sealed class SchemaRegistryHttpPipelineIntegrationTests(KafkaWithSchemaRe
     [Arguments(300, 2)]
     [Arguments(60, 1)]
     [Arguments(10, 1)]
-    public async Task OAuthConfig_UsesConfiguredRefreshWindow(int bufferSeconds, int expectedTokenRequests)
+    public async Task OAuthConfig_UsesConfiguredRefreshWindow(int bufferSeconds, int expectedTokenRequests, CancellationToken cancellationToken)
     {
         await using var endpoint = new LocalTokenEndpoint();
         using var handler = new CapturingDelegatingHandler(new SocketsHttpHandler());
@@ -34,23 +35,23 @@ public sealed class SchemaRegistryHttpPipelineIntegrationTests(KafkaWithSchemaRe
             }
         }, handler);
 
-        _ = await client.GetAllSubjectsAsync();
+        _ = await client.GetAllSubjectsAsync(cancellationToken);
         await Assert.That(handler.Authorization).IsEqualTo("Bearer token-1");
-        _ = await client.GetAllSubjectsAsync();
+        _ = await client.GetAllSubjectsAsync(cancellationToken);
 
         await Assert.That(endpoint.RequestCount).IsEqualTo(expectedTokenRequests);
         await Assert.That(handler.Authorization).IsEqualTo($"Bearer token-{expectedTokenRequests}");
     }
 
     [Test]
-    public async Task CustomDelegatingHandler_SeesVersionedDefaultUserAgent()
+    public async Task CustomDelegatingHandler_SeesVersionedDefaultUserAgent(CancellationToken cancellationToken)
     {
         using var handler = new CapturingDelegatingHandler(new SocketsHttpHandler());
         using var client = new SchemaRegistryClient(
             new SchemaRegistryConfig { Url = testInfra.RegistryUrl },
             handler);
 
-        _ = await client.GetAllSubjectsAsync();
+        _ = await client.GetAllSubjectsAsync(cancellationToken);
 
         await Assert.That(handler.UserAgent).StartsWith("Dekaf.SchemaRegistry/");
     }

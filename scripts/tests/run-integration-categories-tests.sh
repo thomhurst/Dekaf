@@ -66,6 +66,7 @@ printf '%s\n' "$fake_runner" > "$temp_root/artifacts/aot/integration/Dekaf.Tests
 printf '%s\n' "$fake_runner" > "$temp_root/tests/Dekaf.Tests.Integration/bin/Release/net10.0/Dekaf.Tests.Integration"
 
 export CALLS_FILE="$temp_root/calls.log"
+export INTEGRATION_WATCHDOG_POLL_SECONDS=1
 cd "$temp_root"
 
 bash scripts/run-integration-categories.sh aot "Messaging,Interop,Serialization"
@@ -135,6 +136,55 @@ for framework in net10.0 aot; do
   fi
 done
 
+# NativeAOT has no diagnostics IPC server, so --hangdump is JIT-only.
+: > "$CALLS_FILE"
+bash scripts/run-integration-categories.sh aot "Serialization"
+if grep -Fq -- '--hangdump' "$CALLS_FILE"; then
+  echo "NativeAOT run requested an MTP hang dump, which cannot attach to an AOT process" >&2
+  exit 1
+fi
+: > "$CALLS_FILE"
+bash scripts/run-integration-categories.sh net10.0 "Serialization"
+grep -Fq -- '--hangdump --hangdump-timeout 5m' "$CALLS_FILE"
+
+# A stalled AOT category is killed at its deadline after native stacks and a
+# core are captured next to its test results.
+mkdir -p "$temp_root/watchdog-bin"
+printf '%s\n' '#!/usr/bin/env bash' 'exec "$@"' > "$temp_root/watchdog-bin/sudo"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$*" >> "$WATCHDOG_CALLS_FILE"' 'echo "Thread 1 (LWP 42) in RhpWaitForFinalizerRequest"' \
+  > "$temp_root/watchdog-bin/gdb"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "gcore %s\n" "$*" >> "$WATCHDOG_CALLS_FILE"' 'printf core > "$2.$3"' \
+  > "$temp_root/watchdog-bin/gcore"
+chmod +x "$temp_root/watchdog-bin/"*
+printf '%s\n' '#!/usr/bin/env bash' 'exec sleep 60' > "$temp_root/artifacts/aot/integration/Dekaf.Tests.Integration"
+export WATCHDOG_CALLS_FILE="$temp_root/watchdog-calls"
+status=0
+PATH="$temp_root/watchdog-bin:$PATH" \
+  INTEGRATION_WATCHDOG_CATEGORY_SECONDS=1 \
+  INTEGRATION_WATCHDOG_POLL_SECONDS=1 \
+  bash scripts/run-integration-categories.sh aot "Serialization,Producer" || status=$?
+[ "$status" -eq 124 ]
+grep -Fq -- '-batch' "$WATCHDOG_CALLS_FILE"
+grep -Fq 'thread apply all bt' "$WATCHDOG_CALLS_FILE"
+grep -q '^gcore -o TestResults/Serialization/core ' "$WATCHDOG_CALLS_FILE"
+ls TestResults/Serialization/native-stacks-*.txt >/dev/null
+grep -q 'RhpWaitForFinalizerRequest' TestResults/Serialization/native-stacks-*.txt
+ls TestResults/Serialization/core.*.gz >/dev/null
+if [ -d TestResults/Producer ]; then
+  echo "Watchdog failure did not stop the category loop" >&2
+  exit 1
+fi
+# The job-level deadline wins over a longer category deadline.
+rm -rf TestResults
+status=0
+PATH="$temp_root/watchdog-bin:$PATH" \
+  INTEGRATION_WATCHDOG_DEADLINE_EPOCH="$(date +%s)" \
+  INTEGRATION_WATCHDOG_CATEGORY_SECONDS=600 \
+  bash scripts/run-integration-categories.sh aot "Consumer" || status=$?
+[ "$status" -eq 124 ]
+ls TestResults/Consumer/native-stacks-*.txt >/dev/null
+printf '%s\n' "$fake_runner" > "$temp_root/artifacts/aot/integration/Dekaf.Tests.Integration"
+
 grep -Fq "\"$ryuk_image\"" "$repo_root/.github/workflows/ci.yml"
 grep -Fq "\"$ryuk_image\"" "$repo_root/.github/workflows/integration-groups.yml"
 grep -Fq "\"$eventhubs_image\"" "$repo_root/.github/workflows/ci.yml"
@@ -198,5 +248,13 @@ grep -qx 'pull apache/kafka:4.2.1' "$DOCKER_CALLS_FILE"
 grep -qx 'pull apache/kafka:4.3.1' "$DOCKER_CALLS_FILE"
 grep -Fqx "pull $ryuk_image" "$DOCKER_CALLS_FILE"
 [ "$(grep -cx '60s' "$TIMEOUT_CALLS_FILE")" -eq 3 ]
+
+# Large images (Schema Registry) take caller-provided per-attempt budgets.
+rm -f "$DOCKER_ATTEMPTS_FILE" "$DOCKER_CALLS_FILE" "$TIMEOUT_CALLS_FILE"
+export DOCKER_FAIL_UNTIL=1
+PREPULL_TIMEOUT=240s PREPULL_MIRROR_TIMEOUT=200s \
+  bash scripts/prepull-kafka-images.sh "confluentinc/cp-schema-registry:7.9.0"
+[ "$(cat "$TIMEOUT_CALLS_FILE")" = $'240s\n200s' ]
+grep -qx 'pull mirror.gcr.io/confluentinc/cp-schema-registry:7.9.0' "$DOCKER_CALLS_FILE"
 
 echo "run-integration-categories tests passed"

@@ -6,11 +6,12 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for schema evolution and compatibility checking via Schema Registry.
 /// </summary>
 [Category("Serialization")]
+[Timeout(120_000)]
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class SchemaEvolutionTests(KafkaWithSchemaRegistryContainer testInfra)
 {
     [Test]
-    public async Task BackwardCompatible_AddOptionalField_IsCompatible()
+    public async Task BackwardCompatible_AddOptionalField_IsCompatible(CancellationToken cancellationToken)
     {
         var subject = $"compat-backward-{Guid.NewGuid():N}-value";
 
@@ -36,7 +37,7 @@ public sealed class SchemaEvolutionTests(KafkaWithSchemaRegistryContainer testIn
                 """
         };
 
-        await registryClient.RegisterSchemaAsync(subject, v1Schema);
+        await registryClient.RegisterSchemaAsync(subject, v1Schema, cancellationToken);
 
         // v2 adds an optional field with default - backward compatible
         var v2Schema = new Schema
@@ -56,12 +57,12 @@ public sealed class SchemaEvolutionTests(KafkaWithSchemaRegistryContainer testIn
                 """
         };
 
-        var isCompatible = await registryClient.IsCompatibleAsync(subject, v2Schema);
+        var isCompatible = await registryClient.IsCompatibleAsync(subject, v2Schema, cancellationToken: cancellationToken);
         await Assert.That(isCompatible).IsTrue();
     }
 
     [Test]
-    public async Task IncompatibleChange_ChangeFieldType_IsNotCompatible()
+    public async Task IncompatibleChange_ChangeFieldType_IsNotCompatible(CancellationToken cancellationToken)
     {
         var subject = $"compat-incompat-{Guid.NewGuid():N}-value";
 
@@ -87,7 +88,7 @@ public sealed class SchemaEvolutionTests(KafkaWithSchemaRegistryContainer testIn
                 """
         };
 
-        await registryClient.RegisterSchemaAsync(subject, v1Schema);
+        await registryClient.RegisterSchemaAsync(subject, v1Schema, cancellationToken);
 
         // v2 changes "name" from string to int - incompatible
         var v2Schema = new Schema
@@ -106,12 +107,12 @@ public sealed class SchemaEvolutionTests(KafkaWithSchemaRegistryContainer testIn
                 """
         };
 
-        var isCompatible = await registryClient.IsCompatibleAsync(subject, v2Schema);
+        var isCompatible = await registryClient.IsCompatibleAsync(subject, v2Schema, cancellationToken: cancellationToken);
         await Assert.That(isCompatible).IsFalse();
     }
 
     [Test]
-    public async Task MultipleVersions_RegisterTwoVersions_BothTracked()
+    public async Task MultipleVersions_RegisterTwoVersions_BothTracked(CancellationToken cancellationToken)
     {
         var subject = $"compat-versions-{Guid.NewGuid():N}-value";
 
@@ -137,7 +138,7 @@ public sealed class SchemaEvolutionTests(KafkaWithSchemaRegistryContainer testIn
                 """
         };
 
-        await registryClient.RegisterSchemaAsync(subject, v1Schema);
+        await registryClient.RegisterSchemaAsync(subject, v1Schema, cancellationToken);
 
         // Register v2
         var v2Schema = new Schema
@@ -157,16 +158,16 @@ public sealed class SchemaEvolutionTests(KafkaWithSchemaRegistryContainer testIn
                 """
         };
 
-        await registryClient.RegisterSchemaAsync(subject, v2Schema);
+        await registryClient.RegisterSchemaAsync(subject, v2Schema, cancellationToken);
 
-        var versions = await registryClient.GetVersionsAsync(subject);
+        var versions = await registryClient.GetVersionsAsync(subject, cancellationToken);
         await Assert.That(versions).Count().IsEqualTo(2);
         await Assert.That(versions).Contains(1);
         await Assert.That(versions).Contains(2);
     }
 
     [Test]
-    public async Task GetByVersion_SpecificVersion_ReturnsCorrectSchema()
+    public async Task GetByVersion_SpecificVersion_ReturnsCorrectSchema(CancellationToken cancellationToken)
     {
         var subject = $"compat-getver-{Guid.NewGuid():N}-value";
 
@@ -191,7 +192,7 @@ public sealed class SchemaEvolutionTests(KafkaWithSchemaRegistryContainer testIn
                 """
         };
 
-        await registryClient.RegisterSchemaAsync(subject, v1Schema);
+        await registryClient.RegisterSchemaAsync(subject, v1Schema, cancellationToken);
 
         // Register v2
         var v2Schema = new Schema
@@ -210,16 +211,16 @@ public sealed class SchemaEvolutionTests(KafkaWithSchemaRegistryContainer testIn
                 """
         };
 
-        await registryClient.RegisterSchemaAsync(subject, v2Schema);
+        await registryClient.RegisterSchemaAsync(subject, v2Schema, cancellationToken);
 
         // Get v1
-        var registered1 = await registryClient.GetSchemaBySubjectAsync(subject, "1");
+        var registered1 = await registryClient.GetSchemaBySubjectAsync(subject, "1", cancellationToken);
         await Assert.That(registered1.Version).IsEqualTo(1);
         await Assert.That(registered1.Schema.SchemaString).Contains("\"key\"");
         await Assert.That(registered1.Schema.SchemaString).DoesNotContain("\"value\"");
 
         // Get latest (v2)
-        var registeredLatest = await registryClient.GetSchemaBySubjectAsync(subject, "latest");
+        var registeredLatest = await registryClient.GetSchemaBySubjectAsync(subject, "latest", cancellationToken);
         await Assert.That(registeredLatest.Version).IsEqualTo(2);
         await Assert.That(registeredLatest.Schema.SchemaString).Contains("\"value\"");
     }

@@ -156,6 +156,7 @@ public sealed class AspireShareConsumerIntegrationTests(KafkaTestContainer kafka
 
 /// <summary>Schema Registry clients registered through the Dekaf Aspire integration.</summary>
 [Category("Serialization")]
+[Timeout(120_000)]
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class AspireSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
@@ -166,7 +167,7 @@ public sealed class AspireSchemaRegistryIntegrationTests(KafkaWithSchemaRegistry
     [Test]
     [Arguments(false)]
     [Arguments(true)]
-    public async Task JsonSchemaRegistry_RoundTripsAndReportsHealthy(bool keyed)
+    public async Task JsonSchemaRegistry_RoundTripsAndReportsHealthy(bool keyed, CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
         var builder = AspireHost.Create(

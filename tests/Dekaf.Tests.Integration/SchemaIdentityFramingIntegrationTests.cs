@@ -13,6 +13,7 @@ namespace Dekaf.Tests.Integration;
 
 [Category("Serialization")]
 [NotInParallel]
+[Timeout(120_000)]
 [ClassDataSource<KafkaWithAssociationSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class SchemaIdentityFramingIntegrationTests(
     KafkaWithAssociationSchemaRegistryContainer testInfra)
@@ -42,13 +43,14 @@ public sealed class SchemaIdentityFramingIntegrationTests(
         """;
 
     [Test]
-    public async Task Avro_RoutedExplicitIdHeaderFraming_RoundTripsWithoutCallerHeaders()
+    public async Task Avro_RoutedExplicitIdHeaderFraming_RoundTripsWithoutCallerHeaders(CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
         using var registry = CreateRegistryClient();
         var schemaId = await registry.RegisterSchemaAsync(
             $"{topic}-value",
-            new Schema { SchemaType = SchemaType.Avro, SchemaString = AvroSchemaText });
+            new Schema { SchemaType = SchemaType.Avro, SchemaString = AvroSchemaText },
+            cancellationToken);
         await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
             registry,
             new AvroSerializerConfig
@@ -77,8 +79,8 @@ public sealed class SchemaIdentityFramingIntegrationTests(
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithValueSerializer(routingSerializer)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
-        await producer.ProduceAsync(topic, "header", record);
+            .BuildAsync(cancellationToken);
+        await producer.ProduceAsync(topic, "header", record, cancellationToken);
 
         await using var consumer = await Kafka.CreateConsumer<string, GenericRecord>()
             .WithBootstrapServers(testInfra.BootstrapServers)
@@ -86,7 +88,7 @@ public sealed class SchemaIdentityFramingIntegrationTests(
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(new RecordHeaderDeserializerDecorator<GenericRecord>(deserializer))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
         consumer.Subscribe(topic);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
@@ -101,13 +103,14 @@ public sealed class SchemaIdentityFramingIntegrationTests(
     }
 
     [Test]
-    public async Task Json_ExplicitIdHeaderFraming_RoundTripsWithoutCallerHeaders()
+    public async Task Json_ExplicitIdHeaderFraming_RoundTripsWithoutCallerHeaders(CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
         using var registry = CreateRegistryClient();
         var schemaId = await registry.RegisterSchemaAsync(
             $"{topic}-value",
-            new Schema { SchemaType = SchemaType.Json, SchemaString = JsonSchemaText });
+            new Schema { SchemaType = SchemaType.Json, SchemaString = JsonSchemaText },
+            cancellationToken);
         var order = new TestOrder
         {
             OrderId = 5005,
@@ -128,8 +131,8 @@ public sealed class SchemaIdentityFramingIntegrationTests(
                     SchemaIdStrategy = SchemaIdSerializerStrategy.Header
                 })
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
-        await producer.ProduceAsync(topic, "header", order);
+            .BuildAsync(cancellationToken);
+        await producer.ProduceAsync(topic, "header", order, cancellationToken);
 
         await using var consumer = await Kafka.CreateConsumer<string, TestOrder>()
             .WithBootstrapServers(testInfra.BootstrapServers)
@@ -143,7 +146,7 @@ public sealed class SchemaIdentityFramingIntegrationTests(
                     SchemaIdStrategy = SchemaIdDeserializerStrategy.Header
                 })
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
         consumer.Subscribe(topic);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
@@ -158,7 +161,7 @@ public sealed class SchemaIdentityFramingIntegrationTests(
     }
 
     [Test]
-    public async Task AvroPoco_GuidWarmup_AllowsSynchronousBatchConsumption()
+    public async Task AvroPoco_GuidWarmup_AllowsSynchronousBatchConsumption(CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
         using var registry = CreateRegistryClient();
@@ -173,10 +176,11 @@ public sealed class SchemaIdentityFramingIntegrationTests(
             {
                 SchemaIdStrategy = SchemaIdSerializerStrategy.Header
             });
-        var schemaId = await serializer.WarmupAsync(topic);
+        var schemaId = await serializer.WarmupAsync(topic, cancellationToken: cancellationToken);
         var registered = await registry.GetSchemaBySubjectAsync(
             $"{topic}-value",
-            "latest");
+            "latest",
+            cancellationToken);
         await Assert.That(registered.Id).IsEqualTo(schemaId);
         var schemaGuid = Guid.Parse(registered.Guid!);
         await using var deserializer = BatchIdentityRecord.CreateAvroDeserializer(
@@ -185,17 +189,18 @@ public sealed class SchemaIdentityFramingIntegrationTests(
             {
                 SchemaIdStrategy = SchemaIdDeserializerStrategy.Header
             });
-        await deserializer.WarmupAsync(schemaGuid, context);
+        await deserializer.WarmupAsync(schemaGuid, context, cancellationToken);
 
         await using var producer = await Kafka.CreateProducer<string, BatchIdentityRecord>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithValueSerializer(serializer)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
         await producer.ProduceAsync(
             topic,
             "batch",
-            new BatchIdentityRecord { Id = 91, Name = "batch-guid" });
+            new BatchIdentityRecord { Id = 91, Name = "batch-guid" },
+            cancellationToken);
 
         await using var consumer = await Kafka.CreateConsumer<string, BatchIdentityRecord>()
             .WithBootstrapServers(testInfra.BootstrapServers)
@@ -203,10 +208,10 @@ public sealed class SchemaIdentityFramingIntegrationTests(
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(deserializer)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
         consumer.Subscribe(topic);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await using var batches = consumer.ConsumeBatchAsync(cancellation.Token).GetAsyncEnumerator();
+        await using var batches = consumer.ConsumeBatchAsync(cancellation.Token).GetAsyncEnumerator(cancellationToken);
 
         await Assert.That(await batches.MoveNextAsync()).IsTrue();
         var consumed = batches.Current.Single();
@@ -218,7 +223,8 @@ public sealed class SchemaIdentityFramingIntegrationTests(
     [Arguments(SchemaIdDeserializerStrategy.Header)]
     [Arguments(SchemaIdDeserializerStrategy.Dual)]
     public async Task AvroPoco_GuidHeader_ColdShareConsumerRoundTrips(
-        SchemaIdDeserializerStrategy strategy)
+        SchemaIdDeserializerStrategy strategy,
+        CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
         using var producerRegistry = CreateRegistryClient();
@@ -240,20 +246,21 @@ public sealed class SchemaIdentityFramingIntegrationTests(
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithValueSerializer(serializer)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
         await using var consumer = await Kafka.CreateShareConsumer<string, BatchIdentityRecord>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithGroupId($"avro-poco-share-guid-{strategy}-{Guid.NewGuid():N}")
             .WithValueDeserializer(new RecordHeaderDeserializerDecorator<BatchIdentityRecord>(deserializer))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
         consumer.Subscribe(topic);
         await PrimeShareConsumerAsync(consumer);
 
         await producer.ProduceAsync(
             topic,
             "share-guid",
-            new BatchIdentityRecord { Id = 92, Name = "cold-share-guid" });
+            new BatchIdentityRecord { Id = 92, Name = "cold-share-guid" },
+            cancellationToken);
 
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await foreach (var consumed in consumer.PollAsync(cancellation.Token))
