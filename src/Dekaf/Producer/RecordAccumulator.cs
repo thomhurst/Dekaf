@@ -9821,10 +9821,12 @@ internal sealed class PartitionBatch
             return;
         }
 
-        if (_arena is not null)
-            BatchArena.ReturnToPool(_arena);
-
+        // Rent before returning: if renting throws (e.g. OutOfMemoryException), _arena must
+        // still be an arena this batch owns, not one the return pooled or stripped of its buffer.
+        var previous = _arena;
         _arena = BatchArena.RentOrCreate(requiredCapacity);
+        if (previous is not null)
+            BatchArena.ReturnToPool(previous);
     }
 
     internal readonly record struct ReservedRecordAppend(
@@ -10344,12 +10346,14 @@ internal sealed class PartitionBatch
 
         var normalCapacity = GetNormalArenaCapacity(_options);
         var capacity = Math.Max(normalCapacity, encodedRecordSize);
+
+        // Rent before returning, as in EnsureNormalArenaCapacity: a failed rent leaves the
+        // batch holding its own arena rather than one another batch can rent.
+        _arena = BatchArena.RentOrCreate(capacity, normalCapacity);
         if (arena is not null)
         {
             BatchArena.ReturnToPool(arena);
         }
-
-        _arena = BatchArena.RentOrCreate(capacity, normalCapacity);
     }
 
     private void EnsureArenaCanFitNextRecord(int encodedRecordSize)
