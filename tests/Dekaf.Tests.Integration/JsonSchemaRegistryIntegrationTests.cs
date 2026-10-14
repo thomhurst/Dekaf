@@ -11,6 +11,7 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for JSON Schema Registry serialization.
 /// </summary>
 [Category("Serialization")]
+[Timeout(120_000)]
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
@@ -41,7 +42,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
 
     [Test]
     [SkipWhenNativeAot("Reflection-based JSON schema registry serialization is not supported under NativeAOT; use the JsonTypeInfo overload.")]
-    public async Task JsonSchemaRegistry_ProduceAndConsume_RoundTrips()
+    public async Task JsonSchemaRegistry_ProduceAndConsume_RoundTrips(CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
 
@@ -61,7 +62,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseJsonSchemaRegistry(registryClient, TestOrderSchema)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
 
         await producer.ProduceAsync(new ProducerMessage<string, TestOrder>
         {
@@ -75,7 +76,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             .WithGroupId($"json-sr-test-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .UseJsonSchemaRegistry(registryClient)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync(cancellationToken);
 
         consumer.Subscribe(topic);
 
@@ -95,7 +96,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
     }
 
     [Test]
-    public async Task JsonSchemaRegistry_ProduceAndConsume_WithJsonTypeInfo_RoundTrips()
+    public async Task JsonSchemaRegistry_ProduceAndConsume_WithJsonTypeInfo_RoundTrips(CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
 
@@ -118,7 +119,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
                 TestOrderSchema,
                 JsonSchemaRegistryIntegrationJsonContext.Default.TestOrder)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
 
         await producer.ProduceAsync(new ProducerMessage<string, TestOrder>
         {
@@ -134,7 +135,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             .UseJsonSchemaRegistry(
                 registryClient,
                 JsonSchemaRegistryIntegrationJsonContext.Default.TestOrder)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync(cancellationToken);
 
         consumer.Subscribe(topic);
 
@@ -154,7 +155,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
     }
 
     [Test]
-    public async Task JsonSchemaValidation_RegisteredSchema_RoundTripsAndRejectsInvalidWrite()
+    public async Task JsonSchemaValidation_RegisteredSchema_RoundTripsAndRejectsInvalidWrite(CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
         using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
@@ -173,14 +174,14 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
                 JsonSchemaRegistryIntegrationJsonContext.Default.TestOrder,
                 validation)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
 
         await producer.ProduceAsync(new ProducerMessage<string, TestOrder>
         {
             Topic = topic,
             Key = "valid",
             Value = new TestOrder { OrderId = 4004, CustomerName = "Dana", Amount = 5.25m }
-        });
+        }, cancellationToken);
 
         var exception = await Assert.ThrowsAsync<JsonSchemaValidationException>(
             () => producer.ProduceAsync(new ProducerMessage<string, TestOrder>
@@ -200,7 +201,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
                 JsonSchemaRegistryIntegrationJsonContext.Default.TestOrder,
                 validation)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
         consumer.Subscribe(topic);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         TestOrder? consumed = null;
@@ -217,7 +218,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
 
     [Test]
     [SkipWhenNativeAot("Reflection-based JSON schema registry serialization is not supported under NativeAOT; use the JsonTypeInfo overload.")]
-    public async Task JsonSchemaRegistry_MultipleMessages_AllRoundTrip()
+    public async Task JsonSchemaRegistry_MultipleMessages_AllRoundTrip(CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
         const int messageCount = 10;
@@ -231,7 +232,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseJsonSchemaRegistry(registryClient, TestOrderSchema)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -255,7 +256,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             .WithGroupId($"json-sr-multi-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .UseJsonSchemaRegistry(registryClient)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync(cancellationToken);
 
         consumer.Subscribe(topic);
 
@@ -279,7 +280,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
 
     [Test]
     [SkipWhenNativeAot("Reflection-based JSON schema registry serialization is not supported under NativeAOT; use the JsonTypeInfo overload.")]
-    public async Task JsonSchemaRegistry_RegistersSchemaInRegistry()
+    public async Task JsonSchemaRegistry_RegistersSchemaInRegistry(CancellationToken cancellationToken)
     {
         var topic = $"json-sr-schema-{Guid.NewGuid():N}";
         await testInfra.CreateTopicAsync(topic);
@@ -293,7 +294,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseJsonSchemaRegistry(registryClient, TestOrderSchema)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
 
         await producer.ProduceAsync(new ProducerMessage<string, TestOrder>
         {
@@ -302,13 +303,13 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             Value = new TestOrder { OrderId = 1, CustomerName = "Test", Amount = 10.0m }
         }, CancellationToken.None);
 
-        var subjects = await registryClient.GetAllSubjectsAsync();
+        var subjects = await registryClient.GetAllSubjectsAsync(cancellationToken);
         await Assert.That(subjects).Contains($"{topic}-value");
     }
 
     [Test]
     [SkipWhenNativeAot("Reflection-based JSON schema registry serialization is not supported under NativeAOT; use the JsonTypeInfo overload.")]
-    public async Task JsonSchemaRegistry_CustomJsonOptions_RespectedDuringSerialization()
+    public async Task JsonSchemaRegistry_CustomJsonOptions_RespectedDuringSerialization(CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
 
@@ -333,7 +334,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseJsonSchemaRegistry(registryClient, TestOrderSchema, jsonOptions)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
 
         await producer.ProduceAsync(new ProducerMessage<string, TestOrder>
         {
@@ -347,7 +348,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             .WithGroupId($"json-sr-options-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .UseJsonSchemaRegistry(registryClient, jsonOptions)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync(cancellationToken);
 
         consumer.Subscribe(topic);
 

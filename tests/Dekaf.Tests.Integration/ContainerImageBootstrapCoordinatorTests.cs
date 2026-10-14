@@ -82,4 +82,37 @@ public sealed class ContainerImageBootstrapCoordinatorTests
 
         await Assert.That(startupCount).IsEqualTo(2);
     }
+
+    [Test]
+    public async Task RunAsync_FollowerCancelledWhileBootstrapStalls_StopsWaiting()
+    {
+        var coordinator = new ContainerImageBootstrapCoordinator();
+        var bootstrapStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stalledBootstrap = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var leader = coordinator.RunAsync(() =>
+        {
+            bootstrapStarted.SetResult();
+            return stalledBootstrap.Task;
+        });
+        await bootstrapStarted.Task;
+
+        using var deadline = new CancellationTokenSource();
+        var followerStarted = false;
+        var follower = coordinator.RunAsync(
+            () =>
+            {
+                followerStarted = true;
+                return Task.CompletedTask;
+            },
+            deadline.Token);
+
+        await deadline.CancelAsync();
+
+        await Assert.That(async () => await follower).Throws<OperationCanceledException>();
+        await Assert.That(followerStarted).IsFalse();
+
+        stalledBootstrap.SetResult();
+        await leader;
+    }
 }

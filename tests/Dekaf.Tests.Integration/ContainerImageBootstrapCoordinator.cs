@@ -5,7 +5,7 @@ internal sealed class ContainerImageBootstrapCoordinator
     private readonly SemaphoreSlim _bootstrapGate = new(1, 1);
     private bool _bootstrapCompleted;
 
-    internal async Task RunAsync(Func<Task> startupAsync)
+    internal async Task RunAsync(Func<Task> startupAsync, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(startupAsync);
 
@@ -15,7 +15,7 @@ internal sealed class ContainerImageBootstrapCoordinator
             return;
         }
 
-        await _bootstrapGate.WaitAsync().ConfigureAwait(false);
+        await _bootstrapGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             if (!Volatile.Read(ref _bootstrapCompleted))

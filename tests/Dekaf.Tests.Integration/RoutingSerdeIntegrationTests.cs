@@ -12,6 +12,7 @@ using AvroSchema = Avro.Schema;
 namespace Dekaf.Tests.Integration;
 
 [Category("Serialization")]
+[Timeout(120_000)]
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class RoutingSerdeIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
@@ -41,7 +42,7 @@ public sealed class RoutingSerdeIntegrationTests(KafkaWithSchemaRegistryContaine
         """;
 
     [Test]
-    public async Task SchemaIdRouter_ConsumesMultipleVersionsAndProvidesRawKey()
+    public async Task SchemaIdRouter_ConsumesMultipleVersionsAndProvidesRawKey(CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
         using var registry = new SchemaRegistryClient(new SchemaRegistryConfig { Url = testInfra.RegistryUrl });
@@ -50,10 +51,10 @@ public sealed class RoutingSerdeIntegrationTests(KafkaWithSchemaRegistryContaine
 
         var v1Record = CreateRecord(EventV1Schema, 1, "one");
         var v2Record = CreateRecord(EventV2Schema, 2, "two", "priority");
-        var v1SchemaId = await serializer.WarmupAsync(topic, v1Record);
-        var v2SchemaId = await serializer.WarmupAsync(topic, v2Record);
-        await deserializer.WarmupAsync(v1SchemaId);
-        await deserializer.WarmupAsync(v2SchemaId);
+        var v1SchemaId = await serializer.WarmupAsync(topic, v1Record, cancellationToken: cancellationToken);
+        var v2SchemaId = await serializer.WarmupAsync(topic, v2Record, cancellationToken: cancellationToken);
+        await deserializer.WarmupAsync(v1SchemaId, cancellationToken);
+        await deserializer.WarmupAsync(v2SchemaId, cancellationToken);
         var v1Bytes = Serialize(serializer, topic, v1Record);
         var v2Bytes = Serialize(serializer, topic, v2Record);
 
@@ -75,10 +76,10 @@ public sealed class RoutingSerdeIntegrationTests(KafkaWithSchemaRegistryContaine
         await using (var producer = await Kafka.CreateProducer<string, byte[]>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithClientId("routing-serde-producer")
-            .BuildAsync())
+            .BuildAsync(cancellationToken))
         {
-            await producer.ProduceAsync(topic, "key-v1", v1Bytes);
-            await producer.ProduceAsync(topic, "key-v2", v2Bytes);
+            await producer.ProduceAsync(topic, "key-v1", v1Bytes, cancellationToken);
+            await producer.ProduceAsync(topic, "key-v2", v2Bytes, cancellationToken);
             await producer.FlushWithTimeoutAsync();
         }
 
@@ -88,7 +89,7 @@ public sealed class RoutingSerdeIntegrationTests(KafkaWithSchemaRegistryContaine
             .WithGroupId($"routing-serde-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(router)
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
         consumer.Subscribe(topic);
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));

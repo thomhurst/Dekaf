@@ -10,6 +10,7 @@ using AvroSchema = Avro.Schema;
 
 namespace Dekaf.Tests.Integration;
 
+[Timeout(120_000)]
 [ClassDataSource<KafkaWithAssociationSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 [Category("Serialization")]
 public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociationSchemaRegistryContainer testInfra)
@@ -27,7 +28,7 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
         "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"}}}";
 
     [Test]
-    public async Task Association_CreateListDelete_RoundTripsAgainstSchemaRegistry()
+    public async Task Association_CreateListDelete_RoundTripsAgainstSchemaRegistry(CancellationToken cancellationToken)
     {
         var suffix = Guid.NewGuid().ToString("N");
         var resourceName = $"orders-{suffix}";
@@ -42,7 +43,7 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
         {
             SchemaType = SchemaType.Json,
             SchemaString = "{\"type\":\"object\"}"
-        });
+        }, cancellationToken);
         var request = new AssociationCreateOrUpdateRequest
         {
             ResourceName = resourceName,
@@ -61,15 +62,10 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
             ]
         };
 
-        var created = await client.CreateAssociationAsync(request);
+        var created = await client.CreateAssociationAsync(request, cancellationToken);
         try
         {
-            var found = await client.GetAssociationsByResourceNameAsync(
-                resourceName,
-                resourceNamespace: "-",
-                resourceType: "topic",
-                associationTypes: ["value"],
-                lifecycle: "WEAK");
+            var found = await client.GetAssociationsByResourceNameAsync(resourceName, resourceNamespace: "-", resourceType: "topic", associationTypes: ["value"], lifecycle: "WEAK", cancellationToken: cancellationToken);
 
             await Assert.That(created.ResourceId).IsEqualTo(resourceId);
             await Assert.That(created.Associations).Count().IsEqualTo(1);
@@ -85,7 +81,7 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
                     SchemaString = "{\"type\":\"object\"}"
                 },
                 SubjectNameStrategy.AssociatedName);
-            var resolved = await serializer.PrepareAsync(resourceName, 42);
+            var resolved = await serializer.PrepareAsync(resourceName, 42, cancellationToken: cancellationToken);
             await Assert.That(resolved.Subject).IsEqualTo(subject);
 
             var ruleExecutor = new CapturingRuleExecutor();
@@ -107,26 +103,23 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
             BinaryPrimitives.WriteInt32BigEndian(data.AsSpan(1), schemaId);
 
             await Assert.That(preparer.TryDeserialize(data, context, out _)).IsFalse();
-            await preparer.PrepareAsync(data, context);
+            await preparer.PrepareAsync(data, context, cancellationToken);
             await Assert.That(preparer.TryDeserialize(data, context, out var value)).IsTrue();
             await Assert.That(value).IsEqualTo(42);
             await Assert.That(ruleExecutor.Subject).IsEqualTo(subject);
         }
         finally
         {
-            await client.DeleteAssociationsAsync(
-                resourceId,
-                resourceType: "topic",
-                associationTypes: ["value"]);
+            await client.DeleteAssociationsAsync(resourceId, resourceType: "topic", associationTypes: ["value"], cancellationToken: cancellationToken);
         }
 
-        var remaining = await client.GetAssociationsByResourceNameAsync(resourceName, resourceNamespace);
+        var remaining = await client.GetAssociationsByResourceNameAsync(resourceName, resourceNamespace, cancellationToken: cancellationToken);
 
         await Assert.That(remaining).IsEmpty();
     }
 
     [Test]
-    public async Task AssociatedName_AllFormatSerializers_PrepareAgainstSchemaRegistry()
+    public async Task AssociatedName_AllFormatSerializers_PrepareAgainstSchemaRegistry(CancellationToken cancellationToken)
     {
         var suffix = Guid.NewGuid().ToString("N");
         using var client = new SchemaRegistryClient(new SchemaRegistryConfig
@@ -190,11 +183,9 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
                     UseLatestVersion = true
                 });
 
-            var avroPrepared = await avro.PrepareAsync(avroTopic, avroValue);
-            var jsonPrepared = await json.PrepareAsync(jsonTopic, new AssociatedJsonRecord { Id = 42 });
-            var protobufPrepared = await protobuf.PrepareAsync(
-                protobufTopic,
-                new TestPerson { Id = 42, Name = "Associated" });
+            var avroPrepared = await avro.PrepareAsync(avroTopic, avroValue, cancellationToken: cancellationToken);
+            var jsonPrepared = await json.PrepareAsync(jsonTopic, new AssociatedJsonRecord { Id = 42 }, cancellationToken: cancellationToken);
+            var protobufPrepared = await protobuf.PrepareAsync(protobufTopic, new TestPerson { Id = 42, Name = "Associated" }, cancellationToken: cancellationToken);
 
             await Assert.That(avroPrepared.Subject).IsEqualTo(avroSubject);
             await Assert.That(jsonPrepared.Subject).IsEqualTo(jsonSubject);

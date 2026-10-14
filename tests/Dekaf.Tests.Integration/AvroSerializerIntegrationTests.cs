@@ -14,6 +14,7 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for Avro serializer with Kafka and Schema Registry.
 /// </summary>
 [Category("Serialization")]
+[Timeout(120_000)]
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
@@ -70,7 +71,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
         """;
 
     [Test]
-    public async Task AvroInlineValidation_RejectsInvalidAndRoundTripsValidRecord()
+    public async Task AvroInlineValidation_RejectsInvalidAndRoundTripsValidRecord(CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
         using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
@@ -98,7 +99,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithClientId("avro-inline-validation-producer")
             .WithValueSerializer(serializer)
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
 
         await producer.ProduceAsync(new ProducerMessage<string, GenericRecord>
         {
@@ -119,7 +120,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             .WithGroupId($"avro-inline-validation-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(deserializer)
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
         consumer.Subscribe(topic);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         GenericRecord? consumed = null;
@@ -134,7 +135,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
     }
 
     [Test]
-    public async Task AvroSerializer_ProduceAndConsume_RoundTrips()
+    public async Task AvroSerializer_ProduceAndConsume_RoundTrips(CancellationToken cancellationToken)
     {
         // Arrange
         var topic = await testInfra.CreateTestTopicAsync();
@@ -158,7 +159,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             .WithClientId("avro-test-producer")
             .WithValueSerializer(serializer)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
 
         var metadata = await producer.ProduceAsync(new ProducerMessage<string, GenericRecord>
         {
@@ -176,7 +177,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             .WithGroupId($"avro-test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(deserializer)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync(cancellationToken);
 
         consumer.Subscribe(topic);
 
@@ -196,7 +197,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
     }
 
     [Test]
-    public async Task AvroSerializer_MultipleMessages_AllRoundTrip()
+    public async Task AvroSerializer_MultipleMessages_AllRoundTrip(CancellationToken cancellationToken)
     {
         // Arrange
         var topic = await testInfra.CreateTestTopicAsync();
@@ -218,7 +219,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             .WithClientId("avro-multi-producer")
             .WithValueSerializer(serializer)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -245,7 +246,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             .WithGroupId($"avro-multi-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(deserializer)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync(cancellationToken);
 
         consumer.Subscribe(topic);
 
@@ -271,7 +272,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
     }
 
     [Test]
-    public async Task AvroSerializer_AlternatingSchemas_WireIdsDecodeEveryRecord()
+    public async Task AvroSerializer_AlternatingSchemas_WireIdsDecodeEveryRecord(CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();
         const int messageCount = 20;
@@ -289,7 +290,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             .WithClientId("avro-alternating-schema-producer")
             .WithValueSerializer(serializer)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync())
+            .BuildAsync(cancellationToken))
         {
             for (var i = 0; i < messageCount; i++)
             {
@@ -318,7 +319,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(Serializers.RawBytes)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
 
         consumer.Subscribe(topic);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -359,7 +360,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
     }
 
     [Test]
-    public async Task AvroSerializer_SchemaEvolution_HandlesNullableFields()
+    public async Task AvroSerializer_SchemaEvolution_HandlesNullableFields(CancellationToken cancellationToken)
     {
         // Arrange
         var topic = await testInfra.CreateTestTopicAsync();
@@ -387,7 +388,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             .WithClientId("avro-null-producer")
             .WithValueSerializer(serializer)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
 
         await producer.ProduceAsync(new ProducerMessage<string, GenericRecord>
         {
@@ -403,7 +404,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             .WithGroupId($"avro-null-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(deserializer)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync(cancellationToken);
 
         consumer.Subscribe(topic);
 
@@ -424,7 +425,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
     }
 
     [Test]
-    public async Task AvroSerializer_WithKeySerializer_RoundTrips()
+    public async Task AvroSerializer_WithKeySerializer_RoundTrips(CancellationToken cancellationToken)
     {
         // Arrange
         var topic = await testInfra.CreateTestTopicAsync();
@@ -459,7 +460,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             .WithKeySerializer(keySerializer)
             .WithValueSerializer(valueSerializer)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
 
         await producer.ProduceAsync(new ProducerMessage<GenericRecord, GenericRecord>
         {
@@ -476,7 +477,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithKeyDeserializer(keyDeserializer)
             .WithValueDeserializer(valueDeserializer)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync(cancellationToken);
 
         consumer.Subscribe(topic);
 
@@ -502,7 +503,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
     }
 
     [Test]
-    public async Task AvroSerializer_RegistersSchemaInRegistry()
+    public async Task AvroSerializer_RegistersSchemaInRegistry(CancellationToken cancellationToken)
     {
         // Arrange
         var topic = $"avro-schema-test-{Guid.NewGuid():N}";
@@ -526,7 +527,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             .WithClientId("avro-schema-producer")
             .WithValueSerializer(serializer)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
 
         await producer.ProduceAsync(new ProducerMessage<string, GenericRecord>
         {
@@ -536,7 +537,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
         }, CancellationToken.None);
 
         // Assert - verify schema was registered
-        var subjects = await registryClient.GetAllSubjectsAsync();
+        var subjects = await registryClient.GetAllSubjectsAsync(cancellationToken);
         await Assert.That(subjects).Contains($"{topic}-value");
     }
 }

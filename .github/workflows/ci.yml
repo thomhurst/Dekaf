@@ -861,7 +861,27 @@ jobs:
             4.0.2 \
             "testcontainers/ryuk:0.14.0@sha256:7c1a8a9a47c780ed0f983770a662f80deb115d95cce3e2daa3d12115b8cd28f0"
 
+      # Schema Registry fixtures otherwise pull these inside the test process,
+      # with no timeout and no mirror fallback (run 38631204581 stalled there).
+      - name: Pre-pull Schema Registry images
+        env:
+          PREPULL_TIMEOUT: 240s
+          PREPULL_MIRROR_TIMEOUT: 240s
+        run: |
+          bash scripts/prepull-kafka-images.sh \
+            "confluentinc/cp-schema-registry:7.9.0" \
+            "confluentinc/cp-schema-registry:8.2.0"
+
+      - name: Enable core dumps
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/TestResults/cores"
+          echo "$GITHUB_WORKSPACE/TestResults/cores/core.%e.%p" | sudo tee /proc/sys/kernel/core_pattern
+
+      # NativeAOT cannot use --hangdump; the runner's watchdog captures native
+      # stacks instead. Keep its budget below the job timeout.
       - name: Run NativeAOT integration smoke tests
+        env:
+          INTEGRATION_WATCHDOG_TOTAL_SECONDS: '1020'
         run: bash scripts/run-integration-categories.sh aot "Producer,Consumer,Messaging,Serialization"
 
       - name: Upload Test Results
@@ -872,15 +892,19 @@ jobs:
           path: |
             **/TestResults/**
             **/test-results/**
+            !**/TestResults/**/core.*
           retention-days: 7
 
-      - name: Upload HangDump artifacts
+      # Symbolize a core with the executable and .dbg from native-aot-integration.
+      - name: Upload NativeAOT hang diagnostics
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
-          name: hangdump-artifacts-integration-aot-smoke
+          name: native-diagnostics-integration-aot-smoke
           path: |
-            **/*.dmp
+            **/TestResults/**/native-stacks-*.txt
+            **/TestResults/**/gcore-*.log
+            **/TestResults/**/core.*
           if-no-files-found: ignore
           retention-days: 7
 

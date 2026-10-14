@@ -130,9 +130,30 @@ jobs:
             "${kafka_tags[@]}" \
             "testcontainers/ryuk:0.14.0@sha256:7c1a8a9a47c780ed0f983770a662f80deb115d95cce3e2daa3d12115b8cd28f0"
 
+      # Schema Registry fixtures otherwise pull these inside the test process,
+      # with no timeout and no mirror fallback (run 38631204581 stalled there).
+      - name: Pre-pull Schema Registry images
+        if: matrix.group == 'messaging'
+        env:
+          PREPULL_TIMEOUT: 240s
+          PREPULL_MIRROR_TIMEOUT: 240s
+        run: |
+          bash scripts/prepull-kafka-images.sh \
+            "confluentinc/cp-schema-registry:7.9.0" \
+            "confluentinc/cp-schema-registry:8.2.0"
+
+      - name: Enable core dumps
+        if: inputs.framework == 'aot'
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/TestResults/cores"
+          echo "$GITHUB_WORKSPACE/TestResults/cores/core.%e.%p" | sudo tee /proc/sys/kernel/core_pattern
+
+      # NativeAOT cannot use --hangdump; the runner's watchdog captures native
+      # stacks instead. Keep its budget below the job timeout.
       - name: Run integration tests
         env:
           KAFKA_TEST_IMAGE_TAG: ${{ inputs.kafka-tag }}
+          INTEGRATION_WATCHDOG_TOTAL_SECONDS: '1020'
         run: bash scripts/run-integration-categories.sh ${{ inputs.framework }} "${{ matrix.categories[matrix.group] }}"
 
       - name: Upload Test Results
@@ -143,8 +164,11 @@ jobs:
           path: |
             **/TestResults/**
             **/test-results/**
+            !**/TestResults/**/core.*
           retention-days: 7
 
+      # NativeAOT watchdog output is native stacks and cores (symbolize them with
+      # the executable and .dbg from native-aot-integration), not .dmp files.
       - name: Upload HangDump artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
@@ -152,5 +176,8 @@ jobs:
           name: hangdump-artifacts-${{ inputs.framework }}-${{ inputs.kafka-tag }}-${{ matrix.group }}
           path: |
             **/*.dmp
+            **/TestResults/**/native-stacks-*.txt
+            **/TestResults/**/gcore-*.log
+            **/TestResults/**/core.*
           if-no-files-found: ignore
           retention-days: 7

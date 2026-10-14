@@ -3,6 +3,7 @@ using Dekaf.SchemaRegistry;
 namespace Dekaf.Tests.Integration;
 
 [Category("Serialization")]
+[Timeout(120_000)]
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class SchemaRegistrySubjectDeletionIntegrationTests(KafkaWithSchemaRegistryContainer infrastructure)
 {
@@ -11,7 +12,7 @@ public sealed class SchemaRegistrySubjectDeletionIntegrationTests(KafkaWithSchem
     [Arguments(false, true)]
     [Arguments(true, false)]
     [Arguments(true, true)]
-    public async Task DeleteThenReregister_RestoresSubject(bool normalize, bool permanent)
+    public async Task DeleteThenReregister_RestoresSubject(bool normalize, bool permanent, CancellationToken cancellationToken)
     {
         using var client = new SchemaRegistryClient(new SchemaRegistryConfig { Url = infrastructure.RegistryUrl });
         using var observer = new SchemaRegistryClient(new SchemaRegistryConfig { Url = infrastructure.RegistryUrl });
@@ -21,15 +22,15 @@ public sealed class SchemaRegistrySubjectDeletionIntegrationTests(KafkaWithSchem
             SchemaString = $$"""{"type":"record","name":"DeletionRecord_{{Guid.NewGuid():N}}","fields":[{"name":"value","type":"string"}]}""",
             SchemaType = SchemaType.Avro
         };
-        var originalId = await client.RegisterSchemaAsync(subject, schema, normalize);
+        var originalId = await client.RegisterSchemaAsync(subject, schema, normalize, cancellationToken);
 
-        await client.DeleteSubjectAsync(subject);
+        await client.DeleteSubjectAsync(subject, cancellationToken: cancellationToken);
         if (permanent)
-            await client.DeleteSubjectAsync(subject, permanent: true);
+            await client.DeleteSubjectAsync(subject, permanent: true, cancellationToken: cancellationToken);
         await Assert.ThrowsAsync<SchemaRegistryException>(() => observer.GetSchemaBySubjectAsync(subject));
 
-        var restoredId = await client.RegisterSchemaAsync(subject, schema, normalize);
-        var restored = await observer.GetSchemaBySubjectAsync(subject);
+        var restoredId = await client.RegisterSchemaAsync(subject, schema, normalize, cancellationToken);
+        var restored = await observer.GetSchemaBySubjectAsync(subject, cancellationToken: cancellationToken);
 
         await Assert.That(restored.Subject).IsEqualTo(subject);
         await Assert.That(restored.Id).IsEqualTo(restoredId);

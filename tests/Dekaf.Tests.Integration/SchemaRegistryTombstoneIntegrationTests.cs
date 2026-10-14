@@ -10,11 +10,12 @@ using Dekaf.Tests.Integration.Protos;
 namespace Dekaf.Tests.Integration;
 
 [Category("Serialization")]
+[Timeout(120_000)]
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class SchemaRegistryTombstoneIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
     [Test]
-    public async Task AvroDeserializer_ConsumesTombstoneFromCompactedTopic()
+    public async Task AvroDeserializer_ConsumesTombstoneFromCompactedTopic(CancellationToken cancellationToken)
     {
         using var registry = CreateRegistryClient();
         await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(registry);
@@ -23,7 +24,7 @@ public sealed class SchemaRegistryTombstoneIntegrationTests(KafkaWithSchemaRegis
     }
 
     [Test]
-    public async Task ProtobufDeserializer_ConsumesTombstoneFromCompactedTopic()
+    public async Task ProtobufDeserializer_ConsumesTombstoneFromCompactedTopic(CancellationToken cancellationToken)
     {
         using var registry = CreateRegistryClient();
         await using var deserializer = new ProtobufSchemaRegistryDeserializer<TestPerson>(registry);
@@ -32,7 +33,7 @@ public sealed class SchemaRegistryTombstoneIntegrationTests(KafkaWithSchemaRegis
     }
 
     [Test]
-    public async Task JsonSchemaDeserializer_ConsumesTombstoneFromCompactedTopic()
+    public async Task JsonSchemaDeserializer_ConsumesTombstoneFromCompactedTopic(CancellationToken cancellationToken)
     {
         using var registry = CreateRegistryClient();
         await using var deserializer = new JsonSchemaRegistryDeserializer<TestOrder>(
