@@ -15,7 +15,7 @@
     <NuGetAudit>true</NuGetAudit>
     <NuGetAuditMode>all</NuGetAuditMode>
     <NuGetAuditLevel>low</NuGetAuditLevel>
-    <!-- Keep audit results visible during normal restores; the dedicated JSON CI gate fails closed. -->
+    <!-- Keep audit results visible during restores without failing builds on advisories published outside our changes. -->
     <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1900;NU1901;NU1902;NU1903;NU1904;NU1905</WarningsNotAsErrors>
     <!-- Suppress rules that are too pedantic for a protocol library -->
     <NoWarn>
