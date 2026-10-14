@@ -1313,13 +1313,13 @@ public class ProducerPoolMemoryBoundTests
     }
 
     [Test]
-    [NotInParallel(nameof(BatchArena))]
+    [NotInParallel]
     public async Task PartitionBatchPool_UnusedBatch_ReturnsItsArenaToTheArenaPool()
     {
         // Rotation races and rejected first appends return a rented batch without completing it.
         // Its arena was never written or shared, so it must go back to the arena pool (buffer
         // kept) rather than be dropped and reallocated on the next rent.
-        using var room = BatchArena.Register(new ArenaPoolLimit(BatchArena.MaxPoolSizeCap, BatchArena.MaxPoolSizeCap, long.MaxValue / 2));
+        using var room = IsolateArenaPool();
         var (pool, _) = CreatePools(maxPoolSize: 2);
         var arenaField = typeof(PartitionBatch).GetField(
             "_arena",
@@ -1335,10 +1335,10 @@ public class ProducerPoolMemoryBoundTests
     }
 
     [Test]
-    [NotInParallel(nameof(BatchArena))]
+    [NotInParallel]
     public async Task PartitionBatchPool_DiscardedUnusedBatch_ReturnsItsArenaToTheArenaPool()
     {
-        using var room = BatchArena.Register(new ArenaPoolLimit(BatchArena.MaxPoolSizeCap, BatchArena.MaxPoolSizeCap, long.MaxValue / 2));
+        using var room = IsolateArenaPool();
         var (pool, readyPool) = CreatePools(maxPoolSize: 1);
         var arenaField = typeof(PartitionBatch).GetField(
             "_arena",
@@ -1576,6 +1576,23 @@ public class ProducerPoolMemoryBoundTests
         BatchSize = batchSize,
         BufferMemory = (ulong)bufferMemory,
     };
+
+    /// <summary>
+    /// Prepares the process-wide arena pool for a test that follows an arena after returning it.
+    /// Such a test must also be <c>[NotInParallel]</c> without a key: every producer test rents
+    /// from this pool, so a test running alongside could rent the returned arena and drop its
+    /// buffer when it returns it.
+    /// </summary>
+    /// <returns>A registration that retains every returned arena until it is disposed.</returns>
+    private static IDisposable IsolateArenaPool()
+    {
+        // Earlier tests can leave a larger idle arena in the pool. A batch that rents it caps
+        // it at its own arena capacity, so returning it drops the buffer. Disposing a
+        // registration larger than any other lowers the byte limit, which releases the pooled
+        // arenas; the test's rents then create arenas of exactly the capacity they ask for.
+        BatchArena.Register(new ArenaPoolLimit(1, 1, long.MaxValue)).Dispose();
+        return BatchArena.Register(new ArenaPoolLimit(BatchArena.MaxPoolSizeCap, BatchArena.MaxPoolSizeCap, long.MaxValue / 2));
+    }
 
     private static (PartitionBatchPool Pool, ReadyBatchPool ReadyPool) CreatePools(int maxPoolSize)
     {
