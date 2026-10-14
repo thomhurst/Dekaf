@@ -68,8 +68,8 @@ fi
 ensure_gdb() {
   command -v gdb >/dev/null 2>&1 && command -v gcore >/dev/null 2>&1 && return 0
   echo "Installing gdb for native stack capture..."
-  timeout 45s sudo apt-get update -qq >/dev/null 2>&1 || true
-  timeout 60s sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends gdb >/dev/null 2>&1 || true
+  timeout -k 5s 45s sudo apt-get update -qq >/dev/null 2>&1 || true
+  timeout -k 5s 60s sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends gdb >/dev/null 2>&1 || true
   command -v gdb >/dev/null 2>&1
 }
 
@@ -93,7 +93,7 @@ capture_native_diagnostics() {
     remaining=$(( stacks_deadline - $(date +%s) ))
     [ "$remaining" -gt 0 ] || break
     echo "Capturing native thread stacks of process $pid into $out_dir"
-    timeout "${remaining}s" sudo gdb -p "$pid" -batch -nx \
+    timeout -k 5s "${remaining}s" sudo gdb -p "$pid" -batch -nx \
       -ex "set debuginfod enabled off" \
       -ex "set pagination off" \
       -ex "set print frame-arguments none" \
@@ -103,9 +103,10 @@ capture_native_diagnostics() {
   done
   # The core supplements the stacks: only the test process, and capped.
   echo "Capturing core of process $root_pid"
-  if timeout 120s sudo gcore -o "$out_dir/core" "$root_pid" > "$out_dir/gcore-$root_pid.log" 2>&1; then
+  if timeout -k 5s 120s sudo gcore -o "$out_dir/core" "$root_pid" > "$out_dir/gcore-$root_pid.log" 2>&1; then
     sudo chmod a+r "$out_dir/core.$root_pid" 2>/dev/null || true
-    timeout 60s gzip -1 "$out_dir/core.$root_pid" || rm -f "$out_dir/core.$root_pid.gz"
+    # An uncompressed core could be too large to upload in the reserve; drop it.
+    timeout -k 5s 60s gzip -1 "$out_dir/core.$root_pid" || rm -f "$out_dir/core.$root_pid" "$out_dir/core.$root_pid.gz"
   fi
 }
 
