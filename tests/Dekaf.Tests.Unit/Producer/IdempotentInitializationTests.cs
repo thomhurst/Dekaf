@@ -257,37 +257,41 @@ public sealed class IdempotentInitializationTests
     public async Task InitializeAsync_AllBrokersUnavailable_TimeoutPreservesLastTransportFailure(
         bool dnsFailure, CancellationToken cancellationToken)
     {
-        await using var harness = new ProducerInitializationHarness(maxBlockMs: 1000, retryBackoffMs: 10_000);
+        await using var harness = new ProducerInitializationHarness(maxBlockMs: 1000, retryBackoffMs: 10_000, manualMaxBlock: true);
         var firstFailure = new SocketException((int)SocketError.ConnectionRefused);
         Exception lastFailure = dnsFailure
             ? new DnsResolutionException("last-broker", 9093, firstFailure)
             : new IOException("Last broker disconnected", firstFailure);
-        harness.Connect = (id, _) => ValueTask.FromException<IKafkaConnection>(
-            id == harness.BrokerIds[0] ? firstFailure : lastFailure);
+        var roundTried = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.Connect = (id, _) =>
+        {
+            if (id == harness.BrokerIds[1])
+                roundTried.TrySetResult();
 
-        var exception = await Assert.That(async () => await harness.Producer.InitializeAsync(cancellationToken))
-            .Throws<KafkaTimeoutException>();
+            return ValueTask.FromException<IKafkaConnection>(id == harness.BrokerIds[0] ? firstFailure : lastFailure);
+        };
 
-        await Assert.That(exception!.Configured).IsEqualTo(TimeSpan.FromMilliseconds(1000));
-        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
-        await Assert.That(exception!.Elapsed).IsLessThan(TimeSpan.FromSeconds(5));
-        await Assert.That(exception!.Message).Contains("InitProducerId");
-        await Assert.That(ReferenceEquals(exception!.InnerException, lastFailure)).IsTrue();
-        await Assert.That(ReferenceEquals(exception!.InnerException!.InnerException, firstFailure)).IsTrue();
+        var exception = await TimeOutAfterAsync(harness, roundTried.Task, cancellationToken);
+
+        await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromMilliseconds(1000));
+        await Assert.That(exception.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+        await Assert.That(exception.Elapsed).IsLessThan(TimeSpan.FromSeconds(5));
+        await Assert.That(exception.Message).Contains("InitProducerId");
+        await Assert.That(ReferenceEquals(exception.InnerException, lastFailure)).IsTrue();
+        await Assert.That(ReferenceEquals(exception.InnerException!.InnerException, firstFailure)).IsTrue();
         await Assert.That(harness.ConnectionAttempts.ToArray()).IsEquivalentTo(harness.BrokerIds);
     }
 
     [Test]
     public async Task InitializeAsync_RetriableResponsesUntilDeadline_PreservesErrorCode(CancellationToken cancellationToken)
     {
-        await using var harness = new ProducerInitializationHarness(maxBlockMs: 1000, retryBackoffMs: 10_000);
-        harness.Send = (_, _) => ValueTask.FromResult(new InitProducerIdResponse { ErrorCode = ErrorCode.CoordinatorLoadInProgress });
+        await using var harness = new ProducerInitializationHarness(maxBlockMs: 1000, retryBackoffMs: 10_000, manualMaxBlock: true);
+        var roundAnswered = AnswerLoadInProgressUntilRoundEnds(harness);
 
-        var exception = await Assert.That(async () => await harness.Producer.InitializeAsync(cancellationToken))
-            .Throws<KafkaTimeoutException>();
+        var exception = await TimeOutAfterAsync(harness, roundAnswered, cancellationToken);
 
-        await Assert.That(((KafkaException)exception!.InnerException!).ErrorCode).IsEqualTo(ErrorCode.CoordinatorLoadInProgress);
-        await Assert.That(exception!.Elapsed).IsLessThan(TimeSpan.FromSeconds(5));
+        await Assert.That(((KafkaException)exception.InnerException!).ErrorCode).IsEqualTo(ErrorCode.CoordinatorLoadInProgress);
+        await Assert.That(exception.Elapsed).IsLessThan(TimeSpan.FromSeconds(5));
         await Assert.That(harness.Requests.Count).IsEqualTo(2);
     }
 
@@ -333,9 +337,9 @@ public sealed class IdempotentInitializationTests
     [Test]
     public async Task InitializeAsync_TimeoutThenRecovery_CanInitializeAgain(CancellationToken cancellationToken)
     {
-        await using var harness = new ProducerInitializationHarness(maxBlockMs: 1000, retryBackoffMs: 10_000);
-        harness.Send = (_, _) => ValueTask.FromResult(new InitProducerIdResponse { ErrorCode = ErrorCode.CoordinatorLoadInProgress });
-        await Assert.That(async () => await harness.Producer.InitializeAsync(cancellationToken)).Throws<KafkaTimeoutException>();
+        await using var harness = new ProducerInitializationHarness(maxBlockMs: 1000, retryBackoffMs: 10_000, manualMaxBlock: true);
+        var roundAnswered = AnswerLoadInProgressUntilRoundEnds(harness);
+        await TimeOutAfterAsync(harness, roundAnswered, cancellationToken);
 
         harness.Send = (_, _) => ValueTask.FromResult(Success());
         await harness.Producer.InitializeAsync(cancellationToken);
@@ -348,15 +352,21 @@ public sealed class IdempotentInitializationTests
     {
         // An empty broker list is a transient metadata state (every broker restarting), not a
         // configuration error: refresh and retry until MaxBlockMs, then report the timeout.
-        await using var harness = new ProducerInitializationHarness(maxBlockMs: 200);
+        // max.block.ms expires while the first refresh is still trying to connect: the timeout
+        // must name the missing brokers, not the cancellation that ended the refresh.
+        await using var harness = new ProducerInitializationHarness(maxBlockMs: 200, manualMaxBlock: true);
         harness.Metadata.Metadata.Update(new MetadataResponse { Brokers = [], Topics = [] });
-        harness.Connect = (_, _) => ValueTask.FromException<IKafkaConnection>(
-            new SocketException((int)SocketError.ConnectionRefused));
+        var refreshConnecting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.Connect = async (_, token) =>
+        {
+            refreshConnecting.TrySetResult();
+            await WaitForCancellationAsync(token);
+            throw new SocketException((int)SocketError.ConnectionRefused);
+        };
 
-        var exception = await Assert.That(async () => await harness.Producer.InitializeAsync(cancellationToken))
-            .Throws<KafkaTimeoutException>();
+        var exception = await TimeOutAfterAsync(harness, refreshConnecting.Task, cancellationToken);
 
-        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+        await Assert.That(exception.TimeoutKind).IsEqualTo(TimeoutKind.Api);
         await Assert.That(exception.InnerException).IsTypeOf<KafkaException>();
         await Assert.That(((KafkaException)exception.InnerException!).ErrorCode).IsEqualTo(ErrorCode.BrokerNotAvailable);
         await Assert.That(harness.ConnectionAttempts.Count).IsGreaterThan(0);
@@ -368,24 +378,26 @@ public sealed class IdempotentInitializationTests
     [Arguments(true)]
     public async Task InitializeAsync_StalledOperation_RespectsMaxBlock(bool duringConnect, CancellationToken cancellationToken)
     {
-        await using var harness = new ProducerInitializationHarness(maxBlockMs: 1000);
+        await using var harness = new ProducerInitializationHarness(maxBlockMs: 1000, manualMaxBlock: true);
+        var stalled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         if (duringConnect)
             harness.Connect = async (_, token) =>
             {
+                stalled.TrySetResult();
                 await Task.Delay(Timeout.Infinite, token);
                 return harness.Connections[1];
             };
         else
             harness.Send = async (_, token) =>
             {
+                stalled.TrySetResult();
                 await Task.Delay(Timeout.Infinite, token);
                 return Success();
             };
 
-        var exception = await Assert.That(async () => await harness.Producer.InitializeAsync(cancellationToken))
-            .Throws<KafkaTimeoutException>();
+        var exception = await TimeOutAfterAsync(harness, stalled.Task, cancellationToken);
 
-        await Assert.That(exception!.Elapsed).IsLessThan(TimeSpan.FromSeconds(5));
+        await Assert.That(exception.Elapsed).IsLessThan(TimeSpan.FromSeconds(5));
         await Assert.That(harness.ConnectionAttempts.Count).IsEqualTo(1);
     }
 
@@ -396,17 +408,18 @@ public sealed class IdempotentInitializationTests
         // The socket reports its failure only once the max.block.ms token has fired. The caller
         // must see the timeout carrying that failure, not the raw transport exception. (Only a
         // send can surface this: the pool maps a cancelled connection setup itself.)
-        await using var harness = new ProducerInitializationHarness(maxBlockMs: 300);
+        await using var harness = new ProducerInitializationHarness(maxBlockMs: 300, manualMaxBlock: true);
+        var sending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         harness.Send = async (_, token) =>
         {
+            sending.TrySetResult();
             await WaitForCancellationAsync(token);
             throw new SocketException((int)SocketError.ConnectionReset);
         };
 
-        var exception = await Assert.That(async () => await harness.Producer.InitializeAsync(cancellationToken))
-            .Throws<KafkaTimeoutException>();
+        var exception = await TimeOutAfterAsync(harness, sending.Task, cancellationToken);
 
-        await Assert.That(exception!.InnerException).IsTypeOf<SocketException>();
+        await Assert.That(exception.InnerException).IsTypeOf<SocketException>();
     }
 
     [Test]
@@ -428,6 +441,40 @@ public sealed class IdempotentInitializationTests
         caller.Cancel();
 
         await Assert.That(() => initialization).Throws<OperationCanceledException>();
+    }
+
+    /// <summary>
+    /// Starts initialization, expires its max.block.ms budget once <paramref name="reached"/>
+    /// completes, and returns the timeout. Expiring at an observed step, instead of on a wall-clock
+    /// timer, keeps a loaded machine (GC pauses, a busy thread pool) from expiring the budget
+    /// before the step the test is about.
+    /// </summary>
+    private static async Task<KafkaTimeoutException> TimeOutAfterAsync(
+        ProducerInitializationHarness harness, Task reached, CancellationToken cancellationToken)
+    {
+        var initialization = harness.Producer.InitializeAsync(cancellationToken).AsTask();
+        await reached.WaitAsync(cancellationToken);
+        harness.ExpireMaxBlock();
+
+        var exception = await Assert.That(() => initialization).Throws<KafkaTimeoutException>();
+        return exception!;
+    }
+
+    /// <summary>
+    /// Answers every InitProducerId with CoordinatorLoadInProgress; the returned task completes
+    /// once every broker of the first round has been asked.
+    /// </summary>
+    private static Task AnswerLoadInProgressUntilRoundEnds(ProducerInitializationHarness harness)
+    {
+        var roundAnswered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.Send = (_, _) =>
+        {
+            if (harness.Requests.Count == harness.BrokerIds.Length)
+                roundAnswered.TrySetResult();
+
+            return ValueTask.FromResult(new InitProducerIdResponse { ErrorCode = ErrorCode.CoordinatorLoadInProgress });
+        };
+        return roundAnswered.Task;
     }
 
     private static async Task WaitForCancellationAsync(CancellationToken token)

@@ -34,7 +34,8 @@ internal sealed class ProducerInitializationHarness : IAsyncDisposable
         int retryBackoffMs = 1,
         bool idempotent = true,
         string? transactionalId = null,
-        MetadataOptions? metadataOptions = null)
+        MetadataOptions? metadataOptions = null,
+        bool manualMaxBlock = false)
     {
         Connect = (id, _) => ValueTask.FromResult(Connections[id]);
         _pool = new ConnectionPool("idempotent-init-test", new ConnectionOptions { ReconnectBackoff = TimeSpan.Zero }, 1,
@@ -87,7 +88,20 @@ internal sealed class ProducerInitializationHarness : IAsyncDisposable
             RetryBackoffMaxMs = retryBackoffMs,
             CloseTimeoutMs = 100
         }, Serializers.String, Serializers.String, _pool, _metadata, DekafMemoryBudget.Global);
+        if (manualMaxBlock)
+            Producer.ArmIdempotentInitializationBudgetForTesting = budget => Volatile.Write(ref _maxBlockBudget, budget);
     }
+
+    private CancellationTokenSource? _maxBlockBudget;
+
+    /// <summary>
+    /// Expires the max.block.ms budget of the running initialization (requires
+    /// <c>manualMaxBlock</c>). A test calls it once it has observed the step the budget must
+    /// interrupt, so the outcome does not depend on how quickly a loaded machine reaches that step.
+    /// </summary>
+    public void ExpireMaxBlock() =>
+        (Volatile.Read(ref _maxBlockBudget) ?? throw new InvalidOperationException("No initialization budget armed"))
+            .Cancel();
 
     public static InitProducerIdResponse Success() => new()
     {
