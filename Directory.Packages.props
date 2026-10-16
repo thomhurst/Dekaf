@@ -73,7 +73,7 @@
     <PackageVersion Include="ToxiproxyNetCore" Version="1.0.50" />
     <PackageVersion Include="TUnit" Version="1.75.0" />
     <PackageVersion Include="TUnit.Logging.Microsoft" Version="1.75.0" />
-    <PackageVersion Include="Verify.TUnit" Version="33.3.3" />
+    <PackageVersion Include="Verify.TUnit" Version="33.3.4" />
     <PackageVersion Include="ZstdSharp.Port" Version="0.8.8" />
   </ItemGroup>
 
