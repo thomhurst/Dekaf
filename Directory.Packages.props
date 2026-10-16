@@ -7,7 +7,7 @@
 
   <ItemGroup>
     <PackageVersion Include="Apache.Avro" Version="1.12.2" />
-    <PackageVersion Include="AlibabaCloud.SDK.Kms20160120" Version="2.2.1" />
+    <PackageVersion Include="AlibabaCloud.SDK.Kms20160120" Version="2.2.2" />
     <PackageVersion Include="Aliyun.Credentials" Version="1.5.4" />
     <PackageVersion Include="Aspire.Hosting" Version="13.6.1" />
     <PackageVersion Include="Aspire.Hosting.Testing" Version="13.6.1" />
