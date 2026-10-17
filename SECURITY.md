@@ -8,7 +8,9 @@ versions may require an upgrade to receive a fix.
 ## Reporting a Vulnerability
 
 Report suspected vulnerabilities through a
-[private GitHub security advisory](https://github.com/thomhurst/Dekaf/security/advisories/new).
+[private GitHub security advisory](https://github.com/thomhurst/Dekaf/security/advisories/new),
+or by email to the security contact,
+[oss-security-scanner@tomlonghurst.com](mailto:oss-security-scanner@tomlonghurst.com).
 Do not open a public issue or disclose exploit details before a fix is
 available. Include affected versions, impact, reproduction steps, and any
 known mitigations.
