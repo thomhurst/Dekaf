@@ -2,7 +2,7 @@
 # The scanner builds this file with the repository as the build context, then scans the
 # finished image with no network access. Everything the build, the unit tests and the
 # fuzz targets need is fetched here.
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     DOTNET_ROOT=/usr/share/dotnet \
