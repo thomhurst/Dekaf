@@ -69,6 +69,21 @@ exit 0
     Remove-MergedWorktree -Repo $repo -Worktree $logWorktree
     Assert-True (-not (Test-Path -LiteralPath $logWorktree)) 'Log-only worktree was not removed.'
 
+    if ($IsWindows) {
+        # Git follows a directory junction while deleting and empties its target, which
+        # here lies outside the worktree, as a package-manager link into a shared store can.
+        $outside = Join-Path $testRoot 'outside-store'
+        New-Item -ItemType Directory -Path $outside | Out-Null
+        Set-Content -LiteralPath (Join-Path $outside 'keep.txt') -Value 'shared'
+        $junctionWorktree = Join-Path $testRoot 'issue-127-junction'
+        git -C $repo worktree add --quiet -b issue-127-junction $junctionWorktree
+        New-Item -ItemType Directory -Path (Join-Path $junctionWorktree 'bin') | Out-Null
+        New-Item -ItemType Junction -Path (Join-Path $junctionWorktree 'bin/pkg') -Target $outside | Out-Null
+        Remove-MergedWorktree -Repo $repo -Worktree $junctionWorktree -Label 'junction fixture'
+        Assert-True (-not (Test-Path -LiteralPath $junctionWorktree)) 'Worktree containing a junction was not removed.'
+        Assert-True (Test-Path -LiteralPath (Join-Path $outside 'keep.txt')) 'Removal deleted a file through a junction outside the worktree.'
+    }
+
     $blockedWorktree = Join-Path $testRoot 'issue-126-ignored-source'
     git -C $repo worktree add --quiet -b issue-126-ignored-source $blockedWorktree
     Set-Content -LiteralPath (Join-Path $blockedWorktree '.env') -Value 'local settings'
