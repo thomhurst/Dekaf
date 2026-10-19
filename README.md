@@ -8,9 +8,9 @@ Dekaf is a high-performance, pure C# Apache Kafka client optimized for .NET 10, 
 
 If you like, or use this library, a sponsor is appreciated.
 
-**[Benchmarks vs Confluent](https://thomhurst.github.io/Dekaf/docs/stress-tests)**
+**[Benchmarks vs Confluent](https://dekaf.tomlonghurst.dev/docs/stress-tests)**
 
-**[View Full Documentation](https://thomhurst.github.io/Dekaf/)**
+**[View Full Documentation](https://dekaf.tomlonghurst.dev/)**
 
 ## Why Dekaf?
 
@@ -52,7 +52,7 @@ assets and tested runtimes are separate:
 A `netstandard2.0` asset does not mean every compatible runtime is tested or has
 identical APIs and performance. .NET 8 uses the dedicated `net8.0` asset;
 optional packages require their own compatible assets. See
-[API and runtime compatibility](https://thomhurst.github.io/Dekaf/docs/api-compatibility)
+[API and runtime compatibility](https://dekaf.tomlonghurst.dev/docs/api-compatibility)
 for asset differences, package validation and AOT limits.
 
 ### Producing Messages
@@ -227,7 +227,7 @@ await consumer.ForEachAsync(async msg =>
 }, cancellationToken);
 ```
 
-Note: filtered messages are skipped permanently once offsets are committed past them — see [the docs](https://thomhurst.github.io/Dekaf/docs/consumer/linq-extensions#filtering-skips-messages-permanently) before filtering messages you might need later!
+Note: filtered messages are skipped permanently once offsets are committed past them — see [the docs](https://dekaf.tomlonghurst.dev/docs/consumer/linq-extensions#filtering-skips-messages-permanently) before filtering messages you might need later!
 
 ## Offset Management
 
@@ -444,5 +444,5 @@ public sealed class OrderProcessor : KafkaConsumerService<string, Order>
 }
 ```
 
-Failed messages flow `orders` → `orders-retry-5s` → `orders-retry-30s` → `orders.DLQ`, carrying headers with the source offset and failure details. If no retry or durable routing path succeeds, the service keeps running and redelivers the source record with backoff by default (`MessageFailureDisposition.Redeliver`); override `GetFailureDispositionAsync` to explicitly discard selected failures or to stop the service with `Retry`. Hosted consumer services require after-processing offset staging and reject `WithAtMostOnceProcessing()`. See the [Hosted Consumer Services](https://thomhurst.github.io/Dekaf/docs/hosted-services) and [Dead Letter Queues](https://thomhurst.github.io/Dekaf/docs/consumer/dead-letter-queues) docs.
+Failed messages flow `orders` → `orders-retry-5s` → `orders-retry-30s` → `orders.DLQ`, carrying headers with the source offset and failure details. If no retry or durable routing path succeeds, the service keeps running and redelivers the source record with backoff by default (`MessageFailureDisposition.Redeliver`); override `GetFailureDispositionAsync` to explicitly discard selected failures or to stop the service with `Retry`. Hosted consumer services require after-processing offset staging and reject `WithAtMostOnceProcessing()`. See the [Hosted Consumer Services](https://dekaf.tomlonghurst.dev/docs/hosted-services) and [Dead Letter Queues](https://dekaf.tomlonghurst.dev/docs/consumer/dead-letter-queues) docs.
 

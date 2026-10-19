@@ -52,8 +52,8 @@ const config = {
   tagline: 'Kafka in pure C#, without librdkafka',
   favicon: 'img/favicon.ico',
 
-  url: 'https://thomhurst.github.io',
-  baseUrl: '/Dekaf/',
+  url: 'https://dekaf.tomlonghurst.dev',
+  baseUrl: '/',
 
   organizationName: 'thomhurst',
   projectName: 'Dekaf',
@@ -65,7 +65,7 @@ const config = {
         rel: 'icon',
         type: 'image/svg+xml',
         sizes: 'any',
-        href: '/Dekaf/img/favicon.svg',
+        href: '/img/favicon.svg',
       },
     },
     {
@@ -73,7 +73,7 @@ const config = {
       attributes: {
         rel: 'apple-touch-icon',
         sizes: '180x180',
-        href: '/Dekaf/img/apple-touch-icon.png',
+        href: '/img/apple-touch-icon.png',
       },
     },
     {
@@ -126,8 +126,7 @@ const config = {
           enableMarkdownFiles: true,
           // Off by default; this is the single-file full corpus.
           enableLlmsFullTxt: true,
-          // Emit absolute URLs. Relative links omit the /Dekaf/ baseUrl, which 404s
-          // once llms.txt is fetched away from the site.
+          // Emit absolute URLs. Relative links 404 once llms.txt is fetched away from the site.
           relativePaths: false,
           includeDocs: true,
           includeBlog: false,

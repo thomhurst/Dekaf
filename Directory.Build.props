@@ -29,7 +29,7 @@
     <Product>Dekaf</Product>
     <Copyright>Copyright (c) Dekaf Contributors</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://thomhurst.github.io/Dekaf/</PackageProjectUrl>
+    <PackageProjectUrl>https://dekaf.tomlonghurst.dev/</PackageProjectUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <RepositoryUrl>https://github.com/thomhurst/Dekaf</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
