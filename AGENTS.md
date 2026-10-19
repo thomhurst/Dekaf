@@ -65,4 +65,12 @@ CI runs the stress tests (`.github/workflows/stress-tests.yml`). Agents do not d
 - `tools/Dekaf.Benchmarks/`, `tools/Dekaf.StressTests/`: performance validation.
 - `tools/profile-stress-test.sh`, `tools/Dekaf.TraceAnalyzer/`: phased trace capture and analysis.
 
+## Autonomous self-improvement
+
+Treat every problem you notice as work to act on, whether you find it while testing, developing, reading code, reviewing, or doing anything else. Examples include bugs, flaky or failing tests, incorrect docs, misleading comments, broken tooling, and gaps in these instructions.
+
+- If the fix is trivial and low-risk, fix it as part of the current work and mention it in the PR description.
+- If the fix is out of scope for the current work, raise a GitHub issue at the point you discover it so it can be fixed later. Include what you saw, where you saw it (file and line, command, or CI run), how to reproduce it, and the expected behavior. Search existing issues first, and add to a matching issue instead of opening a duplicate.
+- Do not ignore a problem because it existed before your change or is unrelated to it.
+
 Keep agent instructions focused on non-obvious project requirements. Prefer links to maintained code or workflows over duplicated tutorials, examples, and inventories.
