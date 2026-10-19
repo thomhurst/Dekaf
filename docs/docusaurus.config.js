@@ -184,6 +184,11 @@ const config = {
             label: 'Documentation',
           },
           {
+            href: 'https://tomlonghurst.dev/',
+            label: 'More libraries',
+            position: 'right',
+          },
+          {
             href: 'https://www.nuget.org/packages/Dekaf',
             label: 'NuGet',
             position: 'right',
@@ -230,6 +235,35 @@ const config = {
               {
                 label: 'NuGet',
                 href: 'https://www.nuget.org/packages/Dekaf',
+              },
+            ],
+          },
+          {
+            title: 'More libraries',
+            items: [
+              {
+                label: 'TUnit',
+                href: 'https://tunit.dev/',
+              },
+              {
+                label: 'ModularPipelines',
+                href: 'https://modularpipelines.tomlonghurst.dev/',
+              },
+              {
+                label: 'Respire',
+                href: 'https://respire.tomlonghurst.dev/',
+              },
+              {
+                label: 'Kevlar',
+                href: 'https://kevlar.tomlonghurst.dev/',
+              },
+              {
+                label: 'BDTest',
+                href: 'https://bdtest.tomlonghurst.dev/',
+              },
+              {
+                label: 'All projects',
+                href: 'https://tomlonghurst.dev/',
               },
             ],
           },
