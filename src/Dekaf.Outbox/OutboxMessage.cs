@@ -1,4 +1,6 @@
 using System.Buffers;
+using System.Diagnostics;
+using Dekaf.Diagnostics;
 using Dekaf.Serialization;
 
 namespace Dekaf.Outbox;
@@ -79,6 +81,13 @@ public class OutboxMessage
     /// Call this inside the same database transaction as the business write, then hand the
     /// result to the outbox store (e.g. <c>DbContext.AddOutboxMessage</c>).
     /// </summary>
+    /// <remarks>
+    /// When <see cref="Activity.Current"/> is a W3C activity and <paramref name="headers"/>
+    /// carries no <c>traceparent</c>, its trace context is stored as <c>traceparent</c> and
+    /// <c>tracestate</c> headers. The relay restores that context as the parent of the
+    /// publish, so the trace runs from the enqueuing request to the consumer. The caller's
+    /// <paramref name="headers"/> instance is never modified.
+    /// </remarks>
     /// <typeparam name="TKey">Key type.</typeparam>
     /// <typeparam name="TValue">Value type.</typeparam>
     /// <param name="topic">The topic to publish to.</param>
@@ -105,7 +114,12 @@ public class OutboxMessage
         ArgumentOutOfRangeException.ThrowIfLessThan(bucketCount, 1);
 
         var messageId = Guid.NewGuid();
-        if (key is not null
+        var traceActivity = Activity.Current is { IdFormat: ActivityIdFormat.W3C } current
+            && headers?.GetFirst(TraceContextPropagator.TraceparentHeader) is null
+                ? current
+                : null;
+        if (traceActivity is not null
+            || key is not null
             && keySerializer is IRecordHeaderSerializer { ProducesRecordHeaders: true }
             || value is not null
             && valueSerializer is IRecordHeaderSerializer { ProducesRecordHeaders: true })
@@ -115,6 +129,8 @@ public class OutboxMessage
 
         var keyBytes = SerializeComponent(topic, key, keySerializer, headers, SerializationComponent.Key);
         var valueBytes = SerializeComponent(topic, value, valueSerializer, headers, SerializationComponent.Value);
+        if (traceActivity is not null)
+            AddTraceContext(headers!, traceActivity);
 
         return new OutboxMessage
         {
@@ -127,6 +143,13 @@ public class OutboxMessage
             Partition = partition,
             CreatedAtUtc = DateTimeOffset.UtcNow
         };
+    }
+
+    private static void AddTraceContext(Headers headers, Activity activity)
+    {
+        headers.Add(TraceContextPropagator.TraceparentHeader, activity.Id!);
+        if (!string.IsNullOrEmpty(activity.TraceStateString))
+            headers.Add(TraceContextPropagator.TracestateHeader, activity.TraceStateString!);
     }
 
     private static byte[]? SerializeComponent<T>(

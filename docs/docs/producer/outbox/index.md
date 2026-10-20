@@ -164,6 +164,20 @@ var messageId = outboxResult.Headers.FirstOrDefault(h => h.Key == "x-outbox-mess
 // Track processed ids (e.g. an inbox table keyed by the GUID) and skip repeats.
 ```
 
+## Tracing
+
+`OutboxMessage.Create` (and `AddOutboxMessage`) stores the W3C trace context of `Activity.Current` on the row as `traceparent` and `tracestate` headers. A `traceparent` header you pass yourself takes precedence.
+
+When the relay publishes the row and a listener is attached to the `Dekaf` activity source, it starts an `outbox relay {topic}` span parented to the stored context, from pickup to broker acknowledgement. The producer's `send {topic}` span is its child and replaces the stored headers, so the record carries one `traceparent` and consumers link to the trace of the request that wrote the row, not to the relay's background loop:
+
+```text
+POST /orders                 (enqueuing request)
+└── outbox relay orders      (relay, possibly minutes later)
+    └── send orders          (producer)
+```
+
+If your sampler drops the relay span, the `send` span parents directly to the stored context. If it drops the `send` span itself, the record is published without a `traceparent`, because the stored headers were already removed. Without a listener the stored headers are published unchanged. Register the source with `TracerProviderBuilder.AddSource(DekafDiagnostics.ActivitySourceName)`; see [Observability](../../observability.md#tracing).
+
 ## Tuning
 
 | Option | Default | Notes |
