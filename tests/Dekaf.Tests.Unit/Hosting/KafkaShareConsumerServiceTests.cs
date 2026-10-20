@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Threading.Tasks.Sources;
 using Dekaf.Consumer;
 using Dekaf.Errors;
+using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Consumer.DeadLetter;
 using Dekaf.Extensions.Hosting;
@@ -198,6 +199,41 @@ public sealed class KafkaShareConsumerServiceTests
         await Assert.That(consumer.Acknowledgements.Select(x => x.Type)).IsEquivalentTo([AcknowledgeType.Accept, AcknowledgeType.Accept]);
         await Assert.That(service.ExecuteTask!.IsCompletedSuccessfully).IsTrue();
         await Assert.That(service.Errors).IsEmpty();
+    }
+
+    [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    [Arguments(3)]
+    public async Task AcknowledgementFailureThrownByPoll_RestartsPoll(int kind)
+    {
+        // A poll sends the previous record's acknowledgement before fetching. After the member or
+        // share session is lost, it reports the per-partition failure and then throws the
+        // code-less CommitAsync wrapper, which is not retriable by itself (#3586).
+        Exception error = kind switch
+        {
+            0 => new KafkaException(ErrorCode.ShareSessionNotFound, "session gone", isRetriable: true),
+            1 => new KafkaException(ErrorCode.UnknownMemberId, "member expired"),
+            2 => new KafkaException(ErrorCode.InvalidRecordState, "acquisition lost"),
+            _ => new ConnectionSetupExhaustedException(3),
+        };
+        var wrapper = new KafkaException("CommitAsync partially failed", error);
+        var consumer = new TestConsumer(Record(0), Record(1))
+        {
+            InlineFailure = error,
+            PollFailure = wrapper,
+            FailPollAfterRecords = 1
+        };
+        await using var service = new TestService(consumer,
+            options: new KafkaShareConsumerServiceOptions { PollRetryBackoff = TimeSpan.FromMilliseconds(1) });
+
+        await RunAsync(service);
+
+        await Assert.That(consumer.PollAttempts).IsEqualTo(2);
+        await Assert.That(consumer.Delivered).IsEqualTo(2);
+        await Assert.That(service.Errors.Single()).IsSameReferenceAs(wrapper);
+        await Assert.That(service.ExecuteTask!.IsCompletedSuccessfully).IsTrue();
     }
 
     [Test]

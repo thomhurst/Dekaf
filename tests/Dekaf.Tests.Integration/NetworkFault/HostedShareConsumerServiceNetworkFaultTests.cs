@@ -3,7 +3,7 @@ using Dekaf.Consumer;
 using Dekaf.Extensions.Hosting;
 using Dekaf.Producer;
 using Dekaf.ShareConsumer;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Tests.Integration.NetworkFault;
 
@@ -101,7 +101,10 @@ public sealed class HostedShareConsumerServiceNetworkFaultTests(ShareFaultKafkaC
         // A faulted service never receives the record, so report the fault instead of a timeout.
         var second = service.WaitForAsync("second");
         await Task.WhenAny(second, service.ExecuteTask!).WaitAsync(TimeSpan.FromSeconds(90), cancellationToken);
-        await Assert.That(service.ExecuteTask!.IsCompleted).IsFalse();
+        // Awaiting a faulted service rethrows the failure that stopped it.
+        if (service.ExecuteTask!.IsCompleted)
+            await service.ExecuteTask;
+        await Assert.That(service.ExecuteTask.IsCompleted).IsFalse();
         await second;
 
         // Awaiting surfaces the fault itself if shutdown failed.
@@ -121,7 +124,8 @@ public sealed class HostedShareConsumerServiceNetworkFaultTests(ShareFaultKafkaC
     }
 
     private sealed class RecordingShareConsumerService(IKafkaShareConsumer<string, string> consumer, string topic)
-        : KafkaShareConsumerService<string, string>(consumer, NullLogger.Instance,
+        : KafkaShareConsumerService<string, string>(consumer,
+            GlobalTestSetup.GetLoggerFactory().CreateLogger<RecordingShareConsumerService>(),
             serviceOptions: new KafkaShareConsumerServiceOptions
             {
                 PollRetryBackoff = TimeSpan.FromMilliseconds(500),
@@ -167,7 +171,7 @@ public sealed class HostedShareConsumerServiceNetworkFaultTests(ShareFaultKafkaC
             CancellationToken cancellationToken)
         {
             FailureObserved.TrySetResult();
-            return ValueTask.CompletedTask;
+            return base.OnErrorAsync(exception, result, cancellationToken);
         }
     }
 }
