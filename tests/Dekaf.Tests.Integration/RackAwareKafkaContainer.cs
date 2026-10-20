@@ -22,6 +22,9 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
     private const int ControllerPort = 9093;
     private const int ExternalBrokerPort = 19092;
 
+    /// <summary>The cluster's <c>offsets.topic.num.partitions</c>.</summary>
+    public const int OffsetsTopicPartitionCount = 3;
+
     private string _resourceSuffix = string.Empty;
     private int[] _hostPorts = [];
     private IContainer[] _brokers = [];
@@ -567,7 +570,8 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
             ["KAFKA_BROKER_RACK"] = rack,
             ["KAFKA_REPLICA_SELECTOR_CLASS"] = "org.apache.kafka.common.replica.RackAwareReplicaSelector",
             ["KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR"] = "3",
-            ["KAFKA_OFFSETS_TOPIC_NUM_PARTITIONS"] = "3",
+            ["KAFKA_OFFSETS_TOPIC_NUM_PARTITIONS"] = OffsetsTopicPartitionCount.ToString(
+                System.Globalization.CultureInfo.InvariantCulture),
             ["KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR"] = "3",
             ["KAFKA_TRANSACTION_STATE_LOG_MIN_ISR"] = "2",
             ["KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS"] = "0",
