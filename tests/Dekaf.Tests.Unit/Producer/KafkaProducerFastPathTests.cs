@@ -513,6 +513,63 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task FireAsync_Tracing_SuccessfulSendSpanLeavesStatusUnset(bool useAsyncSerializer)
+    {
+        // Instrumentation leaves Ok to the application (OTel span-status guidance).
+        var clientId = $"test-producer-{Guid.NewGuid():N}";
+        var sendSpans = new List<Activity>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            ActivityStopped = activity =>
+            {
+                if (Equals(activity.GetTagItem(DekafDiagnostics.MessagingClientId), clientId))
+                {
+                    lock (sendSpans)
+                        sendSpans.Add(activity);
+                }
+            }
+        };
+        ActivitySource.AddActivityListener(listener);
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = clientId,
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+        var producer = useAsyncSerializer
+            ? new KafkaProducer<string, string>(
+                options,
+                Serializers.String,
+                Serializers.String,
+                asyncValueSerializer: new AsyncStringSerializer())
+            : new KafkaProducer<string, string>(
+                options,
+                Serializers.String,
+                Serializers.String);
+        await using (producer)
+        {
+            await StopProducerBackgroundLoopsAsync(producer);
+            SeedProducerMetadata(producer);
+            SetInstanceField(producer, "_initialized", true);
+            AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
+
+            await producer.FireAsync(new ProducerMessage<string, string> { Topic = Topic, Key = "key", Value = "value" });
+
+            await Assert.That(sendSpans.Count).IsEqualTo(1);
+            await Assert.That(sendSpans[0].Status).IsEqualTo(ActivityStatusCode.Unset);
+        }
+    }
+
+    [Test]
     public async Task ProduceAsync_Tracing_SendParentContext_OverridesCallerSpan()
     {
         // TUnit's own listener keeps the Dekaf source live in parallel tests, so count only

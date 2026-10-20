@@ -1858,7 +1858,6 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     // Hot path complete — fully synchronous, zero allocation
                     if (!appendResult.Result)
                         throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
-                    activity?.SetStatus(ActivityStatusCode.Ok);
                     activity?.Dispose();
                     return default;
                 }
@@ -6168,8 +6167,6 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
             if (!appendResult)
                 throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
-
-            activity?.SetStatus(ActivityStatusCode.Ok);
         }
         catch (KafkaTimeoutException ex)
         {
@@ -6659,7 +6656,6 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             var result = await appendResult.ConfigureAwait(false);
             if (!result)
                 throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
-            activity?.SetStatus(ActivityStatusCode.Ok);
         }
         catch (KafkaTimeoutException ex)
         {
@@ -7286,8 +7282,6 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 key.Return();
                 value.Return();
             }
-
-            activity?.SetStatus(ActivityStatusCode.Ok);
         }
         catch (KafkaTimeoutException ex) when (deliveryHandler is null)
         {
