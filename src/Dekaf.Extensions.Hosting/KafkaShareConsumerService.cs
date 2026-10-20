@@ -313,10 +313,15 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                 catch (Exception exception) when (
                     current is null && _acknowledgementFailure is null &&
                     !_pollCancellation.IsCancellationRequested && !_processingCancellation.IsCancellationRequested &&
-                    ServiceRestartPolicy.CanRestartAfter(exception))
+                    (ServiceRestartPolicy.CanRestartAfter(exception) ||
+                     IsStaleAcquisitionFailure(exception) || IsRecoverableAcknowledgementFailure(exception)))
                 {
                     // The failed iterator has been disposed. Start a new poll after backoff;
                     // never retry processing or acknowledgement failures as polling failures.
+                    // A poll also sends pending acknowledgements before fetching and throws the
+                    // CommitAsync wrapper when they fail. The per-partition results already
+                    // reached ObserveAcknowledgements, which records any failure that loses a
+                    // decision, so a stale or recoverable failure here only restarts the poll.
                     await DelayBeforeRestartAsync(exception, ++restartAttempt).ConfigureAwait(false);
                 }
             }
@@ -486,7 +491,8 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                     or ErrorCode.ShareSessionNotFound or ErrorCode.InvalidShareSessionEpoch
             } => true,
             TimeoutException or IOException or SocketException => true,
-            _ => false
+            // A connection that kept closing during setup, or a broker route not learned yet.
+            _ => TransportFailureClassifier.IsClientRoutingFailure(exception)
         };
     }
 
