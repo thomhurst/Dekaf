@@ -1,4 +1,5 @@
 using Dekaf.Admin;
+using Dekaf.Consumer;
 using Dekaf.Protocol;
 using Dekaf.ShareConsumer;
 
@@ -17,16 +18,20 @@ public class ShareGroupOffsetQueryTests(KafkaTestContainer kafka) : KafkaIntegra
         var secondGroup = $"share-query-{Guid.NewGuid():N}";
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync();
+        // Produce before any poll and read from the earliest offset. Priming with a cancelled
+        // poll can strand the record in a ShareFetch the broker completes after cancellation,
+        // which hides it for the 15 s acquisition lock and consumes most of the deadline.
+        await ShareConsumerTestHelper.ProduceAsync(producer, topic, count: 1);
         await using var first = await Kafka.CreateShareConsumer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(firstGroup).BuildAsync();
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(firstGroup)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest).BuildAsync();
         await using var second = await Kafka.CreateShareConsumer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(secondGroup).BuildAsync();
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(secondGroup)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest).BuildAsync();
         first.Subscribe(topic);
         second.Subscribe(topic);
-        await ShareConsumerTestHelper.PrimeShareConsumerAsync(first);
-        await ShareConsumerTestHelper.PrimeShareConsumerAsync(second);
-        await ShareConsumerTestHelper.ProduceAsync(producer, topic, count: 1);
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        // The deadline now also covers each consumer's group join, which priming used to absorb.
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         foreach (var consumer in new[] { first, second })
         {
             var received = false;

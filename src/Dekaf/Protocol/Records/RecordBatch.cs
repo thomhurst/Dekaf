@@ -1539,9 +1539,13 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         bool checkCrcs)
         => ReadCore(ref reader, codecs, availableBytes, checkCrcs, ArrayPool<byte>.Shared, borrowResponseMemory: true);
 
+    // The reader spans the rest of one partition's ShareFetch records. A broker truncates the
+    // last batch at the response byte limit; bounding the read by what remains reports that
+    // tail as InsufficientDataException, which the parser skips, instead of malformed data.
     internal static RecordBatch ReadForShareConsumer(
         ref KafkaProtocolReader reader, CompressionCodecRegistry? codecs, ArrayPool<byte> recordDataPool)
-        => ReadCore(ref reader, codecs, int.MaxValue, false, recordDataPool, borrowResponseMemory: false);
+        => ReadCore(ref reader, codecs, (int)Math.Min(reader.Remaining, int.MaxValue), false, recordDataPool,
+            borrowResponseMemory: false);
 
     private static RecordBatch ReadCore(
         ref KafkaProtocolReader reader, CompressionCodecRegistry? codecs, int availableBytes,
