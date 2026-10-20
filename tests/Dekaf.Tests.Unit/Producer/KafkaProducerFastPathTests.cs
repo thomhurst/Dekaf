@@ -451,7 +451,8 @@ public class KafkaProducerFastPathTests
     public async Task ProduceAsync_Tracing_DoesNotLeakSendSpanIntoCallerContext(bool withCallerSpan)
     {
         // TUnit's own listener keeps the Dekaf source live in parallel tests, so count only
-        // this producer's spans. A send span stops at append, before ProduceAsync returns.
+        // this producer's spans. A ProduceAsync send span stops when delivery completes, before
+        // the awaited ProduceAsync result is available.
         var clientId = $"test-producer-{Guid.NewGuid():N}";
         var sendSpans = new List<Activity>();
         using var listener = new ActivityListener
@@ -573,7 +574,8 @@ public class KafkaProducerFastPathTests
     public async Task ProduceAsync_Tracing_SendParentContext_OverridesCallerSpan()
     {
         // TUnit's own listener keeps the Dekaf source live in parallel tests, so count only
-        // this producer's spans. A send span stops at append, before ProduceAsync returns.
+        // this producer's spans. A ProduceAsync send span stops when delivery completes, before
+        // the awaited ProduceAsync result is available.
         var clientId = $"test-producer-{Guid.NewGuid():N}";
         var sendSpans = new List<Activity>();
         using var listener = new ActivityListener

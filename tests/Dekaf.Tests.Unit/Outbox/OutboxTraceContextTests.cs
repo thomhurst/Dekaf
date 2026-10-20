@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using Dekaf.Diagnostics;
 using Dekaf.Outbox;
@@ -78,14 +79,12 @@ public sealed class OutboxTraceContextTests
     [Test]
     public async Task Publish_WithListener_ParentsRelaySpanToStoredContextAndDropsStoredHeaders()
     {
-        var stopped = new List<Activity>();
-        using var listener = new ActivityListener
-        {
-            ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
-            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
-            ActivityStopped = stopped.Add
-        };
-        ActivitySource.AddActivityListener(listener);
+        var row = Row(new Headers()
+            .Add("traceparent", StoredTraceparent)
+            .Add("tracestate", "vendor=value")
+            .Add("tenant", "a"));
+        var stopped = new ConcurrentQueue<Activity>();
+        using var listener = ListenForStoppedRelaySpans(row, stopped);
 
         Activity? currentDuringProduce = null;
         ActivityContext sendParentDuringProduce = default;
@@ -101,10 +100,6 @@ public sealed class OutboxTraceContextTests
             });
         await using var publisher = new DekafOutboxPublisher(producer, ownsProducer: false);
 
-        var row = Row(new Headers()
-            .Add("traceparent", StoredTraceparent)
-            .Add("tracestate", "vendor=value")
-            .Add("tenant", "a"));
         var callerActivity = Activity.Current;
 
         var result = await publisher.PublishAsync([row], HeaderName);
@@ -178,25 +173,20 @@ public sealed class OutboxTraceContextTests
     [Test]
     public async Task Publish_WithListener_FailedProduce_RecordsErrorOnRelaySpan()
     {
-        var stopped = new List<Activity>();
-        using var listener = new ActivityListener
-        {
-            ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
-            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
-            ActivityStopped = stopped.Add
-        };
-        ActivitySource.AddActivityListener(listener);
+        var row = Row(new Headers().Add("traceparent", StoredTraceparent));
+        var stopped = new ConcurrentQueue<Activity>();
+        using var listener = ListenForStoppedRelaySpans(row, stopped);
 
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
         producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
             .Returns(ValueTask.FromException<RecordMetadata>(new InvalidOperationException("rejected")));
         await using var publisher = new DekafOutboxPublisher(producer, ownsProducer: false);
 
-        var result = await publisher.PublishAsync(
-            [Row(new Headers().Add("traceparent", StoredTraceparent))], HeaderName);
+        var result = await publisher.PublishAsync([row], HeaderName);
 
         await Assert.That(result.AckedCount).IsEqualTo(0);
-        var relay = stopped.Single(activity => activity.OperationName == "outbox relay topic");
+        var relay = stopped.Single();
+        await Assert.That(relay.OperationName).IsEqualTo("outbox relay topic");
         await Assert.That(relay.Status).IsEqualTo(ActivityStatusCode.Error);
         await Assert.That(relay.GetTagItem("error.type")).IsEqualTo(typeof(InvalidOperationException).FullName);
     }
@@ -242,4 +232,24 @@ public sealed class OutboxTraceContextTests
         Headers = OutboxHeaderCodec.Encode(headers),
         CreatedAtUtc = new DateTimeOffset(2026, 7, 22, 0, 0, 0, TimeSpan.Zero)
     };
+
+    // [NotInParallel] only orders this class: producer tests in other classes stop Dekaf spans
+    // on other threads while these tests run. Keep only this row's relay span, in a thread-safe
+    // collection, so a parallel stop can neither add to the count nor mutate it mid-assertion.
+    private static ActivityListener ListenForStoppedRelaySpans(OutboxMessage row, ConcurrentQueue<Activity> stopped)
+    {
+        var messageId = row.MessageId.ToString("D");
+        var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = activity =>
+            {
+                if (Equals(activity.GetTagItem(DekafDiagnostics.MessagingMessageId), messageId))
+                    stopped.Enqueue(activity);
+            }
+        };
+        ActivitySource.AddActivityListener(listener);
+        return listener;
+    }
 }
