@@ -147,6 +147,104 @@ public sealed partial class ShareConsumerRenewalTests
     }
 
     [Test]
+    public async Task Commit_AfterCancelledPollCarriedEveryAcknowledgement_WaitsForTheirOutcome()
+    {
+        // The cancelled poll took the only acknowledgement from the tracker. A commit must still
+        // wait for the detached request that carries it and report its outcome.
+        var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var respond = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var outcomes = new List<(long[] Offsets, Exception? Error)>();
+        var inner = new CapturingConnection(ApiKey.ShareFetch, 2)
+        {
+            ShareFetchHandler = async (_, _) =>
+            {
+                sent.TrySetResult();
+                await respond.Task;
+                return CreateFetchResponse(0, 100);
+            }
+        };
+        var connection = new AfterWriteCancellationConnection(inner);
+        await using var fixture = CreateFixture(inner, leaseHandler: connection.LeaseAsync,
+            acknowledgementCommitCallback: results => CaptureOutcomes(results, outcomes));
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Subscribe("topic");
+        EstablishSessions(fixture.Consumer, 1);
+        fixture.Consumer.Acknowledge(CreateRecord(0, 42));
+
+        using (var cancellation = new CancellationTokenSource())
+        {
+            await using var cancelled = fixture.Consumer.PollAsync(cancellation.Token).GetAsyncEnumerator();
+            var pending = cancelled.MoveNextAsync().AsTask();
+            await sent.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await cancellation.CancelAsync();
+            await Assert.That(async () => await pending.WaitAsync(TimeSpan.FromSeconds(10)))
+                .Throws<OperationCanceledException>();
+        }
+        await Assert.That(HasPendingAcknowledgements(fixture.Consumer)).IsFalse();
+
+        bool waited;
+        try
+        {
+            var commit = fixture.Consumer.CommitAsync().AsTask();
+            waited = !commit.IsCompleted;
+            respond.TrySetResult();
+            await commit.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            // Disposal waits for the detached request, so never leave it parked.
+            respond.TrySetResult();
+        }
+        await Assert.That(waited).IsTrue();
+        await Assert.That(outcomes).HasSingleItem();
+        await Assert.That(outcomes[0].Offsets).IsEquivalentTo([42L]);
+        await Assert.That(outcomes[0].Error).IsNull();
+    }
+
+    [Test]
+    public async Task PollBatches_ResumedAfterAssignmentChange_SkipsRevokedPartitions()
+    {
+        var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var respond = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var inner = new CapturingConnection(ApiKey.ShareFetch, 2)
+        {
+            ShareFetchHandler = async (request, _) =>
+            {
+                if (request.ShareSessionEpoch != 0)
+                    return CreateFetchResponse(0, 200);
+                sent.TrySetResult();
+                await respond.Task;
+                return CreateFetchResponse(1, 100);
+            }
+        };
+        var connection = new AfterWriteCancellationConnection(inner);
+        await using var fixture = CreateFixture(inner, leaseHandler: connection.LeaseAsync);
+        PrepareForPoll(fixture.Consumer, new TopicPartition("topic", 0), new TopicPartition("topic", 1));
+        fixture.Consumer.Subscribe("topic");
+
+        using (var cancellation = new CancellationTokenSource())
+        {
+            await using var cancelled = fixture.Consumer.PollBatchesAsync(cancellation.Token).GetAsyncEnumerator();
+            var pending = cancelled.MoveNextAsync().AsTask();
+            await sent.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await cancellation.CancelAsync();
+            await Assert.That(async () => await pending.WaitAsync(TimeSpan.FromSeconds(10)))
+                .Throws<OperationCanceledException>();
+        }
+
+        // Partition 1 is revoked before the detached response that acquired its records is resumed.
+        PrepareForPoll(fixture.Consumer, new TopicPartition("topic", 0));
+        respond.TrySetResult();
+        await using var poll = fixture.Consumer.PollBatchesAsync().GetAsyncEnumerator();
+        await Assert.That(await poll.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10))).IsTrue();
+        await Assert.That(poll.Current.TopicPartition).IsEqualTo(new TopicPartition("topic", 0));
+        var offsets = new List<long>();
+        foreach (var record in poll.Current)
+            offsets.Add(record.Offset);
+        await Assert.That(offsets).IsEquivalentTo([200L]);
+    }
+
+    [Test]
     public async Task Poll_CancelledBeforeWrite_KeepsTheSessionAndAcknowledgements()
     {
         var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

@@ -197,6 +197,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                         }
                         if (partition.AcquiredRecords.Count == 0)
                             continue;
+                        // The assignment can change while a fetch is detached. Like
+                        // RemoveOutsideAssignment, leave revoked acquisitions to lock expiry.
+                        if (detached is not null
+                            && !assignment.Contains(new TopicPartition(topicInfo.Name, partition.PartitionIndex)))
+                            continue;
                         var byteOffset = 0;
                         var acquiredIndex = 0;
                         var previousBatchOffset = long.MinValue;

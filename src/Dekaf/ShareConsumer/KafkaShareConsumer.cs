@@ -791,10 +791,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         bool releaseImplicit = false,
         bool deferWithoutSession = false)
     {
+        // A detached fetch can still advance the session epochs these requests carry, and may
+        // hold inline acknowledgements already taken from the tracker, so settle it first.
+        await SettleDetachedFetchAsync(cancellationToken).ConfigureAwait(false);
         if (!HasPendingAcknowledgements)
             return;
-        // A detached fetch can still advance the session epochs these requests carry.
-        await SettleDetachedFetchAsync(cancellationToken).ConfigureAwait(false);
 
         var pendingAcks = FlushAcknowledgements(releaseImplicit);
         if (pendingAcks.Count == 0)
