@@ -49,8 +49,15 @@ public sealed class ControllerOnlyKafkaContainer : IAsyncInitializer, IAsyncDisp
             .WithResourceMapping(Encoding.UTF8.GetBytes(config), "/tmp/controller.properties")
             .WithEntrypoint("/bin/bash")
             .WithCommand("-ec", "/opt/kafka/bin/kafka-storage.sh format -t MkU3OEVBNTcwNTJENDM2Qk -c /tmp/controller.properties; exec /opt/kafka/bin/kafka-server-start.sh /tmp/controller.properties")
+            // The controller enables request processing before its FeaturesPublisher has loaded
+            // the formatted metadata.version. Until then it reports the minimum version and
+            // rejects DescribeCluster with "Direct-to-controller communication is not supported
+            // with the current MetadataVersion", so wait for the publisher to load it as well.
+            // Kafka 4.0 logs the features as "Features(...)", later versions as
+            // "FinalizedFeatures[...]".
             .WithWaitStrategy(Wait.ForUnixContainer()
-                .UntilInternalTcpPortIsAvailable(_hostPort))
+                .UntilInternalTcpPortIsAvailable(_hostPort)
+                .UntilMessageIsLogged(@"Loaded new metadata \w*Features[\[(]metadataVersion="))
             .Build();
     }
 
