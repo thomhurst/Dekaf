@@ -305,6 +305,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
     public IKafkaShareConsumer<TKey, TValue> Unsubscribe()
     {
+        // Its records were never delivered. The final release below closes the share sessions,
+        // which releases this member's acquisitions.
+        AbandonDetachedFetch();
         _batchAcknowledgements?.ReleaseActiveAcquisitions();
         ClearBufferedRecords(releaseAcquisitions: true);
         // Release any pending acks back to the group so other members can claim them,
@@ -391,18 +394,33 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 continue;
             }
 
-            if (_pendingFetches is null && _bufferedRecordCount == 0)
+            if (_detachedFetch is not null || (_pendingFetches is null && _bufferedRecordCount == 0))
             {
                 ShareMetrics?.BeginPollWait();
-                var fetchTasks = StartPollFetch(assignment, cancellationToken,
-                    out var pendingAcks, out var sentAcknowledgementPartitionCount);
-                using var responseScope = new BufferedShareFetchResponseScope(this, fetchTasks);
+                var detached = TakeDetachedFetch();
+                List<Task<ShareFetchBrokerResult>> fetchTasks;
+                Dictionary<TopicPartition, List<AcknowledgementBatchData>>? pendingAcks;
+                int sentAcknowledgementPartitionCount;
+                if (detached is null)
+                {
+                    fetchTasks = StartPollFetch(assignment, cancellationToken,
+                        out pendingAcks, out sentAcknowledgementPartitionCount);
+                }
+                else
+                {
+                    // Resume the fetch an earlier cancelled poll stopped waiting for.
+                    fetchTasks = detached.Tasks;
+                    pendingAcks = detached.PendingAcks;
+                    sentAcknowledgementPartitionCount = detached.SentAcknowledgementPartitionCount;
+                }
+                using var responseScope = new PollFetchResponseScope(this, fetchTasks);
                 ShareFetchBrokerResult[] fetchResults;
                 try
                 {
-                    fetchResults = await Task.WhenAll(fetchTasks).ConfigureAwait(false);
+                    fetchResults = detached?.Results ?? await AwaitPollFetchAsync(fetchTasks, pendingAcks,
+                        sentAcknowledgementPartitionCount, detached is not null, cancellationToken).ConfigureAwait(false);
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (!IsDetached(fetchTasks))
                 {
                     RequeueAcknowledgements(pendingAcks);
                     InvokeAcknowledgementCommitCallback(pendingAcks, ex);
@@ -411,18 +429,22 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 }
                 finally
                 {
-                    ReturnPollPartitionGroups();
+                    if (!IsDetached(fetchTasks))
+                        ReturnPollPartitionGroups();
                     ShareMetrics?.EndPollWait();
                 }
 
                 var stopped = false;
                 try
                 {
-                    CompletePollFetch(fetchResults, pendingAcks, sentAcknowledgementPartitionCount);
+                    // A fetch settled by a commit has already completed its bookkeeping.
+                    if (detached?.Results is null)
+                        CompletePollFetch(fetchResults, pendingAcks, sentAcknowledgementPartitionCount);
                 }
                 finally
                 {
-                    _ackTracker.ReturnPollBatches(pendingAcks);
+                    if (detached?.Results is null)
+                        _ackTracker.ReturnPollBatches(pendingAcks);
                     // Keep successful acquisitions even when another broker's bookkeeping fails.
                     // A late response after close/disposal remains owned by the response scope.
                     stopped = Volatile.Read(ref _disposed) != 0 || Volatile.Read(ref _closed) != 0;
@@ -430,6 +452,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     {
                         _pendingFetches = fetchTasks;
                         AdvancePendingFetchCursor();
+                        // The assignment can change while a fetch is detached.
+                        if (detached is not null && _pendingFetches is not null)
+                            _hasBufferedAcquisitionReleases |= ReleasePendingFetchAcquisitions(assignment);
                     }
                 }
                 if (stopped)
@@ -766,6 +791,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         bool releaseImplicit = false,
         bool deferWithoutSession = false)
     {
+        // A detached fetch can still advance the session epochs these requests carry, and may
+        // hold inline acknowledgements already taken from the tracker, so settle it first.
+        await SettleDetachedFetchAsync(cancellationToken).ConfigureAwait(false);
         if (!HasPendingAcknowledgements)
             return;
 
@@ -912,6 +940,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         _coordinator.NotifyAssignmentChange();
 
         LogClosingShareConsumer();
+        await CloseDetachedFetchAsync(cancellationToken).ConfigureAwait(false);
         ClearBufferedRecords();
         ClearRenewedRecords();
         _activeShareBatch?.Dispose();
@@ -1123,11 +1152,15 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         CancellationToken cancellationToken)
     {
         var requestContext = GetHostedRequestContext(brokerId);
+        // Without a hosted response budget, the poll may stop waiting while this request
+        // continues; the context records whether its write started.
+        var fetchContext = requestContext ?? GetFetchWriteContext(brokerId);
         var isRenewAck = ContainsRenewAcknowledgement(brokerAcks);
 
         for (var attempt = 0; ; attempt++)
         {
             requestContext?.Reset();
+            fetchContext.Reset();
             try
             {
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken)
@@ -1164,8 +1197,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 ShareFetchResponse response;
                 try
                 {
-                    response = await SendHostedRequestAsync<ShareFetchRequest, ShareFetchResponse>(
-                        connection, request, version, requestContext, cancellationToken)
+                    response = await SendShareFetchAsync(
+                        connection, request, version, requestContext, fetchContext, cancellationToken)
                     .ConfigureAwait(false);
                 }
                 catch
@@ -1212,9 +1245,12 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             catch (Exception ex) when (ex is OperationCanceledException or BrokerVersionException)
             {
                 // A request cancelled after its write can still advance the broker's session.
-                if (ex is OperationCanceledException && (requestContext is null || requestContext.WriteStarted))
+                var unsent = ex is OperationCanceledException && !(requestContext ?? fetchContext).WriteStarted;
+                if (ex is OperationCanceledException && !unsent)
                     _sessionManager.ResetSession(brokerId);
-                return new ShareFetchBrokerResult(brokerId, 0, null, brokerAcks, ex, ex);
+                // Only a submitted request has an acknowledgement outcome. A poll that resumes a
+                // detached request ignores the cancellation and keeps unsent acknowledgements.
+                return new ShareFetchBrokerResult(brokerId, 0, null, brokerAcks, ex, unsent ? null : ex);
             }
             catch (Exception ex)
             {
@@ -3063,12 +3099,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         }
     }
 
-    private readonly struct BufferedShareFetchResponseScope(
+    // Buffered responses and a fetch detached by cancellation outlive the poll that started them.
+    private readonly struct PollFetchResponseScope(
         KafkaShareConsumer<TKey, TValue> consumer, List<Task<ShareFetchBrokerResult>> tasks) : IDisposable
     {
         public void Dispose()
         {
-            if (!ReferenceEquals(consumer._pendingFetches, tasks))
+            if (!ReferenceEquals(consumer._pendingFetches, tasks) && !consumer.IsDetached(tasks))
                 new ShareFetchResponseScope(tasks).Dispose();
         }
     }

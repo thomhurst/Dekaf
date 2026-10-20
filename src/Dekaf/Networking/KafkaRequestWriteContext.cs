@@ -27,3 +27,14 @@ internal interface IKafkaRequestCancellationConnection
         where TRequest : Protocol.IKafkaRequest<TResponse>
         where TResponse : Protocol.IKafkaResponse;
 }
+
+internal interface IKafkaRequestAfterWriteCancellationConnection
+{
+    // The caller's token bounds the request until its frame is written; after that only
+    // the context's response token (or the request timeout) bounds the wait for the answer.
+    ValueTask<TResponse> SendWithResponseCancellationAfterWriteAsync<TRequest, TResponse>(
+        TRequest request, short apiVersion, KafkaRequestWriteContext context,
+        CancellationToken cancellationToken)
+        where TRequest : Protocol.IKafkaRequest<TResponse>
+        where TResponse : Protocol.IKafkaResponse;
+}
