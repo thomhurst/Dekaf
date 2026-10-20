@@ -450,15 +450,21 @@ public class KafkaProducerFastPathTests
     [Arguments(true)]
     public async Task ProduceAsync_Tracing_DoesNotLeakSendSpanIntoCallerContext(bool withCallerSpan)
     {
+        // TUnit's own listener keeps the Dekaf source live in parallel tests, so count only
+        // this producer's spans. A send span stops at append, before ProduceAsync returns.
+        var clientId = $"test-producer-{Guid.NewGuid():N}";
         var sendSpans = new List<Activity>();
         using var listener = new ActivityListener
         {
             ShouldListenTo = source => source.Name is DekafDiagnostics.ActivitySourceName or "caller-test",
             Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
-            ActivityStarted = activity =>
+            ActivityStopped = activity =>
             {
-                if (activity.Source.Name == DekafDiagnostics.ActivitySourceName)
-                    sendSpans.Add(activity);
+                if (Equals(activity.GetTagItem(DekafDiagnostics.MessagingClientId), clientId))
+                {
+                    lock (sendSpans)
+                        sendSpans.Add(activity);
+                }
             }
         };
         ActivitySource.AddActivityListener(listener);
@@ -466,7 +472,7 @@ public class KafkaProducerFastPathTests
         var options = new ProducerOptions
         {
             BootstrapServers = ["localhost:9092"],
-            ClientId = "test-producer",
+            ClientId = clientId,
             BufferMemory = ulong.MaxValue,
             BatchSize = 4096,
             LingerMs = 10,
@@ -509,15 +515,21 @@ public class KafkaProducerFastPathTests
     [Test]
     public async Task ProduceAsync_Tracing_SendParentContext_OverridesCallerSpan()
     {
+        // TUnit's own listener keeps the Dekaf source live in parallel tests, so count only
+        // this producer's spans. A send span stops at append, before ProduceAsync returns.
+        var clientId = $"test-producer-{Guid.NewGuid():N}";
         var sendSpans = new List<Activity>();
         using var listener = new ActivityListener
         {
             ShouldListenTo = source => source.Name is DekafDiagnostics.ActivitySourceName or "caller-test",
             Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
-            ActivityStarted = activity =>
+            ActivityStopped = activity =>
             {
-                if (activity.Source.Name == DekafDiagnostics.ActivitySourceName)
-                    sendSpans.Add(activity);
+                if (Equals(activity.GetTagItem(DekafDiagnostics.MessagingClientId), clientId))
+                {
+                    lock (sendSpans)
+                        sendSpans.Add(activity);
+                }
             }
         };
         ActivitySource.AddActivityListener(listener);
@@ -525,7 +537,7 @@ public class KafkaProducerFastPathTests
         var options = new ProducerOptions
         {
             BootstrapServers = ["localhost:9092"],
-            ClientId = "test-producer",
+            ClientId = clientId,
             BufferMemory = ulong.MaxValue,
             BatchSize = 4096,
             LingerMs = 10,
