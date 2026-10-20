@@ -1299,11 +1299,24 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
     /// Asserts the committed offsets right after the group coordinator failed over. The commit
     /// was acknowledged (the synchronous CommitAsync completed) before the crash, so its record
     /// is in the new coordinator's log. The new group coordinator serves a non-stable OffsetFetch
-    /// as a read at its last committed offset (the partition's high watermark). Just after it
-    /// takes over, that high watermark can still be below the commit record until the remaining
-    /// follower fetches, so the broker answers successfully without those offsets. Offsets that
-    /// are missing are therefore read again within a bound. An offset with a wrong value, or any
-    /// error the admin client raises, still fails immediately.
+    /// as a read at its last committed offset, which it takes from the partition's high
+    /// watermark. Just after it takes over, that high watermark can still be below the commit
+    /// record until the remaining follower fetches, so the broker answers successfully without
+    /// those offsets.
+    /// <para>
+    /// The broker does not always catch up on its own. Its coordinator runtime reads the high
+    /// watermark while it loads the partition, but registers its high-watermark listener only
+    /// once the load has completed (CoordinatorRuntime.transitionTo(ACTIVE)). A high watermark
+    /// that advances in between is never applied, and the coordinator keeps serving the stale
+    /// read until the next high-watermark change, which takes a write to that partition. Nothing
+    /// in this scenario writes there: a steady KIP-848 heartbeat appends no records. So after a
+    /// read that misses offsets, an offset commit for another group that maps to the same
+    /// <c>__consumer_offsets</c> partition is appended. Its replication advances the high
+    /// watermark past the original commit. The commits of the group under test are left as they
+    /// are, so the read still proves that the pre-crash commit survived the failover.
+    /// </para>
+    /// An offset with a wrong value, or any error the admin client raises, still fails
+    /// immediately.
     /// </summary>
     private async Task AssertCommittedOffsetsAfterFailoverAsync(
         string topic,
@@ -1312,6 +1325,7 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
     {
         await using var admin = kafka.CreateAdminClient();
         var visibility = System.Diagnostics.Stopwatch.StartNew();
+        var highWatermarkWriteGroupId = GroupOnSameOffsetsPartition(groupId);
         for (var read = 1; ; read++)
         {
             var committed = await admin.ListConsumerGroupOffsetsAsync(groupId, cancellationToken)
@@ -1346,8 +1360,39 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
                     $"Committed offsets for group {groupId} were still missing 30 s after the coordinator failed over.");
             }
 
+            // Advances the high watermark of the group's __consumer_offsets partition (see above).
+            await admin.AlterConsumerGroupOffsetsAsync(
+                    highWatermarkWriteGroupId,
+                    [new TopicPartitionOffset(topic, 0, read)],
+                    cancellationToken)
+                .ConfigureAwait(false);
             await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// A group id whose offsets live in the same <c>__consumer_offsets</c> partition as
+    /// <paramref name="groupId"/>'s. The broker maps a group to
+    /// <c>(String.hashCode(groupId) &amp; 0x7fffffff) % offsets.topic.num.partitions</c>.
+    /// </summary>
+    private static string GroupOnSameOffsetsPartition(string groupId)
+    {
+        var partition = OffsetsTopicPartition(groupId);
+        for (var suffix = 0; ; suffix++)
+        {
+            var candidate = $"{groupId}-hw-{suffix}";
+            if (OffsetsTopicPartition(candidate) == partition)
+                return candidate;
+        }
+    }
+
+    private static int OffsetsTopicPartition(string groupId)
+    {
+        // Java's String.hashCode over UTF-16 code units, with int overflow.
+        var hash = 0;
+        foreach (var c in groupId)
+            hash = unchecked((31 * hash) + c);
+        return (hash & 0x7fffffff) % RackAwareKafkaContainer.OffsetsTopicPartitionCount;
     }
 
     private async Task AssertCommittedOffsetsAsync(
