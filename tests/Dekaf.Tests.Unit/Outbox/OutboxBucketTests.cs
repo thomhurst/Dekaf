@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics;
 using System.Text;
 using Dekaf.Outbox;
 using Dekaf.Serialization;
@@ -128,6 +129,8 @@ public class OutboxBucketTests
     [Test]
     public async Task Create_RecordHeaderSerializerWithoutCallerHeaders_PersistsGeneratedHeader()
     {
+        // TUnit runs each test under an Activity; Create would also store its trace context.
+        Activity.Current = null;
         var message = OutboxMessage.Create(
             "orders",
             "order-1",
@@ -146,6 +149,8 @@ public class OutboxBucketTests
     [Test]
     public async Task Create_RoutedRecordHeaderSerializer_DoesNotMutateCallerHeaders()
     {
+        // TUnit runs each test under an Activity; Create would also store its trace context.
+        Activity.Current = null;
         var callerHeaders = Headers.Create("caller", "owned");
         var serializer = new TopicRoutingSerializer<string>()
             .Register("orders", new RecordHeaderStringSerializer())

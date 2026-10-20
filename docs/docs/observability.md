@@ -49,6 +49,7 @@ Dekaf emits spans following the [OpenTelemetry messaging semantic conventions](h
 | `send {topic}` | `Producer` | Each `ProduceAsync` / `FireAsync` |
 | `process {topic}` | `Consumer` | Each message from streaming `ConsumeAsync` |
 | `poll {topic}` | `Client` | Each message from `ConsumeOne` / `ConsumeOneAsync` |
+| `outbox relay {topic}` | `Internal` | Each outbox row the relay publishes with a stored trace context ([Transactional Outbox](./producer/outbox/index.md#tracing)) |
 
 A `send` span is a child of the `Activity.Current` at the time of the call, so sends made while handling a request nest under that request's span. The send span never becomes `Activity.Current` for the caller: each send from a long-lived loop is a sibling under the loop's ambient span, or its own root trace when there is none, rather than a child of the previous send.
 

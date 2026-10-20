@@ -12,8 +12,8 @@ namespace Dekaf.Diagnostics;
 /// </summary>
 internal static class TraceContextPropagator
 {
-    private const string TraceparentHeader = "traceparent";
-    private const string TracestateHeader = "tracestate";
+    internal const string TraceparentHeader = "traceparent";
+    internal const string TracestateHeader = "tracestate";
     internal const int TraceparentLength = Header.TraceparentLength;
 
     static TraceContextPropagator()

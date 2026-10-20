@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using Dekaf.Consumer;
 using Dekaf.Outbox;
@@ -590,6 +591,88 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
         finally
         {
             await relay.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Test]
+    public async Task Relay_PublishesRecordInEnqueuingTrace()
+    {
+        var topic = $"outbox-trace-{Guid.NewGuid():N}";
+        await KafkaContainer.CreateTopicAsync(topic, partitions: 1);
+        var databasePath = Path.Combine(Path.GetTempPath(), $"dekaf-outbox-trace-{Guid.NewGuid():N}.db");
+        var contextOptions = new DbContextOptionsBuilder<OutboxContext>()
+            .UseSqlite(new SqliteConnectionStringBuilder
+            {
+                DataSource = databasePath, Pooling = false, DefaultTimeout = 30
+            }.ToString())
+            .Options;
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == Dekaf.Diagnostics.DekafDiagnostics.ActivitySourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded
+        };
+        ActivitySource.AddActivityListener(listener);
+        try
+        {
+            ActivityTraceId requestTraceId;
+            await using (var context = new OutboxContext(contextOptions))
+            {
+                await context.Database.EnsureCreatedAsync();
+
+                // A root request activity: the relay starts under the test's own activity, so
+                // sharing that trace would let the record pass without the stored context.
+                var testActivity = Activity.Current;
+                Activity.Current = null;
+                using (var request = new Activity("enqueue").SetIdFormat(ActivityIdFormat.W3C).Start())
+                {
+                    requestTraceId = request.TraceId;
+                    context.AddOutboxMessage(topic, "key", "traced", Serializers.String, Serializers.String, bucketCount: 1);
+                }
+
+                Activity.Current = testActivity;
+                await context.SaveChangesAsync();
+            }
+
+            var producer = Kafka.CreateProducer<byte[]?, byte[]?>()
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+                .Build();
+            await using var publisher = new DekafOutboxPublisher(producer);
+            using var relay = new OutboxRelayService(
+                new EfCoreOutboxStore<OutboxContext>(new ContextFactory(contextOptions)),
+                publisher,
+                new OutboxRelayOptions { BucketCount = 1, PollInterval = TimeSpan.FromMilliseconds(50) },
+                GlobalTestSetup.GetLoggerFactory().CreateLogger<OutboxRelayService>());
+            await relay.StartAsync(CancellationToken.None);
+            try
+            {
+                await using var consumer = await Kafka.CreateConsumer<string, string>()
+                    .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                    .WithGroupId($"outbox-trace-group-{Guid.NewGuid():N}")
+                    .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+                    .BuildAsync();
+                consumer.Subscribe(topic);
+                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                await using var records = consumer.ConsumeAsync(deadline.Token).GetAsyncEnumerator();
+                await Assert.That(await records.MoveNextAsync()).IsTrue();
+
+                // Headers reference pooled fetch buffers, so read them before the next MoveNextAsync.
+                var traceparentCount = records.Current.Headers.Count(header => header.Key == "traceparent");
+                var traceparent = ReadHeader(records.Current.Headers, "traceparent");
+
+                // The stored context is replaced by the send span, never published alongside it.
+                await Assert.That(traceparentCount).IsEqualTo(1);
+                await Assert.That(ActivityContext.TryParse(traceparent, null, out var published)).IsTrue();
+                await Assert.That(published.TraceId).IsEqualTo(requestTraceId);
+            }
+            finally
+            {
+                await relay.StopAsync(CancellationToken.None);
+            }
+        }
+        finally
+        {
+            DeleteDatabaseFiles(databasePath);
         }
     }
 

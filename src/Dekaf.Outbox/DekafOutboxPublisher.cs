@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using Dekaf.Diagnostics;
 using Dekaf.Producer;
 using Dekaf.Serialization;
 
@@ -9,6 +11,14 @@ namespace Dekaf.Outbox;
 /// Partial failures can still let later rows arrive before a failed row is retried; message-id
 /// deduplication does not restore enqueue order in that case.
 /// </summary>
+/// <remarks>
+/// When a row carries the trace context captured by <see cref="OutboxMessage.Create"/> and a
+/// listener is attached to <see cref="DekafDiagnostics.ActivitySourceName"/>, each row is
+/// published under an <c>outbox relay {topic}</c> span parented to that stored context. The
+/// producer's send span becomes its child and replaces the stored <c>traceparent</c> and
+/// <c>tracestate</c> headers, so consumers continue the enqueuing request's trace. Without a
+/// listener the stored headers are published unchanged.
+/// </remarks>
 public sealed class DekafOutboxPublisher : IOutboxPublisher
 {
     private readonly IKafkaProducer<byte[]?, byte[]?> _producer;
@@ -55,11 +65,13 @@ public sealed class DekafOutboxPublisher : IOutboxPublisher
         // cannot be pooled - a produce cancelled after append keeps delivering in the
         // background, so its header memory stays referenced after this method returns.
         var tasks = new Task<RecordMetadata>[messages.Count];
+        Activity?[]? activities = null;
         var startedCount = 0;
         Exception? firstError = null;
         for (var i = 0; i < messages.Count; i++)
         {
             var message = messages[i];
+            Activity? activity = null;
             try
             {
                 // Remove drops any caller-supplied header colliding with the reserved dedup
@@ -71,22 +83,47 @@ public sealed class DekafOutboxPublisher : IOutboxPublisher
                 message.MessageId.TryFormat(messageIdUtf8, out _, "D");
                 headers.Add(messageIdHeaderName, messageIdUtf8);
 
-                // Timestamp is deliberately left unset (publish time): stamping the enqueue
-                // time would let a record published after a long backlog land already past
-                // a CreateTime topic's retention.ms - the broker acks, the row is deleted,
-                // and the segment can be cleaned before any consumer reads it (loss).
-                tasks[i] = _producer.ProduceAsync(new ProducerMessage<byte[]?, byte[]?>
+                // StartActivity makes the relay span Activity.Current so the producer's send
+                // span parents to it; the finally restores the relay loop's own context.
+                var previousActivity = Activity.Current;
+                activity = StartRelayActivity(message, headers);
+                try
                 {
-                    Topic = message.Topic,
-                    Key = message.Key,
-                    Value = message.Value,
-                    Headers = headers,
-                    Partition = message.Partition
-                }, cancellationToken).AsTask();
+                    // Timestamp is deliberately left unset (publish time): stamping the enqueue
+                    // time would let a record published after a long backlog land already past
+                    // a CreateTime topic's retention.ms - the broker acks, the row is deleted,
+                    // and the segment can be cleaned before any consumer reads it (loss).
+                    tasks[i] = _producer.ProduceAsync(new ProducerMessage<byte[]?, byte[]?>
+                    {
+                        Topic = message.Topic,
+                        Key = message.Key,
+                        Value = message.Value,
+                        Headers = headers,
+                        Partition = message.Partition
+                    }, cancellationToken).AsTask();
+                }
+                finally
+                {
+                    if (activity is not null)
+                        Activity.Current = previousActivity;
+                }
+
+                if (activity is not null)
+                {
+                    activities ??= new Activity?[messages.Count];
+                    activities[i] = activity;
+                }
+
                 startedCount++;
             }
             catch (Exception ex)
             {
+                if (activity is not null)
+                {
+                    DekafDiagnostics.RecordException(activity, ex);
+                    activity.Stop();
+                }
+
                 // Any synchronous per-row failure - a corrupt persisted header blob, a
                 // disposed producer, a custom implementation validating eagerly - must not
                 // skip the await loop below: the tasks already started still need awaiting
@@ -101,9 +138,11 @@ public sealed class DekafOutboxPublisher : IOutboxPublisher
         var ackedCount = 0;
         for (var i = 0; i < startedCount; i++)
         {
+            var activity = activities?[i];
             try
             {
                 await tasks[i].ConfigureAwait(false);
+                activity?.SetStatus(ActivityStatusCode.Ok);
                 // The contiguous prefix is intact at index i iff every prior task acked;
                 // once any task fails, ackedCount freezes below all later indexes.
                 if (ackedCount == i)
@@ -117,11 +156,52 @@ public sealed class DekafOutboxPublisher : IOutboxPublisher
             }
             catch (Exception ex)
             {
+                if (activity is not null)
+                    DekafDiagnostics.RecordException(activity, ex);
                 firstError ??= ex;
+            }
+            finally
+            {
+                activity?.Stop();
             }
         }
 
         return new OutboxPublishResult(ackedCount, firstError);
+    }
+
+    /// <summary>
+    /// Starts the relay span parented to the trace context stored on the row, and drops the
+    /// stored trace headers so the producer's send span context is the only one published.
+    /// Returns null, leaving the headers unchanged, when no listener samples the span or the
+    /// row carries no valid stored context.
+    /// </summary>
+    private static Activity? StartRelayActivity(OutboxMessage message, Headers headers)
+    {
+        if (!DekafDiagnostics.Source.HasListeners())
+            return null;
+
+        var traceparent = headers.GetFirstAsString(TraceContextPropagator.TraceparentHeader);
+        if (traceparent is null
+            || !ActivityContext.TryParse(
+                traceparent,
+                headers.GetFirstAsString(TraceContextPropagator.TracestateHeader),
+                isRemote: true,
+                out var parentContext))
+        {
+            return null;
+        }
+
+        var activity = DekafDiagnostics.Source.StartActivity(
+            string.Concat("outbox relay ", message.Topic), ActivityKind.Internal, parentContext);
+        if (activity is null)
+            return null;
+
+        activity.SetTag(DekafDiagnostics.MessagingSystem, DekafDiagnostics.MessagingSystemValue);
+        activity.SetTag(DekafDiagnostics.MessagingDestinationName, message.Topic);
+        activity.SetTag(DekafDiagnostics.MessagingMessageId, message.MessageId.ToString("D"));
+        headers.Remove(TraceContextPropagator.TraceparentHeader);
+        headers.Remove(TraceContextPropagator.TracestateHeader);
+        return activity;
     }
 
     public async ValueTask DisposeAsync()

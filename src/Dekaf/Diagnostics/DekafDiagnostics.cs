@@ -36,6 +36,7 @@ public static class DekafDiagnostics
     internal const string MessagingKafkaClusterId = "messaging.kafka.cluster.id";
     internal const string MessagingKafkaTombstone = "messaging.kafka.message.tombstone";
     internal const string MessagingClientId = "messaging.client.id";
+    internal const string MessagingMessageId = "messaging.message.id";
 
     /// <summary>Payload (value) size only — the key is not part of the message body.</summary>
     internal const string MessagingMessageBodySize = "messaging.message.body.size";
