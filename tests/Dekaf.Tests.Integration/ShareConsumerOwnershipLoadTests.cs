@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Globalization;
+using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.Serialization;
 using Dekaf.ShareConsumer;
@@ -27,9 +28,13 @@ public class ShareConsumerOwnershipLoadTests(KafkaTestContainer kafka) : KafkaIn
             .WithValueDeserializer(Serializers.RawBytes)
             .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit)
             .WithMaxPollRecords(recordsPerRound).WithFetchMaxBytes(256 * 1024).WithFetchMaxWaitMs(25)
+            // No cancelled priming poll: the broker can complete its in-flight ShareFetch with
+            // round-0 records after cancellation. Those stay locked for 15 s, and the round-0
+            // Renew then races the retained record's lock expiry. Earliest covers records
+            // produced before the first poll joins the group.
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .BuildAsync();
         consumer.Subscribe(topic);
-        await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var received = new HashSet<int>();

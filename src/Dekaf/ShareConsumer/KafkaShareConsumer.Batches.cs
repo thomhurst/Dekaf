@@ -233,7 +233,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         {
             // No ResponseParsingContext is active here: RecordBatch owns a copy
             // (or decompressed buffer), so replay does not borrow the response frame.
-            batch = RecordBatch.Read(ref reader, _compressionCodecs);
+            // Bounding by the remaining bytes reports a last batch the broker cut at the
+            // response byte limit as InsufficientDataException instead of malformed data.
+            batch = RecordBatch.Read(ref reader, _compressionCodecs, bytes.Length - byteOffset);
             byteOffset += checked((int)reader.Consumed);
             return true;
         }

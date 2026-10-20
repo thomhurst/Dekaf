@@ -121,6 +121,83 @@ public sealed class ShareConsumerRecordPoolingTests
     }
 
     [Test]
+    [Arguments(false, 3)]
+    [Arguments(true, 3)]
+    [Arguments(false, 70)]
+    [Arguments(true, 70)]
+    [NotInParallel]
+    public async Task ParsePartitionRecords_FetchTruncatedLastBatch_DeliversCompleteBatches(
+        bool prepared, int retainedTailBytes)
+    {
+        // A broker fills ShareFetch responses up to the byte limit and can cut the last batch
+        // anywhere: inside its records or just after its header. Only complete batches are acquired.
+        var consumer = CreateBorrowedConsumer(out var metadata);
+        await using var metadataScope = metadata;
+        await using var consumerScope = consumer;
+        using var recordScope = consumer.BeginRecordBatchScope();
+        var buffer = new ArrayBufferWriter<byte>();
+        for (var offset = 0; offset < 2; offset++)
+        {
+            using var batch = new RecordBatch
+            {
+                BaseOffset = offset,
+                Records = [new Record { IsKeyNull = true, Value = new byte[128] }]
+            };
+            batch.Write(buffer);
+        }
+        var completeBatchLength = buffer.WrittenCount / 2;
+        var partition = new ShareFetchResponsePartition
+        {
+            PartitionIndex = 0,
+            CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
+            RecordBytes = buffer.WrittenMemory[..(completeBatchLength + retainedTailBytes)],
+            AcquiredRecords = [new ShareFetchAcquiredRecords { FirstOffset = 0, LastOffset = 0, DeliveryCount = 1 }]
+        };
+        var records = ParsePartition(consumer, partition, prepared);
+
+        await Assert.That(records.Count).IsEqualTo(1);
+        await Assert.That(records[0].Offset).IsEqualTo(0L);
+        await Assert.That(records[0].Value.Length).IsEqualTo(128);
+    }
+
+    [Test]
+    [Arguments(3)]
+    [Arguments(70)]
+    public async Task TryReadBatch_FetchTruncatedLastBatch_StopsAfterCompleteBatches(int retainedTailBytes)
+    {
+        // PollBatchesAsync reads whole batches from the same ShareFetch records, so the tail the
+        // broker cut at the response byte limit must end the partition, not fail the poll.
+        var consumer = CreateBorrowedConsumer(out var metadata);
+        await using var metadataScope = metadata;
+        await using var consumerScope = consumer;
+        var buffer = new ArrayBufferWriter<byte>();
+        for (var offset = 0; offset < 2; offset++)
+        {
+            using var batch = new RecordBatch
+            {
+                BaseOffset = offset,
+                Records = [new Record { IsKeyNull = true, Value = new byte[128] }]
+            };
+            batch.Write(buffer);
+        }
+        var completeBatchLength = buffer.WrittenCount / 2;
+        var bytes = buffer.WrittenMemory[..(completeBatchLength + retainedTailBytes)];
+        var tryReadBatch = typeof(KafkaShareConsumer<string, ReadOnlyMemory<byte>>).GetMethod(
+            "TryReadBatch", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+        object?[] first = [bytes, 0, null];
+        var readFirst = (bool)tryReadBatch.Invoke(consumer, first)!;
+        using var firstBatch = (RecordBatch?)first[2];
+        object?[] tail = [bytes, first[1], null];
+        var readTail = (bool)tryReadBatch.Invoke(consumer, tail)!;
+
+        await Assert.That(readFirst).IsTrue();
+        await Assert.That(firstBatch!.BaseOffset).IsEqualTo(0L);
+        await Assert.That((int)first[1]!).IsEqualTo(completeBatchLength);
+        await Assert.That(readTail).IsFalse();
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task CompletedParsing_ReleasesMaterializedRecordsButRetainsPayload(bool prepared)
@@ -307,7 +384,6 @@ public sealed class ShareConsumerRecordPoolingTests
             batch.Write(buffer);
         }
 
-        var topic = new TopicInfo { Name = "topic", Partitions = [] };
         var partition = new ShareFetchResponsePartition
         {
             PartitionIndex = 0,
@@ -318,13 +394,21 @@ public sealed class ShareConsumerRecordPoolingTests
                 FirstOffset = 0, LastOffset = values.Length - 1, DeliveryCount = 1
             }]
         };
+        return ParsePartition(consumer, partition, prepared, values.Length);
+    }
+
+    private static List<ShareConsumeResult<string, ReadOnlyMemory<byte>>> ParsePartition(
+        KafkaShareConsumer<string, ReadOnlyMemory<byte>> consumer, ShareFetchResponsePartition partition,
+        bool prepared, int maxRecords = 2)
+    {
+        var topic = new TopicInfo { Name = "topic", Partitions = [] };
         if (prepared)
         {
             var records = new List<ShareConsumeResult<string, ReadOnlyMemory<byte>>>();
             var state = new KafkaShareConsumer<string, ReadOnlyMemory<byte>>.DeserializerPreparationParserState();
             try
             {
-                if (consumer.ParsePartitionRecordsWithPreparation(topic, partition, values.Length,
+                if (consumer.ParsePartitionRecordsWithPreparation(topic, partition, maxRecords,
                     records, ref state, false, null) is not null)
                     throw new InvalidOperationException("The raw deserializer must not require preparation.");
                 return records;
@@ -337,7 +421,7 @@ public sealed class ShareConsumerRecordPoolingTests
         var parse = typeof(KafkaShareConsumer<string, ReadOnlyMemory<byte>>).GetMethod(
             "ParsePartitionRecords", BindingFlags.Instance | BindingFlags.NonPublic)!;
         return (List<ShareConsumeResult<string, ReadOnlyMemory<byte>>>)parse.Invoke(consumer,
-            [topic, partition, values.Length])!;
+            [topic, partition, maxRecords])!;
     }
 
     [Test]

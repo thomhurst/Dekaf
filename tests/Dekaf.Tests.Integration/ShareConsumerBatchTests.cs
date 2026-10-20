@@ -12,6 +12,55 @@ namespace Dekaf.Tests.Integration;
 public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
+    public async Task FetchTruncatedLastBatch_DeliversEveryRecordThroughBatches()
+    {
+        // Each awaited 128 KB record is its own broker batch, so a 256 KB ShareFetch ends with a
+        // batch cut at the byte limit. PollBatchesAsync must skip that tail and fetch it again.
+        const int messageCount = 12;
+        const int payloadSize = 128 * 1024;
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        var group = $"share-batch-truncated-{Guid.NewGuid():N}";
+        await ConfigureEarliestAsync(group);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        await using (var producer = await Kafka.CreateProducer<int, byte[]>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync(timeout.Token))
+        {
+            for (var index = 0; index < messageCount; index++)
+            {
+                var value = new byte[payloadSize];
+                value.AsSpan().Fill((byte)index);
+                await producer.ProduceAsync(new ProducerMessage<int, byte[]>
+                {
+                    Topic = topic, Partition = 0, Key = index, Value = value
+                }, timeout.Token);
+            }
+        }
+        await using var consumer = await Kafka.CreateShareConsumer<int, ReadOnlyMemory<byte>>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(group)
+            .WithValueDeserializer(Serializers.RawBytes)
+            .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit)
+            .WithFetchMaxBytes(256 * 1024).WithFetchMaxWaitMs(25)
+            .BuildAsync(timeout.Token);
+        consumer.Subscribe(topic);
+        var received = new HashSet<int>();
+        await foreach (var batch in consumer.PollBatchesAsync(timeout.Token))
+        {
+            foreach (var record in batch)
+            {
+                await Assert.That(record.Value.Length).IsEqualTo(payloadSize);
+                await Assert.That(record.Value.Span[payloadSize - 1]).IsEqualTo((byte)record.Key);
+                received.Add(record.Key);
+                batch.Acknowledge(record);
+            }
+            await consumer.CommitAsync(timeout.Token);
+            if (received.Count == messageCount)
+                break;
+        }
+        await Assert.That(received.Count).IsEqualTo(messageCount);
+        await consumer.CloseAsync(timeout.Token);
+    }
+
+    [Test]
     public async Task LongHeaderRouting_ResumesColdPreparationAndPreservesBorrowedHeaders()
     {
         const int messageCount = 16;
