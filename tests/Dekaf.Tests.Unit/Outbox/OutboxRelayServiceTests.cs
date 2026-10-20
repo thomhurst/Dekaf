@@ -126,8 +126,16 @@ public class OutboxRelayServiceTests
         try
         {
             await time.WaitForTimerAsync(TimeSpan.FromSeconds(3));
+            // Each commit wakes the parked relay, which runs a cycle that skips the backing-off
+            // bucket and parks again on a fresh 3s wait. Send the next commit only once that
+            // wait is armed: the relay computes the wait from the clock and arms it later, so
+            // advancing the clock while a cycle is still running would arm the retry a whole
+            // step late, past the last Advance, and the retry would never fire.
             for (var index = 0; index < 100; index++)
+            {
                 notifier.NotifyCommitted();
+                await time.WaitForTimerAsync(TimeSpan.FromSeconds(3));
+            }
             time.Advance(TimeSpan.FromSeconds(2));
             await Assert.That(publisher.PublishCalls).IsEqualTo(1);
             await Assert.That(store.Rows(0).Count).IsEqualTo(1);
