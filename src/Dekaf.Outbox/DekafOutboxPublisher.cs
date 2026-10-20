@@ -155,7 +155,6 @@ public sealed class DekafOutboxPublisher : IOutboxPublisher
             try
             {
                 await tasks[i].ConfigureAwait(false);
-                activity?.SetStatus(ActivityStatusCode.Ok);
                 // The contiguous prefix is intact at index i iff every prior task acked;
                 // once any task fails, ackedCount freezes below all later indexes.
                 if (ackedCount == i)

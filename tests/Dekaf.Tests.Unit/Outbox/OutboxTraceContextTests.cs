@@ -118,7 +118,8 @@ public sealed class OutboxTraceContextTests
         await Assert.That(relay.ParentSpanId.ToHexString()).IsEqualTo("b7ad6b7169203331");
         await Assert.That(relay.TraceStateString).IsEqualTo("vendor=value");
         await Assert.That(relay.GetTagItem("messaging.message.id")).IsEqualTo(row.MessageId.ToString("D"));
-        await Assert.That(relay.Status).IsEqualTo(ActivityStatusCode.Ok);
+        // Successful spans leave the status unset, per the OTel span-status guidance.
+        await Assert.That(relay.Status).IsEqualTo(ActivityStatusCode.Unset);
         await Assert.That(stopped).Contains(relay);
 
         // The send span parents to the relay span explicitly, not only through Activity.Current.
