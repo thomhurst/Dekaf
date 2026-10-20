@@ -2350,10 +2350,18 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         if (!Diagnostics.DekafDiagnostics.Source.HasListeners())
             return null;
 
+        // StartActivity makes the send span Activity.Current. The produce entry points are
+        // synchronous methods, so that change flows back into the caller's ExecutionContext,
+        // and the span ends later on the completion path, not on the caller's context. Left
+        // in place, every later send from the same caller would parent to the previous send
+        // span, chaining one unbounded trace that keeps every span reachable.
+        // Restore the caller's Current: the span still parents to the caller's span.
+        var callerActivity = Activity.Current;
         var activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
             GetPublishActivityName(message.Topic), ActivityKind.Producer);
         if (activity is not null)
         {
+            Activity.Current = callerActivity;
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, message.Topic);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationName, Diagnostics.DekafDiagnostics.OperationNameSend);

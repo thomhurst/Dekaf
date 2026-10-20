@@ -448,6 +448,67 @@ public class KafkaProducerFastPathTests
     [Test]
     [Arguments(false)]
     [Arguments(true)]
+    public async Task ProduceAsync_Tracing_DoesNotLeakSendSpanIntoCallerContext(bool withCallerSpan)
+    {
+        var sendSpans = new List<Activity>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name is DekafDiagnostics.ActivitySourceName or "caller-test",
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            ActivityStarted = activity =>
+            {
+                if (activity.Source.Name == DekafDiagnostics.ActivitySourceName)
+                    sendSpans.Add(activity);
+            }
+        };
+        ActivitySource.AddActivityListener(listener);
+        using var callerSource = new ActivitySource("caller-test");
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
+
+        // Drop any ambient test-framework span so the no-caller case starts from a root context.
+        Activity.Current = null;
+        using var callerSpan = withCallerSpan ? callerSource.StartActivity("caller") : null;
+        var message = new ProducerMessage<string, string> { Topic = Topic, Key = "key", Value = "value" };
+
+        // A long-lived loop: the sends are issued from one context without scoping it.
+        var first = producer.ProduceAsync(message);
+        await Assert.That(Activity.Current).IsSameReferenceAs(callerSpan);
+        var second = producer.ProduceAsync(message);
+        await Assert.That(Activity.Current).IsSameReferenceAs(callerSpan);
+
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        readyBatch.CompleteSend(baseOffset: 0, DateTimeOffset.UtcNow);
+        _ = await first;
+        _ = await second;
+
+        await Assert.That(sendSpans.Count).IsEqualTo(2);
+        await Assert.That(sendSpans[0].Parent).IsSameReferenceAs(callerSpan);
+        await Assert.That(sendSpans[1].Parent).IsSameReferenceAs(callerSpan);
+        await Assert.That(sendSpans[1].TraceId == sendSpans[0].TraceId).IsEqualTo(withCallerSpan);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
     public async Task ProduceAsync_SerializerFailure_RestoresCallerOwnedTraceHeaders(
         bool useAsyncSerializer)
     {
