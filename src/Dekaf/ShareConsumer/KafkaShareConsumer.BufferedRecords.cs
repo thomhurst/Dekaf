@@ -65,6 +65,15 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         _pollPartitionGroupsInUse = false;
     }
 
+    private void AbandonPollPartitionGroups()
+    {
+        if (!_pollPartitionGroupsInUse)
+            return;
+        // Abandoned requests may still read these lists; let them go instead of reusing them.
+        _pollPartitionGroups = null;
+        _pollPartitionGroupsInUse = false;
+    }
+
     private bool RemoveBufferedRecordsOutsideAssignment(TopicPartitionSet assignment)
     {
         if (ReferenceEquals(_bufferedAssignment, assignment)) return false;

@@ -63,6 +63,11 @@ public interface IKafkaShareConsumer<TKey, TValue> : IInitializableKafkaClient, 
     /// remain available to later polls. Only delivered records participate in implicit acceptance.
     /// </para>
     /// <para>
+    /// Cancelling stops the wait immediately. A ShareFetch already sent to the broker keeps
+    /// running, and the next poll delivers the records it acquired, as the Java consumer does.
+    /// <see cref="CommitAsync"/> waits for that request before it sends acknowledgements.
+    /// </para>
+    /// <para>
     /// <b>Important:</b> In <see cref="ShareAcknowledgementMode.Implicit"/> mode, records from
     /// the previous poll that were not explicitly acknowledged via <see cref="Acknowledge"/> are
     /// accepted automatically. In <see cref="ShareAcknowledgementMode.Explicit"/> mode, only

@@ -120,17 +120,32 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
             }
 
             var fetchWaitStarted = ShareMetrics?.Timestamp(ShareConsumerTelemetryMetrics.Groups.Poll) ?? -1;
-            var fetchTasks = StartPollFetch(assignment, cancellationToken,
-                out var pendingAcks, out var sentAcknowledgementPartitionCount);
+            var detached = TakeDetachedFetch();
+            List<Task<ShareFetchBrokerResult>> fetchTasks;
+            Dictionary<TopicPartition, List<AcknowledgementBatchData>>? pendingAcks;
+            int sentAcknowledgementPartitionCount;
+            if (detached is null)
+            {
+                fetchTasks = StartPollFetch(assignment, cancellationToken,
+                    out pendingAcks, out sentAcknowledgementPartitionCount);
+            }
+            else
+            {
+                // Resume the fetch an earlier cancelled poll stopped waiting for.
+                fetchTasks = detached.Tasks;
+                pendingAcks = detached.PendingAcks;
+                sentAcknowledgementPartitionCount = detached.SentAcknowledgementPartitionCount;
+            }
             // Keep response frames valid while parsing producer batches. Parsed
             // RecordBatch storage has its own lifetime, including renewal replay.
-            using var responseScope = new ShareFetchResponseScope(fetchTasks);
+            using var responseScope = new PollFetchResponseScope(this, fetchTasks);
             ShareFetchBrokerResult[] fetchResults;
             try
             {
-                fetchResults = await Task.WhenAll(fetchTasks).ConfigureAwait(false);
+                fetchResults = detached?.Results ?? await AwaitPollFetchAsync(fetchTasks, pendingAcks,
+                    sentAcknowledgementPartitionCount, detached is not null, cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (!IsDetached(fetchTasks))
             {
                 // A broker task should normally return its failure in ShareFetchBrokerResult.
                 // Preserve every drained acknowledgement if an unexpected fault escapes.
@@ -143,7 +158,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                 ShareMetrics?.PollWaitCompleted(fetchWaitStarted);
             }
 
-            CompletePollFetch(fetchResults, pendingAcks, sentAcknowledgementPartitionCount);
+            // A fetch settled by a commit has already completed its bookkeeping.
+            if (detached?.Results is null)
+                CompletePollFetch(fetchResults, pendingAcks, sentAcknowledgementPartitionCount);
             if (fetchResults.Length == 0)
             {
                 // No broker request provided long-poll back-pressure. Refresh missing

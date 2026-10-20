@@ -46,6 +46,8 @@ public class ShareConsumerPollBenchmarks
     internal bool RenewalMode { get; set; }
     internal int ReplayChunkSize { get; set; }
     internal ShareAcquisitionShape AcquisitionShape { get; set; }
+    // A cancellable token that is never cancelled, as hosted loops and per-iteration timeouts pass.
+    internal CancellationToken PollCancellationToken { get; set; }
 
     [GlobalSetup]
     public async ValueTask Setup()
@@ -103,8 +105,8 @@ public class ShareConsumerPollBenchmarks
         _metadata.Metadata.Update(_connection.MetadataResponse);
         _compatibility = CreateConsumer(pool);
         _borrowed = CreateConsumer(pool, ReplayChunkSize);
-        _records = _compatibility.PollAsync().GetAsyncEnumerator();
-        _batches = _borrowed.PollBatchesAsync().GetAsyncEnumerator();
+        _records = _compatibility.PollAsync(PollCancellationToken).GetAsyncEnumerator();
+        _batches = _borrowed.PollBatchesAsync(PollCancellationToken).GetAsyncEnumerator();
         await ValidatePolling(offsets, acquired);
         long expected = 0;
         foreach (var offset in offsets)

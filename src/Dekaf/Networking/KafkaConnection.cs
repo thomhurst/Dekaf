@@ -93,7 +93,8 @@ public sealed partial class KafkaConnection :
     IRetirableKafkaConnection,
     IKafkaPipelinedWriteCompletionConnection,
     IKafkaRequestWriteObserverConnection,
-    IKafkaRequestCancellationConnection
+    IKafkaRequestCancellationConnection,
+    IKafkaRequestAfterWriteCancellationConnection
 {
     private readonly string _host;
     private readonly int _port;
@@ -705,6 +706,12 @@ public sealed partial class KafkaConnection :
             requireReady: true,
             cancellationToken,
             requestWriteStarted);
+
+    ValueTask<TResponse> IKafkaRequestAfterWriteCancellationConnection.SendWithResponseCancellationAfterWriteAsync<TRequest, TResponse>(
+        TRequest request, short apiVersion, KafkaRequestWriteContext context,
+        CancellationToken cancellationToken)
+        => SendWithResponseCancellationAfterWriteAsync<TRequest, TResponse>(request, apiVersion,
+            collector: null, context, cancellationToken);
 
     ValueTask<TResponse> IKafkaRequestCancellationConnection.SendWithResponseCancellationAsync<TRequest, TResponse>(
         TRequest request, short apiVersion, KafkaRequestWriteContext context,

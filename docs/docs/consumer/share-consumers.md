@@ -181,6 +181,12 @@ await foreach (var record in shareConsumer.PollAsync(cancellationToken))
 }
 ```
 
+Cancelling `PollAsync` or `PollBatchesAsync` stops waiting right away. If a ShareFetch request already
+reached the broker, it keeps running in the background, and the next poll delivers the records it
+acquired. Without this, those records would stay locked to this consumer until their acquisition lock
+expired. `CommitAsync` and `CloseAsync` wait for that request first, so that their requests use
+the share session it advances.
+
 The three acknowledgement types:
 
 | Type | Effect |

@@ -110,6 +110,59 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     }
 
     [Test]
+    public async Task ShareConsumer_PollCancelledDuringFetch_DeliversRecordsTheFetchAcquired()
+    {
+        // A poll cancelled while its ShareFetch is parked on the broker must not strand the
+        // records that request acquires afterwards until their acquisition lock expires (#3592).
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync();
+        await using var consumer = await Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId($"share-cancel-{Guid.NewGuid():N}")
+            .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit)
+            .WithFetchMaxWaitMs(5000)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        consumer.Subscribe(topic);
+        await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
+
+        using (var cancellation = new CancellationTokenSource())
+        {
+            var poll = Task.Run(async () =>
+            {
+                await foreach (var _ in consumer.PollAsync(cancellation.Token))
+                    throw new InvalidOperationException("The topic is empty.");
+            });
+            // Let the ShareFetch reach the broker and park for FetchMaxWaitMs.
+            await Task.Delay(TimeSpan.FromMilliseconds(500));
+            await cancellation.CancelAsync();
+            await Assert.That(async () => await poll).Throws<OperationCanceledException>();
+        }
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic, Partition = 0, Key = "key", Value = "value"
+        });
+        var produced = Stopwatch.GetTimestamp();
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        ShareConsumeResult<string, string>? received = null;
+        await foreach (var record in consumer.PollAsync(timeout.Token))
+        {
+            received = record;
+            consumer.Acknowledge(record);
+            await consumer.CommitAsync(timeout.Token);
+            break;
+        }
+
+        await Assert.That(received).IsNotNull();
+        await Assert.That(received!.Value).IsEqualTo("value");
+        // A stranded record is redelivered only after its lock expires, with a second delivery.
+        await Assert.That(received.DeliveryCount).IsEqualTo(1);
+        await Assert.That(Stopwatch.GetElapsedTime(produced)).IsLessThan(TimeSpan.FromSeconds(10));
+    }
+
+    [Test]
     public async Task ShareConsumer_SingleConsumer_ReceivesAllMessages()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
