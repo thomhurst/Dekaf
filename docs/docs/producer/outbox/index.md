@@ -176,7 +176,7 @@ POST /orders                 (enqueuing request)
     └── send orders          (producer)
 ```
 
-Without a listener the stored headers are published unchanged. Register the source with `TracerProviderBuilder.AddSource(DekafDiagnostics.ActivitySourceName)`; see [Observability](../../observability.md#tracing).
+If your sampler drops the relay span, the `send` span parents directly to the stored context. If it drops the `send` span itself, the record is published without a `traceparent`, because the stored headers were already removed. Without a listener the stored headers are published unchanged. Register the source with `TracerProviderBuilder.AddSource(DekafDiagnostics.ActivitySourceName)`; see [Observability](../../observability.md#tracing).
 
 ## Tuning
 

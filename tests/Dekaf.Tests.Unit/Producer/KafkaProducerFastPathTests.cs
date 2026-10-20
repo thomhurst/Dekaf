@@ -507,6 +507,69 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
+    public async Task ProduceAsync_Tracing_SendParentContext_OverridesCallerSpan()
+    {
+        var sendSpans = new List<Activity>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name is DekafDiagnostics.ActivitySourceName or "caller-test",
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            ActivityStarted = activity =>
+            {
+                if (activity.Source.Name == DekafDiagnostics.ActivitySourceName)
+                    sendSpans.Add(activity);
+            }
+        };
+        ActivitySource.AddActivityListener(listener);
+        using var callerSource = new ActivitySource("caller-test");
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
+
+        using var callerSpan = callerSource.StartActivity("caller");
+        var stored = new ActivityContext(
+            ActivityTraceId.CreateRandom(), ActivitySpanId.CreateRandom(), ActivityTraceFlags.Recorded, isRemote: true);
+        var message = new ProducerMessage<string, string> { Topic = Topic, Key = "key", Value = "value" };
+
+        DekafDiagnostics.SendParentContext.Value = stored;
+        ValueTask<RecordMetadata> produce;
+        try
+        {
+            produce = producer.ProduceAsync(message);
+        }
+        finally
+        {
+            DekafDiagnostics.SendParentContext.Value = default;
+        }
+
+        await Assert.That(Activity.Current).IsSameReferenceAs(callerSpan);
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        readyBatch.CompleteSend(baseOffset: 0, DateTimeOffset.UtcNow);
+        _ = await produce;
+
+        await Assert.That(sendSpans.Count).IsEqualTo(1);
+        await Assert.That(sendSpans[0].TraceId).IsEqualTo(stored.TraceId);
+        await Assert.That(sendSpans[0].ParentSpanId).IsEqualTo(stored.SpanId);
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task ProduceAsync_SerializerFailure_RestoresCallerOwnedTraceHeaders(

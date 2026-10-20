@@ -88,12 +88,14 @@ public sealed class OutboxTraceContextTests
         ActivitySource.AddActivityListener(listener);
 
         Activity? currentDuringProduce = null;
+        ActivityContext sendParentDuringProduce = default;
         Headers? producedHeaders = null;
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
         producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
                 currentDuringProduce = Activity.Current;
+                sendParentDuringProduce = DekafDiagnostics.SendParentContext.Value;
                 producedHeaders = callInfo.Arg<ProducerMessage<byte[]?, byte[]?>>()!.Headers;
                 return new ValueTask<RecordMetadata>(Metadata);
             });
@@ -119,10 +121,57 @@ public sealed class OutboxTraceContextTests
         await Assert.That(relay.Status).IsEqualTo(ActivityStatusCode.Ok);
         await Assert.That(stopped).Contains(relay);
 
+        // The send span parents to the relay span explicitly, not only through Activity.Current.
+        await Assert.That(sendParentDuringProduce == relay.Context).IsTrue();
+        await Assert.That(DekafDiagnostics.SendParentContext.Value == default).IsTrue();
+
         // The producer injects its send span; the stored context must not be published twice.
         await Assert.That(producedHeaders!.GetFirst("traceparent")).IsNull();
         await Assert.That(producedHeaders.GetFirst("tracestate")).IsNull();
         await Assert.That(producedHeaders.GetFirstAsString("tenant")).IsEqualTo("a");
+    }
+
+    [Test]
+    public async Task Publish_WithListener_DuplicateStoredHeaders_UsesLastLikeConsumers()
+    {
+        const string lastTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        ActivityContext sendParentDuringProduce = default;
+        Activity? currentDuringProduce = null;
+        Headers? producedHeaders = null;
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                currentDuringProduce = Activity.Current;
+                sendParentDuringProduce = DekafDiagnostics.SendParentContext.Value;
+                producedHeaders = callInfo.Arg<ProducerMessage<byte[]?, byte[]?>>()!.Headers;
+                return new ValueTask<RecordMetadata>(Metadata);
+            });
+        await using var publisher = new DekafOutboxPublisher(producer, ownsProducer: false);
+
+        var result = await publisher.PublishAsync(
+            [Row(new Headers()
+                .Add("traceparent", "garbage")
+                .Add("tracestate", "first=1")
+                .Add("traceparent", lastTraceparent)
+                .Add("tracestate", "last=2"))],
+            HeaderName);
+
+        await Assert.That(result.AckedCount).IsEqualTo(1);
+        var relay = currentDuringProduce!;
+        await Assert.That(relay.TraceId.ToHexString()).IsEqualTo("4bf92f3577b34da6a3ce929d0e0e4736");
+        await Assert.That(relay.ParentSpanId.ToHexString()).IsEqualTo("00f067aa0ba902b7");
+        await Assert.That(relay.TraceStateString).IsEqualTo("last=2");
+        await Assert.That(sendParentDuringProduce == relay.Context).IsTrue();
+        await Assert.That(producedHeaders!.GetFirst("traceparent")).IsNull();
+        await Assert.That(producedHeaders.GetFirst("tracestate")).IsNull();
     }
 
     [Test]

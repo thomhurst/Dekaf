@@ -2357,8 +2357,12 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // span, chaining one unbounded trace that keeps every span reachable.
         // Restore the caller's Current: the span still parents to the caller's span.
         var callerActivity = Activity.Current;
-        var activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
-            GetPublishActivityName(message.Topic), ActivityKind.Producer);
+        var parentContext = Diagnostics.DekafDiagnostics.SendParentContext.Value;
+        var activity = parentContext == default
+            ? Diagnostics.DekafDiagnostics.Source.StartActivity(
+                GetPublishActivityName(message.Topic), ActivityKind.Producer)
+            : Diagnostics.DekafDiagnostics.Source.StartActivity(
+                GetPublishActivityName(message.Topic), ActivityKind.Producer, parentContext);
         if (activity is not null)
         {
             Activity.Current = callerActivity;

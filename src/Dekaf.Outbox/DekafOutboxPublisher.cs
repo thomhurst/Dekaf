@@ -16,7 +16,8 @@ namespace Dekaf.Outbox;
 /// listener is attached to <see cref="DekafDiagnostics.ActivitySourceName"/>, each row is
 /// published under an <c>outbox relay {topic}</c> span parented to that stored context. The
 /// producer's send span becomes its child and replaces the stored <c>traceparent</c> and
-/// <c>tracestate</c> headers, so consumers continue the enqueuing request's trace. Without a
+/// <c>tracestate</c> headers, so consumers continue the enqueuing request's trace. When the
+/// relay span is not sampled, the send span parents directly to the stored context. Without a
 /// listener the stored headers are published unchanged.
 /// </remarks>
 public sealed class DekafOutboxPublisher : IOutboxPublisher
@@ -83,10 +84,19 @@ public sealed class DekafOutboxPublisher : IOutboxPublisher
                 message.MessageId.TryFormat(messageIdUtf8, out _, "D");
                 headers.Add(messageIdHeaderName, messageIdUtf8);
 
-                // StartActivity makes the relay span Activity.Current so the producer's send
-                // span parents to it; the finally restores the relay loop's own context.
+                // The send span parents to the relay span when it is sampled, otherwise
+                // directly to the stored context, so a filtered relay span cannot drop the
+                // trace. StartActivity also makes the relay span Activity.Current; the
+                // finally restores the relay loop's own context.
                 var previousActivity = Activity.Current;
-                activity = StartRelayActivity(message, headers);
+                var previousSendParent = DekafDiagnostics.SendParentContext.Value;
+                var hasStoredContext = TryTakeStoredTraceContext(headers, out var storedContext);
+                if (hasStoredContext)
+                {
+                    activity = StartRelayActivity(message, storedContext);
+                    DekafDiagnostics.SendParentContext.Value = activity?.Context ?? storedContext;
+                }
+
                 try
                 {
                     // Timestamp is deliberately left unset (publish time): stamping the enqueue
@@ -104,8 +114,11 @@ public sealed class DekafOutboxPublisher : IOutboxPublisher
                 }
                 finally
                 {
-                    if (activity is not null)
+                    if (hasStoredContext)
+                    {
+                        DekafDiagnostics.SendParentContext.Value = previousSendParent;
                         Activity.Current = previousActivity;
+                    }
                 }
 
                 if (activity is not null)
@@ -170,37 +183,53 @@ public sealed class DekafOutboxPublisher : IOutboxPublisher
     }
 
     /// <summary>
-    /// Starts the relay span parented to the trace context stored on the row, and drops the
-    /// stored trace headers so the producer's send span context is the only one published.
-    /// Returns null, leaving the headers unchanged, when no listener samples the span or the
-    /// row carries no valid stored context.
+    /// Reads the trace context stored on the row and drops the stored trace headers, so the
+    /// producer's send span context is the only one published. Like consumer extraction, the
+    /// last <c>traceparent</c> and <c>tracestate</c> win. Returns false, leaving the headers
+    /// unchanged, when no listener is attached or the row carries no valid stored context.
     /// </summary>
-    private static Activity? StartRelayActivity(OutboxMessage message, Headers headers)
+    private static bool TryTakeStoredTraceContext(Headers headers, out ActivityContext storedContext)
     {
+        storedContext = default;
         if (!DekafDiagnostics.Source.HasListeners())
-            return null;
+            return false;
 
-        var traceparent = headers.GetFirstAsString(TraceContextPropagator.TraceparentHeader);
-        if (traceparent is null
-            || !ActivityContext.TryParse(
-                traceparent,
-                headers.GetFirstAsString(TraceContextPropagator.TracestateHeader),
-                isRemote: true,
-                out var parentContext))
+        string? traceparent = null;
+        string? tracestate = null;
+        for (var i = 0; i < headers.Count; i++)
         {
-            return null;
+            var header = headers[i];
+            if (header.Key == TraceContextPropagator.TraceparentHeader)
+                traceparent = header.GetValueAsString();
+            else if (header.Key == TraceContextPropagator.TracestateHeader)
+                tracestate = header.GetValueAsString();
         }
 
+        if (traceparent is null
+            || !ActivityContext.TryParse(traceparent, tracestate, isRemote: true, out storedContext))
+        {
+            return false;
+        }
+
+        headers.Remove(TraceContextPropagator.TraceparentHeader);
+        headers.Remove(TraceContextPropagator.TracestateHeader);
+        return true;
+    }
+
+    /// <summary>
+    /// Starts the relay span parented to the stored context, or returns null when no listener
+    /// samples it.
+    /// </summary>
+    private static Activity? StartRelayActivity(OutboxMessage message, ActivityContext storedContext)
+    {
         var activity = DekafDiagnostics.Source.StartActivity(
-            string.Concat("outbox relay ", message.Topic), ActivityKind.Internal, parentContext);
+            string.Concat("outbox relay ", message.Topic), ActivityKind.Internal, storedContext);
         if (activity is null)
             return null;
 
         activity.SetTag(DekafDiagnostics.MessagingSystem, DekafDiagnostics.MessagingSystemValue);
         activity.SetTag(DekafDiagnostics.MessagingDestinationName, message.Topic);
         activity.SetTag(DekafDiagnostics.MessagingMessageId, message.MessageId.ToString("D"));
-        headers.Remove(TraceContextPropagator.TraceparentHeader);
-        headers.Remove(TraceContextPropagator.TracestateHeader);
         return activity;
     }
 

@@ -22,6 +22,13 @@ public static class DekafDiagnostics
     public const string MeterName = "Dekaf";
 
     internal static readonly ActivitySource Source = new(ActivitySourceName);
+
+    /// <summary>
+    /// Parent for send spans started on this async flow in place of <see cref="Activity.Current"/>;
+    /// default means none. The outbox relay sets it so a send continues the row's stored trace
+    /// even when the relay span itself is not sampled.
+    /// </summary>
+    internal static readonly AsyncLocal<ActivityContext> SendParentContext = new();
     internal static readonly Meter Meter = new(MeterName);
 
     // OTel semantic convention attribute names — messaging
