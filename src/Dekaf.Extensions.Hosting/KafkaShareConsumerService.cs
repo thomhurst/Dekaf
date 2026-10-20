@@ -434,7 +434,7 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                 LogStaleAcquisition(exception, result.TopicPartition.Topic, result.TopicPartition.Partition);
                 continue;
             }
-            if (IsRecoverableAcknowledgementFailure(exception))
+            if (IsRecoverableAcknowledgementFailure(exception, reportedByConsumer: true))
             {
                 LogRecoverableAcknowledgementFailure(exception, result.TopicPartition.Topic, result.TopicPartition.Partition);
                 continue;
@@ -476,14 +476,20 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
     // A failure no acknowledgement decision is lost to. The consumer keeps the acknowledgements of a
     // transient failure pending and resends them. Once the member or share session that acquired the
     // records is gone, the broker redelivers them when their locks expire. CommitAsync reports a
-    // partition failure as the inner exception.
-    private static bool IsRecoverableAcknowledgementFailure(Exception exception)
+    // partition failure as the inner exception. An ObjectDisposedException the consumer reports as a
+    // request outcome is a pooled connection retired between lease and write; one thrown directly by
+    // a disposed consumer stays terminal.
+    private static bool IsRecoverableAcknowledgementFailure(Exception exception, bool reportedByConsumer = false)
     {
         if (exception is KafkaException { ErrorCode: null, IsRetriable: false, InnerException: { } inner })
+        {
             exception = inner;
+            reportedByConsumer = true;
+        }
 
         return exception switch
         {
+            ObjectDisposedException => reportedByConsumer,
             KafkaException { IsRetriable: true } or KafkaTimeoutException => true,
             KafkaException
             {

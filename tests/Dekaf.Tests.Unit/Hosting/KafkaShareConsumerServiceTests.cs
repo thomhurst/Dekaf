@@ -171,6 +171,7 @@ public sealed class KafkaShareConsumerServiceTests
     [Arguments(4)]
     [Arguments(5)]
     [Arguments(6)]
+    [Arguments(7)]
     public async Task RecoverableAcknowledgementFailure_DoesNotStopService(int kind)
     {
         // The consumer keeps transient failures pending for retry, and the broker redelivers
@@ -183,7 +184,9 @@ public sealed class KafkaShareConsumerServiceTests
             3 => new KafkaException(ErrorCode.FencedMemberEpoch, "member fenced"),
             4 => new KafkaException(ErrorCode.ShareSessionNotFound, "session gone"),
             5 => new KafkaException(ErrorCode.InvalidShareSessionEpoch, "stale session epoch"),
-            _ => new TimeoutException("request timed out"),
+            6 => new TimeoutException("request timed out"),
+            // A pooled connection retired between lease and write (#3594 CI).
+            _ => new ObjectDisposedException("KafkaConnection"),
         };
         var consumer = new TestConsumer(Record(0), Record(1))
         {
