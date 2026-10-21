@@ -12088,9 +12088,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 // -1 = latest, -2 = earliest
                 var resolvedOffset = await ResolveOffsetAsync(partition, fetchPosition, cancellationToken).ConfigureAwait(false);
-                SetFetchPosition(partition, resolvedOffset);
-                SetPosition(partition, resolvedOffset, dirty: false);
-                ClearLastConsumedLeaderEpoch(partition);
+
+                // Seeks write positions under this lock. One made while ListOffsets was in flight
+                // replaced the sentinel, and its position must not be overwritten by this result.
+                lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+                {
+                    if (!_fetchPositions.TryGetValue(partition, out var current) || current != fetchPosition)
+                        continue;
+
+                    SetFetchPosition(partition, resolvedOffset);
+                    SetPosition(partition, resolvedOffset, dirty: false);
+                    ClearLastConsumedLeaderEpoch(partition);
+                }
             }
         }
     }

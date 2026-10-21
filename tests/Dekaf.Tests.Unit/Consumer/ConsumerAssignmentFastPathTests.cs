@@ -2582,6 +2582,39 @@ public sealed partial class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task SeekToBeginning_SeekWhileResolving_KeepsLaterSeek()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.IncrementalAssign([new TopicPartitionOffset(partition.Topic, partition.Partition, 60)]);
+
+        // The application seeks again while the earliest offset is being resolved.
+        connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                Arg.Any<ListOffsetsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                consumer.Seek(new TopicPartitionOffset(partition.Topic, partition.Partition, 42));
+                return ValueTask.FromResult(CreateListOffsetsResponse(partition.Partition, 40));
+            });
+
+        consumer.SeekToBeginning(partition);
+        await InvokeResolveSpecialOffsetsAsync(consumer, [partition]);
+
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(42L);
+        await Assert.That(consumer.GetPosition(partition)).IsEqualTo(42L);
+    }
+
+    [Test]
     public async Task TopicIdentityChange_PendingRevocationDrainDuringReset_DoesNotSuppressReset()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
