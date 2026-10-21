@@ -732,8 +732,8 @@ public sealed partial class ConsumerAssignmentFastPathTests
     private static long ExpectedSeekOffset(SeekKind kind) => kind switch
     {
         SeekKind.Offset => 42L,
-        SeekKind.Beginning => 0L,
-        _ => -1L
+        SeekKind.Beginning => TopicPartitionTimestamp.Earliest,
+        _ => TopicPartitionTimestamp.Latest
     };
 
     private static ConsumerGroupHeartbeatResponse AssignedResponse(int memberEpoch, params int[] partitions) =>

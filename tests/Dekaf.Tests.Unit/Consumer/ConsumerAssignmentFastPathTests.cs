@@ -2256,7 +2256,7 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await WritePrefetchedItemsAsync(consumer, [staleFetch], staleEpoch);
 
         var fetchPositions = GetFetchPositions(consumer);
-        await Assert.That(fetchPositions[partition]).IsEqualTo(0L);
+        await Assert.That(fetchPositions[partition]).IsEqualTo(TopicPartitionTimestamp.Earliest);
         await Assert.That(GetPrefetchBuffer(consumer).TryRead(out _)).IsFalse();
         await Assert.That(GetPrefetchedBytes(consumer)).IsEqualTo(0L);
     }
@@ -2288,7 +2288,7 @@ public sealed partial class ConsumerAssignmentFastPathTests
         consumer.SeekToBeginning(partition);
         await writeTask.WaitAsync(TimeSpan.FromSeconds(2));
 
-        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(0L);
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(TopicPartitionTimestamp.Earliest);
         await Assert.That(prefetchBuffer.TryRead(out _)).IsFalse();
         SetPrefetchedBytes(consumer, 0);
     }
@@ -2533,7 +2533,85 @@ public sealed partial class ConsumerAssignmentFastPathTests
 
         await InvokeHandleTopicIdentityChangesAsync(consumer);
 
-        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(0L);
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(TopicPartitionTimestamp.Earliest);
+    }
+
+    [Test]
+    [Arguments(true, TopicPartitionTimestamp.Earliest, 40L)]
+    [Arguments(false, TopicPartitionTimestamp.Latest, 90L)]
+    public async Task SeekToBeginningOrEnd_ResolvesThroughListOffsetsBeforeFetch(
+        bool seekToBeginning,
+        long expectedTimestamp,
+        long resolvedOffset)
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.IncrementalAssign([new TopicPartitionOffset(partition.Topic, partition.Partition, 60)]);
+
+        var requestedTimestamps = new List<long>();
+        connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                Arg.Any<ListOffsetsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                requestedTimestamps.Add(call.ArgAt<ListOffsetsRequest>(0).Topics[0].Partitions[0].Timestamp);
+                return ValueTask.FromResult(CreateListOffsetsResponse(partition.Partition, resolvedOffset));
+            });
+
+        // The log start offset (40 here) is not 0 once retention or DeleteRecords removed the
+        // first records: the seek must not land on offset 0.
+        if (seekToBeginning)
+            consumer.SeekToBeginning(partition);
+        else
+            consumer.SeekToEnd(partition);
+
+        await InvokeResolveSpecialOffsetsAsync(consumer, [partition]);
+
+        await Assert.That(requestedTimestamps).IsEquivalentTo([expectedTimestamp]);
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(resolvedOffset);
+        await Assert.That(consumer.GetPosition(partition)).IsEqualTo(resolvedOffset);
+    }
+
+    [Test]
+    public async Task SeekToBeginning_SeekWhileResolving_KeepsLaterSeek()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.IncrementalAssign([new TopicPartitionOffset(partition.Topic, partition.Partition, 60)]);
+
+        // The application seeks again while the earliest offset is being resolved.
+        connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                Arg.Any<ListOffsetsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                consumer.Seek(new TopicPartitionOffset(partition.Topic, partition.Partition, 42));
+                return ValueTask.FromResult(CreateListOffsetsResponse(partition.Partition, 40));
+            });
+
+        consumer.SeekToBeginning(partition);
+        await InvokeResolveSpecialOffsetsAsync(consumer, [partition]);
+
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(42L);
+        await Assert.That(consumer.GetPosition(partition)).IsEqualTo(42L);
     }
 
     [Test]
@@ -3726,6 +3804,22 @@ public sealed partial class ConsumerAssignmentFastPathTests
             ?? throw new InvalidOperationException("_watermarkAssignmentVersions field not found.");
 
         return (ConcurrentDictionary<TopicPartition, int>)field.GetValue(consumer)!;
+    }
+
+    private static async ValueTask InvokeResolveSpecialOffsetsAsync(
+        KafkaConsumer<string, string> consumer,
+        List<TopicPartition> partitions)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "ResolveSpecialOffsetsAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("ResolveSpecialOffsetsAsync method not found.");
+
+        var result = method.Invoke(consumer, [partitions, 0, partitions.Count, CancellationToken.None]);
+        if (result is not ValueTask valueTask)
+            throw new InvalidOperationException("ResolveSpecialOffsetsAsync returned unexpected type.");
+
+        await valueTask;
     }
 
     private static async ValueTask InvokeHandleTopicIdentityChangesAsync(

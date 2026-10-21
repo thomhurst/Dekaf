@@ -409,6 +409,58 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
     }
 
     [Test]
+    public async Task Consumer_SeekToBeginningAfterDeleteRecords_ConsumesFromLogStartOffset()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var tp = new TopicPartition(topic, 0);
+        await using (var producer = await Kafka.CreateProducer<string, string>()
+                         .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                         .WithAcks(Acks.All)
+                         .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+                         .BuildAsync())
+        {
+            for (var i = 0; i < 5; i++)
+            {
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Key = $"key-{i}",
+                    Value = $"value-{i}"
+                }, CancellationToken.None);
+            }
+        }
+
+        await using (var admin = Kafka.CreateAdminClient()
+                         .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                         .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+                         .Build())
+        {
+            var deleted = await admin.DeleteRecordsAsync(new Dictionary<TopicPartition, long>
+            {
+                [tp] = 2
+            });
+            await Assert.That(deleted[tp]).IsEqualTo(2);
+        }
+
+        // AutoOffsetReset.Latest: a seek to offset 0 (below the log start offset) would be reset to
+        // the end of the partition and skip the retained records.
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithAutoOffsetReset(AutoOffsetReset.Latest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        consumer.Assign(tp);
+        consumer.SeekToBeginning(tp);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Offset).IsEqualTo(2);
+        await Assert.That(result.Value.Value).IsEqualTo("value-2");
+    }
+
+    [Test]
     public async Task Consumer_ManualCommit_CommitsOffset()
     {
         // Arrange

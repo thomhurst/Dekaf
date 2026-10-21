@@ -109,6 +109,80 @@ public sealed class ConsumerAwareRebalanceListenerTests(KafkaTestContainer kafka
         await Assert.That(exception.Message).Contains("callback has completed");
     }
 
+    [Test]
+    public async Task AssignedCallback_SeekToBeginningAfterDeleteRecords_StartsAtLogStartOffset()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var partition = new TopicPartition(topic, 0);
+        await using (var producer = await Kafka.CreateProducer<string, string>()
+                         .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                         .WithAcks(Acks.All)
+                         .BuildAsync())
+        {
+            for (var i = 0; i < 5; i++)
+            {
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Key = $"key-{i}",
+                    Value = $"value-{i}"
+                });
+            }
+        }
+
+        await using (var admin = Kafka.CreateAdminClient()
+                         .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                         .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+                         .Build())
+        {
+            var deleted = await admin.DeleteRecordsAsync(new Dictionary<TopicPartition, long>
+            {
+                [partition] = 2
+            });
+            await Assert.That(deleted[partition]).IsEqualTo(2);
+        }
+
+        // AutoOffsetReset.Latest: a seek to offset 0 (below the log start offset) would be reset to
+        // the end of the partition and skip the retained records.
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId($"consumer-aware-seek-beginning-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Latest)
+            .WithRebalanceListener(new SeekToBeginningRebalanceListener())
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        consumer.Subscribe(topic);
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), timeout.Token);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Offset).IsEqualTo(2);
+        await Assert.That(result.Value.Value).IsEqualTo("value-2");
+    }
+
+    private sealed class SeekToBeginningRebalanceListener : IConsumerAwareRebalanceListener
+    {
+        public ValueTask OnPartitionsAssignedAsync(
+            IRebalanceConsumer consumer,
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken)
+        {
+            consumer.SeekToBeginning(partitions.ToArray());
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask OnPartitionsRevokedAsync(
+            IRebalanceConsumer consumer,
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public ValueTask OnPartitionsLostAsync(
+            IRebalanceConsumer consumer,
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken) => ValueTask.CompletedTask;
+    }
+
     private sealed class SeekingRebalanceListener : IConsumerAwareRebalanceListener
     {
         public IRebalanceConsumer? RetainedView { get; private set; }

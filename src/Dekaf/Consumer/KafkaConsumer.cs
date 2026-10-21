@@ -6249,8 +6249,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _positions[partition] = position;
         if (dirty)
         {
-            if (_options.EnableAutoOffsetStore)
+            if (!_options.EnableAutoOffsetStore)
+                return;
+
+            // A seek to the beginning or end stages a sentinel that the next fetch resolves; it is
+            // not an offset to commit, and the earlier store it replaces is not one either.
+            if (position >= 0)
                 StoreOffsetCore(partition, position, GetLastConsumedLeaderEpoch(partition));
+            else
+                ClearStoredOffset(partition);
         }
         else
         {
@@ -9528,9 +9535,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    public void SeekToBeginning(params TopicPartition[] partitions)
+    // The log start offset, not offset 0: retention or DeleteRecords may have removed the first
+    // records, and a fetch at 0 would then apply AutoOffsetReset instead.
+    public void SeekToBeginning(params TopicPartition[] partitions) =>
+        SeekToListOffsetsSentinel(partitions, TopicPartitionTimestamp.Earliest);
+
+    public void SeekToEnd(params TopicPartition[] partitions) =>
+        SeekToListOffsetsSentinel(partitions, TopicPartitionTimestamp.Latest);
+
+    /// <summary>
+    /// Positions <paramref name="partitions"/> at a ListOffsets timestamp sentinel that
+    /// <see cref="ResolveSpecialOffsetsAsync"/> resolves to an offset before the next fetch.
+    /// </summary>
+    private void SeekToListOffsetsSentinel(TopicPartition[] partitions, long sentinel)
     {
-        if (!TryStageAssignedCallbackSeeks(ref partitions, offset: 0))
+        if (!TryStageAssignedCallbackSeeks(ref partitions, sentinel))
             return;
 
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
@@ -9541,28 +9560,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             foreach (var partition in partitions)
             {
                 ClearLastConsumedLeaderEpoch(partition);
-                SetPosition(partition, 0, dirty: true);
-                SetFetchPosition(partition, 0);
-                _eofEmitted.TryRemove(partition, out _);
-            }
-        }
-    }
-
-    public void SeekToEnd(params TopicPartition[] partitions)
-    {
-        if (!TryStageAssignedCallbackSeeks(ref partitions, offset: -1))
-            return;
-
-        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
-        {
-            ThrowIfSnapshotOperationActive();
-            ClearFetchBufferForPartitions(partitions, stagePendingClear: true);
-
-            foreach (var partition in partitions)
-            {
-                ClearLastConsumedLeaderEpoch(partition);
-                SetPosition(partition, -1, dirty: true); // Special value meaning end
-                SetFetchPosition(partition, -1); // Special value meaning end
+                SetPosition(partition, sentinel, dirty: true);
+                SetFetchPosition(partition, sentinel);
                 _eofEmitted.TryRemove(partition, out _);
             }
         }
@@ -12089,9 +12088,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 // -1 = latest, -2 = earliest
                 var resolvedOffset = await ResolveOffsetAsync(partition, fetchPosition, cancellationToken).ConfigureAwait(false);
-                SetFetchPosition(partition, resolvedOffset);
-                SetPosition(partition, resolvedOffset, dirty: false);
-                ClearLastConsumedLeaderEpoch(partition);
+
+                // Seeks write positions under this lock. One made while ListOffsets was in flight
+                // replaced the sentinel, and its position must not be overwritten by this result.
+                lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+                {
+                    if (!_fetchPositions.TryGetValue(partition, out var current) || current != fetchPosition)
+                        continue;
+
+                    SetFetchPosition(partition, resolvedOffset);
+                    SetPosition(partition, resolvedOffset, dirty: false);
+                    ClearLastConsumedLeaderEpoch(partition);
+                }
             }
         }
     }

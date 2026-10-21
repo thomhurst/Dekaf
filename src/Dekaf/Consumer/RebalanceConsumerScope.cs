@@ -73,10 +73,10 @@ internal sealed class RebalanceConsumerScope<TKey, TValue> : IRebalanceConsumerS
     }
 
     public void SeekToBeginning(params TopicPartition[] partitions) =>
-        SeekPartitions(partitions, offset: 0);
+        SeekPartitions(partitions, TopicPartitionTimestamp.Earliest);
 
     public void SeekToEnd(params TopicPartition[] partitions) =>
-        SeekPartitions(partitions, offset: -1);
+        SeekPartitions(partitions, TopicPartitionTimestamp.Latest);
 
     public void Pause(params TopicPartition[] partitions) => GetConsumer().Pause(partitions);
     public void Resume(params TopicPartition[] partitions) => GetConsumer().Resume(partitions);

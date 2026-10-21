@@ -59,7 +59,7 @@ public interface IRebalanceConsumer
     /// <summary>Seeks to a specific offset.</summary>
     void Seek(TopicPartitionOffset offset);
 
-    /// <summary>Seeks partitions to their beginning.</summary>
+    /// <summary>Seeks partitions to their beginning (the log start offset).</summary>
     void SeekToBeginning(params TopicPartition[] partitions);
 
     /// <summary>Seeks partitions to their end.</summary>
