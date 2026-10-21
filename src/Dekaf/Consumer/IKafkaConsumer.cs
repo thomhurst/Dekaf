@@ -362,12 +362,13 @@ public interface IConsumerPositions
     void Seek(TopicPartitionOffset offset);
 
     /// <summary>
-    /// Seeks to the beginning of partitions.
+    /// Seeks to the beginning of partitions: the log start offset, which is greater than 0 once
+    /// retention or DeleteRecords has removed records. The offset is resolved before the next fetch.
     /// </summary>
     void SeekToBeginning(params TopicPartition[] partitions);
 
     /// <summary>
-    /// Seeks to the end of partitions.
+    /// Seeks to the end of partitions. The offset is resolved before the next fetch.
     /// </summary>
     void SeekToEnd(params TopicPartition[] partitions);
 }

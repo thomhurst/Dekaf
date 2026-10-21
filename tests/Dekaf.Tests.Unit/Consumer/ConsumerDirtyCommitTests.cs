@@ -1383,6 +1383,26 @@ public sealed partial class ConsumerDirtyCommitTests
         ]);
     }
 
+    [Test]
+    [Arguments("SeekToBeginning")]
+    [Arguments("SeekToEnd")]
+    public async Task CommitAsync_AfterSeekToBeginningOrEndBeforeFetch_CommitsNoSentinelOffset(string seekOperation)
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(requests, ErrorCode.None);
+        var partition = new TopicPartition("topic-a", 0);
+
+        // The seek replaces this stored offset with a sentinel the next fetch resolves. Neither the
+        // sentinel nor the replaced offset may be committed: a negative committed offset reads as
+        // "no committed offset", so a restart would apply AutoOffsetReset.
+        consumer.Seek(new TopicPartitionOffset(partition.Topic, partition.Partition, 10));
+        ApplySeek(consumer, seekOperation, partition);
+
+        await consumer.CommitAsync(CancellationToken.None);
+
+        await Assert.That(requests).IsEmpty();
+    }
+
     private static KafkaConsumer<string, string> CreateConsumer(
         List<OffsetCommitRequest> requests,
         ErrorCode responseError,
