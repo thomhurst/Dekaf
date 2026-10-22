@@ -107,7 +107,7 @@ Model latency grows with context size, and it dominates loop time: tools account
 
 - When the runtime can start subagents or fresh threads, invoking this loop authorizes one per unit. Detect the runtime from the environment: `CLAUDECODE=1` means Claude Code, so use the Agent tool with a `general-purpose` subagent. `CODEX_THREAD_ID` set means Codex, so use its subagent or thread tool. The coordinator surveys, chooses one item, and hands over the item ID, this skill in single-unit mode for that item, the shared checkout, and the canonical lock script. The subagent acquires the lock and does the unit. Require a confirmed `merged #N`, `pushed fixes to #N`, `reran main run <id>`, `waiting #N: run <id>`, `deferred main [category]: reason`, `deferred #N [category]: reason`, `opened #N closing #M`, `failed #N: reason`, or `triaged: summary`; then continue surveying. Keep only queue state in the coordinator, never diffs, logs, or review bodies.
 - When a runtime lets you pick reasoning effort, use a lower effort for mechanical units: merges, surveys, conflict-free rebases, and disposition replies. Keep high effort for implementation, conflict resolution in shared code, and CI failure diagnosis.
-- Without subagents, drop the previous item's details once it is pushed or deferred. In both modes, send long command output (builds, tests, `gh api` dumps, logs) to a file and read only the lines you need. Use `--jq` to select fields.
+- Without subagents, drop the previous item's details once it is pushed or deferred. In both modes, send long command output (builds, tests, `gh api` dumps, logs) to a file under the evidence root ([Isolation and ownership](#isolation-and-ownership)) and read only the lines you need. Use `--jq` to select fields.
 
 ## Isolation and ownership
 
@@ -119,9 +119,17 @@ $repoSlug = gh repo view --json nameWithOwner --jq .nameWithOwner
 $repoName = ($repoSlug -split '/')[-1]
 $agentLocks = Join-Path $repo 'scripts/AgentLocks.ps1'
 $worktreeRoot = Join-Path (Split-Path $repo -Parent) ($repoName + '-worktrees')
+$evidenceRoot = "$repo-evidence"
 ```
 
 Verify the repository and intended base; examples use `origin/main`. Use a writable temporary `<repoName>-worktrees` root if needed. Choose a unique worktree path when one already exists.
+
+Write nothing loose beside the repository. Every file an agent produces outside its worktree has one home, so cleanup can find it:
+
+- Evidence (build and test logs, reports, PR and comment body drafts, diffs, validation projects) goes in `$evidenceRoot/<lock-name>/`, for example `C:/git/Dekaf-evidence/issue-3592/build.log`. `scripts/Remove-MergedWorktrees.ps1` deletes an evidence entry once its newest file is older than 7 days (`-EvidenceRetentionDays`).
+- Throwaway checkouts and baselines are worktrees under `$worktreeRoot`, never plain copies and never sibling folders such as `C:/git/Dekaf-wt-3592`.
+- Downloaded SDKs and CLI tools go in `<repo-parent>/toolchains/<name>-<version>/` (for example `C:/git/toolchains/`), shared by every repository.
+- Never write to the repository's parent directory itself or to the shared checkout.
 
 Acquire the Redis lock before acting on an item: `pr-<N>` for PR work or recovery, `issue-<N>` for new implementation. Always invoke the absolute shared-checkout `$agentLocks` path for every verb; older branch copies can have incompatible token caches.
 
@@ -142,7 +150,7 @@ Use repository scripts for merged-worktree cleanup; `[gone]` or ancestry alone i
 
 Stop only services/processes/containers started for this worktree. Never blanket-delete containers/volumes or stop shared lock Redis. Follow local lifecycle guidance; use Aspire only where an AppHost exists.
 
-Immediately after checkout, run `pwsh $agentLocks renew -LockName $lockName -Worktree $worktree` once to register its path. Stop owned processes, archive needed evidence outside the worktree, then release in `finally` from a command whose `workdir` is the shared checkout, never the worktree: on Windows a shell whose current directory is inside the worktree blocks its deletion. Run `Merge-Pr.ps1` the same way. Release removes clean checkouts even for open PRs; branches and detached commits remain available for re-checkout. Never `git worktree lock` a checkout to keep it; commit and push work you need. See [local worktree lifecycle](../../../scripts/WorktreeLifecycle.md) for preservation rules and crash behavior.
+Immediately after checkout, run `pwsh $agentLocks renew -LockName $lockName -Worktree $worktree` once to register its path. Stop owned processes, save needed evidence under `$evidenceRoot` (see above), then release in `finally` from a command whose `workdir` is the shared checkout, never the worktree: on Windows a shell whose current directory is inside the worktree blocks its deletion. Run `Merge-Pr.ps1` the same way. Release removes clean checkouts even for open PRs; branches and detached commits remain available for re-checkout. Never `git worktree lock` a checkout to keep it; commit and push work you need. See [local worktree lifecycle](../../../scripts/WorktreeLifecycle.md) for preservation rules and crash behavior.
 
 ## Maintain PRs
 
@@ -192,7 +200,7 @@ Merge requires an open, ready-for-review PR; `MERGEABLE` and `CLEAN`; every appl
 
 Use current repository rules/instructions for approval requirements. Historical merges without approval do not prove approval is optional; inaccessible protection APIs do not prove no protection exists.
 
-Archive validation evidence when first citing it in a PR, outside every removable worktree. Use a durable directory alongside the shared checkout and its worktree root, organized by PR number and measured SHA, or a durable uploaded artifact. Include raw benchmark/test reports, experiment inputs and hashes, fixture/probe sources, and loaded binaries needed to reproduce or reanalyze the evidence. Include both head-branch and detached review checkouts.
+Archive validation evidence when first citing it in a PR, outside every removable worktree: in `$evidenceRoot/pr-<N>/<measured SHA>/` ([Isolation and ownership](#isolation-and-ownership)), or in a durable uploaded artifact when it must outlive the evidence retention window. Include raw benchmark/test reports, experiment inputs and hashes, fixture/probe sources, and loaded binaries needed to reproduce or reanalyze the evidence. Include both head-branch and detached review checkouts.
 
 Before invoking the merge wrapper, verify the archived file inventory and SHA-256 hashes against the originals, then update the PR with the durable location. `.artifacts`, `bin`, `TestResults`, and similar generated directories inside a worktree are disposable under [WorktreeCleanup.ps1](../../../scripts/WorktreeCleanup.ps1); another worker's merge or sweep can remove them. If archival fails, defer the merge and take another item. If evidence is already lost, correct its retention claim explicitly; a rerun is new evidence, not recovery of deleted results.
 

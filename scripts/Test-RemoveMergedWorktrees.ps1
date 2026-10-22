@@ -61,6 +61,18 @@ try {
     git -C $repo worktree add --quiet --detach $owned $mainHead
     git -C $repo config extensions.worktreeConfig true
     git -C $owned config --worktree agent.lockName fixture-owned
+    git -C $owned config --worktree agent.lockWorktree $owned
+    # `git worktree add` copies config.worktree; the copied marker names $owned.
+    $inherited = Join-Path $testRoot 'inherited-detached'
+    git -C $owned worktree add --quiet --detach $inherited $mainHead
+    $evidenceRoot = "$repo-evidence"
+    foreach ($entry in @('issue-1/build.log', 'issue-2/build.log')) {
+        $file = Join-Path $evidenceRoot $entry
+        New-Item -ItemType Directory -Path (Split-Path $file -Parent) -Force | Out-Null
+        Set-Content -LiteralPath $file -Value 'evidence'
+    }
+    (Get-Item -LiteralPath (Join-Path $evidenceRoot 'issue-1/build.log')).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-10)
+    (Get-Item -LiteralPath (Join-Path $evidenceRoot 'issue-1')).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-10)
     New-Item -ItemType Directory -Path (Join-Path $repo 'scripts') | Out-Null
     # Live Redis semantics are tested separately; this verifies sweep routing.
     Set-Content -LiteralPath (Join-Path $repo 'scripts/AgentLocks.ps1') -Value @'
@@ -87,6 +99,8 @@ exit 3
         Assert-True ($preview -match 'NewFeature.cs') 'Preview did not report untracked source blocker.'
         Assert-True ($preview -notmatch 'WOULD remove .*[\\/]dirty') 'Preview claimed a dirty worktree would be removed.'
         Assert-True (Test-Path -LiteralPath $mergedWorktree) 'Preview removed worktree.'
+        Assert-True ($preview -match 'WOULD remove stale evidence .*issue-1') 'Preview did not identify stale evidence.'
+        Assert-True (Test-Path -LiteralPath (Join-Path $evidenceRoot 'issue-1')) 'Preview removed evidence.'
 
         & $sweep -Repo fixture/repo
         Assert-True (-not (Test-Path -LiteralPath $mergedWorktree)) 'Merged worktree was not removed autonomously.'
@@ -94,6 +108,9 @@ exit 3
         Assert-True (Test-Path -LiteralPath $divergentWorktree) 'Divergent local commit was removed.'
         Assert-True (Test-Path -LiteralPath $openWorktree) 'Open PR worktree was removed.'
         Assert-True (Test-Path -LiteralPath $owned) 'Redis-owned detached main checkout was removed.'
+        Assert-True (-not (Test-Path -LiteralPath $inherited)) 'Checkout with an inherited lock marker was preserved.'
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $evidenceRoot 'issue-1'))) 'Stale evidence was not removed.'
+        Assert-True (Test-Path -LiteralPath (Join-Path $evidenceRoot 'issue-2')) 'Recent evidence was removed.'
         Assert-True (Test-Path -LiteralPath (Join-Path $orphan 'NewFeature.cs')) 'Orphan with unverifiable ownership/source was removed.'
         git -C $repo show-ref --verify --quiet refs/heads/merged
         Assert-True ($LASTEXITCODE -ne 0) 'Merged branch was not cleaned up.'

@@ -118,6 +118,7 @@ exit $code
         $unavailable = Join-Path $testRoot 'unavailable'
         Invoke-TestGit -C $repo worktree add --detach $unavailable HEAD
         Invoke-TestGit -C $unavailable config --worktree agent.lockName "cleanup-test-$suffix-unavailable"
+        Invoke-TestGit -C $unavailable config --worktree agent.lockWorktree $unavailable
         Set-Content -LiteralPath (Join-Path $repo 'scripts/AgentLocks.ps1') -Value 'exit 2'
         Remove-MergedWorktree -Repo $repo -Worktree $unavailable
         Assert (Test-Path -LiteralPath $unavailable) 'Unavailable ownership check allowed removal.'
@@ -131,6 +132,7 @@ exit $code
         Invoke-TestGit -C $repo worktree add --detach $changed HEAD
         $key = "cleanup-test-$suffix-original"
         Invoke-TestGit -C $changed config --worktree agent.lockName $key
+        Invoke-TestGit -C $changed config --worktree agent.lockWorktree $changed
         $changedProxy = @'
 param($Verb, $LockName, $OwnerId)
 & pwsh -NoProfile -File '__CANONICAL__' $Verb -LockName $LockName -OwnerId $OwnerId *> $null
@@ -149,7 +151,24 @@ exit $code
         $state = & pwsh -NoProfile -File $AgentLocksScript status -LockName $key -OwnerId $owner
         Assert ($state -eq 'FREE') 'Preserved checkout left cleanup ownership behind.'
         Set-Content -LiteralPath (Join-Path $repo 'scripts/AgentLocks.ps1') -Value $proxy
-        Write-Host 'OK worktree ownership: live owner, creation window, canonical release, preview, unavailable endpoint, changed identity and competing acquisition throughout removal.'
+
+        # `git worktree add` copies the source checkout's config.worktree. The copied
+        # marker names the source's path, so it must not tie the new checkout to the
+        # source's live lease.
+        $source = Join-Path $testRoot 'marker-source'
+        Invoke-TestGit -C $repo worktree add --detach $source HEAD
+        $key = "cleanup-test-$suffix-source"
+        Claim $key $source
+        $inherited = Join-Path $testRoot 'marker-inherited'
+        Invoke-TestGit -C $source worktree add --detach $inherited HEAD
+        Assert ((git -C $inherited config --worktree --get agent.lockName) -ceq $key) 'Fixture did not inherit the source marker.'
+        Assert ((Get-WorktreeCleanupLockName -Worktree $source) -ceq $key) 'Source marker did not resolve in its own worktree.'
+        Assert ($null -eq (Get-WorktreeCleanupLockName -Worktree $inherited)) 'Inherited marker resolved in a new worktree.'
+        Remove-MergedWorktree -Repo $repo -Worktree $inherited -Label 'inherited marker fixture'
+        Assert (-not (Test-Path -LiteralPath $inherited)) "Cleanup preserved a checkout for another worktree's lease."
+        Assert (Test-Path -LiteralPath (Join-Path $source '.git')) 'Cleanup removed the source checkout with a live lease.'
+        Release $key
+        Write-Host 'OK worktree ownership: live owner, creation window, canonical release, preview, unavailable endpoint, changed identity, inherited marker and competing acquisition throughout removal.'
     }
     finally {
         foreach ($key in $keys) {
