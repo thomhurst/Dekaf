@@ -159,6 +159,8 @@ exit $code
         Invoke-TestGit -C $repo worktree add --detach $source HEAD
         $key = "cleanup-test-$suffix-source"
         Claim $key $source
+        # Record the owner path explicitly: the canonical endpoint may predate it.
+        Invoke-TestGit -C $source config --worktree agent.lockWorktree $source
         $inherited = Join-Path $testRoot 'marker-inherited'
         Invoke-TestGit -C $source worktree add --detach $inherited HEAD
         Assert ((git -C $inherited config --worktree --get agent.lockName) -ceq $key) 'Fixture did not inherit the source marker.'
@@ -168,7 +170,21 @@ exit $code
         Assert (-not (Test-Path -LiteralPath $inherited)) "Cleanup preserved a checkout for another worktree's lease."
         Assert (Test-Path -LiteralPath (Join-Path $source '.git')) 'Cleanup removed the source checkout with a live lease.'
         Release $key
-        Write-Host 'OK worktree ownership: live owner, creation window, canonical release, preview, unavailable endpoint, changed identity, inherited marker and competing acquisition throughout removal.'
+
+        # A marker written before agent.lockWorktree existed (by an older canonical
+        # AgentLocks.ps1) records no owner path. Its lease must still protect the checkout.
+        $legacy = Join-Path $testRoot 'legacy-marker'
+        Invoke-TestGit -C $repo worktree add --detach $legacy HEAD
+        $key = "cleanup-test-$suffix-legacy"
+        Claim $key ''
+        Invoke-TestGit -C $legacy config --worktree agent.lockName $key
+        Assert ((Get-WorktreeCleanupLockName -Worktree $legacy) -ceq $key) 'Legacy marker did not resolve.'
+        Remove-MergedWorktree -Repo $repo -Worktree $legacy -Label 'legacy marker fixture'
+        Assert (Test-Path -LiteralPath (Join-Path $legacy '.git')) 'Cleanup removed a legacy-marker checkout with a live Redis lease.'
+        Release $key
+        Remove-MergedWorktree -Repo $repo -Worktree $legacy -Label 'released legacy marker fixture'
+        Assert (-not (Test-Path -LiteralPath $legacy)) 'Cleanup preserved a released legacy-marker checkout.'
+        Write-Host 'OK worktree ownership: live owner, creation window, canonical release, preview, unavailable endpoint, changed identity, inherited marker, legacy marker and competing acquisition throughout removal.'
     }
     finally {
         foreach ($key in $keys) {

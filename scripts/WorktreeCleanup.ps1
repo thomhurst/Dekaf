@@ -135,11 +135,21 @@ function Get-WorktreeCleanupLockName {
             if ($LASTEXITCODE -notin @(0, 1)) { throw 'Cannot inspect worktree lock marker.' }
             $owner = git -C $Worktree config --worktree --get agent.lockWorktree 2>$null
             if ($LASTEXITCODE -notin @(0, 1)) { throw 'Cannot inspect worktree lock marker owner.' }
-            # `git worktree add` copies the source checkout's config.worktree, so a
-            # marker counts only in the worktree whose path it records.
-            if ($marker -and $owner -and
-                [IO.Path]::GetFullPath($owner.Trim()).TrimEnd('\', '/') -eq [IO.Path]::GetFullPath($Worktree).TrimEnd('\', '/')) {
-                return $marker.Trim()
+            if (-not [string]::IsNullOrWhiteSpace($marker)) {
+                # A marker without a recorded owner path was written by an
+                # AgentLocks.ps1 that predates agent.lockWorktree (including an
+                # outdated main checkout acting as the canonical endpoint). It may
+                # name a live lease, so it remains an identity to check.
+                if ([string]::IsNullOrWhiteSpace($owner)) { return $marker.Trim() }
+                # `git worktree add` copies the source checkout's config.worktree, so a
+                # marker that records a path counts only in that worktree. Compare
+                # against Git's root as well, which is the path the writer records.
+                $top = git -C $Worktree rev-parse --show-toplevel 2>$null
+                if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($top)) { throw 'Cannot resolve worktree root.' }
+                $recorded = [IO.Path]::GetFullPath($owner.Trim()).TrimEnd('\', '/')
+                foreach ($candidate in @($Worktree, $top.Trim())) {
+                    if ($recorded -eq [IO.Path]::GetFullPath($candidate).TrimEnd('\', '/')) { return $marker.Trim() }
+                }
             }
         }
     }
