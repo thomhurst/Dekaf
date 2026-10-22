@@ -153,7 +153,7 @@ exit 0
     foreach ($sourcePath in @('src/source.log', 'README.md', 'new-feature.md', 'src/NewFeature.cs', '"quoted.log"')) {
         Assert-True (-not (Test-DisposableWorktreePath -Path $sourcePath)) "Unknown file was treated as workflow output: $sourcePath"
     }
-    foreach ($outputPath in @('build.log', 'pressure.nettrace', 'pr-body.md', 'review-pr-body.md', 'sdk-review-disposition.md', 'review-validation.md', 'rebase-validation.md', 'ci-fix-comment.md', 'throttle-issue.md', '.artifacts/run.log')) {
+    foreach ($outputPath in @('build.log', 'certificate-tests.binlog', 'pressure.nettrace', 'pr-body.md', 'review-pr-body.md', 'sdk-review-disposition.md', 'review-validation.md', 'rebase-validation.md', 'ci-fix-comment.md', 'throttle-issue.md', '.artifacts/run.log')) {
         Assert-True (Test-DisposableWorktreePath -Path $outputPath) "Workflow output was not recognized: $outputPath"
         git -C $repo check-ignore --quiet -- $outputPath
         Assert-True ($LASTEXITCODE -eq 0) "Disposable workflow output is missing from .gitignore: $outputPath"
