@@ -1,4 +1,4 @@
-ARG KAFKA_IMAGE=apache/kafka:4.3.1
+ARG KAFKA_IMAGE=apache/kafka:4.4.0
 FROM ${KAFKA_IMAGE} AS kafka
 FROM eclipse-temurin:27-jdk AS compiler
 COPY --from=kafka /opt/kafka/libs /kafka-libs
