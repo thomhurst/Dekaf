@@ -60,6 +60,12 @@
                     Version="@(PackageVersion->WithMetadataValue('Identity', 'Microsoft.EntityFrameworkCore.Sqlite')->'%(Version)')" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" />
   </ItemGroup>
+  <!-- Transitive pin: Microsoft.Data.SqlClient 6.x pulls System.Security.Cryptography.Pkcs 9.0.11,
+       which carries GHSA-2fmv-rv2c-59x7 and GHSA-846f-f764-76mx (patched in 9.0.21). -->
+  <ItemGroup Condition="'$(PublishAot)' != 'true' and '$(TargetFramework)' != 'net8.0'">
+    <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="9.0.22" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Apache.Avro" />
