@@ -63,7 +63,7 @@ public sealed partial class ConsumeOneFastPathTests
         MarkManualAssignmentCurrent(consumer);
 
         var consume = consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
-        await deserializer.PreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await deserializer.PreparationStarted.Task;
 
         await Assert.That(consume.IsCompleted).IsFalse();
         deserializer.ReleasePreparation();
@@ -271,7 +271,7 @@ public sealed partial class ConsumeOneFastPathTests
         MarkManualAssignmentCurrent(consumer);
 
         var consume = consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
-        await deserializer.PreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await deserializer.PreparationStarted.Task;
         deserializer.ReleasePreparation();
 
         var result = await consume;
@@ -348,7 +348,7 @@ public sealed partial class ConsumeOneFastPathTests
         using var cancellation = new CancellationTokenSource();
 
         var consume = consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), cancellation.Token);
-        await deserializer.PreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await deserializer.PreparationStarted.Task;
         cancellation.Cancel();
 
         await Assert.That(async () => await consume).Throws<OperationCanceledException>();
@@ -371,7 +371,7 @@ public sealed partial class ConsumeOneFastPathTests
         await using var records = consumer.ConsumeAsync(timeout.Token).GetAsyncEnumerator();
 
         var moveNext = records.MoveNextAsync();
-        await deserializer.PreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await deserializer.PreparationStarted.Task;
 
         await Assert.That(moveNext.IsCompleted).IsFalse();
         deserializer.ReleasePreparation();
@@ -398,7 +398,7 @@ public sealed partial class ConsumeOneFastPathTests
         MarkManualAssignmentCurrent(consumer);
 
         var consume = consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
-        await valueDeserializer.PreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await valueDeserializer.PreparationStarted.Task;
         valueDeserializer.ReleasePreparation();
 
         var result = await consume;
@@ -426,7 +426,7 @@ public sealed partial class ConsumeOneFastPathTests
         await using var records = consumer.ConsumeAsync(timeout.Token).GetAsyncEnumerator();
 
         var moveNext = records.MoveNextAsync();
-        await valueDeserializer.PreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await valueDeserializer.PreparationStarted.Task;
         valueDeserializer.ReleasePreparation();
 
         await Assert.That(await moveNext).IsTrue();
@@ -453,7 +453,7 @@ public sealed partial class ConsumeOneFastPathTests
         await using var records = consumer.ConsumeAsync(timeout.Token).GetAsyncEnumerator();
 
         var moveNext = records.MoveNextAsync();
-        await keyDeserializer.PreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await keyDeserializer.PreparationStarted.Task;
         keyDeserializer.ReleasePreparation();
 
         await Assert.That(await moveNext).IsTrue();
@@ -479,9 +479,9 @@ public sealed partial class ConsumeOneFastPathTests
         MarkManualAssignmentCurrent(consumer);
 
         var consume = consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
-        await keyDeserializer.PreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await keyDeserializer.PreparationStarted.Task;
         keyDeserializer.ReleasePreparation();
-        await valueDeserializer.PreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await valueDeserializer.PreparationStarted.Task;
         valueDeserializer.ReleasePreparation();
 
         var result = await consume;
@@ -511,9 +511,9 @@ public sealed partial class ConsumeOneFastPathTests
         await using var records = consumer.ConsumeAsync(timeout.Token).GetAsyncEnumerator();
 
         var moveNext = records.MoveNextAsync();
-        await keyDeserializer.PreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await keyDeserializer.PreparationStarted.Task;
         keyDeserializer.ReleasePreparation();
-        await valueDeserializer.PreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await valueDeserializer.PreparationStarted.Task;
         valueDeserializer.ReleasePreparation();
 
         await Assert.That(await moveNext).IsTrue();
