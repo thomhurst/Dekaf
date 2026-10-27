@@ -62,52 +62,69 @@ internal sealed class StreamsGroupHeartbeatResponse : IKafkaResponse
         writer.WriteEmptyTaggedFields();
     }
 
-    public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
+    public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version) =>
+        version == 0 ? ReadV0(ref reader) : ReadV1(ref reader);
+
+    // Each version reads straight into the object initializer, which evaluates in wire order.
+    // Holding the fields in locals instead spills them across the array reads.
+    private static StreamsGroupHeartbeatResponse ReadV0(ref KafkaProtocolReader reader)
     {
-        var throttleTimeMs = reader.ReadInt32();
-        var errorCode = (ErrorCode)reader.ReadInt16();
-        var errorMessage = reader.ReadCompactString();
-        var memberId = reader.ReadCompactString() ?? string.Empty;
-        var memberEpoch = reader.ReadInt32();
-        var heartbeatIntervalMs = reader.ReadInt32();
-        long acceptableRecoveryLag = version == 0 ? reader.ReadInt32() : -1;
-        var taskOffsetIntervalMs = reader.ReadInt32();
-        if (version >= 1)
-            acceptableRecoveryLag = reader.ReadInt64();
-
-        var status = reader.ReadCompactNullableArray(
-            static (ref KafkaProtocolReader r) => StreamsGroupHeartbeatStatus.Read(ref r),
-            minElementSize: 3,
-            maxCount: MaxStatusCount);
-        var activeTasks = ReadNullableTasks(ref reader);
-        var standbyTasks = ReadNullableTasks(ref reader);
-        var warmupTasks = ReadNullableTasks(ref reader);
-        var topologyDescriptionRequired = version >= 1 && reader.ReadBoolean();
-
         var response = new StreamsGroupHeartbeatResponse
         {
-            ThrottleTimeMs = throttleTimeMs,
-            ErrorCode = errorCode,
-            ErrorMessage = errorMessage,
-            MemberId = memberId,
-            MemberEpoch = memberEpoch,
-            HeartbeatIntervalMs = heartbeatIntervalMs,
-            AcceptableRecoveryLag = acceptableRecoveryLag,
-            TaskOffsetIntervalMs = taskOffsetIntervalMs,
-            Status = status,
-            ActiveTasks = activeTasks,
-            StandbyTasks = standbyTasks,
-            WarmupTasks = warmupTasks,
-            TopologyDescriptionRequired = topologyDescriptionRequired,
+            ThrottleTimeMs = reader.ReadInt32(),
+            ErrorCode = (ErrorCode)reader.ReadInt16(),
+            ErrorMessage = reader.ReadCompactString(),
+            MemberId = reader.ReadCompactString() ?? string.Empty,
+            MemberEpoch = reader.ReadInt32(),
+            HeartbeatIntervalMs = reader.ReadInt32(),
+            AcceptableRecoveryLag = reader.ReadInt32(),
+            TaskOffsetIntervalMs = reader.ReadInt32(),
+            Status = ReadNullableStatus(ref reader),
+            ActiveTasks = ReadNullableTasks(ref reader),
+            StandbyTasks = ReadNullableTasks(ref reader),
+            WarmupTasks = ReadNullableTasks(ref reader),
             EndpointInformationEpoch = reader.ReadInt32(),
-            PartitionsByUserEndpoint = reader.ReadCompactNullableArray(
-                static (ref KafkaProtocolReader r) => StreamsGroupHeartbeatEndpointPartitions.Read(ref r),
-                minElementSize: 7,
-                maxCount: MaxEndpointCount)
+            PartitionsByUserEndpoint = ReadNullableEndpoints(ref reader)
         };
         reader.SkipTaggedFields();
         return response;
     }
+
+    private static StreamsGroupHeartbeatResponse ReadV1(ref KafkaProtocolReader reader)
+    {
+        var response = new StreamsGroupHeartbeatResponse
+        {
+            ThrottleTimeMs = reader.ReadInt32(),
+            ErrorCode = (ErrorCode)reader.ReadInt16(),
+            ErrorMessage = reader.ReadCompactString(),
+            MemberId = reader.ReadCompactString() ?? string.Empty,
+            MemberEpoch = reader.ReadInt32(),
+            HeartbeatIntervalMs = reader.ReadInt32(),
+            TaskOffsetIntervalMs = reader.ReadInt32(),
+            AcceptableRecoveryLag = reader.ReadInt64(),
+            Status = ReadNullableStatus(ref reader),
+            ActiveTasks = ReadNullableTasks(ref reader),
+            StandbyTasks = ReadNullableTasks(ref reader),
+            WarmupTasks = ReadNullableTasks(ref reader),
+            TopologyDescriptionRequired = reader.ReadBoolean(),
+            EndpointInformationEpoch = reader.ReadInt32(),
+            PartitionsByUserEndpoint = ReadNullableEndpoints(ref reader)
+        };
+        reader.SkipTaggedFields();
+        return response;
+    }
+
+    private static StreamsGroupHeartbeatStatus[]? ReadNullableStatus(ref KafkaProtocolReader reader) =>
+        reader.ReadCompactNullableArray(
+            static (ref KafkaProtocolReader r) => StreamsGroupHeartbeatStatus.Read(ref r),
+            minElementSize: 3,
+            maxCount: MaxStatusCount);
+
+    private static StreamsGroupHeartbeatEndpointPartitions[]? ReadNullableEndpoints(ref KafkaProtocolReader reader) =>
+        reader.ReadCompactNullableArray(
+            static (ref KafkaProtocolReader r) => StreamsGroupHeartbeatEndpointPartitions.Read(ref r),
+            minElementSize: 7,
+            maxCount: MaxEndpointCount);
 
     private static void WriteNullableTasks(
         ref KafkaProtocolWriter writer,
