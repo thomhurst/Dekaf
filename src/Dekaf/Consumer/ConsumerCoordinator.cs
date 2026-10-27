@@ -4513,7 +4513,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     request, version, TelemetryMetricCollector, cancellationToken).ConfigureAwait(false);
             }
 
-            if (response.ErrorCode != ErrorCode.None)
+            if (response.ErrorCode == ErrorCode.GroupIdNotFound)
+            {
+                // A deleted group holds no membership to leave.
+                LogLeftDeletedGroup(_options.GroupId!);
+            }
+            else if (response.ErrorCode != ErrorCode.None)
             {
                 LogLeaveGroupFailed(response.ErrorCode);
             }
@@ -4741,6 +4746,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "LeaveGroup failed with error: {ErrorCode}")]
     private partial void LogLeaveGroupFailed(ErrorCode errorCode);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Group {GroupId} no longer exists; nothing to leave")]
+    private partial void LogLeftDeletedGroup(string groupId);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Successfully left group {GroupId}")]
     private partial void LogSuccessfullyLeftGroup(string groupId);

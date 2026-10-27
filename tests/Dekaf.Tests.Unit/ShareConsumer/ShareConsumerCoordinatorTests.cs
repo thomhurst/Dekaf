@@ -543,6 +543,95 @@ public sealed partial class ShareConsumerCoordinatorTests
         await Assert.That(coordinator.MemberEpoch).IsEqualTo(2);
     }
 
+    // The coordinator answers GROUP_ID_NOT_FOUND to a nonzero epoch once the group was deleted
+    // under an expired member. Only an epoch-0 join recreates it, so the member rejoins from 0.
+    [Test]
+    public async Task HeartbeatLoop_GroupIdNotFound_RejoinsFromEpochZeroUnderTheSameMemberId(CancellationToken cancellationToken)
+    {
+        var heartbeatCount = 0;
+        var sent = new System.Collections.Concurrent.ConcurrentQueue<(string? MemberId, int Epoch)>();
+        await using var harness = CoordinatorHarness.Create(
+            new ShareConsumerOptions { BootstrapServers = ["broker-0:9092"], GroupId = "share-group-deleted" },
+            Guid.Parse("00000000-0000-0000-0000-000000000001"),
+            request =>
+            {
+                sent.Enqueue((request.MemberId, request.MemberEpoch));
+                return Interlocked.Increment(ref heartbeatCount) switch
+                {
+                    1 => Success(epoch: 1, new ShareGroupHeartbeatAssignment { TopicPartitions = [] }, heartbeatIntervalMs: 1),
+                    2 => new ShareGroupHeartbeatResponse { ErrorCode = ErrorCode.GroupIdNotFound },
+                    _ => Success(epoch: 2, new ShareGroupHeartbeatAssignment { TopicPartitions = [] })
+                };
+            });
+        var coordinator = harness.Coordinator;
+
+        await coordinator.EnsureActiveGroupAsync(cancellationToken);
+        var changed = coordinator.GetAssignmentChangeTask();
+        if (coordinator.State == CoordinatorState.Stable)
+            await changed.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+        await Assert.That(coordinator.MemberEpoch).IsEqualTo(0);
+
+        await coordinator.EnsureActiveGroupAsync(cancellationToken);
+
+        var requests = sent.ToArray();
+        await Assert.That(requests.Select(static r => r.Epoch).ToArray()).IsEquivalentTo([0, 1, 0]);
+        await Assert.That(requests[2].MemberId).IsEqualTo("member-1");
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(coordinator.MemberEpoch).IsEqualTo(2);
+    }
+
+    // A rejoin that still carries the old epoch (the heartbeat loop dropped Stable for another
+    // reason) meets the deleted group in the join loop. It must rejoin from 0, not fail every poll.
+    [Test]
+    public async Task EnsureActiveGroupAsync_GroupIdNotFoundAtRetainedEpoch_RejoinsFromEpochZero(CancellationToken cancellationToken)
+    {
+        var sentEpochs = new System.Collections.Concurrent.ConcurrentQueue<int>();
+        await using var harness = CoordinatorHarness.Create(
+            new ShareConsumerOptions { BootstrapServers = ["broker-0:9092"], GroupId = "share-group-deleted-join" },
+            Guid.Parse("00000000-0000-0000-0000-000000000001"),
+            request =>
+            {
+                sentEpochs.Enqueue(request.MemberEpoch);
+                return request.MemberEpoch == 0
+                    ? Success(epoch: 1, new ShareGroupHeartbeatAssignment { TopicPartitions = [] })
+                    : new ShareGroupHeartbeatResponse { ErrorCode = ErrorCode.GroupIdNotFound };
+            });
+        var coordinator = harness.Coordinator;
+        typeof(ShareConsumerCoordinator)
+            .GetField("_memberEpoch", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(coordinator, 7);
+
+        await coordinator.EnsureActiveGroupAsync(cancellationToken);
+
+        await Assert.That(sentEpochs.ToArray()).IsEquivalentTo([7, 0]);
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(coordinator.MemberEpoch).IsEqualTo(1);
+    }
+
+    // At epoch 0 the coordinator creates the group, so GROUP_ID_NOT_FOUND there is not a
+    // deleted group; it surfaces once instead of looping.
+    [Test]
+    public async Task EnsureActiveGroupAsync_GroupIdNotFoundAtEpochZero_Propagates(CancellationToken cancellationToken)
+    {
+        var heartbeatCount = 0;
+        await using var harness = CoordinatorHarness.Create(
+            new ShareConsumerOptions { BootstrapServers = ["broker-0:9092"], GroupId = "share-group-missing" },
+            Guid.Parse("00000000-0000-0000-0000-000000000001"),
+            _ =>
+            {
+                Interlocked.Increment(ref heartbeatCount);
+                return new ShareGroupHeartbeatResponse { ErrorCode = ErrorCode.GroupIdNotFound };
+            });
+
+        var exception = await Assert.That(async () => await harness.Coordinator.EnsureActiveGroupAsync(cancellationToken))
+            .Throws<GroupException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
+        await Assert.That(Volatile.Read(ref heartbeatCount)).IsEqualTo(1);
+    }
+
     [Test]
     public async Task TelemetryMemberId_OmitsUnjoinedFencedAndDisposedIdentities()
     {

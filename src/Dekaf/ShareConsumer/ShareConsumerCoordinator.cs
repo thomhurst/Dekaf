@@ -208,6 +208,13 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         NotifyAssignmentChange();
     }
 
+    /// <summary>
+    /// The coordinator answers GROUP_ID_NOT_FOUND to a heartbeat with a nonzero epoch when the
+    /// group was deleted after the member's session expired. Only an epoch-0 join recreates it.
+    /// </summary>
+    private bool IsGroupDeletedUnderMember(ErrorCode? errorCode) =>
+        errorCode == ErrorCode.GroupIdNotFound && _memberEpoch != 0;
+
     private static bool IsRetriableCoordinatorError(ErrorCode? errorCode) =>
         errorCode is ErrorCode.NotCoordinator
             or ErrorCode.CoordinatorNotAvailable
@@ -861,6 +868,13 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                     // the consumer's session epochs pointing at another member's sessions.
                     FenceMemberEpoch();
                 }
+                catch (GroupException ex) when (IsGroupDeletedUnderMember(ex.ErrorCode))
+                {
+                    LogShareGroupNotFound(_options.GroupId, _memberEpoch);
+                    // The group was deleted while this member was gone. A rejoin at epoch 0
+                    // recreates it; an epoch-0 GroupIdNotFound is not caught and surfaces.
+                    FenceMemberEpoch();
+                }
                 catch (GroupException ex) when (IsRetriableCoordinatorError(ex.ErrorCode))
                 {
                     LogRetriableCoordinatorError(ex.ErrorCode);
@@ -980,6 +994,11 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                             FenceMemberEpoch();
                             break;
 
+                        case var c when IsGroupDeletedUnderMember(c):
+                            // Rejoin at epoch 0 to recreate the group; see the join loop.
+                            FenceMemberEpoch();
+                            break;
+
                         case var c when IsRetriableCoordinatorError(c):
                             MarkCoordinatorUnknown();
                             break;
@@ -1079,7 +1098,12 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                 request, version, cancellationToken).ConfigureAwait(false);
             _telemetryMetrics?.HeartbeatCompleted(heartbeatStarted);
 
-            if (response.ErrorCode != ErrorCode.None)
+            if (response.ErrorCode == ErrorCode.GroupIdNotFound)
+            {
+                // A deleted group holds no membership to leave.
+                LogLeftDeletedGroup(_options.GroupId);
+            }
+            else if (response.ErrorCode != ErrorCode.None)
             {
                 LogLeaveGroupFailed(response.ErrorCode);
             }
@@ -1188,6 +1212,12 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "LeaveGroup failed with error: {ErrorCode}")]
     private partial void LogLeaveGroupFailed(ErrorCode errorCode);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Share group {GroupId} no longer exists; nothing to leave")]
+    private partial void LogLeftDeletedGroup(string groupId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Share group {GroupId} was not found at member epoch {MemberEpoch}; rejoining at epoch 0 to recreate it")]
+    private partial void LogShareGroupNotFound(string groupId, int memberEpoch);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Successfully left share group {GroupId}")]
     private partial void LogSuccessfullyLeftGroup(string groupId);
