@@ -1847,9 +1847,10 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <summary>
     /// Sets the interval for automatic offset commits.
     /// </summary>
-    /// <param name="interval">The interval between automatic commits.</param>
+    /// <param name="interval">The interval between automatic commits. Must be at least one millisecond.</param>
     public ConsumerBuilder<TKey, TValue> WithAutoCommitInterval(TimeSpan interval)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(interval.TotalMilliseconds, 1, nameof(interval));
         ArgumentOutOfRangeException.ThrowIfGreaterThan(interval.TotalMilliseconds, int.MaxValue, nameof(interval));
         _autoCommitIntervalMs = (int)interval.TotalMilliseconds;
         return this;

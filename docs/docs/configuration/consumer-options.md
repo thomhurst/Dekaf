@@ -196,8 +196,10 @@ Intent-level methods that configure commit mode, offset storage, and staging tim
 Control how often offsets are committed in Auto mode:
 
 ```csharp
-.WithAutoCommitInterval(TimeSpan.FromSeconds(5))  // Same, using TimeSpan
+.WithAutoCommitInterval(TimeSpan.FromSeconds(5))
 ```
+
+The interval must be at least 1 ms. Zero, negative, and sub-millisecond values throw `ArgumentOutOfRangeException`. To turn off automatic commits, use `WithOffsetCommitMode(OffsetCommitMode.Manual)`.
 
 ### WithAutoOffsetReset
 
