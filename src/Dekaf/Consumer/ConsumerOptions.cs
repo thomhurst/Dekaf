@@ -40,6 +40,7 @@ public sealed class ConsumerOptions
 {
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
+    private int _autoCommitIntervalMs = 5000;
     private bool _isReconnectBackoffMsConfigured;
     private bool _isReconnectBackoffMaxMsConfigured;
     private TimeSpan? _connectionTimeoutMax;
@@ -85,9 +86,18 @@ public sealed class ConsumerOptions
     public OffsetCommitMode OffsetCommitMode { get; init; } = OffsetCommitMode.Auto;
 
     /// <summary>
-    /// Auto-commit interval in milliseconds.
+    /// Auto-commit interval in milliseconds. Must be positive; use
+    /// <see cref="OffsetCommitMode.Manual"/> to disable automatic commits.
     /// </summary>
-    public int AutoCommitIntervalMs { get; init; } = 5000;
+    public int AutoCommitIntervalMs
+    {
+        get => _autoCommitIntervalMs;
+        init
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(value, 1);
+            _autoCommitIntervalMs = value;
+        }
+    }
 
     /// <summary>
     /// Automatically stores each consumed message's next offset for auto-commit.

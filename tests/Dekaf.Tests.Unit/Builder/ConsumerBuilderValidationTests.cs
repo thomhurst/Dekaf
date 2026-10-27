@@ -150,6 +150,17 @@ public class ConsumerBuilderValidationTests
     }
 
     [Test]
+    [Arguments(0)]
+    [Arguments(-1)]
+    [Arguments(0.5)]
+    public async Task WithAutoCommitInterval_LessThanOneMillisecond_ThrowsArgumentOutOfRangeException(double milliseconds)
+    {
+        var builder = Kafka.CreateConsumer<string, string>();
+        await Assert.That(() => builder.WithAutoCommitInterval(TimeSpan.FromMilliseconds(milliseconds)))
+            .Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
     public async Task WithOffsetCommitMode_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateConsumer<string, string>();

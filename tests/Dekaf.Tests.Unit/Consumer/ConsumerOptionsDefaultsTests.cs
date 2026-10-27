@@ -48,6 +48,18 @@ public class ConsumerOptionsDefaultsTests
     }
 
     [Test]
+    [Arguments(0)]
+    [Arguments(-1)]
+    public async Task AutoCommitIntervalMs_LessThanOne_ThrowsArgumentOutOfRangeException(int milliseconds)
+    {
+        await Assert.That(() => new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            AutoCommitIntervalMs = milliseconds
+        }).Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
     public async Task AutoOffsetReset_DefaultsTo_Latest()
     {
         var options = CreateOptions();

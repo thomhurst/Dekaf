@@ -1325,6 +1325,27 @@ public class DependencyInjectionTests
     }
 
     [Test]
+    [Arguments("0")]
+    [Arguments("-1")]
+    public async Task AddConsumer_WithConfigurationSection_NonPositiveAutoCommitInterval_Throws(string interval)
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Kafka:Consumers:Orders:BootstrapServers:0"] = "broker1:9092",
+            ["Kafka:Consumers:Orders:AutoCommitIntervalMs"] = interval
+        });
+
+        await Assert.That(async () =>
+        {
+            services.AddDekaf(builder => builder.AddConsumer<string, string>(
+                configuration.GetSection("Kafka:Consumers:Orders")));
+            await using var provider = services.BuildServiceProvider();
+            provider.GetRequiredService<IKafkaConsumer<string, string>>();
+        }).Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
     [Arguments("FetchErrorBackoffMs")]
     [Arguments("MaxInFlight")]
     [Arguments("MessageMaxBytes")]
