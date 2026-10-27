@@ -843,7 +843,8 @@ public sealed class TransactionDescription
     /// <summary>
     /// Unix timestamp in milliseconds when the broker last changed the transaction state,
     /// for both ongoing and completed transactions.
-    /// Null when the coordinator responds with DescribeTransactions v0.
+    /// Null when the coordinator responds with DescribeTransactions v0. KIP-994 (v1) is not in any
+    /// released Kafka version yet, so Dekaf does not negotiate v1 and this is currently always null.
     /// </summary>
     public long? TransactionLastUpdateTimeMs { get; init; }
 

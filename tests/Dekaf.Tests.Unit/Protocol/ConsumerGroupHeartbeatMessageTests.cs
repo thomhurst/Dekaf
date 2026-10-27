@@ -123,9 +123,10 @@ public sealed class ConsumerGroupHeartbeatMessageTests
     }
 
     [Test]
-    public async Task Request_HighestSupportedVersion_Is2()
+    public async Task Request_HighestSupportedVersion_Is1()
     {
-        await Assert.That(ConsumerGroupHeartbeatRequest.HighestSupportedVersion).IsEqualTo((short)2);
+        // Kafka 4.4.0 ships v0-1; the KIP-1327 v2 codec stays unnegotiated until a release ships it.
+        await Assert.That(ConsumerGroupHeartbeatRequest.HighestSupportedVersion).IsEqualTo((short)1);
     }
 
     #endregion
@@ -320,9 +321,10 @@ public sealed class ConsumerGroupHeartbeatMessageTests
     }
 
     [Test]
-    public async Task Response_HighestSupportedVersion_Is2()
+    public async Task Response_HighestSupportedVersion_Is1()
     {
-        await Assert.That(ConsumerGroupHeartbeatResponse.HighestSupportedVersion).IsEqualTo((short)2);
+        // Kafka 4.4.0 ships v0-1; the KIP-1327 v2 codec stays unnegotiated until a release ships it.
+        await Assert.That(ConsumerGroupHeartbeatResponse.HighestSupportedVersion).IsEqualTo((short)1);
     }
 
     #endregion

@@ -414,7 +414,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
-    public async Task ConsumerProtocol_BrokerSupportsV2_UsesV2()
+    public async Task ConsumerProtocol_BrokerAdvertisesUnreleasedV2_UsesReleasedV1()
     {
         _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 2);
         SetupSuccessfulConsumerProtocolJoin();
@@ -425,7 +425,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 
         await _connection.Received().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
             Arg.Any<ConsumerGroupHeartbeatRequest>(),
-            Arg.Is<short>(version => version == 2),
+            Arg.Is<short>(version => version == 1),
             Arg.Any<CancellationToken>());
     }
 

@@ -8,7 +8,9 @@ public sealed class DescribeTransactionsRequest : IKafkaRequest<DescribeTransact
 {
     public static ApiKey ApiKey => ApiKey.DescribeTransactions;
     public static short LowestSupportedVersion => 0;
-    public static short HighestSupportedVersion => 1;
+    // Kafka 4.4.0 ships DescribeTransactions v0 only. The v1 codec (KIP-994 TransactionLastUpdateTimeMs)
+    // is kept for a future release, but v1 must not be negotiated until a released schema is re-verified.
+    public static short HighestSupportedVersion => 0;
 
     public required IReadOnlyList<string> TransactionalIds { get; init; }
 

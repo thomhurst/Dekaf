@@ -200,7 +200,7 @@ public sealed class AdminClientTransactionIntrospectionTests
     }
 
     [Test]
-    public async Task DescribeTransactionsAsync_MultipleCoordinators_NegotiatesEachConnectionIndependently()
+    public async Task DescribeTransactionsAsync_CoordinatorAdvertisesUnreleasedV1_NegotiatesReleasedV0()
     {
         var metadata = CreateMetadataResponse();
         var connections = new Dictionary<int, VersionedTransactionConnection>
@@ -223,9 +223,10 @@ public sealed class AdminClientTransactionIntrospectionTests
         var descriptions = await admin.DescribeTransactionsAsync(["tx-a", "tx-b"]);
 
         await Assert.That(connections[1].DescribeTransactionsVersions).IsEquivalentTo([(short)0]);
-        await Assert.That(connections[2].DescribeTransactionsVersions).IsEquivalentTo([(short)1]);
+        // Kafka 4.4.0 ships DescribeTransactions v0 only; KIP-994 v1 stays unnegotiated until a release ships it.
+        await Assert.That(connections[2].DescribeTransactionsVersions).IsEquivalentTo([(short)0]);
         await Assert.That(descriptions["tx-a"].TransactionLastUpdateTimeMs).IsNull();
-        await Assert.That(descriptions["tx-b"].TransactionLastUpdateTimeMs).IsEqualTo(1700000004321);
+        await Assert.That(descriptions["tx-b"].TransactionLastUpdateTimeMs).IsNull();
     }
 
     [Test]

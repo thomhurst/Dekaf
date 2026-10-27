@@ -9,7 +9,9 @@ public sealed class ConsumerGroupHeartbeatResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.ConsumerGroupHeartbeat;
     public static short LowestSupportedVersion => 0;
-    public static short HighestSupportedVersion => 2;
+    // Kafka 4.4.0 ships ConsumerGroupHeartbeat v0-1. The v2 codec (KIP-1327 NewPartitions) is kept
+    // for a future release, but v2 must not be negotiated until a released schema is re-verified.
+    public static short HighestSupportedVersion => 1;
 
     /// <summary>
     /// Throttle time in milliseconds.

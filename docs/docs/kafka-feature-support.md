@@ -93,6 +93,16 @@ remain future acceptance under [#2958][issue2958]; do not treat their source or
 capability skips as a passing 4.4 run. Likewise, the KIP-939 row records a feature
 level requirement, not a claim that every released 4.x broker supports it.
 
+KIP-1327 (newly expanded partition classification, `ConsumerGroupHeartbeat` v2) and
+KIP-994 (`TransactionLastUpdateTimeMs`, `DescribeTransactions` v1) are not in any
+released Kafka version; Kafka 4.4.0 ships `ConsumerGroupHeartbeat` v0-1 and
+`DescribeTransactions` v0. Dekaf keeps their codecs but does not negotiate those
+versions, so `AutoOffsetResetNewPartitions` falls back to the base policy and
+`TransactionLastUpdateTimeMs` is always null. A unit test pins every message's
+highest version to the released Kafka maximums
+([ReleasedKafkaApiVersionTests][unit/Protocol/ReleasedKafkaApiVersionTests.cs]);
+update its table, and re-verify the schemas, when a Kafka release ships.
+
 ## Maintaining this matrix
 
 When a change adds, removes or limits support, update its row in the same PR.
@@ -173,6 +183,7 @@ SHA, runtime, broker image and relevant results; skipped cases remain unverified
 [unit/Consumer/FetchSessionHandlerTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Unit/Consumer/FetchSessionHandlerTests.cs
 [unit/Producer/TransactionTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Unit/Producer/TransactionTests.cs
 [unit/Protocol/LeaderDiscoveryResponseTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Unit/Protocol/LeaderDiscoveryResponseTests.cs
+[unit/Protocol/ReleasedKafkaApiVersionTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Unit/Protocol/ReleasedKafkaApiVersionTests.cs
 [unit/Protocol/TransactionProtocolTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Unit/Protocol/TransactionProtocolTests.cs
 [unit/Security/Sasl/OAuthBearerAuthenticatorTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Unit/Security/Sasl/OAuthBearerAuthenticatorTests.cs
 [unit/Security/Sasl/OAuthBearerRefreshConcurrencyTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Unit/Security/Sasl/OAuthBearerRefreshConcurrencyTests.cs

@@ -1960,7 +1960,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <summary>
     /// Sets the KIP-1327 offset reset policy for newly expanded partitions.
     /// The base policy continues to apply to pre-existing partitions and out-of-range
-    /// committed offsets.
+    /// committed offsets. No released Kafka version ships KIP-1327 yet, so the base policy
+    /// currently applies to newly expanded partitions too.
     /// </summary>
     public ConsumerBuilder<TKey, TValue> WithAutoOffsetResetNewPartitions(AutoOffsetReset autoOffsetReset)
     {

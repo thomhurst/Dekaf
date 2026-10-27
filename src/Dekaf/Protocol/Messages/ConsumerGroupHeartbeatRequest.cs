@@ -9,7 +9,9 @@ public sealed class ConsumerGroupHeartbeatRequest : IKafkaRequest<ConsumerGroupH
 {
     public static ApiKey ApiKey => ApiKey.ConsumerGroupHeartbeat;
     public static short LowestSupportedVersion => 0;
-    public static short HighestSupportedVersion => 2;
+    // Kafka 4.4.0 ships ConsumerGroupHeartbeat v0-1. The v2 codec (KIP-1327 NewPartitions) is kept
+    // for a future release, but v2 must not be negotiated until a released schema is re-verified.
+    public static short HighestSupportedVersion => 1;
 
     /// <summary>
     /// The group ID.
@@ -115,7 +117,8 @@ public sealed class ConsumerGroupHeartbeatTopicPartitions
 
     /// <summary>
     /// The subset of <see cref="Partitions"/> classified by the coordinator as newly expanded
-    /// (v2+ responses only). Empty when the broker does not support KIP-1327.
+    /// (v2+ responses only). Empty when the broker does not support KIP-1327, which no released Kafka
+    /// version implements yet.
     /// </summary>
     public IReadOnlyList<int> NewPartitions { get; init; } = [];
 
