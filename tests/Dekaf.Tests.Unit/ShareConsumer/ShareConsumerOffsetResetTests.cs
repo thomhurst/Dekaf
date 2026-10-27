@@ -198,7 +198,7 @@ public sealed class ShareConsumerOffsetResetTests
         await Assert.That(ShareAutoOffsetResetStrategy.GetConfigValue(options)).IsEqualTo(expectedConfigValue);
     }
 
-    private static ShareConsumerOptions GetOptions(IKafkaShareConsumer<string, string> consumer) =>
+    internal static ShareConsumerOptions GetOptions(IKafkaShareConsumer<string, string> consumer) =>
         (ShareConsumerOptions)consumer.GetType().GetField("_options", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(consumer)!;
 
     private static ShareConsumerOptions Options(AutoOffsetReset? reset = null, int? milliseconds = null) => new()
@@ -207,7 +207,7 @@ public sealed class ShareConsumerOffsetResetTests
         AutoOffsetResetDuration = milliseconds is { } value ? TimeSpan.FromMilliseconds(value) : null
     };
 
-    private sealed class Fixture : IAsyncDisposable
+    internal sealed class Fixture : IAsyncDisposable
     {
         internal readonly IKafkaConnection Connection = Substitute.For<IKafkaConnection>();
         internal readonly IConnectionPool Pool = Substitute.For<IConnectionPool>();

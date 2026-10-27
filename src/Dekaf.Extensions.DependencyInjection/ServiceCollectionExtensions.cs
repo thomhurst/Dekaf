@@ -1817,6 +1817,12 @@ internal static class DekafConfigurationBinding
                 $"{nameof(ShareConsumerOptions.AutoOffsetResetDuration)} requires " +
                 $"{nameof(ShareConsumerOptions.AutoOffsetReset)} {nameof(AutoOffsetReset.ByDuration)}.");
         }
+        TryGetValue<string>(configuration, nameof(ShareConsumerOptions.DeadLetterQueueTopic), out var deadLetterQueueTopic);
+        builder.WithDeadLetterQueueOptions(
+            deadLetterQueueTopic,
+            TryGetValue<bool>(configuration, nameof(ShareConsumerOptions.DeadLetterQueueCopyRecord), out var copyRecord)
+                ? copyRecord
+                : null);
         if (TryGetValue<string>(configuration, nameof(ShareConsumerOptions.RackId), out var rackId))
             builder.WithRackId(rackId);
         if (TryGetValue<int>(configuration, nameof(ShareConsumerOptions.FetchMinBytes), out var fetchMinBytes))

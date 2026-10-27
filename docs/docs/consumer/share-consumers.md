@@ -100,6 +100,105 @@ For an existing group, use the [share-group offset admin APIs](../admin/detailed
 See Kafka's [group configuration reference](https://kafka.apache.org/42/configuration/group-configs/#share.auto.offset.reset)
 for the broker semantics.
 
+## Broker dead-letter queues (KIP-1191)
+
+Kafka 4.4 can dead-letter share-group records on the broker
+([KIP-1191](https://cwiki.apache.org/confluence/x/fApJFg)). The broker writes a record to the
+group's dead-letter topic when a consumer acknowledges it with `AcknowledgeType.Reject`, or
+when it reaches the group's delivery limit (`share.delivery.count.limit`, default 5). The
+client sends no extra requests, so this works the same in every acknowledgement mode.
+
+Create the dead-letter topic with `errors.deadletterqueue.group.enable=true`, then point the
+group at it:
+
+```csharp
+using Dekaf.Admin;
+
+await using var admin = Kafka.CreateAdminClient().WithBootstrapServers("localhost:9092").Build();
+await admin.CreateTopicsAsync(
+[
+    new NewTopic
+    {
+        Name = "dlq.order-workers",
+        Configs = new Dictionary<string, string> { ["errors.deadletterqueue.group.enable"] = "true" }
+    }
+]);
+
+await using var consumer = await Kafka.CreateShareConsumer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithGroupId("order-workers")
+    .WithDeadLetterQueue("dlq.order-workers", copyRecord: true)
+    .SubscribeTo("orders")
+    .BuildAsync();
+```
+
+`WithDeadLetterQueue` sets the group configs `errors.deadletterqueue.topic.name` and
+`errors.deadletterqueue.copy.record.enable` during initialization, in the same
+`IncrementalAlterConfigs` request as the [starting-offset policy](#starting-offsets). It has the
+same rules: it needs `ALTER_CONFIGS` on the group, it affects every member, and a failure fails
+initialization. Omit it to leave the group configuration untouched. The equivalent
+`ShareConsumerOptions` properties are `DeadLetterQueueTopic` and `DeadLetterQueueCopyRecord`.
+Each is nullable, and null leaves that setting unchanged.
+
+The topic name must be a valid topic name that does not start with `__`. The broker also has
+dynamic configs `errors.deadletterqueue.auto.create.topics.enable` (default `false`) and
+`errors.deadletterqueue.topic.name.prefix` (default `dlq.`), which govern topics the broker
+creates for you. Name the topic with the prefix if you rely on auto-creation.
+
+### Dead-letter records
+
+Each dead-letter record carries these context headers. Numeric values are UTF-8 decimal strings.
+
+| Header | Value |
+| --- | --- |
+| `__dlq.errors.topic` | Source topic |
+| `__dlq.errors.partition` | Source partition |
+| `__dlq.errors.offset` | Source offset |
+| `__dlq.errors.group` | Share group |
+| `__dlq.errors.delivery.count` | Delivery count when the record was dead-lettered |
+| `__dlq.errors.message` | Reason, for example `Offset rejected by client.` or `Offset delivery count exceeded the threshold.` |
+
+With `copyRecord: true` the broker copies the original key and value. With `false`, the
+default, the key and value are null. Kafka 4.4.0 does not copy the original headers in either
+mode. Read the headers with `ShareGroupDeadLetterHeaders`, which parses the numeric headers
+without allocating:
+
+```csharp
+using Dekaf.Consumer.DeadLetter;
+using Dekaf.Serialization;
+
+await using var reader = await Kafka.CreateConsumer<string?, string?>()
+    .WithBootstrapServers("localhost:9092")
+    .WithGroupId("dlq-inspector")
+    .WithValueDeserializer(Serializers.NullableString)
+    .SubscribeTo("dlq.order-workers")
+    .BuildAsync();
+
+await foreach (var record in reader.ConsumeAsync(cancellationToken))
+{
+    if (ShareGroupDeadLetterHeaders.TryParse(record.Headers, out var source))
+        logger.LogWarning("{Topic}-{Partition}@{Offset} dead-lettered by {Group} after {Count} deliveries: {Reason}",
+            source.Topic, source.Partition, source.Offset, source.Group, source.DeliveryCount, source.Message);
+}
+```
+
+The dead-letter write is not atomic with the share-state write. A record can occasionally
+produce more than one dead-letter record, so make dead-letter processing idempotent, for
+example by keying on topic, partition, and offset.
+
+### Broker support
+
+| Broker | Outcome |
+| --- | --- |
+| Kafka 4.4+ with `share.version=2` (the default for new 4.4 clusters) | Rejected and over-limit records are written to the dead-letter topic. |
+| Kafka 4.4 with `share.version=1` | The group configs are accepted, but the broker writes no dead-letter records. Records are archived as before. Upgrade with `kafka-features.sh upgrade --feature share.version=2`; every broker must support it. |
+| Kafka 4.2 and 4.3 | The broker rejects the unknown group config, so `WithDeadLetterQueue` fails initialization with a `KafkaException` whose `ErrorCode` is `InvalidConfig`. Topic creation with `errors.deadletterqueue.group.enable` also fails. |
+| Dead-letter topic missing or without `errors.deadletterqueue.group.enable=true` | The broker logs the failure and archives the record anyway; nothing is written. |
+
+This is separate from Dekaf's client-side [dead letter queues](dead-letter-queues.md), which
+the hosted service for ordinary consumer groups produces itself. See
+[Share groups and broker dead-letter queues](dead-letter-queues.md#share-groups-and-broker-dead-letter-queues).
+
 ## Borrowed batch delivery
 
 `PollBatchesAsync` is an optional capability exposed by Dekaf's share consumer through
@@ -396,6 +495,8 @@ The in-memory share consumer follows the same provisional-delivery shutdown rule
 ## Testing
 
 `Dekaf.Testing` provides `InMemoryShareConsumer<TKey, TValue>` for broker-free unit tests, and `AddDekafInMemory()` swaps DI registrations for in-memory doubles. See [Testing](../testing).
+
+Set `InMemoryShareConsumerOptions.DeadLetterQueueTopic` (and optionally `DeadLetterQueueCopyRecord`) to model the broker dead-letter queue: each rejected record is written to that topic with the context headers above. The in-memory cluster has no delivery limit, so only rejects are dead-lettered.
 
 ## Hosted polling retries
 

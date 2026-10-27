@@ -194,3 +194,24 @@ builder.Services.AddDekaf(dekaf =>
 ## Topic Provisioning
 
 Dekaf does not create DLQ or retry topics. Create them ahead of time (an `orders.DLQ` with the same partition count as `orders` preserves the ability to replay in order), or rely on broker auto-creation if your cluster allows it. Retention on DLQ topics is usually set much longer than the source topic — the whole point is that someone gets to look at these records later.
+
+## Share groups and broker dead-letter queues
+
+Everything above is client-side: the hosted service for ordinary consumer groups decides when a
+record has failed and produces it to the DLQ itself, with `dlq.*` headers.
+
+Share groups on Kafka 4.4+ with `share.version=2` have a broker-side alternative
+([KIP-1191](https://cwiki.apache.org/confluence/x/fApJFg)). The broker writes the record when a
+share consumer rejects it or when it reaches the group's delivery limit. Configure it with
+`ShareConsumerBuilder.WithDeadLetterQueue` and read the `__dlq.errors.*` headers with
+`ShareGroupDeadLetterHeaders`. See [Broker dead-letter queues](share-consumers.md#broker-dead-letter-queues-kip-1191).
+
+| | Client-side DLQ | Broker DLQ (share groups) |
+| --- | --- | --- |
+| Groups | Consumer groups, through the hosted service | Share groups |
+| Broker | Any | Kafka 4.4+ with `share.version=2` |
+| Who writes the record | Dekaf's DLQ producer | The broker |
+| Trigger | `MaxFailures`, `IRetryPolicy`, or `IDeadLetterPolicy` | `AcknowledgeType.Reject`, or `share.delivery.count.limit` reached |
+| Headers | `dlq.source.*`, `dlq.error.*`, plus the original headers | `__dlq.errors.*` only |
+| Topic | Created by you | Created by you with `errors.deadletterqueue.group.enable=true`, or auto-created by the broker when enabled |
+| Duplicates | At-least-once, see [Delivery Guarantee](#delivery-guarantee) | Occasional duplicates, because the write is not atomic with the share state |

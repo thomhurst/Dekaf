@@ -21,6 +21,7 @@ internal static partial class DekafOptionsBinding
                 throw new ArgumentException("AutoOffsetResetDuration requires AutoOffsetReset.ByDuration.", nameof(options));
             if (options.AutoOffsetReset is { } reset) builder.WithAutoOffsetReset(reset);
         }
+        builder.WithDeadLetterQueueOptions(options.DeadLetterQueueTopic, options.DeadLetterQueueCopyRecord);
         if (options.ClientId is not null) builder.WithClientId(options.ClientId);
         if (options.RackId is not null) builder.WithRackId(options.RackId);
         builder.WithFetchMinBytes(options.FetchMinBytes);
