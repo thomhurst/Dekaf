@@ -73,6 +73,41 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
 
     [Test]
     [SupportsKafka(CompleteStreamsGroupSupport)]
+    public async Task Kafka44NegotiatesHeartbeatV1ForMembership()
+    {
+        await using var pool = new ConnectionPool(
+            "streams-heartbeat-version",
+            new ConnectionOptions { RequestTimeout = TimeSpan.FromSeconds(30) },
+            loggerFactory: null);
+        var endpoint = BootstrapServerList.Parse(KafkaContainer.BootstrapServers);
+        var connection = await pool.GetConnectionAsync(endpoint.Host, endpoint.Port, CancellationToken.None);
+        var negotiated = ((IKafkaCapabilityProvider)connection).Capabilities.NegotiateVersion(
+            ApiKey.StreamsGroupHeartbeat,
+            StreamsGroupHeartbeatRequest.LowestSupportedVersion,
+            StreamsGroupHeartbeatRequest.HighestSupportedVersion);
+        await Assert.That(negotiated).IsEqualTo((short)1);
+
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1).ConfigureAwait(false);
+        await using var client = Kafka.Connect(KafkaContainer.BootstrapServers, builder =>
+            builder.WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()));
+        await using var member = client.CreateStreamsGroupMember(new StreamsGroupMemberOptions
+        {
+            GroupId = $"streams-group-{Guid.NewGuid():N}"
+        });
+        await member.InitializeAsync();
+
+        var join = await member.JoinAsync(CreateInitialState(topic, "process-v1"));
+
+        await Assert.That(join.MemberEpoch).IsGreaterThan(0);
+        await Assert.That(member.Snapshot.AcceptableRecoveryLagOffsets).IsEqualTo(join.AcceptableRecoveryLagOffsets);
+        await member.CloseAsync(new StreamsGroupCloseOptions
+        {
+            GroupMembershipOperation = StreamsGroupMembershipOperation.LeaveGroup
+        });
+    }
+
+    [Test]
+    [SupportsKafka(CompleteStreamsGroupSupport)]
     public async Task MemberReportsTaskOffsets()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);

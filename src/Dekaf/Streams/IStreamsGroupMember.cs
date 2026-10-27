@@ -119,8 +119,22 @@ public sealed class StreamsGroupHeartbeatResult
     /// <summary>Gets the broker-directed heartbeat interval.</summary>
     public TimeSpan HeartbeatInterval { get; init; }
 
-    /// <summary>Gets the maximum acceptable recovery lag.</summary>
-    public int AcceptableRecoveryLag { get; init; }
+    /// <summary>Gets the maximum acceptable recovery lag, saturated to <see cref="int.MaxValue"/>.</summary>
+    [Obsolete($"Kafka 4.4 reports a 64-bit lag. Use {nameof(AcceptableRecoveryLagOffsets)} instead.")]
+    public int AcceptableRecoveryLag
+    {
+        get => (int)Math.Min(AcceptableRecoveryLagOffsets, int.MaxValue);
+        init => AcceptableRecoveryLagOffsets = value;
+    }
+
+    /// <summary>
+    /// Gets the maximum number of offsets a client may lag and still count as caught up for an active task.
+    /// </summary>
+    /// <remarks>
+    /// <c>-1</c> means the broker does not support this configuration. StreamsGroupHeartbeat v0 brokers
+    /// report a 32-bit value; v1 (Kafka 4.4+) reports the full 64-bit value.
+    /// </remarks>
+    public long AcceptableRecoveryLagOffsets { get; init; }
 
     /// <summary>Gets the broker-directed task-offset reporting interval.</summary>
     public TimeSpan TaskOffsetInterval { get; init; }
@@ -174,8 +188,22 @@ public sealed class StreamsGroupMemberSnapshot
     /// <summary>Gets the broker-directed heartbeat interval.</summary>
     public TimeSpan HeartbeatInterval { get; init; }
 
-    /// <summary>Gets the maximum acceptable recovery lag.</summary>
-    public int AcceptableRecoveryLag { get; init; }
+    /// <summary>Gets the maximum acceptable recovery lag, saturated to <see cref="int.MaxValue"/>.</summary>
+    [Obsolete($"Kafka 4.4 reports a 64-bit lag. Use {nameof(AcceptableRecoveryLagOffsets)} instead.")]
+    public int AcceptableRecoveryLag
+    {
+        get => (int)Math.Min(AcceptableRecoveryLagOffsets, int.MaxValue);
+        init => AcceptableRecoveryLagOffsets = value;
+    }
+
+    /// <summary>
+    /// Gets the maximum number of offsets a client may lag and still count as caught up for an active task.
+    /// </summary>
+    /// <remarks>
+    /// <c>-1</c> means the broker does not support this configuration. StreamsGroupHeartbeat v0 brokers
+    /// report a 32-bit value; v1 (Kafka 4.4+) reports the full 64-bit value.
+    /// </remarks>
+    public long AcceptableRecoveryLagOffsets { get; init; }
 
     /// <summary>Gets the broker-directed task-offset reporting interval.</summary>
     public TimeSpan TaskOffsetInterval { get; init; }
@@ -305,10 +333,52 @@ public sealed class StreamsGroupTaskSet
 public sealed class StreamsGroupStatus
 {
     /// <summary>Gets the protocol-defined status code.</summary>
+    /// <remarks>Codes newer than this client remain available as raw values.</remarks>
     public sbyte StatusCode { get; init; }
+
+    /// <summary>Gets <see cref="StatusCode"/> as a named value.</summary>
+    public StreamsGroupStatusCode Code => (StreamsGroupStatusCode)StatusCode;
 
     /// <summary>Gets the status detail.</summary>
     public required string StatusDetail { get; init; }
+}
+
+/// <summary>Status codes the group coordinator reports in <see cref="StreamsGroupStatus"/>.</summary>
+public enum StreamsGroupStatusCode : sbyte
+{
+    /// <summary>The supplied topology epoch is lower than the group's topology epoch.</summary>
+    StaleTopology = 0,
+
+    /// <summary>
+    /// One or more source topics are missing, or a source topic regex matches no topic.
+    /// <see cref="StreamsGroupStatus.StatusDetail"/> names the topics.
+    /// </summary>
+    MissingSourceTopics = 1,
+
+    /// <summary>
+    /// Copartitioned or changelog topics have inconsistent partition counts.
+    /// <see cref="StreamsGroupStatus.StatusDetail"/> names the topics.
+    /// </summary>
+    IncorrectlyPartitionedTopics = 2,
+
+    /// <summary>
+    /// One or more internal topics are missing. The coordinator tries to create them and reports
+    /// creation errors in <see cref="StreamsGroupStatus.StatusDetail"/>.
+    /// </summary>
+    MissingInternalTopics = 3,
+
+    /// <summary>A client requested shutdown of the whole application.</summary>
+    ShutdownApplication = 4,
+
+    /// <summary>No assignment was provided because the assignment computation was delayed.</summary>
+    AssignmentDelayed = 5,
+
+    /// <summary>
+    /// Client tags required for rack-aware standby task assignment are missing. Send them through
+    /// <see cref="StreamsGroupMemberUpdate.ClientTags"/>. Brokers report this code only to
+    /// StreamsGroupHeartbeat v1 clients (Kafka 4.4+).
+    /// </summary>
+    MissingClientTags = 6
 }
 
 /// <summary>Topic partitions routed to one interactive-query endpoint.</summary>

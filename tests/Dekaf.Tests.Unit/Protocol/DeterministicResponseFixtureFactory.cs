@@ -61,22 +61,28 @@ internal static class DeterministicResponseFixtureFactory
             ["ProduceResponse.v8"] = EncodeLegacyProduceResponse(version: 8),
             ["ProduceResponse.v12"] = Encode(WriteProduceResponseV12),
             ["ProduceResponse.v13"] = Encode(WriteProduceResponseV13),
-            ["StreamsGroupHeartbeatResponse.v0"] = Encode(WriteStreamsGroupHeartbeatResponse),
+            ["StreamsGroupHeartbeatResponse.v0"] = EncodeStreamsGroupHeartbeatResponse(version: 0),
+            ["StreamsGroupHeartbeatResponse.v1"] = EncodeStreamsGroupHeartbeatResponse(version: 1),
             ["UpdateFeaturesResponse.v0"] = EncodeUpdateFeaturesResponse(version: 0),
             ["UpdateFeaturesResponse.v1"] = EncodeUpdateFeaturesResponse(version: 1),
             ["UpdateFeaturesResponse.v2"] = EncodeUpdateFeaturesResponse(version: 2)
         };
 
-    private static void WriteStreamsGroupHeartbeatResponse(ref KafkaProtocolWriter writer)
+    private static byte[] EncodeStreamsGroupHeartbeatResponse(short version)
     {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
         writer.WriteInt32(17);
         writer.WriteInt16((short)ErrorCode.None);
         writer.WriteCompactNullableString(null);
         writer.WriteCompactString("wire-member");
         writer.WriteInt32(3);
         writer.WriteInt32(5_000);
-        writer.WriteInt32(42);
+        if (version == 0)
+            writer.WriteInt32(42);
         writer.WriteInt32(10_000);
+        if (version >= 1)
+            writer.WriteInt64(4_294_967_296L);
 
         WriteCompactArrayLength(ref writer, 1);
         writer.WriteInt8(1);
@@ -87,6 +93,8 @@ internal static class DeterministicResponseFixtureFactory
         WriteStreamsTaskIds(ref writer, "wire-subtopology", [0, 2]);
         WriteCompactArrayLength(ref writer, 0);
         writer.WriteUnsignedVarInt(0);
+        if (version >= 1)
+            writer.WriteBoolean(true);
 
         writer.WriteInt32(7);
         WriteCompactArrayLength(ref writer, 1);
@@ -102,6 +110,7 @@ internal static class DeterministicResponseFixtureFactory
         WriteCompactArrayLength(ref writer, 0);
         WriteEmptyTaggedFields(ref writer);
         WriteEmptyTaggedFields(ref writer);
+        return buffer.WrittenSpan.ToArray();
     }
 
     private static void WriteStreamsTaskIds(

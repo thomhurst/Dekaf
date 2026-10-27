@@ -33,6 +33,8 @@ public class StreamsGroupHeartbeatProtocolBenchmarks
         ]
     };
     private readonly StreamsGroupHeartbeatRequestCache _requestCache = new();
+    private readonly byte[] _steadyStateResponseV0 = EncodeSteadyStateResponse(version: 0);
+    private readonly byte[] _steadyStateResponseV1 = EncodeSteadyStateResponse(version: 1);
 
     [GlobalSetup]
     public void Setup() => GetCachedSteadyStateHeartbeat();
@@ -54,4 +56,35 @@ public class StreamsGroupHeartbeatProtocolBenchmarks
             _request.MemberEpoch,
             _request.EndpointInformationEpoch,
             _request.InstanceId);
+
+    [Benchmark]
+    public long ReadSteadyStateHeartbeatResponseV0() => ReadResponse(_steadyStateResponseV0, version: 0);
+
+    [Benchmark]
+    public long ReadSteadyStateHeartbeatResponseV1() => ReadResponse(_steadyStateResponseV1, version: 1);
+
+    private static long ReadResponse(byte[] payload, short version)
+    {
+        var reader = new KafkaProtocolReader(payload);
+        var response = (StreamsGroupHeartbeatResponse)StreamsGroupHeartbeatResponse.Read(ref reader, version);
+        return response.AcceptableRecoveryLag;
+    }
+
+    // Steady-state heartbeats carry no change-only fields.
+    private static byte[] EncodeSteadyStateResponse(short version)
+    {
+        var buffer = new ArrayBufferWriter<byte>(128);
+        var writer = new KafkaProtocolWriter(buffer);
+        new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.None,
+            MemberId = "member-benchmark",
+            MemberEpoch = 7,
+            HeartbeatIntervalMs = 5_000,
+            AcceptableRecoveryLag = 10_000,
+            TaskOffsetIntervalMs = 60_000,
+            EndpointInformationEpoch = 4
+        }.Write(ref writer, version);
+        return buffer.WrittenSpan.ToArray();
+    }
 }

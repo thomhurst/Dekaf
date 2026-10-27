@@ -739,3 +739,16 @@ Dekaf.Consumer.ConsumeBatch<TKey, TValue>.TryGetNextOffset(out Dekaf.TopicPartit
 Dekaf.Consumer.ConsumeRawBatch.TryGetNextOffset(out Dekaf.TopicPartitionOffset checkpoint) -> bool
 Dekaf.Errors.ProduceErrorKind.TransactionAborted = 2 -> Dekaf.Errors.ProduceErrorKind
 Dekaf.Errors.ProduceErrorKind.ArenaAllocationFailed = 3 -> Dekaf.Errors.ProduceErrorKind
+Dekaf.Streams.StreamsGroupHeartbeatResult.AcceptableRecoveryLagOffsets.get -> long
+Dekaf.Streams.StreamsGroupHeartbeatResult.AcceptableRecoveryLagOffsets.init -> void
+Dekaf.Streams.StreamsGroupMemberSnapshot.AcceptableRecoveryLagOffsets.get -> long
+Dekaf.Streams.StreamsGroupMemberSnapshot.AcceptableRecoveryLagOffsets.init -> void
+Dekaf.Streams.StreamsGroupStatus.Code.get -> Dekaf.Streams.StreamsGroupStatusCode
+Dekaf.Streams.StreamsGroupStatusCode
+Dekaf.Streams.StreamsGroupStatusCode.AssignmentDelayed = 5 -> Dekaf.Streams.StreamsGroupStatusCode
+Dekaf.Streams.StreamsGroupStatusCode.IncorrectlyPartitionedTopics = 2 -> Dekaf.Streams.StreamsGroupStatusCode
+Dekaf.Streams.StreamsGroupStatusCode.MissingClientTags = 6 -> Dekaf.Streams.StreamsGroupStatusCode
+Dekaf.Streams.StreamsGroupStatusCode.MissingInternalTopics = 3 -> Dekaf.Streams.StreamsGroupStatusCode
+Dekaf.Streams.StreamsGroupStatusCode.MissingSourceTopics = 1 -> Dekaf.Streams.StreamsGroupStatusCode
+Dekaf.Streams.StreamsGroupStatusCode.ShutdownApplication = 4 -> Dekaf.Streams.StreamsGroupStatusCode
+Dekaf.Streams.StreamsGroupStatusCode.StaleTopology = 0 -> Dekaf.Streams.StreamsGroupStatusCode
