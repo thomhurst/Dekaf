@@ -18,7 +18,7 @@ on:
         description: 'apache/kafka image tag for KafkaIntegrationTest-derived tests'
         required: false
         type: string
-        default: '4.3.1'
+        default: '4.4.0'
       fail-fast:
         description: 'Cancel sibling integration groups after the first failure'
         required: false

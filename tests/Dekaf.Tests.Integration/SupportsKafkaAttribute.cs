@@ -1,6 +1,11 @@
 namespace Dekaf.Tests.Integration;
 
-public class SupportsKafkaAttribute(int supportedKafkaVersion) : SkipAttribute(string.Empty)
+/// <summary>
+/// Skips a test on brokers older than <paramref name="supportedKafkaVersion"/>.
+/// When a feature has not shipped in any released broker yet, pass a
+/// <paramref name="reason"/> that names the KIP and the issue that tracks it.
+/// </summary>
+public class SupportsKafkaAttribute(int supportedKafkaVersion, string? reason = null) : SkipAttribute(string.Empty)
 {
     public override Task<bool> ShouldSkip(TestRegisteredContext context)
     {
@@ -18,7 +23,8 @@ public class SupportsKafkaAttribute(int supportedKafkaVersion) : SkipAttribute(s
             ? KafkaContainerDefault.ImageTag
             : kafkaContainer.Version.ToString();
 
-        return $"The test requires Kafka {supportedKafkaVersion} or above, but this test is testing {kafkaVersionUsedInTest}";
+        var message = $"The test requires Kafka {supportedKafkaVersion} or above, but this test is testing {kafkaVersionUsedInTest}";
+        return reason is null ? message : $"{message}: {reason}";
     }
 
     private static KafkaTestContainer GetKafkaContainerUsedInTest(TestRegisteredContext context)

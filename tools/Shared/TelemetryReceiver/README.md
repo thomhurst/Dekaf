@@ -1,6 +1,6 @@
 # Broker telemetry receiver fixture
 
-`TelemetryReceiverKafkaContainer` builds this test-only reporter against the exact Kafka image selected by `KAFKA_TEST_IMAGE_TAG` (default 4.3.1). Docker builds the Java classes with a JDK; the host needs Docker and the repository .NET SDK, not Java. The image and broker are owned and disposed by Testcontainers. Image construction has a five-minute deadline.
+`TelemetryReceiverKafkaContainer` builds this test-only reporter against the exact Kafka image selected by `KAFKA_TEST_IMAGE_TAG` (default 4.4.0). Docker builds the Java classes with a JDK; the host needs Docker and the repository .NET SDK, not Java. The image and broker are owned and disposed by Testcontainers. Image construction has a five-minute deadline.
 
 The dedicated broker enables `metric.reporters=dekaf.testing.RecordingTelemetryReporter`. It copies the borrowed payload in Kafka's telemetry callback and serves captured exports at `/payloads` on a dynamically mapped port. Each line contains the client instance UUID, terminating flag, and Base64-encoded client ID, content type, and payload. HTTP reads retain exports so concurrent tests cannot consume one another's evidence. Captures live only for the fixture's lifetime.
 
