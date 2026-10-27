@@ -10,7 +10,7 @@ Java client, Kafka Streams, Connect, or broker-only KIP. A wire codec alone does
 not establish a working client feature. Read [API and Runtime Compatibility](api-compatibility.md)
 for package assets and configured broker coverage.
 
-Last reviewed: **2026-09-14**. Broker API versions and finalized feature levels
+Last reviewed: **2026-10-27**. Broker API versions and finalized feature levels
 are the capability requirements; an accepted KIP or a version advertised in
 `ApiVersions` does not prove that every broker behavior is implemented.
 
@@ -87,10 +87,10 @@ the full maintained API surface.
 ## Released brokers and future protocol work
 
 Use the [configured compatibility coverage](api-compatibility.md#package-assets-and-tested-runtimes)
-and [CI workflow][ci] for released Kafka 4.x testing. The [official Apache download index](https://downloads.apache.org/kafka/) has no
-Kafka 4.4 release at this review date. Kafka 4.4 lifecycle checks
-remain future acceptance under [#2958][issue2958]; do not treat their source or
-capability skips as a passing 4.4 run. Likewise, the KIP-939 row records a feature
+and [CI workflow][ci] for released Kafka 4.x testing. Kafka 4.4.0 is released, but
+the configured CI matrix does not yet include it ([#3612][issue3612]). Kafka 4.4
+lifecycle checks remain future acceptance under [#2958][issue2958]; do not treat
+their source or capability skips as a passing 4.4 run. Likewise, the KIP-939 row records a feature
 level requirement, not a claim that every released 4.x broker supports it.
 
 KIP-1327 (newly expanded partition classification, `ConsumerGroupHeartbeat` v2) and
@@ -138,6 +138,7 @@ SHA, runtime, broker image and relevant results; skipped cases remain unverified
 [issue3311]: https://github.com/thomhurst/Dekaf/issues/3311
 [issue3312]: https://github.com/thomhurst/Dekaf/issues/3312
 [issue3313]: https://github.com/thomhurst/Dekaf/issues/3313
+[issue3612]: https://github.com/thomhurst/Dekaf/issues/3612
 [kip1043]: https://cwiki.apache.org/confluence/pages/viewpage.action?pageId=305171038
 [kip1071]: https://cwiki.apache.org/confluence/pages/viewpage.action?pageId=311627992
 [kip12]: https://cwiki.apache.org/confluence/pages/viewpage.action?pageId=51809888
