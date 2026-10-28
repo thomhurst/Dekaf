@@ -591,11 +591,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
         // Group assigned partitions by leader broker
         var fetchErrors = GetPartitionFetchErrors(assignment);
+        // Grouping and deferral share one timestamp, so a partition whose backoff ends between
+        // them is either fetched with its acknowledgements or skipped with them deferred.
+        var now = fetchErrors is null ? 0 : System.Diagnostics.Stopwatch.GetTimestamp();
         var partitionsByBroker = GroupPartitionsByLeader(assignment,
             _batchAcknowledgements is null ? TakePollPartitionGroups(assignment.Count) : null,
-            fetchErrors);
+            fetchErrors, now);
         if (fetchErrors is not null && pendingAcks is { Count: > 0 })
-            DeferSuspendedAcknowledgements(pendingAcks, fetchErrors);
+            DeferSuspendedAcknowledgements(pendingAcks, fetchErrors, now);
 
         // Send fetch requests to all brokers concurrently. Session epochs are per-broker
         // and independent, so parallelism is safe. This avoids waiting for each broker's
@@ -1422,7 +1425,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     // pending for the ShareFetch that opens the next session.
                     var noSession = CreateNoShareSessionException(brokerId);
                     MergeAcknowledgements(ref failedAcknowledgements, pendingAcknowledgements);
-                    AddAcknowledgementErrors(ref acknowledgementErrors, pendingAcknowledgements, noSession);
+                    CollectAcknowledgementErrors(ref acknowledgementErrors, pendingAcknowledgements, noSession);
                     return new AcknowledgeBrokerResult(
                         successfulAcknowledgements,
                         failedAcknowledgements,
@@ -1511,7 +1514,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 if (terminalAcknowledgements is not null)
                 {
                     MergeAcknowledgements(ref failedAcknowledgements, terminalAcknowledgements);
-                    AddAcknowledgementErrors(
+                    CollectAcknowledgementErrors(
                         ref acknowledgementErrors,
                         acknowledgementFailures.Errors,
                         terminalAcknowledgements.Keys);
@@ -1528,7 +1531,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 if (retriableAcknowledgements is not null)
                 {
                     MergeAcknowledgements(ref failedAcknowledgements, retriableAcknowledgements);
-                    AddAcknowledgementErrors(
+                    CollectAcknowledgementErrors(
                         ref acknowledgementErrors,
                         acknowledgementFailures.Errors,
                         retriableAcknowledgements.Keys);
@@ -1571,7 +1574,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 // acknowledgements wait for a ShareFetch to open it instead of being retried here.
                 _sessionManager.ResetSession(brokerId);
                 MergeAcknowledgements(ref failedAcknowledgements, pendingAcknowledgements);
-                AddAcknowledgementErrors(
+                CollectAcknowledgementErrors(
                     ref acknowledgementErrors,
                     pendingAcknowledgements,
                     ex);
@@ -1603,7 +1606,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             catch (Exception ex)
             {
                 MergeAcknowledgements(ref failedAcknowledgements, pendingAcknowledgements);
-                AddAcknowledgementErrors(
+                CollectAcknowledgementErrors(
                     ref acknowledgementErrors,
                     pendingAcknowledgements,
                     ex);
@@ -1659,11 +1662,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     /// </summary>
     private Dictionary<int, List<TopicPartition>> GroupPartitionsByLeader(
         TopicPartitionSet assignment, Dictionary<int, List<TopicPartition>>? reusable = null,
-        Dictionary<TopicPartition, PartitionFetchError>? fetchErrors = null)
+        Dictionary<TopicPartition, PartitionFetchError>? fetchErrors = null, long now = 0)
     {
         var result = reusable ?? new Dictionary<int, List<TopicPartition>>();
-        // Partitions backing off after a fetch error are skipped until their retry time.
-        var now = fetchErrors is null ? 0 : System.Diagnostics.Stopwatch.GetTimestamp();
+        // Partitions backing off after a fetch error at `now` are skipped until their retry time.
 
         foreach (var tp in assignment)
         {
@@ -2607,7 +2609,19 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             target[topicPartition] = batches;
     }
 
-    private static void AddAcknowledgementErrors(
+    // Poll and commit outcomes only feed the commit callback, so they are not collected without one.
+    // A ShareAcknowledge result collects its errors unconditionally (CollectAcknowledgementErrors),
+    // because RequeueRecoverableAcknowledgements uses them to drop acknowledgements that lost the acquisition.
+    private void AddAcknowledgementErrors(
+        ref Dictionary<TopicPartition, Exception>? target,
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? acknowledgements,
+        Exception exception)
+    {
+        if (_acknowledgementCommitCallback is not null)
+            CollectAcknowledgementErrors(ref target, acknowledgements, exception);
+    }
+
+    private static void CollectAcknowledgementErrors(
         ref Dictionary<TopicPartition, Exception>? target,
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? acknowledgements,
         Exception exception)
@@ -2620,12 +2634,12 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             target.TryAdd(topicPartition, exception);
     }
 
-    private static void AddAcknowledgementErrors<TException>(
+    private void AddAcknowledgementErrors<TException>(
         ref Dictionary<TopicPartition, Exception>? target,
         Dictionary<TopicPartition, TException>? source)
         where TException : Exception
     {
-        if (source is null)
+        if (_acknowledgementCommitCallback is null || source is null)
             return;
 
         target ??= [];
@@ -2633,7 +2647,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             target[topicPartition] = exception;
     }
 
-    private static void AddAcknowledgementErrors<TException>(
+    private static void CollectAcknowledgementErrors<TException>(
         ref Dictionary<TopicPartition, Exception>? target,
         Dictionary<TopicPartition, TException> source,
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>.KeyCollection topicPartitions)

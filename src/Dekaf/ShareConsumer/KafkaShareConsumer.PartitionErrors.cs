@@ -213,10 +213,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
     /// </summary>
     private void DeferSuspendedAcknowledgements(
         Dictionary<TopicPartition, List<AcknowledgementBatchData>> pendingAcks,
-        Dictionary<TopicPartition, PartitionFetchError> errors)
+        Dictionary<TopicPartition, PartitionFetchError> errors,
+        long now)
     {
-        // Read the clock after GroupPartitionsByLeader: a partition suspended now was skipped there.
-        var now = Stopwatch.GetTimestamp();
+        // `now` is the timestamp GroupPartitionsByLeader used, so exactly the skipped partitions match.
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? suspended = null;
         foreach (var (topicPartition, batches) in pendingAcks)
         {
