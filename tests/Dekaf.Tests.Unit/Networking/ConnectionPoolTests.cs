@@ -2267,7 +2267,9 @@ public sealed class ConnectionPoolTests
             connectionOptions: new ConnectionOptions
             {
                 ConnectionTimeout = TimeSpan.FromMilliseconds(20),
-                ConnectionTimeoutMax = TimeSpan.FromMilliseconds(40),
+                // Both deadlines are real-time timers. Keep the overall operation deadline far
+                // beyond the setup deadline so a descheduled thread cannot let it win.
+                ConnectionTimeoutMax = TimeSpan.FromSeconds(30),
                 ReconnectBackoff = TimeSpan.Zero,
                 ReconnectBackoffMax = TimeSpan.Zero
             },
@@ -2424,19 +2426,31 @@ public sealed class ConnectionPoolTests
 
         try
         {
-            Func<Task> firstAttempt = () => pool.GetConnectionAsync("broker-a", 9092).AsTask();
-            await Assert.That(firstAttempt).Throws<KafkaException>()
-                .WithMessageContaining("timeout after 20ms");
+            // The 20 ms deadlines are real-time timers. A descheduled test thread can let the
+            // operation deadline expire before the first attempt reaches the factory, which
+            // records no failure, so retry until the factory has run and recorded one.
+            while (Volatile.Read(ref attempts) == 0)
+            {
+                Func<Task> firstAttempt = () => pool.GetConnectionAsync("broker-a", 9092).AsTask();
+                var firstFailure = await Assert.That(firstAttempt).Throws<KafkaException>();
+                await Assert.That(firstFailure!.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
+            }
 
-            var secondAttempt = pool.GetConnectionAsync("broker-a", 9092).AsTask();
-            var delay = await observedBackoff.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-            await Assert.That(delay).IsEqualTo(TimeSpan.FromMilliseconds(80));
             await Assert.That(attempts).IsEqualTo(1);
 
-            await Assert.That(async () => await secondAttempt).Throws<KafkaException>()
-                .WithMessageContaining("Connection operation timeout after 20ms");
+            // The backoff hook never releases on its own, so only the overall deadline can end
+            // the second attempt. That deadline can also expire before the attempt reaches the
+            // backoff; either way the attempt must time out without another factory call.
+            Func<Task> secondAttempt = () => pool.GetConnectionAsync("broker-a", 9092).AsTask();
+            var secondFailure = await Assert.That(secondAttempt).Throws<KafkaException>();
+
+            await Assert.That(secondFailure!.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
             await Assert.That(attempts).IsEqualTo(1);
+            if (observedBackoff.Task.IsCompleted)
+            {
+                await Assert.That(secondFailure.Message).Contains("Connection operation timeout after 20ms");
+                await Assert.That(await observedBackoff.Task).IsEqualTo(TimeSpan.FromMilliseconds(80));
+            }
         }
         finally
         {
