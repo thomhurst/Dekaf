@@ -52,6 +52,8 @@ public sealed class ProtobufSchemaRegistrySerializer<
     private readonly SchemaResolutionCache<RegisteredDependency> _referenceResolutionCache = new();
     private readonly Schema _resolutionIdentitySchema;
     private readonly ConditionalWeakTable<Schema, IdentityHeaderFrame> _identityHeaderFrames = new();
+    private readonly ConditionalWeakTable<Schema, ResolvedMessageIndexes>? _resolvedMessageIndexes;
+    private ResolvedMessageIndexes? _lastResolvedMessageIndexes;
     private SubjectSchemaIdCache? _associatedSubjectSchemaIdCache;
 
     bool IRecordHeaderSerializer.ProducesRecordHeaders =>
@@ -111,6 +113,10 @@ public sealed class ProtobufSchemaRegistrySerializer<
         _encodedMessageIndexes = VarintEncoder.EncodeMessageIndexes(
             CalculateMessageIndexes(_descriptor),
             _config.UseDeprecatedFormat);
+        // The latest registered schema can declare messages in another order than the local file,
+        // so latest-version mode derives its message indexes from that schema during resolution.
+        if (_schemaSelectionMode == SchemaSelectionMode.Latest)
+            _resolvedMessageIndexes = new ConditionalWeakTable<Schema, ResolvedMessageIndexes>();
         if (_asyncSubjectNameStrategy is not null)
             _associatedSubjectSchemaIdCache = new SubjectSchemaIdCache();
 
@@ -219,8 +225,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
         var protobufPayloadLength = _payloadTransformMode == ProtobufPayloadTransformMode.RuleExecutor
             ? transformedPayload.Length
             : protoSize;
+        var messageIndexes = GetMessageIndexes(schemaEntry.Schema);
         var payloadOffset = _schemaIdStrategy == SchemaIdSerializerStrategy.Prefix
-            ? SchemaIdentityFraming.SchemaIdFrameSize + _encodedMessageIndexes.Length
+            ? SchemaIdentityFraming.SchemaIdFrameSize + messageIndexes.Length
             : 0;
         var totalSize = payloadOffset + protobufPayloadLength;
         if (_payloadTransformMode == ProtobufPayloadTransformMode.InlineValidation)
@@ -230,7 +237,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
             if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
             {
                 SchemaIdentityFraming.WriteSchemaId(validatedSpan, schemaId);
-                _encodedMessageIndexes.CopyTo(
+                messageIndexes.CopyTo(
                     validatedSpan[SchemaIdentityFraming.SchemaIdFrameSize..]);
             }
 
@@ -251,7 +258,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
         if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
         {
             SchemaIdentityFraming.WriteSchemaId(span, schemaId);
-            _encodedMessageIndexes.CopyTo(span[SchemaIdentityFraming.SchemaIdFrameSize..]);
+            messageIndexes.CopyTo(span[SchemaIdentityFraming.SchemaIdFrameSize..]);
         }
 
         if (_payloadTransformMode == ProtobufPayloadTransformMode.None)
@@ -316,8 +323,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
         var protobufPayloadLength = _payloadTransformMode == ProtobufPayloadTransformMode.RuleExecutor
             ? transformedPayload.Length
             : protoSize;
+        var messageIndexes = GetMessageIndexes(schemaEntry.Schema);
         var payloadOffset = _schemaIdStrategy == SchemaIdSerializerStrategy.Prefix
-            ? SchemaIdentityFraming.SchemaIdFrameSize + _encodedMessageIndexes.Length
+            ? SchemaIdentityFraming.SchemaIdFrameSize + messageIndexes.Length
             : 0;
         var totalSize = payloadOffset + protobufPayloadLength;
         if (_payloadTransformMode == ProtobufPayloadTransformMode.InlineValidation)
@@ -327,7 +335,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
             if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
             {
                 SchemaIdentityFraming.WriteSchemaId(validatedSpan, schemaId);
-                _encodedMessageIndexes.CopyTo(
+                messageIndexes.CopyTo(
                     validatedSpan[SchemaIdentityFraming.SchemaIdFrameSize..]);
             }
 
@@ -348,7 +356,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
         if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
         {
             SchemaIdentityFraming.WriteSchemaId(span, schemaId);
-            _encodedMessageIndexes.CopyTo(span[SchemaIdentityFraming.SchemaIdFrameSize..]);
+            messageIndexes.CopyTo(span[SchemaIdentityFraming.SchemaIdFrameSize..]);
         }
 
         // Write the protobuf message
@@ -600,6 +608,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
                     schemaId,
                     explicitSchema,
                     registeredSchema: null,
+                    _encodedMessageIndexes,
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -615,11 +624,17 @@ public sealed class ProtobufSchemaRegistrySerializer<
                     $"Schema ID {latest.Id} has format {latest.Schema.SchemaType}; expected {SchemaType.Protobuf}.");
             }
 
+            var latestMessageIndexes = await ResolveLatestMessageIndexesAsync(
+                    subject,
+                    latest,
+                    cancellationToken)
+                .ConfigureAwait(false);
             return await CreateResolvedValueAsync(
                     subject,
                     latest.Id,
                     latest.Schema,
                     latest,
+                    latestMessageIndexes,
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -661,6 +676,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
                     id,
                     executionSchema,
                     registeredSchema: null,
+                    _encodedMessageIndexes,
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -676,6 +692,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
                 registered.Id,
                 registered.Schema,
                 registered,
+                _encodedMessageIndexes,
                 cancellationToken)
             .ConfigureAwait(false);
     }
@@ -831,13 +848,15 @@ public sealed class ProtobufSchemaRegistrySerializer<
         _schemaRegistry as IFormattedSchemaRegistryClient
         ?? throw new NotSupportedException(
             $"{_schemaRegistry.GetType().Name} does not support formatted schema lookup. " +
-            $"Implement {nameof(IFormattedSchemaRegistryClient)} to use explicit Protobuf schema IDs.");
+            $"Implement {nameof(IFormattedSchemaRegistryClient)} to use explicit Protobuf schema IDs " +
+            "or latest Protobuf schemas returned as .proto text.");
 
     private async Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> CreateResolvedValueAsync(
         string subject,
         int schemaId,
         Schema schema,
         RegisteredSchema? registeredSchema,
+        byte[] messageIndexes,
         CancellationToken cancellationToken)
     {
         var resolved = await SchemaIdentityResolution.CreateSerializerValueAsync(
@@ -850,13 +869,115 @@ public sealed class ProtobufSchemaRegistrySerializer<
                 registeredSchema,
                 cancellationToken)
             .ConfigureAwait(false);
+        _resolvedMessageIndexes?.AddOrUpdate(
+            resolved.Schema!,
+            new ResolvedMessageIndexes(resolved.Schema!, messageIndexes));
         if (_schemaIdStrategy == SchemaIdSerializerStrategy.Header)
-            CacheIdentityHeaderFrame(resolved.Schema!, resolved.SchemaId, resolved.SchemaGuidFrame);
+            CacheIdentityHeaderFrame(resolved.Schema!, resolved.SchemaId, resolved.SchemaGuidFrame, messageIndexes);
 
         return resolved;
     }
 
-    private void CacheIdentityHeaderFrame(Schema schema, int schemaId, byte[]? encodedGuid)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private byte[] GetMessageIndexes(Schema? schema)
+    {
+        if (_resolvedMessageIndexes is null)
+            return _encodedMessageIndexes;
+
+        var last = Volatile.Read(ref _lastResolvedMessageIndexes);
+        return last is not null && ReferenceEquals(last.Schema, schema)
+            ? last.Value
+            : GetResolvedMessageIndexesSlow(schema);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private byte[] GetResolvedMessageIndexesSlow(Schema? schema)
+    {
+        if (schema is null || !_resolvedMessageIndexes!.TryGetValue(schema, out var resolved))
+        {
+            throw new InvalidOperationException(
+                $"Protobuf message indexes for '{_descriptor.FullName}' were not resolved for the selected schema.");
+        }
+
+        Volatile.Write(ref _lastResolvedMessageIndexes, resolved);
+        return resolved.Value;
+    }
+
+    private async Task<byte[]> ResolveLatestMessageIndexesAsync(
+        string subject,
+        RegisteredSchema latest,
+        CancellationToken cancellationToken)
+    {
+        // Schema Registry returns Protobuf schemas as .proto text unless the serialized format is requested.
+        var schemaString = ProtobufInlineRuleValidator.IsSerializedDescriptor(latest.Schema.SchemaString)
+            ? latest.Schema.SchemaString
+            : (await GetSerializedSchemaBySubjectAsync(
+                    subject,
+                    latest.Version.ToString(CultureInfo.InvariantCulture),
+                    cancellationToken)
+                .ConfigureAwait(false)).Schema.SchemaString;
+
+        FileDescriptorProto file;
+        try
+        {
+            file = FileDescriptorProto.Parser.ParseFrom(Convert.FromBase64String(schemaString));
+        }
+        catch (Exception exception) when (exception is FormatException or InvalidProtocolBufferException)
+        {
+            throw new InvalidOperationException(
+                $"Schema ID {latest.Id} for subject '{subject}' is not a valid serialized Protobuf descriptor.",
+                exception);
+        }
+
+        var indexes = FindMessageIndexes(file, _descriptor.FullName)
+            ?? throw new InvalidOperationException(
+                $"Schema ID {latest.Id} for subject '{subject}' does not declare Protobuf message type " +
+                $"'{_descriptor.FullName}'.");
+        return VarintEncoder.EncodeMessageIndexes(indexes, _config.UseDeprecatedFormat);
+    }
+
+    // Mirrors Confluent's ProtobufSchema.toMessageIndexes: the index path of the named message in the schema.
+    private static int[]? FindMessageIndexes(FileDescriptorProto file, string fullName)
+    {
+        var relativeName = fullName;
+        if (file.Package.Length != 0)
+        {
+            if (fullName.Length <= file.Package.Length + 1 ||
+                fullName[file.Package.Length] != '.' ||
+                !fullName.StartsWith(file.Package, StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            relativeName = fullName[(file.Package.Length + 1)..];
+        }
+
+        var names = relativeName.Split('.');
+        var indexes = new int[names.Length];
+        IList<DescriptorProto> messages = file.MessageType;
+        for (var depth = 0; depth < names.Length; depth++)
+        {
+            var index = -1;
+            for (var candidate = 0; candidate < messages.Count; candidate++)
+            {
+                if (string.Equals(messages[candidate].Name, names[depth], StringComparison.Ordinal))
+                {
+                    index = candidate;
+                    break;
+                }
+            }
+
+            if (index < 0)
+                return null;
+
+            indexes[depth] = index;
+            messages = messages[index].NestedType;
+        }
+
+        return indexes;
+    }
+
+    private void CacheIdentityHeaderFrame(Schema schema, int schemaId, byte[]? encodedGuid, byte[] messageIndexes)
     {
         if (encodedGuid is null)
         {
@@ -864,9 +985,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
                 $"Schema Registry GUID framing is unavailable for schema ID {schemaId}.");
         }
 
-        var frame = GC.AllocateUninitializedArray<byte>(encodedGuid.Length + _encodedMessageIndexes.Length);
+        var frame = GC.AllocateUninitializedArray<byte>(encodedGuid.Length + messageIndexes.Length);
         encodedGuid.AsSpan().CopyTo(frame);
-        _encodedMessageIndexes.CopyTo(frame.AsSpan(encodedGuid.Length));
+        messageIndexes.CopyTo(frame.AsSpan(encodedGuid.Length));
         _identityHeaderFrames.AddOrUpdate(schema, new IdentityHeaderFrame(frame));
     }
 
@@ -1123,6 +1244,12 @@ public sealed class ProtobufSchemaRegistrySerializer<
     private sealed class IdentityHeaderFrame(ReadOnlyMemory<byte> value)
     {
         internal ReadOnlyMemory<byte> Value { get; } = value;
+    }
+
+    private sealed class ResolvedMessageIndexes(Schema schema, byte[] value)
+    {
+        internal Schema Schema { get; } = schema;
+        internal byte[] Value { get; } = value;
     }
 
     private static int[] CalculateMessageIndexes(MessageDescriptor descriptor)

@@ -3,6 +3,7 @@ using System.Buffers.Binary;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Protobuf;
 using Dekaf.Serialization;
+using Dekaf.Tests.Unit.SchemaRegistry.ProtobufFixtures;
 using Google.Protobuf;
 using NSubstitute;
 
@@ -749,6 +750,156 @@ public class ProtobufSchemaIdentityTests
             })));
 
         await Assert.That(exception!.ParamName).IsEqualTo("useSchemaId");
+    }
+
+    [Test]
+    public async Task Serialize_UseLatestVersion_Prefix_WritesIndexesOfLatestSchema()
+    {
+        var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "identity-value",
+            CreateSchemaWithLeadingMessages("Envelope"));
+        await using var serializer = new ProtobufSchemaRegistrySerializer<TestMessage>(
+            registry,
+            new ProtobufSerializerConfig { AutoRegisterSchemas = false, UseLatestVersion = true });
+        var message = new TestMessage { Id = 3, Name = "latest" };
+        var destination = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(message, ref destination, CreateContext());
+
+        var written = destination.WrittenMemory.ToArray();
+        var expectedIndexes = VarintEncoder.EncodeMessageIndexes([1]);
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(written.AsSpan(1, 4))).IsEqualTo(schemaId);
+        await Assert.That(written[5..(5 + expectedIndexes.Length)]).IsEquivalentTo(expectedIndexes);
+        await Assert.That(written[(5 + expectedIndexes.Length)..]).IsEquivalentTo(message.ToByteArray());
+    }
+
+    [Test]
+    public async Task Serialize_UseLatestVersion_Header_WritesIndexesOfLatestSchema()
+    {
+        var registry = new MockSchemaRegistryClient();
+        await registry.RegisterSchemaAsync("identity-value", CreateSchemaWithLeadingMessages("Envelope", "Audit"));
+        var context = CreateContext(headers: new Headers());
+        await using var serializer = new ProtobufSchemaRegistrySerializer<TestMessage>(
+            registry,
+            new ProtobufSerializerConfig
+            {
+                AutoRegisterSchemas = false,
+                UseLatestVersion = true,
+                SchemaIdStrategy = SchemaIdSerializerStrategy.Header
+            });
+        var destination = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(new TestMessage { Id = 4 }, ref destination, context);
+
+        var expectedIndexes = VarintEncoder.EncodeMessageIndexes([2]);
+        var header = context.Headers!.GetFirst(SchemaIdentityHeaderNames.Value)!.Value.Value;
+        await Assert.That(header.Span[17..].ToArray()).IsEquivalentTo(expectedIndexes);
+    }
+
+    [Test]
+    public async Task Serialize_UseLatestVersion_TextSchema_ResolvesIndexesFromSerializedFormat()
+    {
+        var serialized = CreateSchemaWithLeadingMessages("Envelope");
+        var registry = Substitute.For<IFormattedSchemaRegistryClient>();
+        registry.GetSchemaBySubjectAsync("identity-value", Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new RegisteredSchema
+            {
+                Id = 21,
+                Subject = "identity-value",
+                Version = 3,
+                Schema = new Schema
+                {
+                    SchemaType = SchemaType.Protobuf,
+                    SchemaString = "syntax = \"proto3\"; package dekaf.tests; message Envelope {} message TestMessage {}"
+                }
+            });
+        registry.GetSchemaBySubjectWithFormatAsync(
+                "identity-value",
+                "3",
+                true,
+                "serialized",
+                Arg.Any<CancellationToken>())
+            .Returns(new RegisteredSchema
+            {
+                Id = 21,
+                Subject = "identity-value",
+                Version = 3,
+                Schema = serialized
+            });
+        await using var serializer = new ProtobufSchemaRegistrySerializer<TestMessage>(
+            registry,
+            new ProtobufSerializerConfig { AutoRegisterSchemas = false, UseLatestVersion = true });
+        var destination = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(new TestMessage { Id = 5 }, ref destination, CreateContext());
+
+        var expectedIndexes = VarintEncoder.EncodeMessageIndexes([1]);
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan[1..5])).IsEqualTo(21);
+        await Assert.That(destination.WrittenSpan.Slice(5, expectedIndexes.Length).ToArray())
+            .IsEquivalentTo(expectedIndexes);
+    }
+
+    [Test]
+    public async Task Serialize_UseLatestVersion_NestedMessage_WritesFullIndexPathOfLatestSchema()
+    {
+        var proto = NestedIndexOuter.Types.Target.Descriptor.File.ToProto();
+        proto.MessageType.Insert(0, new Google.Protobuf.Reflection.DescriptorProto { Name = "Leading" });
+        proto.MessageType[1].NestedType.Insert(0, new Google.Protobuf.Reflection.DescriptorProto { Name = "Sibling" });
+        var registry = new MockSchemaRegistryClient();
+        await registry.RegisterSchemaAsync("identity-value", new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = proto.ToByteString().ToBase64()
+        });
+        await using var serializer = new ProtobufSchemaRegistrySerializer<NestedIndexOuter.Types.Target>(
+            registry,
+            new ProtobufSerializerConfig { AutoRegisterSchemas = false, UseLatestVersion = true });
+        var destination = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(new NestedIndexOuter.Types.Target { Id = 6 }, ref destination, CreateContext());
+
+        var expectedIndexes = VarintEncoder.EncodeMessageIndexes([1, 1]);
+        await Assert.That(destination.WrittenSpan.Slice(5, expectedIndexes.Length).ToArray())
+            .IsEquivalentTo(expectedIndexes);
+    }
+
+    [Test]
+    public async Task Serialize_UseLatestVersion_SchemaWithoutMessage_Throws()
+    {
+        var registry = new MockSchemaRegistryClient();
+        var proto = TestMessage.Descriptor.File.ToProto();
+        proto.MessageType[0].Name = "OtherMessage";
+        await registry.RegisterSchemaAsync("identity-value", new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = proto.ToByteString().ToBase64()
+        });
+        await using var serializer = new ProtobufSchemaRegistrySerializer<TestMessage>(
+            registry,
+            new ProtobufSerializerConfig { AutoRegisterSchemas = false, UseLatestVersion = true });
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        {
+            var destination = new ArrayBufferWriter<byte>();
+            serializer.Serialize(new TestMessage(), ref destination, CreateContext());
+            return Task.CompletedTask;
+        });
+
+        await Assert.That(exception!.Message).Contains("does not declare Protobuf message type 'dekaf.tests.TestMessage'");
+    }
+
+    private static Schema CreateSchemaWithLeadingMessages(params string[] leadingMessages)
+    {
+        var proto = TestMessage.Descriptor.File.ToProto();
+        for (var index = leadingMessages.Length - 1; index >= 0; index--)
+            proto.MessageType.Insert(0, new Google.Protobuf.Reflection.DescriptorProto { Name = leadingMessages[index] });
+
+        return new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = proto.ToByteString().ToBase64()
+        };
     }
 
     private static Schema CreateSchema() => new()
