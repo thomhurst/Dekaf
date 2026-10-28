@@ -230,6 +230,53 @@ public sealed partial class ShareConsumerRenewalTests
     }
 
     [Test]
+    [Arguments(ErrorCode.UnknownTopicId)]
+    [Arguments(ErrorCode.UnknownTopicOrPartition)]
+    [Arguments(ErrorCode.TopicAuthorizationFailed)]
+    public async Task Poll_InPollAcknowledgePartitionError_KeepsDeliveringAndReportsIt(ErrorCode errorCode)
+    {
+        // A deleted topic rejects the in-poll drain's acknowledgements for its partitions. Like the
+        // ShareFetch-carried path, the poll reports that through the callback and keeps delivering.
+        var outcomes = new List<(long FirstOffset, int Length, Exception? Exception)>();
+        var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 2, supportShareFetch: true)
+        {
+            ShareFetchResponses = new([CreateFetchResponse(0, 100, 3)]),
+            ShareAcknowledgeResponses = new([
+                CreateAcknowledgeResponse((0, errorCode)),
+                CreateAcknowledgeResponse((0, ErrorCode.None))
+            ])
+        };
+        await using var fixture = CreateFixture(connection, ShareAcknowledgementMode.Implicit, maxPollRecords: 1,
+            acknowledgementCommitCallback: results =>
+            {
+                foreach (var result in results)
+                    outcomes.Add((result.Offsets[0], result.Offsets.Length, result.Exception));
+            });
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Subscribe("topic");
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        for (var index = 0; index < 3; index++)
+        {
+            await using var poll = fixture.Consumer.PollAsync(stop.Token).GetAsyncEnumerator();
+            await Assert.That(await poll.MoveNextAsync()).IsTrue();
+            await Assert.That(poll.Current.Offset).IsEqualTo(100 + index);
+        }
+
+        await Assert.That(connection.ShareFetchRequests.Count).IsEqualTo(1);
+        await Assert.That(connection.ShareAcknowledgeRequests.Count).IsEqualTo(2);
+        var failed = outcomes[0];
+        await Assert.That(failed.FirstOffset).IsEqualTo(100);
+        await Assert.That(failed.Length).IsEqualTo(1);
+        await Assert.That(((KafkaException)failed.Exception!).ErrorCode).IsEqualTo(errorCode);
+        // A lost acquisition is dropped; any other failure is retried with the next drain.
+        var retried = connection.ShareAcknowledgeRequests[1].Topics[0].Partitions[0].AcknowledgementBatches;
+        await Assert.That(retried[0].FirstOffset)
+            .IsEqualTo(errorCode == ErrorCode.TopicAuthorizationFailed ? 100L : 101L);
+        await Assert.That(outcomes.Skip(1).All(static outcome => outcome.Exception is null)).IsTrue();
+    }
+
+    [Test]
     [Arguments(ErrorCode.NotLeaderOrFollower)]
     [Arguments(ErrorCode.FencedLeaderEpoch)]
     public async Task Commit_AcknowledgementLostToLeaderChange_FailsWithoutRetryAndAppliesHint(ErrorCode errorCode)
