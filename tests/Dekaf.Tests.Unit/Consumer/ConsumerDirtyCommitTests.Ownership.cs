@@ -356,10 +356,14 @@ public sealed partial class ConsumerDirtyCommitTests
             typeof(KafkaConsumer<string, string>)
                 .GetField("_ownershipStartGenerations", BindingFlags.NonPublic | BindingFlags.Instance)!
                 .GetValue(consumer)!)[OwnedP0];
-        using var fetch = PendingFetchData.Create("topic-a", 0, Array.Empty<RecordBatch>(), ownershipStart: ownershipStart);
+        var fetch = PendingFetchData.Create("topic-a", 0, Array.Empty<RecordBatch>(), ownershipStart: ownershipStart);
         typeof(KafkaConsumer<string, string>)
             .GetMethod("PublishActiveConsumedPositionCore", BindingFlags.NonPublic | BindingFlags.Instance)!
             .Invoke(consumer, [OwnedP0, 0L, -1, ownershipStart]);
+        // A queued fetch belongs to the consumer, which disposes it on close. Disposing it here
+        // as well would return the pooled instance first, and the consumer's later Dispose would
+        // then recycle whichever concurrent test had rented it in the meantime (#3661).
+        using var testOwnedFetch = fetchStillQueued ? null : fetch;
         if (fetchStillQueued)
             EnqueuePendingFetch(consumer, fetch);
 
