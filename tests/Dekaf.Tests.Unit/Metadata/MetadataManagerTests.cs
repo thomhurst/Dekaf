@@ -1182,6 +1182,47 @@ public class MetadataManagerTests
     }
 
     [Test]
+    [Timeout(10_000)]
+    public async Task InitializeAsync_ZeroBootstrapResolveTimeout_WaitsForSlowAsynchronousResolution(
+        CancellationToken cancellationToken)
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var connection = CreateSuccessfulMetadataConnection("slow-host", 9092);
+        pool.GetConnectionAsync("slow-host", 9092, Arg.Any<CancellationToken>())
+            .Returns(call => ResolveSlowlyAsync(call.Arg<CancellationToken>()));
+
+        await using var manager = new MetadataManager(
+            pool,
+            ["slow-host:9092"],
+            new MetadataOptions
+            {
+                EnableBackgroundRefresh = false,
+                BootstrapResolveTimeoutMs = 0,
+                RetryBackoffMs = 0,
+                RetryBackoffMaxMs = 0
+            });
+
+        await manager.InitializeAsync(cancellationToken);
+
+        await Assert.That(manager.Metadata.LastRefreshed).IsNotEqualTo(default(DateTimeOffset));
+
+        async ValueTask<IKafkaConnection> ResolveSlowlyAsync(CancellationToken token)
+        {
+            // Far longer than the 1 ms probe zero once meant: zero has no artificial deadline.
+            // A cancelled lookup fails as DNS, which would make initialization fatal.
+            try
+            {
+                await Task.Delay(200, token);
+            }
+            catch (OperationCanceledException ex)
+            {
+                throw new DnsResolutionException("slow-host", 9092, ex);
+            }
+            return connection;
+        }
+    }
+
+    [Test]
     public async Task InitializeAsync_BootstrapDnsRetry_CancellationStopsPromptly()
     {
         var pool = Substitute.For<IConnectionPool>();
@@ -2149,32 +2190,37 @@ public class MetadataManagerTests
     }
 
     // A resolved address that accepts TCP but fails the Kafka handshake is first in DNS order.
-    // Once another address of the same bootstrap server completes the rebootstrap, the next
-    // connection to that server must start at the answering address, not the failing one.
+    // Rebootstrap must still reach the second address, through the bootstrap hostname so TLS
+    // keeps validating that name, and the next connection must start at the answering address.
     [Test]
     public async Task TryRebootstrapImmediateAsync_ThroughASecondResolvedAddress_MakesItTheBootstrapServersDnsPreference(
         CancellationToken cancellationToken)
     {
         MetadataResponse ClusterMetadata() => CreateMetadataResponse((0, "broker-0", 9092));
 
-        var bootstrap = CreateRespondingConnection(-1, "kafka.example", 9092, ClusterMetadata);
-        var brokerZero = CreateRespondingConnection(0, "broker-0", 9092, ClusterMetadata);
-        var firstAddress = CreateRespondingConnection(-1, "10.0.0.1", 9092,
-            () => throw new SocketException((int)SocketError.TimedOut));
-        var secondAddress = CreateRespondingConnection(-1, "10.0.0.2", 9092, ClusterMetadata);
+        var secondAddress = CreateRespondingConnection(-1, "kafka.example", 9092, ClusterMetadata);
+        var resolver = new ClientDnsEndpointResolver(
+            new FixedDnsLookup(IPAddress.Parse("10.0.0.1"), IPAddress.Parse("10.0.0.2")));
+        var connectedHosts = new List<string>();
         await using var pool = new ConnectionPool(
             "metadata-rebootstrap-dns-preference-test",
             new ConnectionOptions(),
             connectionsPerBroker: 1,
-            connectionFactory: (_, host, _, _, _) => ValueTask.FromResult(host switch
+            connectionFactory: async (_, host, port, _, token) =>
             {
-                "kafka.example" => bootstrap,
-                "broker-0" => brokerZero,
-                "10.0.0.1" => firstAddress,
-                _ => secondAddress
-            }));
-        var resolver = new ClientDnsEndpointResolver(
-            new FixedDnsLookup(IPAddress.Parse("10.0.0.1"), IPAddress.Parse("10.0.0.2")));
+                lock (connectedHosts)
+                    connectedHosts.Add(host);
+
+                // Mirror KafkaConnection: connect to the first address in DNS order and make it
+                // the preference once TCP is accepted, then run the handshake against it.
+                var endpoints = await resolver.ResolveAsync(host, port, ClientDnsLookup.UseAllDnsIps, token);
+                var address = endpoints[0].Address;
+                resolver.MarkSuccessful(host, port, ClientDnsLookup.UseAllDnsIps, address);
+                if (address.Equals(IPAddress.Parse("10.0.0.1")))
+                    throw new SocketException((int)SocketError.ConnectionReset);
+
+                return secondAddress;
+            });
         await using var manager = new MetadataManager(
             pool,
             ["kafka.example:9092"],
@@ -2184,14 +2230,14 @@ public class MetadataManagerTests
                 MetadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap,
                 DnsResolver = resolver
             });
-        await manager.InitializeAsync(cancellationToken);
 
         var rebootstrapped = await manager.TryRebootstrapImmediateAsync(topics: null, cancellationToken);
 
-        var endpoints = await resolver.ResolveAsync(
+        var preferred = await resolver.ResolveAsync(
             "kafka.example", 9092, ClientDnsLookup.UseAllDnsIps, cancellationToken);
         await Assert.That(rebootstrapped).IsTrue();
-        await Assert.That(endpoints[0].Address.ToString()).IsEqualTo("10.0.0.2");
+        await Assert.That(connectedHosts).IsEquivalentTo(["kafka.example", "kafka.example"]);
+        await Assert.That(preferred[0].Address.ToString()).IsEqualTo("10.0.0.2");
     }
 
     private sealed class FixedDnsLookup(params IPAddress[] addresses) : IDnsLookup

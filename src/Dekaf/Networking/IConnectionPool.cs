@@ -115,4 +115,11 @@ internal interface IMetadataClusterIdentityPool
     bool TryConsumeMetadataRebootstrapRequest();
     bool TryGetClusterApiVersionsMaxVersion(out short maxVersion);
     void SeedClusterApiVersionsMaxVersion(short maxVersion);
+
+    /// <summary>
+    /// Retires exactly <paramref name="connection"/> from the <paramref name="host"/>:<paramref name="port"/>
+    /// endpoint slot after it failed a rebootstrap, so the next lease of that endpoint opens a fresh
+    /// connection instead of reusing it. In-flight requests drain before disposal.
+    /// </summary>
+    void RetireRebootstrapConnection(string host, int port, IKafkaConnection connection);
 }

@@ -584,7 +584,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             MetadataClusterCheckEnabled = options.MetadataClusterCheckEnabled,
             RetryBackoffMs = options.RetryBackoffMs,
             RetryBackoffMaxMs = options.RetryBackoffMaxMs,
+            MetadataRecoveryRebootstrapTriggerMs = options.MetadataRecoveryRebootstrapTriggerMs,
+            ClientDnsLookup = options.ClientDnsLookup,
             BootstrapResolveTimeoutMs = options.BootstrapResolveTimeoutMs,
+            DnsResolver = options.DnsResolver,
             InitTimeoutMs = options.MaxBlockMs
         };
         var metadataManager = new MetadataManager(

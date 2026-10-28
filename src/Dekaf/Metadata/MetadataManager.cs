@@ -86,6 +86,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     private const int BootstrapWarningAttempt = 6;
 
+    // Rebootstrap runs inside a metadata refresh that callers are waiting on, so each host's
+    // lookup is capped independently of the initial BootstrapResolveTimeoutMs budget.
+    private static readonly TimeSpan RebootstrapDnsTimeout = TimeSpan.FromSeconds(5);
+
     // Rebootstrap recovery state
     private readonly List<string> _originalBootstrapHostnames;
     private long _allBrokersUnavailableSince;
@@ -1473,10 +1477,13 @@ public sealed partial class MetadataManager : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        // A zero budget still gets one bounded probe so an immediate DNS failure retains
-        // its endpoint details instead of racing a pre-cancelled refresh lock.
         var refresh = RefreshMetadataForInitializationAsync(deadlineCts.Token);
-        deadlineCts.CancelAfter(TimeSpan.FromMilliseconds(Math.Max(1, remainingMs)));
+        // Java parity: zero (bootstrap.resolve.timeout.ms default) resolves once with no
+        // artificial deadline, so only a real DNS failure fails initialization. A positive
+        // budget that is spent still gets one bounded probe, so an immediate DNS failure keeps
+        // its endpoint details instead of racing a pre-cancelled refresh lock.
+        if (_options.BootstrapResolveTimeoutMs > 0)
+            deadlineCts.CancelAfter(TimeSpan.FromMilliseconds(Math.Max(1, remainingMs)));
         try
         {
             await refresh.ConfigureAwait(false);
@@ -1627,13 +1634,37 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
         // Try the newly resolved endpoints
         Exception? lastException = null;
-        foreach (var (host, port, bootstrapHost) in newEndpoints)
+        List<IKafkaConnection>? attemptedConnections = null;
+        (string Host, int Port) previousServer = default;
+        foreach (var (host, port, address) in newEndpoints)
         {
+            IKafkaConnection? connection = null;
             try
             {
+                // Always connect by bootstrap hostname: TLS and SASL (GSSAPI) must target the name
+                // the broker certificate and service principal use, never a raw IP. A later
+                // resolved address of the same server is made to lead the connection's own DNS
+                // order, so addresses that accept TCP but fail the handshake are tried in turn.
+                // The first address already leads: the resolver returned them in that order.
+                var server = (host, port);
+                if (address is not null && server == previousServer)
+                    _options.DnsResolver.MarkSuccessful(host, port, _options.ClientDnsLookup, address);
+                previousServer = server;
+
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(host, port, cancellationToken)
                     .ConfigureAwait(false);
-                var connection = connectionLease.Connection;
+                connection = connectionLease.Connection;
+
+                // A connection that failed this rebootstrap is retired (see RetireRebootstrapConnection),
+                // so the next address leases a fresh one. A pool that cannot retire it returns the
+                // same connection, and asking it again would only repeat the previous outcome.
+                attemptedConnections ??= [];
+                if (attemptedConnections.Contains(connection))
+                {
+                    connection = null;
+                    continue;
+                }
+                attemptedConnections.Add(connection);
 
                 KafkaConnectionCapabilities? negotiatedCapabilities = null;
                 if (connection is not IKafkaCapabilityProvider)
@@ -1665,6 +1696,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 if (response.ErrorCode == ErrorCode.RebootstrapRequired)
                 {
                     LogRebootstrapChainSuppressed();
+                    RetireRebootstrapConnection(host, port, connection);
                     continue;
                 }
 
@@ -1696,19 +1728,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 // The endpoint that answered the rebootstrap replaces the one that failed or
                 // asked for it; otherwise the next refresh would try the stale endpoint first.
-                // A resolved address is not in the refresh endpoint list, so record the
-                // bootstrap server it was resolved from, which is.
-                RecordRespondingEndpoint(bootstrapHost, port);
-
-                // Connecting to that bootstrap server resolves it again, and DNS order (or an
-                // address that only accepted TCP) would lead with the address that just failed
-                // the handshake. Make the address that completed the rebootstrap the server's
-                // DNS preference so the next connection to it starts there.
-                if (!string.Equals(host, bootstrapHost, StringComparison.Ordinal)
-                    && IPAddress.TryParse(host, out var respondingAddress))
-                {
-                    _options.DnsResolver.MarkSuccessful(bootstrapHost, port, _options.ClientDnsLookup, respondingAddress);
-                }
+                // The connection already made the address it reached this server's DNS
+                // preference, so the next connection to it starts there.
+                RecordRespondingEndpoint(host, port);
 
                 // Success - reset the rebootstrap timer
                 ResetAllBrokersUnavailableTimestamp();
@@ -1727,11 +1749,24 @@ public sealed partial class MetadataManager : IAsyncDisposable
             {
                 LogRebootstrapEndpointFailed(ex, host, port);
                 lastException = ex;
+                if (connection is not null)
+                    RetireRebootstrapConnection(host, port, connection);
             }
         }
 
         LogRebootstrapFailed(lastException);
         return false;
+    }
+
+    /// <summary>
+    /// Leasing connects by bootstrap hostname, and the pool keeps one connection per hostname.
+    /// Retiring the one that failed lets the next resolved address of that server get a fresh
+    /// connection, which starts at the address made the DNS preference, instead of the same socket.
+    /// </summary>
+    private void RetireRebootstrapConnection(string host, int port, IKafkaConnection connection)
+    {
+        if (_connectionPool is IMetadataClusterIdentityPool identityPool)
+            identityPool.RetireRebootstrapConnection(host, port, connection);
     }
 
     private void RegisterBroker(int brokerId, string host, int port)
@@ -1760,46 +1795,31 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     /// <summary>
     /// Re-resolves DNS for the original bootstrap servers to discover new broker IPs.
+    /// Each entry keeps the bootstrap hostname to connect to; <c>Address</c> is the resolved
+    /// address that connection should try first, or null when resolution found none.
     /// </summary>
-    internal async ValueTask<List<(string Host, int Port, string BootstrapHost)>> ResolveBootstrapEndpointsAsync(
+    internal async ValueTask<List<(string Host, int Port, IPAddress? Address)>> ResolveBootstrapEndpointsAsync(
         CancellationToken cancellationToken)
     {
-        var seen = new HashSet<(string Host, int Port)>();
-        var resolved = new List<(string Host, int Port, string BootstrapHost)>();
+        var seen = new HashSet<(string Host, int Port, IPAddress? Address)>();
+        var resolved = new List<(string Host, int Port, IPAddress? Address)>();
 
         foreach (var (host, port) in _bootstrapEndpoints)
         {
+            var resolvedAddress = false;
             try
             {
                 // Apply a per-host timeout to prevent DNS hangs from blocking rebootstrap
                 using var dnsCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                dnsCts.CancelAfter(TimeSpan.FromSeconds(5));
+                dnsCts.CancelAfter(RebootstrapDnsTimeout);
                 var endpoints = await _options.DnsResolver
                     .ResolveAsync(host, port, _options.ClientDnsLookup, dnsCts.Token)
                     .ConfigureAwait(false);
-                if (_options.ClientDnsLookup == ClientDnsLookup.ResolveCanonicalBootstrapServersOnly)
+                foreach (var endpoint in endpoints)
                 {
-                    if (endpoints.Count > 0)
-                    {
-                        var canonicalEndpoint = (endpoints[0].TargetHost, port);
-                        if (seen.Add(canonicalEndpoint))
-                            resolved.Add((endpoints[0].TargetHost, port, host));
-                    }
-                }
-                else
-                {
-                    foreach (var endpoint in endpoints)
-                    {
-                        var address = endpoint.Address.ToString();
-                        if (seen.Add((address, port)))
-                            resolved.Add((address, port, host));
-                    }
-                }
-
-                // Also add the original hostname endpoint (it may resolve differently now)
-                if (seen.Add((host, port)))
-                {
-                    resolved.Add((host, port, host));
+                    resolvedAddress = true;
+                    if (seen.Add((host, port, endpoint.Address)))
+                        resolved.Add((host, port, endpoint.Address));
                 }
 
                 LogRebootstrapDnsResolved(host, port, endpoints.Count);
@@ -1807,12 +1827,11 @@ public sealed partial class MetadataManager : IAsyncDisposable
             catch (Exception ex)
             {
                 LogRebootstrapDnsResolutionFailed(ex, host, port);
-                // Still add the original hostname as a fallback
-                if (seen.Add((host, port)))
-                {
-                    resolved.Add((host, port, host));
-                }
             }
+
+            // Without a resolved address, still try the hostname: the connection resolves it again.
+            if (!resolvedAddress && seen.Add((host, port, null)))
+                resolved.Add((host, port, null));
         }
 
         return resolved;
@@ -2245,7 +2264,7 @@ public sealed class MetadataOptions
     /// <summary>
     /// Maximum time in milliseconds spent retrying initial bootstrap DNS resolution.
     /// This KIP-909 budget is independent of metadata initialization and request timeouts.
-    /// Default is 120000 (2 minutes).
+    /// Default is 120000 (2 minutes); Kafka 4.4 defaults to 0. Zero resolves once with no deadline.
     /// </summary>
     public int BootstrapResolveTimeoutMs { get; init; } = 120000;
 
