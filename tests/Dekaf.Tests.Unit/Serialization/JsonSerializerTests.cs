@@ -213,6 +213,51 @@ public class JsonSerializerTests
         await Assert.That(result.Name).IsNull();
     }
 
+    [Test]
+    public async Task Deserialize_Tombstone_ReturnsNull()
+    {
+        var serializer = new JsonSerializer<TestPerson>();
+        var context = CreateContext() with { IsNull = true };
+
+        var result = serializer.Deserialize(ReadOnlyMemory<byte>.Empty, context);
+
+        await Assert.That(result).IsNull();
+    }
+
+    [Test]
+    public async Task Deserialize_Tombstone_WithTypeInfo_ReturnsNull()
+    {
+        var serializer = new JsonSerializer<SourceGeneratedPerson>(
+            JsonSerializerTestsJsonContext.Default.SourceGeneratedPerson);
+        var context = CreateContext() with { IsNull = true };
+
+        var result = serializer.Deserialize(ReadOnlyMemory<byte>.Empty, context);
+
+        await Assert.That(result).IsNull();
+    }
+
+    [Test]
+    public async Task Deserialize_Tombstone_ValueType_ReturnsDefault()
+    {
+        var serializer = new JsonSerializer<int>();
+        var context = CreateContext() with { IsNull = true };
+
+        var result = serializer.Deserialize(ReadOnlyMemory<byte>.Empty, context);
+
+        await Assert.That(result).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Deserialize_EmptyNonNullData_Throws()
+    {
+        var serializer = new JsonSerializer<TestPerson>();
+        var context = CreateContext();
+
+        var act = () => serializer.Deserialize(ReadOnlyMemory<byte>.Empty, context);
+
+        await Assert.That(act).Throws<JsonException>();
+    }
+
     #endregion
 
     #region Collection Tests

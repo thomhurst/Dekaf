@@ -4,6 +4,7 @@ using BenchmarkDotNet.Configs;
 using Dekaf.Benchmarks.Infrastructure;
 using Dekaf.Producer;
 using Dekaf.Serialization;
+using Dekaf.Serialization.Json;
 
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
@@ -33,6 +34,8 @@ public class SerializerBenchmarks
     private string _unicodeString = null!;
     private string[] _batchKeys = null!;
     private byte[] _stringBytes = null!;
+    private JsonSerializer<string> _jsonSerializer = null!;
+    private byte[] _jsonBytes = null!;
     private SerializationContext _context;
 
     // Persistent buffers for ReusableBufferWriter, mirroring the producer's
@@ -59,6 +62,9 @@ public class SerializerBenchmarks
 
         // Pre-create string bytes for deserialization
         _stringBytes = System.Text.Encoding.UTF8.GetBytes(_mediumString);
+
+        _jsonSerializer = new JsonSerializer<string>();
+        _jsonBytes = System.Text.Encoding.UTF8.GetBytes("\"" + _mediumString + "\"");
     }
 
     // ===== String Serialization =====
@@ -92,6 +98,14 @@ public class SerializerBenchmarks
     public string DeserializeString()
     {
         return Serializers.String.Deserialize((ReadOnlyMemory<byte>)_stringBytes, _context);
+    }
+
+    // Non-null JSON value: the per-message path that every record takes past the tombstone check.
+    [BenchmarkCategory("Scalar")]
+    [Benchmark(Description = "Deserialize JSON String")]
+    public string DeserializeJsonString()
+    {
+        return _jsonSerializer.Deserialize((ReadOnlyMemory<byte>)_jsonBytes, _context);
     }
 
     // ===== Int32 Serialization =====
