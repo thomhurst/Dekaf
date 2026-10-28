@@ -5,9 +5,13 @@ run-name: 'Performance gate ${{ github.event.pull_request.number && format(''PR 
 # minutes apart. The PR's fixture source is built against both product revisions, so a PR can
 # add or change fixtures without landing them on main first. Thresholds, the repeat rule and
 # the class selection live in .github/scripts/performance_gate.py.
+#
+# A pull request is measured once when it opens (or leaves draft). Later pushes are measured only
+# while the PR carries the `performance` label; adding the label measures the current head.
+# Unrelated label and push events get their own concurrency group so they never cancel a run.
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
     paths:
       - 'src/**'
       - 'tools/Dekaf.Benchmarks/**'
@@ -34,7 +38,12 @@ defaults:
   run:
     shell: bash
 concurrency:
-  group: performance-gate-${{ github.event.pull_request.number || github.run_id }}
+  group: >-
+    performance-gate-${{ github.event.pull_request.number || github.run_id }}${{ !(github.event_name == 'workflow_dispatch'
+    || github.event.pull_request.draft == false && (contains(fromJSON('["opened","reopened","ready_for_review"]'), github.event.action)
+    || github.event.action == 'labeled' && github.event.label.name == 'performance'
+    || github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'performance')))
+    && format('-ignored-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 env:
   DOTNET_CLI_TELEMETRY_OPTOUT: '1'
@@ -49,7 +58,12 @@ env:
 jobs:
   plan:
     name: Select benchmark classes
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+    # Keep in sync with the concurrency group above.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || github.event.pull_request.draft == false && (contains(fromJSON('["opened","reopened","ready_for_review"]'), github.event.action)
+      || github.event.action == 'labeled' && github.event.label.name == 'performance'
+      || github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'performance'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -257,7 +271,7 @@ jobs:
   gate:
     name: Micro A1/B/A2 screen
     needs: [plan, measure]
-    if: always() && (github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false)
+    if: always() && needs.plan.result != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

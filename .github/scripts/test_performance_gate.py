@@ -38,23 +38,6 @@ def phases(a1=100.0, b=100.0, a2=100.0, alloc=(0, 0, 0), **kwargs):
 
 
 class SelectionTests(unittest.TestCase):
-    def test_admin_paths_select_consumer_assignment_parser(self):
-        selected = self.names(gate.select(['src/Dekaf/Admin/AdminClient.cs'], root=REPO_ROOT))
-        self.assertIn('ConsumerGroupAssignmentBenchmarks', selected)
-        self.assertIn('AdminClassicGroupDescriptionBenchmarks', selected)
-
-    def test_inmemory_paths_select_delivery_callbacks(self):
-        selected = self.names(gate.select(['src/Dekaf.Testing/InMemoryKafkaCluster.cs'], root=REPO_ROOT))
-        self.assertIn('InMemoryDeliveryCallbackBenchmarks', selected)
-        self.assertIn('InMemoryClassicGroupDescriptionBenchmarks', selected)
-
-    def test_config_mutations_keep_direct_fixture_coverage(self):
-        for path in ('src/Dekaf/Admin/AdminClient.cs', 'src/Dekaf/Admin/AdminClient.DetailedConfigMutations.cs',
-                     'src/Dekaf/Admin/AdminClient.DetailedMutations.cs'):
-            with self.subTest(path=path):
-                selected = self.names(gate.select([path], root=REPO_ROOT))
-                self.assertIn('AdminDetailedConfigBenchmarks', selected)
-
     fixtures = {'AccumulatorAppendBenchmarks': {'file': 'a.cs', 'steady_state': True},
                 'ConsumerHotPathBenchmarks': {'file': 'b.cs', 'steady_state': True},
                 'FetchResponseParsingBenchmarks': {'file': 'c.cs', 'steady_state': True},
@@ -65,107 +48,43 @@ class SelectionTests(unittest.TestCase):
     def names(self, selection):
         return [item['name'] for item in selection['classes']]
 
-    def test_partition_message_key_selects_direct_fixture(self):
-        path = 'src/Dekaf/Consumer/PartitionMessageKey.cs'
-        selected = self.names(gate.select([path], root=REPO_ROOT))
-        for name in ('PartitionMessageKeyBenchmarks', 'CustomKeyOrderedDispatchBenchmarks', 'BinaryKeyDispatchBenchmarks',
-                     'DistinctBinaryKeyDispatchBenchmarks', 'SharedSuffixBinaryKeyDispatchBenchmarks',
-                     'BinaryHashPromotionBenchmarks'):
-            self.assertIn(name, selected)
-
-    def test_key_ordered_dispatcher_selects_message_key_fixture(self):
-        for path in ('src/Dekaf/Consumer/KeyOrderedPartitionDispatcher.cs',
+    def test_key_ordered_dispatch_paths_select_message_key_fixtures(self):
+        for path in ('src/Dekaf/Consumer/PartitionMessageKey.cs', 'src/Dekaf/Consumer/KeyOrderedPartitionDispatcher.cs',
                      'src/Dekaf/Consumer/KeyOrderedPartitionDispatcher.Storage.cs'):
             with self.subTest(path=path):
                 selected = self.names(gate.select([path], root=REPO_ROOT))
-                for name in ('PartitionMessageKeyBenchmarks', 'CustomKeyOrderedDispatchBenchmarks', 'BinaryKeyDispatchBenchmarks',
-                             'DistinctBinaryKeyDispatchBenchmarks', 'SharedSuffixBinaryKeyDispatchBenchmarks',
-                             'BinaryHashPromotionBenchmarks'):
+                for name in gate.KEY_DISPATCH_BENCHMARKS:
                     self.assertIn(name, selected)
-
-    def test_detailed_mutation_paths_select_direct_fixture(self):
-        for path in ('src/Dekaf/Admin/AdminClient.cs', 'src/Dekaf/Admin/AdminClient.DetailedTopicMutations.cs'):
-            with self.subTest(path=path):
-                selected = self.names(gate.select([path], root=REPO_ROOT))
-                self.assertIn('AdminDetailedMutationBenchmarks', selected)
-
-    def test_quota_mutations_select_direct_fixture(self):
-        for path in ('src/Dekaf/Admin/AdminClient.DetailedClientQuotaMutations.cs', 'src/Dekaf/Admin/AdminClient.DetailedMutations.cs'):
-            with self.subTest(path=path):
-                selected = self.names(gate.select([path], root=REPO_ROOT))
-                self.assertIn('AdminDetailedClientQuotaBenchmarks', selected)
-
-    def test_inmemory_quota_paths_select_direct_fixture(self):
-        for path in ('src/Dekaf.Testing/InMemoryAdminClient.DetailedClientQuotaMutations.cs',
-                     'src/Dekaf.Testing/InMemoryAdminClient.DetailedMutations.cs',
-                     'src/Dekaf.Testing/InMemoryAdminClient.cs'):
-            with self.subTest(path=path):
-                selected = self.names(gate.select([path], root=REPO_ROOT))
-                self.assertIn('InMemoryDetailedClientQuotaBenchmarks', selected)
-
-    def test_member_removal_paths_select_direct_fixture(self):
-        for path in ('src/Dekaf/Admin/AdminClient.MemberRemoval.cs', 'src/Dekaf/Admin/AdminClient.cs'):
-            with self.subTest(path=path):
-                selected = self.names(gate.select([path], root=REPO_ROOT))
-                self.assertIn('AdminMemberRemovalBenchmarks', selected)
-
-    def test_security_mutation_paths_select_direct_fixture(self):
-        for path in ('src/Dekaf/Admin/AdminClient.DetailedSecurityMutations.cs', 'src/Dekaf/Admin/AdminClient.DetailedMutations.cs'):
-            with self.subTest(path=path):
-                selected = self.names(gate.select([path], root=REPO_ROOT))
-                self.assertIn('AdminDetailedSecurityBenchmarks', selected)
-
-    def test_consumer_group_mutation_paths_select_direct_fixture(self):
-        for path in ('src/Dekaf/Admin/AdminClient.DetailedConsumerGroupMutations.cs', 'src/Dekaf/Admin/AdminClient.DetailedMutations.cs'):
-            with self.subTest(path=path):
-                selected = self.names(gate.select([path], root=REPO_ROOT))
-                self.assertIn('AdminDetailedConsumerGroupMutationBenchmarks', selected)
-
-    def test_member_registration_paths_select_direct_fixture(self):
-        for path in ('src/Dekaf.Testing/InMemoryKafkaCluster.cs', 'src/Dekaf.Testing/InMemoryKafkaCluster.MemberRemoval.cs', 'src/Dekaf.Testing/InMemoryConsumer.cs'):
-            with self.subTest(path=path):
-                selected = self.names(gate.select([path], root=REPO_ROOT))
-                self.assertIn('InMemoryMemberRegistrationBenchmarks', selected)
-    def test_consumer_paths_select_completion_and_epoch_fixtures(self):
-        for path in ('src/Dekaf/Consumer/CompletedOffsetRanges.cs', 'src/Dekaf/Consumer/PartitionedProcessing.cs', 'src/Dekaf/Consumer/IKafkaConsumer.cs'):
-            with self.subTest(path=path):
-                selected = self.names(gate.select([path], root=REPO_ROOT))
-                for fixture in ('PartitionedOffsetCompletionBenchmarks', 'PartitionedOffsetFragmentationBenchmarks', 'ConsumeResultEpochBenchmarks'):
-                    self.assertIn(fixture, selected)
-
-    def test_detailed_share_mutations_select_coordinator_fixture(self):
-        for path in ('src/Dekaf/Admin/AdminClient.DetailedMutations.cs', 'src/Dekaf/Admin/AdminClient.DetailedShareGroupOffsets.cs'):
-            with self.subTest(path=path):
-                selected = self.names(gate.select([path], root=REPO_ROOT))
-                self.assertIn('AdminDetailedShareGroupOffsetBenchmarks', selected)
-    def test_share_consumer_selects_polling_and_batch_fixtures(self):
-        path = 'src/Dekaf/ShareConsumer/KafkaShareConsumer.cs'
-        selected = self.names(gate.select([path], root=REPO_ROOT))
-        for fixture in ('ShareConsumerPollBenchmarks', 'ShareConsumerPollBufferBenchmarks', 'ShareConsumerResubscribeBenchmarks', 'ShareConsumerIdleAssignmentBenchmarks', 'ShareConsumerMissingLeaderBenchmarks', 'ShareConsumerUnsubscribeBenchmarks', 'ShareConsumerSparsePollBenchmarks', 'ShareConsumerBorrowedParsingBenchmarks',
-                        'ShareAcknowledgementReleaseBenchmarks', 'ShareAcknowledgementShrinkBenchmarks', 'ShareBatchAcknowledgementBenchmarks', 'ShareBatchScalingBenchmarks',
-                        'ShareBatchRenewalPollBenchmarks', 'ShareBatchPendingStateBenchmarks',
-                        'ShareBatchChunkedRenewalBenchmarks'):
-            self.assertIn(fixture, selected)
 
     def test_acknowledged_offsets_selects_indexing_fixture(self):
         path = 'src/Dekaf/ShareConsumer/ShareAcknowledgedOffsets.cs'
         selected = self.names(gate.select([path], root=REPO_ROOT))
         self.assertIn('ShareAcknowledgedOffsetsBenchmarks', selected)
 
-    def test_share_owner_paths_select_ownership_fixtures(self):
-        for path in ('src/Dekaf/ShareConsumer/ShareRecordBatchOwner.cs',
-                     'src/Dekaf/ShareConsumer/KafkaShareConsumer.cs',
-                     'src/Dekaf/ShareConsumer/KafkaShareConsumer.BufferedRecords.cs'):
-            with self.subTest(path=path):
-                selected = self.names(gate.select([path], root=REPO_ROOT))
-                for fixture in ('ShareConsumerMultiBatchBenchmarks', 'ShareConsumerPartialPollBenchmarks',
-                                'ShareConsumerRenewalReplayBenchmarks'):
-                    self.assertIn(fixture, selected)
-
-    def test_any_product_change_runs_the_sentinels(self):
-        selection = gate.select(['src/Dekaf/Admin/AdminClient.cs'], fixtures=self.fixtures)
+    def test_hot_path_change_runs_the_sentinels(self):
+        selection = gate.select(['src/Dekaf/Networking/KafkaConnection.cs'], fixtures=self.fixtures)
         self.assertEqual(sorted(gate.SENTINELS), self.names(selection))
         self.assertEqual(['*.Unit.AccumulatorAppendBenchmarks.*'], [selection['classes'][0]['filter']])
+
+    def test_build_inputs_run_the_sentinels(self):
+        for path in ('Directory.Packages.props', 'global.json', 'src/Dekaf/Dekaf.csproj'):
+            with self.subTest(path=path):
+                self.assertEqual(sorted(gate.SENTINELS), self.names(gate.select([path], fixtures=self.fixtures)))
+
+    def test_control_plane_changes_select_nothing(self):
+        paths = ['src/Dekaf/Admin/AdminClient.cs', 'src/Dekaf/Builders.cs', 'src/Dekaf/Metadata/MetadataManager.cs',
+                 'src/Dekaf.Testing/InMemoryKafkaCluster.cs', 'src/Dekaf.Extensions.DependencyInjection/ServiceCollectionExtensions.cs',
+                 'src/Dekaf/PublicAPI.Unshipped.txt', 'src/Dekaf.Testing/Dekaf.Testing.csproj',
+                 'src/Dekaf/Consumer/ConsumerOptions.cs', 'src/Dekaf/ShareConsumer/ShareConsumerOptions.cs']
+        selection = gate.select(paths, root=REPO_ROOT)
+        self.assertFalse(selection['applicable'])
+        self.assertEqual([], selection['skipped'])
+
+    def test_component_mappings_stay_small(self):
+        for prefix, classes in gate.COMPONENTS.items():
+            with self.subTest(prefix=prefix):
+                self.assertLessEqual(len(classes), gate.MAX_COMPONENT_CLASSES)
+                self.assertTrue(prefix.startswith(gate.HOT_PATHS), f'{prefix} is not under a hot path')
 
     def test_component_directories_add_their_classes(self):
         selection = gate.select(['src\\Dekaf\\Producer\\RecordAccumulator.cs'], fixtures=self.fixtures)
@@ -212,7 +131,7 @@ class SelectionTests(unittest.TestCase):
         self.assertFalse(fixtures['SchemaRegistryCelFreshContextBenchmarks']['steady_state'])
 
     def test_unknown_and_non_steady_state_classes_are_skipped_with_a_reason(self):
-        selection = gate.select(['src/Dekaf/Foo.cs'], fixtures={'CompressionBenchmarks': {'file': 'f.cs', 'steady_state': False}})
+        selection = gate.select(['global.json'], fixtures={'CompressionBenchmarks': {'file': 'f.cs', 'steady_state': False}})
         self.assertFalse(selection['applicable'])
         self.assertEqual(sorted(gate.SENTINELS), sorted(item['name'] for item in selection['skipped']))
 
@@ -500,7 +419,10 @@ class WorkflowTests(unittest.TestCase):
     def test_gate_workflow_runs_one_same_vm_job_per_class_and_repeats_regressions(self):
         workflow = WORKFLOW.read_text(encoding='utf-8')
         measure = workflow.split('\n  measure:\n', 1)[1].split('\n  gate:\n', 1)[0]
-        self.assertIn("types: [opened, synchronize, reopened, ready_for_review]", workflow)
+        self.assertIn("types: [opened, synchronize, reopened, ready_for_review, labeled]", workflow)
+        self.assertIn("github.event.action == 'labeled' && github.event.label.name == 'performance'", workflow)
+        self.assertIn("github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'performance')", workflow)
+        self.assertIn("format('-ignored-{0}', github.run_id)", workflow)
         self.assertIn("- 'tools/Dekaf.Benchmarks/**'", workflow)
         self.assertNotIn('ubicloud', workflow)
         self.assertNotIn('jq ', workflow)

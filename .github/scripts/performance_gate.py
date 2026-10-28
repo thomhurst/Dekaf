@@ -35,36 +35,28 @@ NON_STEADY_STATE = re.compile(r'IterationSetup|IterationCleanup|InvocationCount|
 CLASS_DECLARATION = re.compile(r'^\s*public\s+(?:sealed\s+)?(?:partial\s+)?class\s+(\w+Benchmarks?)\b', re.M)
 COMMENT = re.compile(r'//[^\n]*|/\*.*?\*/', re.S)
 
-# Hot-path sentinels for any product or build-input change. Fixture classes the PR adds or edits
-# always run as well, so any other component (or a large parameter sweep such as Crc32CBenchmarks)
-# is covered by touching its fixture. Keep mapped classes under about 16 expanded cases so a job
-# finishes in roughly 25 minutes.
+# Only product code on the per-message/per-batch path selects classes by path. Control-plane code
+# (Admin, Metadata, Streams, builders, *Options.cs, Dekaf.Testing, optional integrations) measures nothing unless
+# the PR touches a fixture. Fixture classes the PR adds or edits always run, so any other component
+# (or a large parameter sweep such as Crc32CBenchmarks) is covered by touching its fixture.
+HOT_PATHS = ('src/Dekaf/Producer/', 'src/Dekaf/Consumer/', 'src/Dekaf/ShareConsumer/', 'src/Dekaf/Networking/',
+             'src/Dekaf/Protocol/', 'src/Dekaf/Serialization/', 'src/Dekaf/Compression/')
+BUILD_INPUTS = ('Directory.Packages.props', 'Directory.Build.props', 'Directory.Build.targets', 'global.json',
+                'src/Dekaf/Dekaf.csproj')
 SENTINELS = ('AccumulatorAppendBenchmarks', 'ConsumerHotPathBenchmarks',
              'FetchResponseParsingBenchmarks', 'ProduceResponseParsingBenchmarks')
-KEY_DISPATCH_BENCHMARKS = ('PartitionMessageKeyBenchmarks', 'CustomKeyOrderedDispatchBenchmarks', 'BinaryKeyDispatchBenchmarks',
-                           'DistinctBinaryKeyDispatchBenchmarks', 'SharedSuffixBinaryKeyDispatchBenchmarks',
-                           'BinaryHashPromotionBenchmarks')
+# Every mapped class is a 10 to 25 minute job on each gated run, so entries stay at or under this
+# cap. Do not add a new fixture here: touching it already selects it.
+MAX_COMPONENT_CLASSES = 3
+KEY_DISPATCH_BENCHMARKS = ('PartitionMessageKeyBenchmarks', 'CustomKeyOrderedDispatchBenchmarks', 'BinaryKeyDispatchBenchmarks')
 COMPONENTS = {
     'src/Dekaf/Consumer/KeyOrderedPartitionDispatcher': KEY_DISPATCH_BENCHMARKS,
     'src/Dekaf/Consumer/PartitionMessageKey.cs': KEY_DISPATCH_BENCHMARKS,
-    'src/Dekaf.Testing/': ('InMemoryMemberRegistrationBenchmarks', 'InMemoryDetailedClientQuotaBenchmarks',
-                         'InMemoryDeliveryCallbackBenchmarks', 'InMemoryClassicGroupDescriptionBenchmarks'),
-    'src/Dekaf/Admin/': ('AdminDetailedMutationBenchmarks', 'AdminMemberRemovalBenchmarks', 'AdminDetailedShareGroupOffsetBenchmarks',
-                       'AdminDetailedSecurityBenchmarks', 'AdminDetailedClientQuotaBenchmarks', 'AdminDetailedConsumerGroupMutationBenchmarks', 'AdminDetailedConfigBenchmarks',
-                       'ConsumerGroupAssignmentBenchmarks', 'AdminClassicGroupDescriptionBenchmarks'),
     'src/Dekaf/ShareConsumer/ShareAcknowledgedOffsets.cs': ('ShareAcknowledgedOffsetsBenchmarks',),
-    'src/Dekaf/Producer/': ('AccumulatorAdmissionAppendBenchmarks', 'ProducerFireHotPathBenchmarks',
-                            'PartitionerBenchmarks', 'InflightTrackingBenchmarks', 'PartitionQueueAccountingBenchmarks'),
-    'src/Dekaf/Consumer/': ('FetchRequestBuildBenchmarks', 'OffsetStoreBenchmarks', 'PartitionedDispatchBenchmarks',
-                            'KeyOrderedDispatchBenchmarks', 'PartitionedOffsetTrackingBenchmarks',
-                            'ConsumerBatchInterceptorBenchmarks', 'ConsumerFollowerOffsetRetryBenchmarks',
-                            'PartitionedOffsetCompletionBenchmarks', 'PartitionedOffsetFragmentationBenchmarks', 'ConsumeResultEpochBenchmarks'),
-    'src/Dekaf/ShareConsumer/': ('ShareConsumerParsingBenchmarks', 'ShareConsumerBorrowedParsingBenchmarks', 'ShareFetchResponseDecodingBenchmarks',
-                                 'ShareAcknowledgementTrackingBenchmarks', 'ShareAcknowledgementReleaseBenchmarks', 'ShareAcknowledgementShrinkBenchmarks', 'ShareConsumerMultiBatchBenchmarks', 'ShareConsumerResubscribeBenchmarks',
-                                 'ShareConsumerPollBenchmarks', 'ShareConsumerPollBufferBenchmarks', 'ShareConsumerIdleAssignmentBenchmarks', 'ShareConsumerMissingLeaderBenchmarks', 'ShareConsumerUnsubscribeBenchmarks', 'ShareConsumerSparsePollBenchmarks', 'ShareBatchAcknowledgementBenchmarks', 'ShareBatchScalingBenchmarks',
-                                 'ShareConsumerPartialPollBenchmarks', 'ShareConsumerRenewalReplayBenchmarks',
-                                 'ShareBatchRenewalPollBenchmarks', 'ShareBatchPendingStateBenchmarks',
-                                 'ShareBatchChunkedRenewalBenchmarks'),
+    'src/Dekaf/Producer/': ('AccumulatorAdmissionAppendBenchmarks', 'ProducerFireHotPathBenchmarks', 'PartitionerBenchmarks'),
+    'src/Dekaf/Consumer/': ('FetchRequestBuildBenchmarks', 'OffsetStoreBenchmarks', 'PartitionedDispatchBenchmarks'),
+    'src/Dekaf/ShareConsumer/': ('ShareConsumerPollBenchmarks', 'ShareFetchResponseDecodingBenchmarks',
+                                 'ShareAcknowledgementTrackingBenchmarks'),
     'src/Dekaf/Networking/': ('ResponseFrameReaderBenchmarks', 'PendingRequestTableBenchmarks',
                               'PipelinedResponseAllocationBenchmarks'),
     'src/Dekaf/Protocol/': ('ResponseFrameReaderBenchmarks', 'RecordHeaderMaterializationBenchmarks'),
@@ -109,7 +101,7 @@ def fixture_classes(root):
 
 
 def select(changed_files, root='.', fixtures=None):
-    """Sentinels for any product change, component classes by directory, and every touched fixture class."""
+    """Sentinels for any hot-path change, component classes by directory, and every touched fixture class."""
     fixtures = fixture_classes(root) if fixtures is None else fixtures
     wanted = set()
     for path in changed_files:
@@ -118,8 +110,8 @@ def select(changed_files, root='.', fixtures=None):
             file = Path(root) / path
             if file.exists():
                 wanted.update(classes_in(file.read_text(encoding='utf-8-sig')))
-        elif path.startswith('src/') and path.endswith(('.cs', '.csproj', '.props', '.targets', '.proto')) \
-                or path in ('Directory.Packages.props', 'Directory.Build.props', 'Directory.Build.targets', 'global.json'):
+        elif path.startswith(HOT_PATHS) and path.endswith(('.cs', '.proto')) and not path.endswith('Options.cs') \
+                or path in BUILD_INPUTS:
             wanted.update(SENTINELS)
             for prefix, classes in COMPONENTS.items():
                 if path.startswith(prefix):

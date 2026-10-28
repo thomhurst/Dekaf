@@ -4,13 +4,15 @@ All fixtures live in [tools/Dekaf.Benchmarks](../../tools/Dekaf.Benchmarks) and 
 standard BenchmarkDotNet. See [standard tooling](STANDARD-TOOLS.md) and the repository's
 [performance guidance](../../AGENTS.md).
 
-The [performance gate](../workflows/performance-gate.yml) runs on every pull request that
-changes `src/`, the benchmark project or the build inputs:
+The [performance gate](../workflows/performance-gate.yml) runs once when a pull request that
+changes `src/`, the benchmark project or the build inputs opens or leaves draft. Later pushes
+are measured only while the PR carries the `performance` label:
 
 - `.github/scripts/performance_gate.py select` picks benchmark classes: four hot-path
-  sentinels for any product change, a few extra classes per hot component directory, and
-  every fixture class the PR adds or edits. Non-steady-state fixtures are skipped with a
-  reason.
+  sentinels for changes under the hot-path directories or to build inputs, at most three
+  extra classes per hot component directory, and every fixture class the PR adds or edits.
+  Control-plane code (Admin, Metadata, builders, `Dekaf.Testing`, integrations) selects
+  nothing by path. Non-steady-state fixtures are skipped with a reason.
 - One `ubuntu-latest` job per class builds the PR's fixture source against the baseline
   (merge base with `main`) and the candidate, then measures A1, B and A2 back to back on
   that VM. If the PR fixtures need APIs the baseline lacks, the baseline builds its own
