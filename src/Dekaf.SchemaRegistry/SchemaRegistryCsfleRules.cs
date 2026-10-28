@@ -729,16 +729,35 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         var encryptedKeyMaterial = WaitFor(
             _kmsProviders.WrapKeyAsync(keyMaterial, ToKeyReference(kek)));
 
-        var registered = WaitFor(
-            _schemaRegistryClient.RegisterDekAsync(
-                settings.KekName,
-                new RegisterDekRequest
-                {
-                    Subject = settings.Subject,
-                    Version = existing is null ? null : existing.Version + 1,
-                    Algorithm = settings.Algorithm,
-                    EncryptedKeyMaterial = Convert.ToBase64String(encryptedKeyMaterial)
-                }));
+        int? version = existing is null ? null : existing.Version + 1;
+        Dek registered;
+        try
+        {
+            registered = WaitFor(
+                _schemaRegistryClient.RegisterDekAsync(
+                    settings.KekName,
+                    new RegisterDekRequest
+                    {
+                        Subject = settings.Subject,
+                        Version = version,
+                        Algorithm = settings.Algorithm,
+                        EncryptedKeyMaterial = Convert.ToBase64String(encryptedKeyMaterial)
+                    }));
+        }
+        catch (SchemaRegistryException ex) when (IsConflict(ex))
+        {
+            // Another producer registered this DEK version first. Use its key material, as the
+            // Confluent clients do, instead of failing the write.
+            CryptographicOperations.ZeroMemory(rawKey);
+            var winner = version is { } dekVersion
+                ? WaitFor(_schemaRegistryClient.GetDekAsync(
+                    settings.KekName,
+                    settings.Subject,
+                    dekVersion,
+                    settings.Algorithm))
+                : WaitFor(_schemaRegistryClient.GetDekAsync(settings.KekName, settings.Subject, settings.Algorithm));
+            return ResolveDekMaterial(winner, kek, settings.Subject, settings.RuleName, settings.Algorithm);
+        }
 
         return new ResolvedDek(settings.Algorithm, registered.Version, rawKey, registered.Timestamp);
     }
@@ -804,17 +823,25 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
                     ex);
             }
 
-            return WaitFor(
-                _schemaRegistryClient.RegisterKekAsync(
-                    new RegisterKekRequest
-                    {
-                        Name = settings.KekName,
-                        KmsType = settings.KmsType,
-                        KmsKeyId = settings.KmsKeyId,
-                        KmsProps = settings.MutableRule is { } mutableRule
-                            ? ResolveKmsProps(mutableRule)
-                            : settings.KmsProps
-                    }));
+            try
+            {
+                return WaitFor(
+                    _schemaRegistryClient.RegisterKekAsync(
+                        new RegisterKekRequest
+                        {
+                            Name = settings.KekName,
+                            KmsType = settings.KmsType,
+                            KmsKeyId = settings.KmsKeyId,
+                            KmsProps = settings.MutableRule is { } mutableRule
+                                ? ResolveKmsProps(mutableRule)
+                                : settings.KmsProps
+                        }));
+            }
+            catch (SchemaRegistryException conflict) when (IsConflict(conflict))
+            {
+                // Another producer auto-registered the KEK first.
+                return WaitFor(_schemaRegistryClient.GetKekAsync(settings.KekName));
+            }
         }
     }
 
@@ -1502,6 +1529,13 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
     {
         // Confluent DEK Registry uses 40470 for missing KEKs and 40471 for missing DEKs.
         return exception.ErrorCode is 404 or 40470 or 40471;
+    }
+
+    private static bool IsConflict(SchemaRegistryException exception)
+    {
+        // Confluent DEK Registry reports an existing KEK or DEK as HTTP 409 with a 409xx error code
+        // (40972 for a DEK); the client falls back to the HTTP status when the body has no code.
+        return exception.ErrorCode is 409 or (>= 40900 and <= 40999);
     }
 
     private T WaitFor<T>(Task<T> task)
