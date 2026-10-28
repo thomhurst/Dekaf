@@ -287,6 +287,21 @@ class ScreenTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'did not measure'):
             gate.confirm(first, gate.screen(*phases(method='Other')))
 
+    def test_regressed_case_whose_repeat_baseline_fails_is_reported_not_compared(self):
+        first = gate.screen([benchmark(), benchmark(method='Slow')], [benchmark(), benchmark(method='Slow', median=140)],
+                            [benchmark(), benchmark(method='Slow')])
+        failed = dict(benchmark(method='Slow'), Statistics=None, Metrics=[])
+        repeat = gate.screen([failed], [benchmark(method='Slow', median=135, allocated=70)], [benchmark(method='Slow')])
+        final = gate.confirm(first, repeat)
+        self.assertEqual(('PASS', 2, ['PASS']), (final['screen'], final['round'], [case['screen'] for case in final['cases']]))
+        self.assertEqual(['Dekaf.Benchmarks.Benchmarks.Unit AppendBenchmarks Slow'], [item['case'] for item in final['baseline_failed']])
+        self.assertEqual('REGRESSION', final['baseline_failed'][0]['first_round']['screen'])
+        self.assertIn("| AppendBenchmarks Slow | failed | 135.0 ns | | | | | | - / 70 / - | NOT COMPARED | regressed in the first round",
+                      gate.markdown(final))
+        # The candidate must still measure the case on the repeat.
+        with self.assertRaisesRegex(ValueError, 'which the candidate did not measure either'):
+            gate.screen([failed], [benchmark()], [failed])
+
     def test_passing_cases_are_not_repeated(self):
         first = gate.screen([benchmark(), benchmark(method='Slow')], [benchmark(), benchmark(method='Slow', median=140)],
                             [benchmark(), benchmark(method='Slow')])

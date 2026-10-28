@@ -309,13 +309,20 @@ def overall(cases):
 
 
 def confirm(previous, repeat):
-    """Keep a first-round REGRESSION only when the repeat of that case regressed as well."""
+    """Keep a first-round REGRESSION only when the repeat of that case regressed as well.
+
+    A regressed case that a baseline phase of the repeat failed to measure has no repeat control,
+    so it cannot reproduce; it is reported with the baseline failures, not compared."""
     repeated = {case['case']: case for case in repeat['cases']}
-    cases = []
+    repeat_failed = {item['case']: item for item in repeat.get('baseline_failed', [])}
+    cases, failed = [], list(previous.get('baseline_failed', []))
     for first in previous['cases']:
         again = repeated.get(first['case'])
         if first['screen'] != 'REGRESSION':
             cases.append(first)
+            continue
+        if first['case'] in repeat_failed:
+            failed.append(dict(repeat_failed[first['case']], first_round=first))
             continue
         if again is None:
             raise ValueError(f'the repeat did not measure the regressed case {first["case"]}')
@@ -327,7 +334,7 @@ def confirm(previous, repeat):
         else:
             merged.update(screen='PASS', notes=again['notes'] + [f'not reproduced on repeat ({summary})'])
         cases.append(merged)
-    return dict(previous, cases=cases, round=2, screen=overall(cases))
+    return dict(previous, cases=cases, baseline_failed=failed, round=2, screen=overall(cases))
 
 
 def regressed_filters(comparison):
@@ -358,8 +365,10 @@ def markdown(comparison):
             a2=_ns(item['A2']['median_ns']),
             alloc=' / '.join(f'{item[phase]["allocated_bytes"]:,.0f}' for phase in ('A1', 'B', 'A2'))))
     for item in comparison.get('baseline_failed', []):
-        rows.append('| {short} | failed | {b} | | | | | | {alloc} | NOT COMPARED | the baseline failed to measure this case |'.format(
-            short=item['short'].replace('|', '/'), b=_ns(item['median_ns']), alloc=f'- / {item["allocated_bytes"]:,.0f} / -'))
+        why = ("regressed in the first round, but the repeat's baseline failed to measure this case" if 'first_round' in item
+               else 'the baseline failed to measure this case')
+        rows.append('| {short} | failed | {b} | | | | | | {alloc} | NOT COMPARED | {why} |'.format(
+            short=item['short'].replace('|', '/'), b=_ns(item['median_ns']), alloc=f'- / {item["allocated_bytes"]:,.0f} / -', why=why))
     if comparison['candidate_only']:
         why = ' (the baseline has no benchmark for this filter; the PR adds the class)' if comparison.get('baseline_lacks_filter') else ''
         rows += ['', f'Candidate-only cases, not compared{why}: ' + ', '.join(
