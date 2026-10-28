@@ -512,4 +512,17 @@ public class IncrementalAssignmentTests
             .Throws<InvalidOperationException>();
         await Assert.That(consumer.Assignment).Count().IsEqualTo(2);
     }
+
+    [Test]
+    public async Task InMemoryConsumer_IncrementalUnassign_WhileFilterSubscriptionMatchesNoTopics_Throws()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("topic1", partitionCount: 2);
+        await using var consumer = new InMemoryConsumer<string, string>(cluster);
+
+        consumer.Subscribe(topic => topic.StartsWith("missing", StringComparison.Ordinal));
+
+        await Assert.That(() => consumer.IncrementalUnassign([new TopicPartition("topic1", 0)]))
+            .Throws<InvalidOperationException>();
+    }
 }
