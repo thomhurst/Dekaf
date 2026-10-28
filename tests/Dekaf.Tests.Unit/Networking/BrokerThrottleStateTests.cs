@@ -176,6 +176,7 @@ public sealed class BrokerThrottleStateTests
             (ApiKey.DescribeShareGroupOffsets, 0),
             (ApiKey.AlterShareGroupOffsets, 0),
             (ApiKey.DeleteShareGroupOffsets, 0),
+            (ApiKey.StreamsGroupTopologyDescriptionUpdate, 0),
             (ApiKey.UnregisterController, 0)
         ];
 
