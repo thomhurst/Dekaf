@@ -12,6 +12,10 @@
   <ItemGroup>
     <!-- MTP cannot yet select covering tests per mutant, so keep this campaign protocol-only. -->
     <Compile Include="..\Dekaf.Tests.Unit\AssemblyInfo.cs" Link="AssemblyInfo.cs" />
+    <!-- Module initializers configure the whole Dekaf.Tests.Unit host (thread pool, test-only switches);
+         link all of them so the linked suites run as they do in the unit project. -->
+    <Compile Include="..\Dekaf.Tests.Unit\ThreadPoolConfiguration.cs" Link="ThreadPoolConfiguration.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\AccumulatorTestHooks.cs" Link="Producer\AccumulatorTestHooks.cs" />
     <Compile Include="..\Dekaf.Tests.Unit\Protocol\ArrayEncodingTests.cs" Link="Protocol\ArrayEncodingTests.cs" />
     <Compile Include="..\Dekaf.Tests.Unit\Protocol\KafkaProtocolReaderTests.cs" Link="Protocol\KafkaProtocolReaderTests.cs" />
     <Compile Include="..\Dekaf.Tests.Unit\Protocol\KafkaProtocolWriterTests.cs" Link="Protocol\KafkaProtocolWriterTests.cs" />
