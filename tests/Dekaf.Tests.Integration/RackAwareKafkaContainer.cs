@@ -553,6 +553,24 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
 
     private static IReadOnlyDictionary<string, string> CreateBrokerEnvironment(int nodeId, string rack, int externalPort)
     {
+        var environment = CreateBaseBrokerEnvironment(nodeId, rack, externalPort);
+        if (SupportsShareGroups)
+        {
+            // Share groups (KIP-932), so share-consumer tests can move partition leadership.
+            environment["KAFKA_GROUP_SHARE_ENABLE"] = "true";
+            environment["KAFKA_GROUP_COORDINATOR_REBALANCE_PROTOCOLS"] = "classic,consumer,share";
+            environment["KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR"] = "3";
+            environment["KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR"] = "2";
+            environment["KAFKA_SHARE_COORDINATOR_STATE_TOPIC_NUM_PARTITIONS"] = "3";
+        }
+        return environment;
+    }
+
+    /// <summary>Whether the cluster's image enables share groups, as <see cref="KafkaContainerDefault"/> does.</summary>
+    public static bool SupportsShareGroups => KafkaContainerDefault.SupportsVersion(KafkaContainerDefault.ImageTag, 420);
+
+    private static Dictionary<string, string> CreateBaseBrokerEnvironment(int nodeId, string rack, int externalPort)
+    {
         return new Dictionary<string, string>
         {
             ["KAFKA_CLUSTER_ID"] = "MkU3OEVBNTcwNTJENDM2Qk",

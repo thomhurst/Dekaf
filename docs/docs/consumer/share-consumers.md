@@ -365,7 +365,7 @@ The callback covers both acknowledgement transports:
 - inline acknowledgements piggy-backed by `PollAsync`;
 - standalone acknowledgements sent by `CommitAsync` or the close/dispose flush.
 
-Dekaf invokes it once after broker retries finish and after successful acknowledgements are applied and failed acknowledgements are requeued. If cancellation ends a commit, failed partitions are requeued and reported before `OperationCanceledException` reaches the caller. A callback exception is logged and ignored; it never replaces the broker outcome or changes retry state.
+Dekaf invokes it once after broker retries finish and after successful acknowledgements are applied and failed acknowledgements are requeued. Acknowledgements for acquisitions the broker no longer holds are reported and dropped, not requeued or retried: `INVALID_RECORD_STATE`, `NOT_LEADER_OR_FOLLOWER` and `FENCED_LEADER_EPOCH` after the partition's leadership moved, and `UNKNOWN_TOPIC_OR_PARTITION` and `UNKNOWN_TOPIC_ID` after its topic was deleted. The broker redelivers those records. Batch consumption keeps requeueing failed batch outcomes instead, including these. If cancellation ends a commit, failed partitions are requeued and reported before `OperationCanceledException` reaches the caller. A callback exception is logged and ignored; it never replaces the broker outcome or changes retry state.
 
 The callback runs synchronously on the thread continuing the poll, commit, or close operation. Keep it short and non-blocking. Re-entering the same consumer from the callback is unsupported; record work for later processing instead.
 
@@ -382,6 +382,12 @@ await shareConsumer.CommitAsync(cancellationToken); // Sends the renewal
 ```
 
 Renewal requires explicit acknowledgement mode and brokers supporting ShareFetch/ShareAcknowledge v2; older brokers throw `BrokerVersionException`.
+
+## Leadership Changes and Deleted Topics
+
+When a partition's leadership moves, the old leader answers `ShareFetch` with `NOT_LEADER_OR_FOLLOWER` or `FENCED_LEADER_EPOCH` and usually names the new leader. Dekaf applies that hint, so the next poll fetches the partition from the new leader without waiting for a metadata refresh. Without a hint, and for other partition errors such as `UNKNOWN_TOPIC_ID` or `UNKNOWN_TOPIC_OR_PARTITION` for a deleted topic, Dekaf refreshes metadata and stops fetching that partition for the retry backoff (`RetryBackoffMs`, doubling up to `RetryBackoffMaxMs`). The other partitions keep being fetched. A warning is logged when a partition's error starts or changes; repeats log at debug level.
+
+The share-partition state belongs to the partition leader. After a move, the new leader makes the records that were in flight available again, so acknowledgements for them fail as described in [Observing Acknowledgement Outcomes](#observing-acknowledgement-outcomes) and the records are redelivered.
 
 ## Configuration
 

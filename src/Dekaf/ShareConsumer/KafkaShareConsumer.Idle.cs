@@ -36,7 +36,12 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         using var retryCancellation = cancellationToken.CanBeCanceled
             ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
             : new CancellationTokenSource();
-        var retry = PrepareRequestRetryAsync(0, retryCancellation.Token, observedAssignment);
+        // Partitions backing off after fetch errors have leaders, so wait out their backoff
+        // instead of returning to an empty fetch immediately.
+        var resumeDelayMs = GetPartitionFetchResumeDelayMs(observedAssignment);
+        var retry = resumeDelayMs > 0
+            ? new ValueTask(Task.Delay(resumeDelayMs, retryCancellation.Token))
+            : PrepareRequestRetryAsync(0, retryCancellation.Token, observedAssignment);
         if (retry.IsCompletedSuccessfully)
         {
             await retry.ConfigureAwait(false);

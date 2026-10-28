@@ -120,6 +120,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
             }
 
             var fetchWaitStarted = ShareMetrics?.Timestamp(ShareConsumerTelemetryMetrics.Groups.Poll) ?? -1;
+            if (_detachedFetch is null)
+                await RefreshMetadataForPartitionErrorsAsync(cancellationToken).ConfigureAwait(false);
             var detached = TakeDetachedFetch();
             List<Task<ShareFetchBrokerResult>> fetchTasks;
             Dictionary<TopicPartition, List<AcknowledgementBatchData>>? pendingAcks;
@@ -190,12 +192,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                         continue;
                     foreach (var partition in topic.Partitions)
                     {
-                        if (partition.ErrorCode != ErrorCode.None)
-                        {
-                            LogPartitionFetchError(topicInfo.Name, partition.PartitionIndex, partition.ErrorCode);
-                            continue;
-                        }
-                        if (partition.AcquiredRecords.Count == 0)
+                        // CompletePollFetch already handled partition errors once per response.
+                        if (partition.ErrorCode != ErrorCode.None || partition.AcquiredRecords.Count == 0)
                             continue;
                         // The assignment can change while a fetch is detached. Like
                         // RemoveOutsideAssignment, leave revoked acquisitions to lock expiry.
