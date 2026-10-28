@@ -3339,9 +3339,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
 
                 // Release the drain lock before re-checking so a concurrent ReleaseMemory
-                // can enter if we decide not to loop again.
+                // can enter if we decide not to loop again. The release must be a full fence:
+                // a requester publishes its version and then CASes the guard, and this owner
+                // releases the guard and then reads the version. With a release-only write the
+                // CPU may read the version before the release is visible, so the owner misses the
+                // request while the requester still sees the guard held, and the append waits for
+                // max.block.ms (#3858). One fence per drain pass, slow path only.
                 ownsDrainGuard = false;
-                Volatile.Write(ref _draining, 0);
+                Interlocked.Exchange(ref _draining, 0);
                 var drainRequested = Volatile.Read(ref _pendingAppendDrainRequestVersion)
                     != drainRequestVersion;
 
@@ -9036,7 +9041,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         finally
         {
-            Volatile.Write(ref _draining, 0);
+            // Full fence before the version read below, as at the end of a drain pass (#3858).
+            Interlocked.Exchange(ref _draining, 0);
         }
 
         if (Volatile.Read(ref _pendingAppendDrainRequestVersion) != drainRequestVersion
