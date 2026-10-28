@@ -262,6 +262,69 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    [Arguments("""{"type":"number","$dynamicRef":{},"$recursiveRef":42}""")]
+    [Arguments("""{"$schema":"http://json-schema.org/draft-07/schema#","type":"number","$dynamicRef":"#/definitions/text","$recursiveRef":"#","definitions":{"text":{"type":"string"}}}""")]
+    [Arguments("""{"$schema":"https://json-schema.org/draft/2019-09/schema","type":"number","$dynamicRef":"#/$defs/text","$defs":{"text":{"type":"string"}}}""")]
+    [Arguments("""{"$schema":"https://json-schema.org/draft/2019-09/schema","type":"number","$dynamicRef":{}}""")]
+    [Arguments("""{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"number","$recursiveRef":"#/$defs/text","$defs":{"text":{"type":"string"}}}""")]
+    [Arguments("""{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"number","$recursiveRef":{}}""")]
+    public void Validator_IgnoresReferenceKeywordsFromOtherDialects(string schema)
+    {
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schema));
+
+        validator.Validate("1"u8, 40);
+        Assert.Throws<JsonSchemaValidationException>(() => validator.Validate("\"text\""u8, 40));
+    }
+
+    [Test]
+    [Arguments("""{"type":"string","$anchor":{},"$dynamicAnchor":42}""")]
+    [Arguments("""{"$schema":"http://json-schema.org/draft-07/schema#","type":"string","definitions":{"unused":{"$anchor":42,"$dynamicAnchor":{}}}}""")]
+    [Arguments("""{"$schema":"http://json-schema.org/draft-07/schema#","definitions":{"text":{"type":"string"}},"$ref":"#/definitions/text","$anchor":{},"$dynamicAnchor":42}""")]
+    [Arguments("""{"$schema":"https://json-schema.org/draft/2019-09/schema","type":"string","$dynamicAnchor":{}}""")]
+    public void Validator_IgnoresAnchorKeywordsFromOtherDialects(string schema)
+    {
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schema));
+
+        validator.Validate("\"text\""u8, 41);
+        Assert.Throws<JsonSchemaValidationException>(() => validator.Validate("1"u8, 41));
+    }
+
+    [Test]
+    [Arguments("2019-09")]
+    [Arguments("2020-12")]
+    public void Validator_ResolvesPlainAnchorsInModernDialects(string draft)
+    {
+        var schema = $$$"""
+            {"$schema":"https://json-schema.org/draft/{{{draft}}}/schema","$defs":{"text":{"$anchor":"text","type":"string"}},"$ref":"#text"}
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schema));
+
+        validator.Validate("\"text\""u8, 42);
+        Assert.Throws<JsonSchemaValidationException>(() => validator.Validate("1"u8, 42));
+    }
+
+    [Test]
+    [Arguments("""{"$schema":"https://json-schema.org/draft/2019-09/schema","$id":"https://example.test/root.json","$defs":{"tree":{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"tree.json","$dynamicAnchor":"node","type":"object","required":["name"],"properties":{"child":{"$dynamicRef":"#node"}}},"unused":{"$id":"unused.json","$dynamicAnchor":"node"}},"$ref":"tree.json"}""")]
+    [Arguments("""{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://example.test/root.json","$defs":{"tree":{"$schema":"https://json-schema.org/draft/2019-09/schema","$id":"tree.json","$recursiveAnchor":true,"type":"object","required":["name"],"properties":{"child":{"$recursiveRef":"#"}}},"unused":{"$id":"unused.json","$recursiveAnchor":true}},"$ref":"tree.json"}""")]
+    public void Validator_UsesEachResourceDialectForReferencesAndAnchors(string schema)
+    {
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schema));
+
+        validator.Validate("""{"name":"root","child":{"name":"leaf"}}"""u8, 43);
+        Assert.Throws<JsonSchemaValidationException>(() => validator.Validate("""{"name":"root","child":{}}"""u8, 43));
+    }
+
+    [Test]
+    public void Validator_PreservesDraft201909TupleItems()
+    {
+        var validator = CreateFactory().GetOrCreate(CreateSchema(
+            """{"$schema":"https://json-schema.org/draft/2019-09/schema","items":[{"type":"string"},{"type":"integer"}]}"""));
+
+        validator.Validate("""["text",1]"""u8, 44);
+        Assert.Throws<JsonSchemaValidationException>(() => validator.Validate("""[1,"text"]"""u8, 44));
+    }
+
+    [Test]
     public void Factory_RejectsMixedTupleKeywordDialects()
     {
         const string schema =

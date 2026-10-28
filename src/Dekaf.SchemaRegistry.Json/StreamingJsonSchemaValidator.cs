@@ -1876,16 +1876,21 @@ internal sealed class SchemaCompiler : IDisposable
         Uri baseUri,
         SchemaDialect dialect)
     {
+        if (dialect == SchemaDialect.Draft7)
+            return;
+
         var target = new ReferenceTarget(document, schema, pointer, baseUri, dialect);
         if (schema.TryGetProperty("$anchor", out var anchor))
             AddAnchor(target, "$anchor", anchor, isDynamic: false);
 
         // Dynamic anchors are counted per distinct resource URI, so a document registered under two
         // reference names still counts once when deciding whether a dynamic reference is static.
-        if (schema.TryGetProperty("$dynamicAnchor", out var dynamicAnchor))
+        if (dialect == SchemaDialect.Draft202012 &&
+            schema.TryGetProperty("$dynamicAnchor", out var dynamicAnchor))
             AddAnchor(target, "$dynamicAnchor", dynamicAnchor, isDynamic: true);
 
-        if (schema.TryGetProperty("$recursiveAnchor", out var recursiveAnchor) &&
+        if (dialect == SchemaDialect.Draft201909 &&
+            schema.TryGetProperty("$recursiveAnchor", out var recursiveAnchor) &&
             recursiveAnchor.ValueKind == JsonValueKind.True)
             _recursiveAnchorResources.Add(WithoutFragment(baseUri).AbsoluteUri);
     }
@@ -2042,11 +2047,10 @@ internal sealed class SchemaCompiler : IDisposable
         node.MaxLength = GetNonNegativeInt32(schema, "maxLength", int.MaxValue);
         ParseNumericAssertions(schema, node);
         node.AllOf = CompileSchemaArray(document, schema, "allOf", pointer, baseUri, dialect, depth);
-        if (dialect != SchemaDialect.Draft7)
-        {
+        if (dialect == SchemaDialect.Draft202012)
             AttachDynamicReference(node, CompileDynamicReference(schema, baseUri, depth));
+        else if (dialect == SchemaDialect.Draft201909)
             AttachDynamicReference(node, CompileRecursiveReference(schema, baseUri, depth));
-        }
         node.HasAnyOf = schema.TryGetProperty("anyOf", out _);
         node.AnyOf = CompileSchemaArray(document, schema, "anyOf", pointer, baseUri, dialect, depth);
         node.HasOneOf = schema.TryGetProperty("oneOf", out _);
@@ -2782,8 +2786,9 @@ internal sealed class SchemaCompiler : IDisposable
             value.Contains("draft-06", StringComparison.OrdinalIgnoreCase) ||
             value.Contains("draft-07", StringComparison.OrdinalIgnoreCase))
             return SchemaDialect.Draft7;
-        if (value.Contains("2019-09", StringComparison.OrdinalIgnoreCase) ||
-            value.Contains("2020-12", StringComparison.OrdinalIgnoreCase))
+        if (value.Contains("2019-09", StringComparison.OrdinalIgnoreCase))
+            return SchemaDialect.Draft201909;
+        if (value.Contains("2020-12", StringComparison.OrdinalIgnoreCase))
             return SchemaDialect.Draft202012;
 
         throw new NotSupportedException($"JSON Schema dialect '{value}' is not supported.");
@@ -2828,6 +2833,7 @@ internal sealed class SchemaCompiler : IDisposable
 internal enum SchemaDialect : byte
 {
     Draft7,
+    Draft201909,
     Draft202012
 }
 
