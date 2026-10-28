@@ -192,11 +192,12 @@ public class ShareSessionManagerTests
         var manager = new ShareSessionManager();
         var oldTopicId = Guid.NewGuid();
         var newTopicId = Guid.NewGuid();
-        manager.UpdateSessionPartitions(1, newSession: true, SentTopics(("old", oldTopicId, [0, 1])), null);
+        var session = manager.GetSessionPartitions(1);
+        ShareSessionManager.UpdateSessionPartitions(session, newSession: true, SentTopics(("old", oldTopicId, [0, 1])), null);
 
-        manager.UpdateSessionPartitions(1, newSession: true, SentTopics(("new", newTopicId, [2])), null);
+        ShareSessionManager.UpdateSessionPartitions(session, newSession: true, SentTopics(("new", newTopicId, [2])), null);
 
-        await Assert.That(manager.GetSessionPartitions(1)!)
+        await Assert.That(manager.GetSessionPartitions(1))
             .IsEquivalentTo(new Dictionary<TopicPartition, Guid> { [new("new", 2)] = newTopicId });
     }
 
@@ -206,25 +207,44 @@ public class ShareSessionManagerTests
         var manager = new ShareSessionManager();
         var oldTopicId = Guid.NewGuid();
         var recreatedTopicId = Guid.NewGuid();
-        manager.UpdateSessionPartitions(1, newSession: true, SentTopics(("topic", oldTopicId, [0, 1])), null);
+        var session = manager.GetSessionPartitions(1);
+        ShareSessionManager.UpdateSessionPartitions(session, newSession: true, SentTopics(("topic", oldTopicId, [0, 1])), null);
 
         // The topic was recreated: partition 0 is forgotten under its old ID and sent under the new one.
-        manager.UpdateSessionPartitions(
-            1,
+        ShareSessionManager.UpdateSessionPartitions(
+            session,
             newSession: false,
             SentTopics(("topic", recreatedTopicId, [0])),
             [new TopicPartition("topic", 0), new TopicPartition("topic", 1)]);
 
-        await Assert.That(manager.GetSessionPartitions(1)!)
+        await Assert.That(manager.GetSessionPartitions(1))
             .IsEquivalentTo(new Dictionary<TopicPartition, Guid> { [new("topic", 0)] = recreatedTopicId });
     }
 
     [Test]
-    public async Task UpdateSessionPartitions_DoesNotMarkSessionOpened()
+    public async Task UpdateSessionPartitions_ReplyFromBeforeResetAll_LeavesNewSessionUnchanged()
+    {
+        var manager = new ShareSessionManager();
+        var topicId = Guid.NewGuid();
+        // A request captures the session, then Unsubscribe resets every session before its reply.
+        var abandoned = manager.GetSessionPartitions(1);
+        manager.ResetAll();
+        var current = manager.GetSessionPartitions(1);
+        ShareSessionManager.UpdateSessionPartitions(current, newSession: true, SentTopics(("new", topicId, [0])), null);
+
+        ShareSessionManager.UpdateSessionPartitions(abandoned, newSession: true, SentTopics(("old", topicId, [1])), null);
+
+        await Assert.That(manager.GetSessionPartitions(1))
+            .IsEquivalentTo(new Dictionary<TopicPartition, Guid> { [new("new", 0)] = topicId });
+    }
+
+    [Test]
+    public async Task GetSessionPartitions_DoesNotMarkSessionOpened()
     {
         var manager = new ShareSessionManager();
 
-        manager.UpdateSessionPartitions(1, newSession: true, SentTopics(("topic", Guid.NewGuid(), [0])), null);
+        ShareSessionManager.UpdateSessionPartitions(
+            manager.GetSessionPartitions(1), newSession: true, SentTopics(("topic", Guid.NewGuid(), [0])), null);
 
         await Assert.That(manager.HadSession(1)).IsFalse();
         manager.IncrementEpoch(1);

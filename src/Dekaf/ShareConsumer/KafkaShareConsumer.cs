@@ -1204,6 +1204,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     ShareFetchRequest.LowestSupportedVersion,
                     ShareFetchRequest.HighestSupportedVersion);
                 EnsureRenewalSupported(ApiKey.ShareFetch, version, isRenewAck);
+                // Capture the session's partitions before its epoch, so a reset between the two
+                // leaves this request with the old, unreachable set rather than the new session's.
+                var sessionPartitions = _sessionManager.GetSessionPartitions(brokerId);
                 // Read the epoch once. The poll checked it before selecting acknowledgements, but
                 // another request can reset the session while this one waits for its connection,
                 // and the request that opens a session cannot carry acknowledgements.
@@ -1213,7 +1216,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 var maxRecords = !isRenewAck && version >= 1 ? _options.MaxPollRecords : 0;
                 var topics = BuildShareFetchTopics(partitions, brokerAcks, version, out var sentTopics);
                 var sessionChanged = PrepareSessionPartitionsUpdate(
-                    brokerId, sessionEpoch, sentTopics, out var forgottenTopics, out var forgottenPartitions);
+                    brokerId, sessionEpoch, sessionPartitions, sentTopics,
+                    out var forgottenTopics, out var forgottenPartitions);
                 var request = new ShareFetchRequest
                 {
                     GroupId = _options.GroupId,
@@ -1269,7 +1273,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
                 // The broker applied the session changes only when it accepted the request.
                 if (sessionChanged && response.ErrorCode == ErrorCode.None)
-                    _sessionManager.UpdateSessionPartitions(brokerId, sessionEpoch == 0, sentTopics, forgottenPartitions);
+                {
+                    ShareSessionManager.UpdateSessionPartitions(
+                        sessionPartitions, sessionEpoch == 0, sentTopics, forgottenPartitions);
+                }
 
                 return new ShareFetchBrokerResult(brokerId, version, response, brokerAcks, null, null)
                 {
@@ -2355,6 +2362,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     private bool PrepareSessionPartitionsUpdate(
         int brokerId,
         int sessionEpoch,
+        Dictionary<TopicPartition, Guid> session,
         Dictionary<string, (Guid TopicId, List<ShareFetchRequestPartition> Partitions)> sentTopics,
         out List<ShareFetchForgottenTopic>? forgottenTopics,
         out List<TopicPartition>? forgottenPartitions)
@@ -2362,7 +2370,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         forgottenTopics = null;
         forgottenPartitions = null;
         // A request that opens a session (epoch 0) starts it empty, so it has nothing to forget.
-        if (sessionEpoch == 0 || _sessionManager.GetSessionPartitions(brokerId) is not { } session)
+        if (sessionEpoch == 0)
             return true;
 
         var sentCount = 0;
