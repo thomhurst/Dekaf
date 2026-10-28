@@ -368,12 +368,17 @@ public sealed class AdminClientClassicGroupDescriptionTests
                     Arg.Any<short>(), Arg.Any<CancellationToken>())
                 .Returns(call => new ValueTask<DescribeGroupsResponse>(Wait<DescribeGroupsResponse>(call.Arg<CancellationToken>())));
         using var cancellation = new CancellationTokenSource();
-        var operation = admin.DescribeClassicGroupsAsync(["group"], new() { TimeoutMs = timeout ? 100 : 30000 }, cancellation.Token).AsTask();
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var operation = admin.DescribeClassicGroupsAsync(["group"], new() { TimeoutMs = timeout ? 1000 : 30000 }, cancellation.Token).AsTask();
         if (timeout)
+        {
+            // The deadline is wall-clock, so under load it can expire before the stage is entered.
+            // Either way it must surface as a timeout; once the stage is entered, the operation can
+            // only finish through the deadline cancelling the stage's token.
             await Assert.That(async () => await operation).Throws<KafkaTimeoutException>();
+        }
         else
         {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
             cancellation.Cancel();
             await Assert.That(async () => await operation).Throws<OperationCanceledException>();
         }
