@@ -252,6 +252,12 @@ public sealed partial class ConnectionPool :
     bool IMetadataClusterIdentityPool.TryConsumeMetadataRebootstrapRequest()
         => _metadataClusterIdentity.TryConsumeRebootstrapRequest();
 
+    bool IMetadataClusterIdentityPool.TryGetClusterApiVersionsMaxVersion(out short maxVersion)
+        => _metadataClusterIdentity.TryGetClusterApiVersionsMaxVersion(out maxVersion);
+
+    void IMetadataClusterIdentityPool.SeedClusterApiVersionsMaxVersion(short maxVersion)
+        => _metadataClusterIdentity.SeedClusterApiVersionsMaxVersion(maxVersion);
+
     private static ConnectionOptions ConfigureSharedOAuthBearerProvider(
         ConnectionOptions options,
         out OAuthBearerTokenProvider? sharedProvider)

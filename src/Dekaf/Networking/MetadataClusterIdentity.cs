@@ -85,6 +85,31 @@ internal sealed class MetadataClusterIdentity
         }
     }
 
+    public bool TryGetClusterApiVersionsMaxVersion(out short maxVersion)
+    {
+        lock (_gate)
+        {
+            maxVersion = _lastReportedApiVersionsMaxVersion;
+            return maxVersion >= 0;
+        }
+    }
+
+    /// <summary>
+    /// Adopts another pool's cluster-wide hint when this pool has no report of its own. A shared
+    /// client's consumer pool learns the cluster ID from the primary pool's metadata but opens
+    /// no bootstrap connection, so without the hint its first broker connection would send v5.
+    /// </summary>
+    public void SeedClusterApiVersionsMaxVersion(short maxVersion)
+    {
+        lock (_gate)
+        {
+            if (!_enabled || _lastReportedApiVersionsMaxVersion >= 0)
+                return;
+
+            _lastReportedApiVersionsMaxVersion = maxVersion;
+        }
+    }
+
     public void RequestRebootstrap()
     {
         lock (_gate)

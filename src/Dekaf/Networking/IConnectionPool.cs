@@ -113,4 +113,6 @@ internal interface IMetadataClusterIdentityPool
     void UpdateMetadataClusterId(string? clusterId);
     void RequestMetadataRebootstrap();
     bool TryConsumeMetadataRebootstrapRequest();
+    bool TryGetClusterApiVersionsMaxVersion(out short maxVersion);
+    void SeedClusterApiVersionsMaxVersion(short maxVersion);
 }

@@ -1983,10 +1983,14 @@ public class MetadataManagerTests
 
     // In a misroute every endpoint can answer REBOOTSTRAP_REQUIRED. Each immediate rebootstrap
     // re-resolves and re-dials the whole bootstrap list, so one refresh runs it at most once
-    // instead of once per rejecting endpoint.
+    // instead of once per rejecting endpoint. A trigger of 0 ms means the first failed refresh
+    // starts an already-expired timer, which must not add a second rebootstrap to the next one.
     [Test]
     [Timeout(30_000)]
+    [Arguments(300_000)]
+    [Arguments(0)]
     public async Task RefreshMetadataAsync_EveryEndpointRequiresRebootstrap_RebootstrapsOncePerRefresh(
+        int rebootstrapTriggerMs,
         CancellationToken cancellationToken)
     {
         var misrouted = false;
@@ -2016,18 +2020,64 @@ public class MetadataManagerTests
             {
                 EnableBackgroundRefresh = false,
                 MetadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap,
+                MetadataRecoveryRebootstrapTriggerMs = rebootstrapTriggerMs,
                 DnsResolver = new ClientDnsEndpointResolver(dnsLookup)
             });
 
         await manager.InitializeAsync(cancellationToken);
         Volatile.Write(ref misrouted, true);
-        var lookupsBeforeRefresh = dnsLookup.Lookups;
 
-        await Assert.That(async () => await manager.RefreshMetadataAsync(cancellationToken))
-            .Throws<MetadataRefreshFailedException>();
+        for (var refresh = 0; refresh < 2; refresh++)
+        {
+            var lookupsBeforeRefresh = dnsLookup.Lookups;
 
-        await Assert.That(dnsLookup.Lookups - lookupsBeforeRefresh).IsEqualTo(1);
+            await Assert.That(async () => await manager.RefreshMetadataAsync(cancellationToken))
+                .Throws<MetadataRefreshFailedException>();
+
+            await Assert.That(dnsLookup.Lookups - lookupsBeforeRefresh).IsEqualTo(1);
+        }
     }
+
+    // A shared client's consumer pool opens broker connections only, so it never hears a
+    // bootstrap handshake. It must still learn the ApiVersions version the cluster reported:
+    // a server that drops the connection on v5 never answers UNSUPPORTED_VERSION.
+    [Test]
+    public async Task RefreshMetadataAsync_SharesApiVersionsHintWithAdditionalPool(
+        CancellationToken cancellationToken)
+    {
+        var bootstrap = CreateRespondingConnection(-1, "kafka.example", 9092,
+            () => CreateMetadataResponse((0, "broker-0", 9092)));
+        await using var primaryPool = new ConnectionPool(
+            "metadata-shared-hint-test",
+            new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => ValueTask.FromResult(bootstrap));
+        await using var additionalPool = new ConnectionPool();
+        await using var manager = new MetadataManager(
+            primaryPool,
+            ["kafka.example:9092"],
+            new MetadataOptions
+            {
+                EnableBackgroundRefresh = false,
+                MetadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap,
+                MetadataClusterCheckEnabled = true
+            });
+        manager.SetAdditionalBrokerRegistrationTarget(additionalPool);
+
+        // Substitute connections do not record their handshake, so record the bootstrap's report.
+        GetClusterIdentity(primaryPool).RecordApiVersionsMaxVersion(-1, 3);
+
+        await manager.InitializeAsync(cancellationToken);
+
+        var shared = GetClusterIdentity(additionalPool).TryGetApiVersionsMaxVersion(0, out var maxVersion);
+        await Assert.That(shared).IsTrue();
+        await Assert.That(maxVersion).IsEqualTo((short)3);
+    }
+
+    private static MetadataClusterIdentity GetClusterIdentity(ConnectionPool pool)
+        => (MetadataClusterIdentity)typeof(ConnectionPool)
+            .GetField("_metadataClusterIdentity", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(pool)!;
 
     // With a hostname bootstrap server, a rebootstrap connects to the addresses it resolves to.
     // The refresh endpoint list holds only broker and bootstrap hosts, so the preference must

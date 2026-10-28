@@ -193,6 +193,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
         ConfigureMetadataClusterCheck(connectionPool);
         UpdateMetadataClusterId(connectionPool, Volatile.Read(ref _trustedMetadataClusterId));
+        ShareClusterApiVersionsHint(connectionPool);
     }
 
     private void ConfigureMetadataClusterCheck(IConnectionPool connectionPool)
@@ -217,7 +218,23 @@ public sealed partial class MetadataManager : IAsyncDisposable
         UpdateMetadataClusterId(_connectionPool, clusterId);
         var additionalPool = Volatile.Read(ref _additionalBrokerRegistrationTarget);
         if (additionalPool is not null)
+        {
             UpdateMetadataClusterId(additionalPool, clusterId);
+            ShareClusterApiVersionsHint(additionalPool);
+        }
+    }
+
+    // The additional pool opens broker connections only, so it never hears a bootstrap
+    // connection's ApiVersions report. Pass on the primary pool's hint before it uses the
+    // cluster ID; otherwise its first connection sends v5, which some servers drop.
+    private void ShareClusterApiVersionsHint(IConnectionPool additionalPool)
+    {
+        if (_connectionPool is IMetadataClusterIdentityPool identityPool
+            && additionalPool is IMetadataClusterIdentityPool additionalIdentityPool
+            && identityPool.TryGetClusterApiVersionsMaxVersion(out var maxVersion))
+        {
+            additionalIdentityPool.SeedClusterApiVersionsMaxVersion(maxVersion);
+        }
     }
 
     private bool TryConsumeMetadataRebootstrapRequest()
@@ -1421,17 +1438,26 @@ public sealed partial class MetadataManager : IAsyncDisposable
             throw new BootstrapResolutionPendingException(unresolvedBootstrapServers, lastException!);
         }
 
-        // All known endpoints failed - try rebootstrap if configured
+        // All known endpoints failed - try rebootstrap if configured. A refresh that already
+        // ran a rebootstrap and failed does not run the timer-gated one as well; it only starts
+        // the timer, so recovery continues if later refreshes stop requesting a rebootstrap.
         if (_options.MetadataRecoveryStrategy == MetadataRecoveryStrategy.Rebootstrap)
         {
-            var rebootstrapped = await TryRebootstrapAsync(
-                topics,
-                cancellationToken,
-                allowAutoTopicCreation).ConfigureAwait(false);
-            if (rebootstrapped)
+            if (retryRequestedRebootstrap)
             {
-                _hasSuccessfulRefresh = true;
-                return;
+                StartAllBrokersUnavailableTimer(Dekaf.MonotonicClock.GetMilliseconds());
+            }
+            else
+            {
+                var rebootstrapped = await TryRebootstrapAsync(
+                    topics,
+                    cancellationToken,
+                    allowAutoTopicCreation).ConfigureAwait(false);
+                if (rebootstrapped)
+                {
+                    _hasSuccessfulRefresh = true;
+                    return;
+                }
             }
         }
 
@@ -1536,13 +1562,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
     {
         var now = Dekaf.MonotonicClock.GetMilliseconds();
 
-        // Atomically set the timestamp only if it hasn't been set yet (compare-and-set from 0)
-        if (Interlocked.CompareExchange(ref _allBrokersUnavailableSince, now, 0) == 0)
-        {
-            // First time all brokers are unavailable - we just recorded the timestamp
-            LogAllBrokersUnavailable(_options.MetadataRecoveryRebootstrapTriggerMs);
+        // First time all brokers are unavailable - record the timestamp and wait for the delay.
+        if (StartAllBrokersUnavailableTimer(now))
             return false;
-        }
 
         var elapsedMs = now - Interlocked.Read(ref _allBrokersUnavailableSince);
         if (elapsedMs < _options.MetadataRecoveryRebootstrapTriggerMs)
@@ -1556,6 +1578,16 @@ public sealed partial class MetadataManager : IAsyncDisposable
             topics,
             allowAutoTopicCreation,
             cancellationToken).ConfigureAwait(false);
+    }
+
+    // Atomically set the timestamp only if it hasn't been set yet (compare-and-set from 0).
+    private bool StartAllBrokersUnavailableTimer(long now)
+    {
+        if (Interlocked.CompareExchange(ref _allBrokersUnavailableSince, now, 0) != 0)
+            return false;
+
+        LogAllBrokersUnavailable(_options.MetadataRecoveryRebootstrapTriggerMs);
+        return true;
     }
 
     /// <summary>
