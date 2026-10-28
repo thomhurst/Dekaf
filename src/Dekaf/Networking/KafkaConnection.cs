@@ -937,12 +937,30 @@ public sealed partial class KafkaConnection :
             NodeId = expectedIdentity?.NodeId ?? -1
         };
 
+        // KIP-1242: with a known identity, send the newest version (which carries ClusterId and
+        // NodeId) directly, like Java's NetworkClient, and fall back on UNSUPPORTED_VERSION.
+        // When this broker, or failing that any connection to the cluster, reported an older
+        // maximum, start there: a pre-KIP-1242 broker skips the fallback, and a server that
+        // drops the connection on an unknown version is never sent one. Without an identity,
+        // the broadly-compatible v3 probe avoids a fallback round trip on older brokers.
+        var initialVersion = broadlyCompatibleApiVersionsVersion;
+        if (expectedIdentity is not null)
+        {
+            initialVersion = ApiVersionsRequest.HighestSupportedVersion;
+            if (_metadataClusterIdentity!.TryGetApiVersionsMaxVersion(BrokerId, out var knownMaxVersion)
+                && knownMaxVersion >= ApiVersionsRequest.LowestSupportedVersion
+                && knownMaxVersion < initialVersion)
+            {
+                initialVersion = knownMaxVersion;
+            }
+        }
+
         ApiVersionsResponse response;
         try
         {
             response = await SendAsyncCore<ApiVersionsRequest, ApiVersionsResponse>(
                 request,
-                broadlyCompatibleApiVersionsVersion,
+                initialVersion,
                 requireReady: false,
                 cancellationToken).ConfigureAwait(false);
 
@@ -950,7 +968,7 @@ public sealed partial class KafkaConnection :
 
             if (response.ErrorCode == ErrorCode.UnsupportedVersion)
             {
-                var retryVersion = GetApiVersionsRetryVersion(response);
+                var retryVersion = GetApiVersionsRetryVersion(response, initialVersion);
                 response = await SendAsyncCore<ApiVersionsRequest, ApiVersionsResponse>(
                     request,
                     retryVersion,
@@ -968,18 +986,8 @@ public sealed partial class KafkaConnection :
             }
 
             var capabilities = KafkaConnectionCapabilities.Create(response);
-            if (expectedIdentity is not null &&
-                capabilities.SupportsVersion(ApiKey.ApiVersions, ApiVersionsRequest.HighestSupportedVersion))
-            {
-                var identityResponse = await SendAsyncCore<ApiVersionsRequest, ApiVersionsResponse>(
-                    request,
-                    ApiVersionsRequest.HighestSupportedVersion,
-                    requireReady: false,
-                    cancellationToken).ConfigureAwait(false);
-                ThrowIfRebootstrapRequired(identityResponse);
-                if (identityResponse.ErrorCode == ErrorCode.None)
-                    capabilities = KafkaConnectionCapabilities.Create(identityResponse);
-            }
+            if (_metadataClusterIdentity is not null)
+                RecordApiVersionsMaxVersion(_metadataClusterIdentity, response);
 
             return capabilities;
         }
@@ -989,6 +997,20 @@ public sealed partial class KafkaConnection :
                 ErrorCode.RequestTimedOut,
                 $"ApiVersions negotiation timed out for {_host}:{_port}",
                 ex);
+        }
+    }
+
+    private void RecordApiVersionsMaxVersion(
+        MetadataClusterIdentity identity,
+        ApiVersionsResponse response)
+    {
+        foreach (var apiVersion in response.ApiKeys)
+        {
+            if (apiVersion.ApiKey == ApiKey.ApiVersions)
+            {
+                identity.RecordApiVersionsMaxVersion(BrokerId, apiVersion.MaxVersion);
+                return;
+            }
         }
     }
 
@@ -1004,7 +1026,7 @@ public sealed partial class KafkaConnection :
             isRetriable: true);
     }
 
-    private short GetApiVersionsRetryVersion(ApiVersionsResponse response)
+    private short GetApiVersionsRetryVersion(ApiVersionsResponse response, short rejectedVersion)
     {
         ApiVersion? brokerRange = null;
         foreach (var apiVersion in response.ApiKeys)
@@ -1042,7 +1064,7 @@ public sealed partial class KafkaConnection :
                 $"{ApiVersionsRequest.HighestSupportedVersion}].");
         }
 
-        if (retryVersion == ApiVersionsRequest.HighestSupportedVersion)
+        if (retryVersion == rejectedVersion)
         {
             throw new BrokerVersionException(
                 $"Broker {_host}:{_port} rejected ApiVersions v{retryVersion} but reported it as supported.");

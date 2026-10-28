@@ -246,14 +246,17 @@ public sealed partial class ConnectionPool :
     void IMetadataClusterIdentityPool.UpdateMetadataClusterId(string? clusterId)
         => _metadataClusterIdentity.UpdateClusterId(clusterId);
 
-    void IMetadataClusterIdentityPool.BeginMetadataRebootstrap()
-        => _metadataClusterIdentity.BeginRebootstrap();
-
     void IMetadataClusterIdentityPool.RequestMetadataRebootstrap()
         => _metadataClusterIdentity.RequestRebootstrap();
 
     bool IMetadataClusterIdentityPool.TryConsumeMetadataRebootstrapRequest()
         => _metadataClusterIdentity.TryConsumeRebootstrapRequest();
+
+    bool IMetadataClusterIdentityPool.TryGetClusterApiVersionsMaxVersion(out short maxVersion)
+        => _metadataClusterIdentity.TryGetClusterApiVersionsMaxVersion(out maxVersion);
+
+    void IMetadataClusterIdentityPool.SeedClusterApiVersionsMaxVersion(short maxVersion)
+        => _metadataClusterIdentity.SeedClusterApiVersionsMaxVersion(maxVersion);
 
     private static ConnectionOptions ConfigureSharedOAuthBearerProvider(
         ConnectionOptions options,

@@ -193,6 +193,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
         ConfigureMetadataClusterCheck(connectionPool);
         UpdateMetadataClusterId(connectionPool, Volatile.Read(ref _trustedMetadataClusterId));
+        ShareClusterApiVersionsHint(connectionPool);
     }
 
     private void ConfigureMetadataClusterCheck(IConnectionPool connectionPool)
@@ -217,17 +218,23 @@ public sealed partial class MetadataManager : IAsyncDisposable
         UpdateMetadataClusterId(_connectionPool, clusterId);
         var additionalPool = Volatile.Read(ref _additionalBrokerRegistrationTarget);
         if (additionalPool is not null)
+        {
             UpdateMetadataClusterId(additionalPool, clusterId);
+            ShareClusterApiVersionsHint(additionalPool);
+        }
     }
 
-    private void BeginMetadataRebootstrap()
+    // The additional pool opens broker connections only, so it never hears a bootstrap
+    // connection's ApiVersions report. Pass on the primary pool's hint before it uses the
+    // cluster ID; otherwise its first connection sends v5, which some servers drop.
+    private void ShareClusterApiVersionsHint(IConnectionPool additionalPool)
     {
-        Volatile.Write(ref _trustedMetadataClusterId, null);
-        if (_connectionPool is IMetadataClusterIdentityPool identityPool)
-            identityPool.BeginMetadataRebootstrap();
-
-        if (Volatile.Read(ref _additionalBrokerRegistrationTarget) is IMetadataClusterIdentityPool additionalIdentityPool)
-            additionalIdentityPool.BeginMetadataRebootstrap();
+        if (_connectionPool is IMetadataClusterIdentityPool identityPool
+            && additionalPool is IMetadataClusterIdentityPool additionalIdentityPool
+            && identityPool.TryGetClusterApiVersionsMaxVersion(out var maxVersion))
+        {
+            additionalIdentityPool.SeedClusterApiVersionsMaxVersion(maxVersion);
+        }
     }
 
     private bool TryConsumeMetadataRebootstrapRequest()
@@ -1335,22 +1342,40 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 UpdateVersionlessCapabilities(connection, metadataApiVersion);
 
-                // KIP-1102: If the broker signals rebootstrap, prefer fresh topology
-                // from re-resolved DNS over the current response's potentially-stale data.
-                if (response.ErrorCode == ErrorCode.RebootstrapRequired
-                    && _options.MetadataRecoveryStrategy == MetadataRecoveryStrategy.Rebootstrap)
+                // KIP-1102: the broker flagged its own response as untrusted. Like Java's
+                // NetworkClient, never apply its topology: stale broker endpoints would retire
+                // healthy connections and misroute partitions. Rebootstrap when configured;
+                // otherwise treat this endpoint as failed and keep the previous snapshot.
+                if (response.ErrorCode == ErrorCode.RebootstrapRequired)
                 {
-                    var rebootstrapped = await TryRebootstrapImmediateAsync(
-                        topics,
-                        cancellationToken,
-                        allowAutoTopicCreation).ConfigureAwait(false);
-                    if (rebootstrapped)
+                    // A rebootstrap re-resolves and re-dials every bootstrap server, so run it once
+                    // per refresh: retryRequestedRebootstrap is set once one has failed here.
+                    if (_options.MetadataRecoveryStrategy == MetadataRecoveryStrategy.Rebootstrap
+                        && !retryRequestedRebootstrap)
                     {
-                        ResetAllBrokersUnavailableTimestamp();
-                        _hasSuccessfulRefresh = true;
-                        return;
+                        var rebootstrapped = await TryRebootstrapImmediateAsync(
+                            topics,
+                            cancellationToken,
+                            allowAutoTopicCreation).ConfigureAwait(false);
+                        if (rebootstrapped)
+                        {
+                            ResetAllBrokersUnavailableTimestamp();
+                            _hasSuccessfulRefresh = true;
+                            return;
+                        }
+
+                        // Retry the rebootstrap on the next refresh unless another endpoint answers.
+                        retryRequestedRebootstrap = true;
                     }
-                    // Rebootstrap failed — fall through and apply the original response as best-effort fallback
+
+                    var rejected = new KafkaException(
+                        ErrorCode.RebootstrapRequired,
+                        $"Broker {host}:{port} returned REBOOTSTRAP_REQUIRED; its metadata was not applied",
+                        isRetriable: true);
+                    LogMetadataRefreshFailed(rejected, host, port);
+                    lastException = rejected;
+                    sawNonDnsFailure = true;
+                    continue;
                 }
 
                 if (negotiatedCapabilities is not null)
@@ -1360,9 +1385,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 // Publish the routes before the snapshot can expose these brokers (see
                 // TryUpdatePartitionLeader): a reader that picks a broker from the new snapshot
-                // would otherwise find the connection pool still considers it unknown. The
-                // accepted fallback snapshot must remain usable for routing even when its
-                // cluster identity and diagnostic broker set are not trusted.
+                // would otherwise find the connection pool still considers it unknown.
                 foreach (var broker in response.Brokers)
                     RegisterBroker(broker.NodeId, broker.Host, broker.Port);
 
@@ -1371,13 +1394,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 // This matches the Java client's incremental metadata update behavior.
                 _metadata.Update(response, mergeTopics: topics is not null);
 
-                if (response.ErrorCode != ErrorCode.RebootstrapRequired)
-                {
-                    UpdateMetadataClusterId(response.ClusterId);
-
-                    // Only trusted metadata may replace connection-routing diagnostics.
-                    PublishBrokerStatusSnapshot(response.Brokers);
-                }
+                UpdateMetadataClusterId(response.ClusterId);
+                PublishBrokerStatusSnapshot(response.Brokers);
 
                 LogMetadataRefreshed(response.Brokers.Count, response.Topics.Count);
 
@@ -1420,17 +1438,26 @@ public sealed partial class MetadataManager : IAsyncDisposable
             throw new BootstrapResolutionPendingException(unresolvedBootstrapServers, lastException!);
         }
 
-        // All known endpoints failed - try rebootstrap if configured
+        // All known endpoints failed - try rebootstrap if configured. A refresh that already
+        // ran a rebootstrap and failed does not run the timer-gated one as well; it only starts
+        // the timer, so recovery continues if later refreshes stop requesting a rebootstrap.
         if (_options.MetadataRecoveryStrategy == MetadataRecoveryStrategy.Rebootstrap)
         {
-            var rebootstrapped = await TryRebootstrapAsync(
-                topics,
-                cancellationToken,
-                allowAutoTopicCreation).ConfigureAwait(false);
-            if (rebootstrapped)
+            if (retryRequestedRebootstrap)
             {
-                _hasSuccessfulRefresh = true;
-                return;
+                StartAllBrokersUnavailableTimer(Dekaf.MonotonicClock.GetMilliseconds());
+            }
+            else
+            {
+                var rebootstrapped = await TryRebootstrapAsync(
+                    topics,
+                    cancellationToken,
+                    allowAutoTopicCreation).ConfigureAwait(false);
+                if (rebootstrapped)
+                {
+                    _hasSuccessfulRefresh = true;
+                    return;
+                }
             }
         }
 
@@ -1535,13 +1562,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
     {
         var now = Dekaf.MonotonicClock.GetMilliseconds();
 
-        // Atomically set the timestamp only if it hasn't been set yet (compare-and-set from 0)
-        if (Interlocked.CompareExchange(ref _allBrokersUnavailableSince, now, 0) == 0)
-        {
-            // First time all brokers are unavailable - we just recorded the timestamp
-            LogAllBrokersUnavailable(_options.MetadataRecoveryRebootstrapTriggerMs);
+        // First time all brokers are unavailable - record the timestamp and wait for the delay.
+        if (StartAllBrokersUnavailableTimer(now))
             return false;
-        }
 
         var elapsedMs = now - Interlocked.Read(ref _allBrokersUnavailableSince);
         if (elapsedMs < _options.MetadataRecoveryRebootstrapTriggerMs)
@@ -1555,6 +1578,16 @@ public sealed partial class MetadataManager : IAsyncDisposable
             topics,
             allowAutoTopicCreation,
             cancellationToken).ConfigureAwait(false);
+    }
+
+    // Atomically set the timestamp only if it hasn't been set yet (compare-and-set from 0).
+    private bool StartAllBrokersUnavailableTimer(long now)
+    {
+        if (Interlocked.CompareExchange(ref _allBrokersUnavailableSince, now, 0) != 0)
+            return false;
+
+        LogAllBrokersUnavailable(_options.MetadataRecoveryRebootstrapTriggerMs);
+        return true;
     }
 
     /// <summary>
@@ -1796,9 +1829,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
     {
         const short versionlessConnectionApiVersionsVersion = 3;
 
-        // Production connections negotiate v4 with fallback during physical connection setup.
-        // Injected connections have no capability snapshot or physical-connection retry path,
-        // so preserve the broadly-compatible v3 probe used before v4 support was added.
+        // Production connections negotiate during physical connection setup (v5 with the
+        // expected cluster identity when one is known, otherwise v3, falling back on
+        // UNSUPPORTED_VERSION). Injected connections have no capability snapshot or
+        // physical-connection retry path, so keep the broadly-compatible v3 probe.
         var request = new ApiVersionsRequest
         {
             ClientSoftwareName = "dekaf",

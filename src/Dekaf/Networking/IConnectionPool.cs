@@ -111,7 +111,8 @@ internal interface IMetadataClusterIdentityPool
 {
     void ConfigureMetadataClusterCheck(bool enabled);
     void UpdateMetadataClusterId(string? clusterId);
-    void BeginMetadataRebootstrap();
     void RequestMetadataRebootstrap();
     bool TryConsumeMetadataRebootstrapRequest();
+    bool TryGetClusterApiVersionsMaxVersion(out short maxVersion);
+    void SeedClusterApiVersionsMaxVersion(short maxVersion);
 }

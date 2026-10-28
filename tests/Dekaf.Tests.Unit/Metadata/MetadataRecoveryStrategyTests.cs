@@ -498,7 +498,7 @@ public sealed class MetadataRecoveryStrategyTests
     }
 
     [Test]
-    public async Task MetadataClusterIdentity_RebootstrapClearsLearnedIdentity()
+    public async Task MetadataClusterIdentity_RebootstrapRequestPreservesLearnedIdentity()
     {
         var identity = new MetadataClusterIdentity();
         identity.Configure(enabled: true);
@@ -513,9 +513,9 @@ public sealed class MetadataRecoveryStrategyTests
             .IsEqualTo(new ExpectedBrokerIdentity("cluster-a", 7));
         await Assert.That(identity.TryConsumeRebootstrapRequest()).IsTrue();
 
-        identity.BeginRebootstrap();
-
-        await Assert.That(identity.GetExpectedBrokerIdentity(7)).IsNull();
+        // The trusted cluster ID survives a rebootstrap so a misrouted broker keeps being rejected.
+        await Assert.That(identity.GetExpectedBrokerIdentity(7))
+            .IsEqualTo(new ExpectedBrokerIdentity("cluster-a", 7));
     }
 
     [Test]
