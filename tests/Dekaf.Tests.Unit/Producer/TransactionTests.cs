@@ -1570,6 +1570,90 @@ public sealed class TransactionTests
         await Assert.That(harness.FindCoordinatorRequests).IsEqualTo(1);
     }
 
+    [Test]
+    [Arguments(ErrorCode.UnknownTopicOrPartition)]
+    [Arguments(ErrorCode.UnknownTopicId)]
+    public async Task AddPartitionsToTransactionAsync_UnknownTopicError_RetriesInsteadOfEnrolling(
+        ErrorCode errorCode)
+    {
+        // The coordinator's metadata has not caught up with a new topic or partition yet. The
+        // partitions are not in the transaction, so the call must retry rather than report success.
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            addPartitionsRetriableFailuresBeforeSuccess: 1,
+            addPartitionsRetriableError: errorCode,
+            maxBlockMs: 60_000);
+
+        await harness.Producer.AddPartitionsToTransactionAsync(
+            [new TopicPartition("orders", 0)],
+            CancellationToken.None);
+
+        await Assert.That(harness.AddPartitionsRequests).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task AddPartitionsToTransactionAsync_RetriableErrorBesideOperationNotAttempted_Retries()
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            maxBlockMs: 60_000);
+        // The coordinator rejects the whole request for one unknown partition and reports the
+        // others as not attempted.
+        harness.AddPartitionsError = (requestNumber, partition) => requestNumber > 1
+            ? ErrorCode.None
+            : partition == 1 ? ErrorCode.UnknownTopicOrPartition : ErrorCode.OperationNotAttempted;
+
+        await harness.Producer.AddPartitionsToTransactionAsync(
+            [new TopicPartition("orders", 0), new TopicPartition("orders", 1), new TopicPartition("orders", 2)],
+            CancellationToken.None);
+
+        await Assert.That(harness.AddPartitionsRequests).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task AddPartitionsToTransactionAsync_ReportsRealCauseOverOperationNotAttempted()
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            maxBlockMs: 60_000);
+        harness.AddPartitionsError = (_, partition) => partition == 0
+            ? ErrorCode.TopicAuthorizationFailed
+            : ErrorCode.OperationNotAttempted;
+
+        var act = async () => await harness.Producer.AddPartitionsToTransactionAsync(
+            [new TopicPartition("orders", 0), new TopicPartition("orders", 1)],
+            CancellationToken.None);
+
+        var exception = await Assert.That(act).Throws<AbortableTransactionException>();
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.TopicAuthorizationFailed);
+        await Assert.That(exception.Message).Contains("orders-0");
+        await Assert.That(harness.AddPartitionsRequests).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task AddPartitionsToTransactionAsync_OnlyOperationNotAttempted_IsAbortable()
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            maxBlockMs: 60_000);
+        harness.AddPartitionsError = (_, _) => ErrorCode.OperationNotAttempted;
+
+        var act = async () => await harness.Producer.AddPartitionsToTransactionAsync(
+            [new TopicPartition("orders", 0)],
+            CancellationToken.None);
+
+        var exception = await Assert.That(act).Throws<AbortableTransactionException>();
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.OperationNotAttempted);
+    }
+
     // Transport failures (a broker that resets or refuses connections, a DNS miss, a connection
     // retired by pool churn) used to escape every transaction control-plane loop on the first
     // attempt because their catch filters only matched OperationCanceledException.
@@ -3033,6 +3117,15 @@ public sealed class TransactionTests
             set => connection.BeforeInitProducerIdResponse = value;
         }
 
+        /// <summary>
+        /// Overrides the AddPartitionsToTxn error per partition, by 1-based request number and
+        /// partition index.
+        /// </summary>
+        public Func<int, int, ErrorCode>? AddPartitionsError
+        {
+            set => connection.AddPartitionsError = value;
+        }
+
         public int ConnectionAttemptsTo(int brokerId)
         {
             lock (connectionAttemptBrokerIds)
@@ -3363,12 +3456,16 @@ public sealed class TransactionTests
             };
         }
 
+        public Func<int, int, ErrorCode>? AddPartitionsError { get; set; }
+
         private AddPartitionsToTxnResponse CreateAddPartitionsResponse(AddPartitionsToTxnRequest request)
         {
             AddPartitionsRequests++;
-            var errorCode = AddPartitionsRequests <= addPartitionsRetriableFailuresBeforeSuccess
+            var requestNumber = AddPartitionsRequests;
+            var errorCode = requestNumber <= addPartitionsRetriableFailuresBeforeSuccess
                 ? addPartitionsRetriableError
                 : ErrorCode.None;
+            var partitionError = AddPartitionsError;
             return new AddPartitionsToTxnResponse
             {
                 Results = request.Topics.Select(topic => new AddPartitionsToTxnTopicResult
@@ -3377,7 +3474,7 @@ public sealed class TransactionTests
                     Partitions = topic.Partitions.Select(partition => new AddPartitionsToTxnPartitionResult
                     {
                         PartitionIndex = partition,
-                        ErrorCode = errorCode
+                        ErrorCode = partitionError?.Invoke(requestNumber, partition) ?? errorCode
                     }).ToArray()
                 }).ToArray()
             };
