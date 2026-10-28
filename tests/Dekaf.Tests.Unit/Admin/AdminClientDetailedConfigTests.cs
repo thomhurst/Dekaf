@@ -149,6 +149,40 @@ public sealed class AdminClientDetailedConfigTests
     }
 
     [Test]
+    public async Task DescribeConfigs_RetryReplaysEveryNodeWithinOneBudgetAndReturnsAllResults()
+    {
+        var (admin, connections) = CreateAdmin();
+        await using var client = admin;
+        var calls = new List<(int Node, CancellationToken Token)>();
+        foreach (var pair in connections)
+        {
+            pair.Value.SendAsync<DescribeConfigsRequest, DescribeConfigsResponse>(Arg.Any<DescribeConfigsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+                .Returns(call =>
+                {
+                    calls.Add((pair.Key, call.Arg<CancellationToken>()));
+                    var failOnce = pair.Key == 2 && calls.Count(static item => item.Node == 2) == 1;
+                    return ValueTask.FromResult(new DescribeConfigsResponse { Results = call.Arg<DescribeConfigsRequest>().Resources.Select(item => new DescribeConfigsResult
+                    {
+                        ResourceType = item.ResourceType, ResourceName = item.ResourceName,
+                        ErrorCode = failOnce ? ErrorCode.NotController : ErrorCode.None,
+                        Configs = [new() { Name = "node", Value = pair.Key.ToString(System.Globalization.CultureInfo.InvariantCulture) }]
+                    }).ToArray() });
+                });
+        }
+        var topic = ConfigResource.Topic("orders");
+        var broker = ConfigResource.Broker(2);
+        var logger = ConfigResource.BrokerLogger(3);
+        var result = await admin.DescribeConfigsAsync([topic, broker, logger], new DescribeConfigsOptions { TimeoutMs = 30_000 });
+        await Assert.That(calls.Select(static item => item.Node).Order().ToArray()).IsEquivalentTo([1, 1, 2, 2, 3]);
+        await Assert.That(calls.Select(static item => item.Token).Distinct().Count()).IsEqualTo(1);
+        await Assert.That(calls[0].Token.CanBeCanceled).IsTrue();
+        await Assert.That(result.Count).IsEqualTo(3);
+        await Assert.That(result[topic][0].Value).IsEqualTo("1");
+        await Assert.That(result[broker][0].Value).IsEqualTo("2");
+        await Assert.That(result[logger][0].Value).IsEqualTo("3");
+    }
+
+    [Test]
     public async Task PlainConfigApis_RejectNonNumericBrokerNamesBeforeDispatch()
     {
         var (admin, connections) = CreateAdmin();
