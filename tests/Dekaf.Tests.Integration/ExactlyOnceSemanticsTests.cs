@@ -1,3 +1,4 @@
+using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.Protocol.Messages;
@@ -196,8 +197,18 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : Transa
             await next.CommitAsync();
         }
 
-        var committed = await consumer.GetCommittedOffsetAsync(new TopicPartition(msg.Topic, msg.Partition), cts.Token);
-        await Assert.That(committed).IsEqualTo(msg.Offset + 1);
+        // The COMMIT marker reaches __consumer_offsets after EndTxn returns, and a plain OffsetFetch
+        // omits the offset until it lands, so ask the broker for the stable offset instead.
+        var partition = new TopicPartition(msg.Topic, msg.Partition);
+        await using var admin = KafkaContainer.CreateAdminClient();
+        var committed = await admin.ListConsumerGroupOffsetsAsync(
+            new Dictionary<string, ListConsumerGroupOffsetsSpec>
+            {
+                [consumerGroupId] = new() { TopicPartitions = [partition] }
+            },
+            new ListConsumerGroupOffsetsOptions { RequireStable = true },
+            cts.Token);
+        await Assert.That(committed[consumerGroupId].Offsets[partition].Offset?.Offset).IsEqualTo(msg.Offset + 1);
     }
 
     [Test]
