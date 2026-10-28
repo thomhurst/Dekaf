@@ -1084,7 +1084,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         try
         {
             var memberId = _memberId;
-            if (string.IsNullOrEmpty(memberId) || _leftGroup)
+            if (memberId is not { Length: > 0 } || _leftGroup)
                 return;
 
             // Leave Stable before stopping the loop: a join that completed before this took the
