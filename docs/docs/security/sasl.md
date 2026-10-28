@@ -127,6 +127,8 @@ var producer = await Kafka.CreateProducer<string, string>()
 
 Dekaf signs the SASL payload with SigV4 using the default AWS credential chain:
 environment variables, web identity, shared AWS profiles, ECS credentials, then EC2 instance metadata.
+Credentials that carry an expiration are refreshed five minutes before they expire; environment and shared-profile
+credentials are re-read every five minutes, so rotated keys and session tokens apply without restarting the client.
 The AWS region is inferred from standard MSK broker hostnames; set it explicitly when using a custom DNS name:
 
 ```csharp

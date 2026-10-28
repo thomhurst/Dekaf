@@ -173,6 +173,85 @@ public sealed partial class AwsMskIamDefaultCredentialsProviderTests
         await Assert.That(calls).IsEqualTo(2);
     }
 
+    [Test]
+    public async Task SharedProfile_RotatedFileIsReReadAfterRefreshInterval()
+    {
+        using var environment = new CredentialEnvironment();
+        var credentialsFile = environment.WriteFile(ProfileFile("first"));
+        Environment.SetEnvironmentVariable("AWS_SHARED_CREDENTIALS_FILE", credentialsFile);
+        Environment.SetEnvironmentVariable("AWS_PROFILE", "msk");
+        var now = DateTimeOffset.UtcNow;
+        using var http = new HttpClient(new CredentialHandler((_, _) => throw new InvalidOperationException("No HTTP expected")));
+        var provider = new AwsMskIamDefaultCredentialsProvider(http, utcNow: () => now);
+
+        var first = await provider.GetCredentialsAsync();
+        await File.WriteAllTextAsync(credentialsFile, ProfileFile("second"));
+        now += AwsMskIamDefaultCredentialsProvider.CacheRefreshInterval - TimeSpan.FromSeconds(1);
+        var beforeInterval = await provider.GetCredentialsAsync();
+        now += TimeSpan.FromSeconds(1);
+        var afterInterval = await provider.GetCredentialsAsync();
+
+        await Assert.That(first.SessionToken).IsEqualTo("first-token");
+        await Assert.That(beforeInterval).IsSameReferenceAs(first);
+        await Assert.That(afterInterval.AccessKeyId).IsEqualTo("second-access");
+        await Assert.That(afterInterval.SecretAccessKey).IsEqualTo("second-secret");
+        await Assert.That(afterInterval.SessionToken).IsEqualTo("second-token");
+    }
+
+    [Test]
+    public async Task Environment_RotatedVariablesAreReReadAfterRefreshInterval()
+    {
+        using var environment = new CredentialEnvironment();
+        Environment.SetEnvironmentVariable("AWS_ACCESS_KEY_ID", "first-access");
+        Environment.SetEnvironmentVariable("AWS_SECRET_ACCESS_KEY", "first-secret");
+        Environment.SetEnvironmentVariable("AWS_SESSION_TOKEN", "first-token");
+        var now = DateTimeOffset.UtcNow;
+        using var http = new HttpClient(new CredentialHandler((_, _) => throw new InvalidOperationException("No HTTP expected")));
+        var provider = new AwsMskIamDefaultCredentialsProvider(http, utcNow: () => now);
+
+        var first = await provider.GetCredentialsAsync();
+        Environment.SetEnvironmentVariable("AWS_ACCESS_KEY_ID", "second-access");
+        Environment.SetEnvironmentVariable("AWS_SECRET_ACCESS_KEY", "second-secret");
+        Environment.SetEnvironmentVariable("AWS_SESSION_TOKEN", "second-token");
+        var cached = await provider.GetCredentialsAsync();
+        now += AwsMskIamDefaultCredentialsProvider.CacheRefreshInterval;
+        var rotated = await provider.GetCredentialsAsync();
+
+        await Assert.That(cached).IsSameReferenceAs(first);
+        await Assert.That(rotated.AccessKeyId).IsEqualTo("second-access");
+        await Assert.That(rotated.SessionToken).IsEqualTo("second-token");
+    }
+
+    [Test]
+    public async Task ExpiringCredentials_AreCachedUntilRefreshBufferBeforeExpiration()
+    {
+        using var environment = new CredentialEnvironment();
+        Environment.SetEnvironmentVariable("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "/credentials/test");
+        var now = DateTimeOffset.UtcNow;
+        var expiration = now.AddHours(1);
+        var calls = 0;
+        using var http = new HttpClient(new CredentialHandler((_, _) =>
+            Task.FromResult(CredentialResponse(expiration, ++calls == 1 ? "access" : "refreshed"))));
+        var provider = new AwsMskIamDefaultCredentialsProvider(http, utcNow: () => now);
+
+        var first = await provider.GetCredentialsAsync();
+        now = expiration - AwsMskIamDefaultCredentialsProvider.CacheRefreshInterval - TimeSpan.FromSeconds(1);
+        var cached = await provider.GetCredentialsAsync();
+        now += TimeSpan.FromSeconds(1);
+        var refreshed = await provider.GetCredentialsAsync();
+
+        await Assert.That(cached).IsSameReferenceAs(first);
+        await Assert.That(refreshed.AccessKeyId).IsEqualTo("refreshed");
+        await Assert.That(calls).IsEqualTo(2);
+    }
+
+    private static string ProfileFile(string prefix) => $"""
+        [msk]
+        aws_access_key_id = {prefix}-access
+        aws_secret_access_key = {prefix}-secret
+        aws_session_token = {prefix}-token
+        """;
+
     private static HttpResponseMessage CredentialResponse(DateTimeOffset expiration, string access = "access") => new(HttpStatusCode.OK)
     {
         Content = new StringContent(JsonSerializer.Serialize(new Dictionary<string, string>
