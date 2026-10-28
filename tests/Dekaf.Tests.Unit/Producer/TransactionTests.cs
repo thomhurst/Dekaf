@@ -1795,6 +1795,63 @@ public sealed class TransactionTests
     }
 
     [Test]
+    public async Task AddPartitionsToTransactionAsync_BrokerAdvertisingV5_SendsClientVersion3()
+    {
+        // v4+ is the broker-to-broker verification version: brokers authorize it with
+        // CLUSTER_ACTION, so a client principal holding only transactional-ID ACLs is rejected.
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            maxBlockMs: 60_000);
+
+        await harness.Producer.AddPartitionsToTransactionAsync(
+            [new TopicPartition("orders", 0)],
+            CancellationToken.None);
+
+        await Assert.That(harness.AddPartitionsApiVersion).IsEqualTo((short)3);
+    }
+
+    [Test]
+    public async Task AddPartitionsToTransactionAsync_TopLevelErrorWithoutResults_FailsEnrollment()
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            maxBlockMs: 60_000);
+        harness.AddPartitionsTopLevelError = _ => ErrorCode.ClusterAuthorizationFailed;
+
+        var act = async () => await harness.Producer.AddPartitionsToTransactionAsync(
+            [new TopicPartition("orders", 0)],
+            CancellationToken.None);
+
+        var exception = await Assert.That(act).Throws<TransactionException>();
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.ClusterAuthorizationFailed);
+        await Assert.That(exception.Message).Contains("test-txn-id");
+        await Assert.That(harness.AddPartitionsRequests).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task AddPartitionsToTransactionAsync_RetriableTopLevelErrorWithoutResults_Retries()
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            maxBlockMs: 60_000);
+        harness.AddPartitionsTopLevelError = requestNumber => requestNumber == 1
+            ? ErrorCode.CoordinatorLoadInProgress
+            : ErrorCode.None;
+
+        await harness.Producer.AddPartitionsToTransactionAsync(
+            [new TopicPartition("orders", 0)],
+            CancellationToken.None);
+
+        await Assert.That(harness.AddPartitionsRequests).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task AddPartitionsToTransactionAsync_RetriableErrorBesideOperationNotAttempted_Retries()
     {
         await using var harness = BuildPreparedCompletionHarness(
@@ -3153,10 +3210,11 @@ public sealed class TransactionTests
             ApiKey.FindCoordinator,
             FindCoordinatorRequest.LowestSupportedVersion,
             FindCoordinatorRequest.HighestSupportedVersion);
+        // Kafka 4.x brokers advertise AddPartitionsToTxn up to v5; v4+ is broker-only (KIP-890).
         metadataManager.SetApiVersion(
             ApiKey.AddPartitionsToTxn,
             AddPartitionsToTxnRequest.LowestSupportedVersion,
-            AddPartitionsToTxnRequest.HighestSupportedVersion);
+            5);
         metadataManager.SetApiVersion(
             ApiKey.EndTxn,
             EndTxnRequest.LowestSupportedVersion,
@@ -3327,6 +3385,17 @@ public sealed class TransactionTests
             set => connection.AddPartitionsError = value;
         }
 
+        /// <summary>
+        /// Answers AddPartitionsToTxn with only a top-level error and no per-partition results
+        /// (the v4+ error shape), by 1-based request number; <see cref="ErrorCode.None"/> answers normally.
+        /// </summary>
+        public Func<int, ErrorCode>? AddPartitionsTopLevelError
+        {
+            set => connection.AddPartitionsTopLevelError = value;
+        }
+
+        public short? AddPartitionsApiVersion => connection.AddPartitionsApiVersion;
+
         public int ConnectionAttemptsTo(int brokerId)
         {
             lock (connectionAttemptBrokerIds)
@@ -3481,6 +3550,9 @@ public sealed class TransactionTests
             where TResponse : IKafkaResponse
         {
             Volatile.Write(ref _leaseCountDuringRequest, LeaseCount);
+            if (request is AddPartitionsToTxnRequest)
+                AddPartitionsApiVersion = apiVersion;
+
             if (request is InitProducerIdRequest && initProducerIdWaitsForCancellation)
             {
                 InitProducerIdRequests++;
@@ -3658,11 +3730,19 @@ public sealed class TransactionTests
         }
 
         public Func<int, int, ErrorCode>? AddPartitionsError { get; set; }
+        public Func<int, ErrorCode>? AddPartitionsTopLevelError { get; set; }
+        public short? AddPartitionsApiVersion { get; private set; }
 
         private AddPartitionsToTxnResponse CreateAddPartitionsResponse(AddPartitionsToTxnRequest request)
         {
             AddPartitionsRequests++;
             var requestNumber = AddPartitionsRequests;
+            if (AddPartitionsTopLevelError?.Invoke(requestNumber) is { } topLevelError
+                && topLevelError != ErrorCode.None)
+            {
+                return new AddPartitionsToTxnResponse { ErrorCode = topLevelError, Results = [] };
+            }
+
             var errorCode = requestNumber <= addPartitionsRetriableFailuresBeforeSuccess
                 ? addPartitionsRetriableError
                 : ErrorCode.None;
