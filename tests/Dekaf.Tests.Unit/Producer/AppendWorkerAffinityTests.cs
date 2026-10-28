@@ -296,7 +296,9 @@ public class AppendWorkerAffinityTests
 
         await Assert.That(HasBatchForPartition(deques, tp)).IsFalse();
         await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
-        await Assert.That(GetSlowPathAppendCount(deques, tp)).IsEqualTo(0);
+        // The worker completes the queued item before its finally block decrements the count.
+        await TestWait.UntilAsync(() => GetSlowPathAppendCount(deques, tp) == 0, cancellationToken,
+            TimeSpan.FromMilliseconds(1));
     }
 
     [Test]
