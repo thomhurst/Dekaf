@@ -746,9 +746,6 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     private readonly object _failureGate = new();
     private ExceptionDispatchInfo? _failure;
     private DateTimeOffset _nextPeriodicCommit;
-    // The record a backpressured route has enumerated but not yet queued to _heldRecordLane.
-    private PartitionLane<TKey, TValue>? _heldRecordLane;
-    private TopicPartitionOffset _heldRecordOffset;
 
     public PartitionedConsumerRuntime(
         IKafkaConsumer<TKey, TValue> consumer,
@@ -1200,26 +1197,19 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                 {
                     PauseIfNeeded(lane);
                     // The consumer position already counts the held record. A lane that fails
-                    // while commands drain must rewind to it unless it rewinds further back.
+                    // before the record is queued must rewind to it unless it rewinds further
+                    // back. The lane keeps the offset after this route returns, because the
+                    // failure can reach the command channel after the drain below ends.
                     if (!records.Current.IsPartitionEof)
                     {
-                        _heldRecordLane = lane;
-                        _heldRecordOffset = new TopicPartitionOffset(
+                        lane.HeldRecordOffset = new TopicPartitionOffset(
                             lane.TopicPartition.Topic,
                             lane.TopicPartition.Partition,
                             records.Current.Offset,
                             records.Current.LeaderEpoch ?? -1);
                     }
 
-                    try
-                    {
-                        await DrainCommandsAsync(cancellationToken).ConfigureAwait(false);
-                    }
-                    finally
-                    {
-                        _heldRecordLane = null;
-                    }
-
+                    await DrainCommandsAsync(cancellationToken).ConfigureAwait(false);
                     ThrowIfFailed();
 
                     if (lane.IsCompleted
@@ -1232,6 +1222,10 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
 
                     await signal.WaitAsync(Timeout.Infinite).ConfigureAwait(false);
                 }
+
+                // Clear the hold once the record is queued: the lane's queue covers it now.
+                if (lane.HeldRecordOffset is not null)
+                    lane.HeldRecordOffset = null;
 
                 if (!records.Current.IsPartitionEof)
                     published++;
@@ -1502,14 +1496,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         }
     }
 
-    private TopicPartitionOffset? GetFirstUndeliveredOffset(PartitionLane<TKey, TValue> lane)
-    {
-        // Records left in the lane precede the record a backpressured route still holds.
-        if (lane.FirstUndeliveredOffset is { } abandoned)
-            return abandoned;
-
-        return ReferenceEquals(_heldRecordLane, lane) ? _heldRecordOffset : null;
-    }
+    // Records left in the lane precede the record a backpressured route still holds.
+    private static TopicPartitionOffset? GetFirstUndeliveredOffset(PartitionLane<TKey, TValue> lane)
+        => lane.FirstUndeliveredOffset ?? lane.HeldRecordOffset;
 
     private void RestartLaneIfStillAssigned(TopicPartition partition)
     {
@@ -2004,6 +1993,13 @@ internal sealed class PartitionLane<TKey, TValue>
     /// the processor received every queued record. Read only after the processor task completes.
     /// </summary>
     public TopicPartitionOffset? FirstUndeliveredOffset => _firstUndeliveredOffset;
+
+    /// <summary>
+    /// The record a backpressured route has enumerated for this lane but not yet queued, or null.
+    /// Only the runtime loop reads or writes it. It stays set when the route abandons the record
+    /// because the lane completed, so a failure handled later still rewinds to it.
+    /// </summary>
+    public TopicPartitionOffset? HeldRecordOffset { get; set; }
 
     public bool IsFull => Volatile.Read(ref _bufferedCount) >= _capacity;
 
