@@ -25,7 +25,7 @@ public class DekafKafkaResourceTests
         await Assert.That(endpoints["tcp"].Port).IsEqualTo(19092);
         await Assert.That(endpoints["tcp"].Protocol).IsEqualTo(ProtocolType.Tcp);
         await Assert.That(endpoints["internal"].TargetPort).IsEqualTo(9093);
-        await Assert.That($"{image.Registry}/{image.Image}:{image.Tag}").IsEqualTo("docker.io/apache/kafka:4.3.1");
+        await Assert.That($"{image.Registry}/{image.Image}:{image.Tag}").IsEqualTo("docker.io/apache/kafka:4.4.0");
     }
 
     [Test]
