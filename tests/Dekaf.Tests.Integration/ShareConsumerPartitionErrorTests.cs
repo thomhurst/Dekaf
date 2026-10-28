@@ -62,6 +62,62 @@ public sealed class ShareConsumerLeadershipTests(RackAwareKafkaContainer kafka)
             .IsEqualTo(10);
     }
 
+    [Test]
+    [Timeout(240_000)]
+    public async Task LeaderMove_OfOnePartition_OldBrokerForgetsItAndKeepsServingTheOther(
+        CancellationToken cancellationToken)
+    {
+        if (!RackAwareKafkaContainer.SupportsShareGroups)
+            Skip.Test($"Share groups need Kafka 4.2 or later; this run uses {KafkaContainerDefault.ImageTag}.");
+
+        // Both partitions start on broker 1. After partition 0 moves, the next request to broker 1
+        // still fetches partition 1 and forgets partition 0 in the same share session.
+        var topic = await kafka.CreateTopicWithRemoteLeaderAndLocalFollowerAsync(partitionCount: 2)
+            .ConfigureAwait(false);
+        var group = $"share-leader-move-forget-{Guid.NewGuid():N}";
+        await using var admin = kafka.CreateAdminClient();
+        await ShareConsumerPartitionErrorHelper.ConsumeFromEarliestAsync(admin, group, cancellationToken)
+            .ConfigureAwait(false);
+        await using var producer = await ShareConsumerPartitionErrorHelper
+            .CreateProducerAsync(kafka.BootstrapServers, cancellationToken).ConfigureAwait(false);
+        await using var consumer = await ShareConsumerPartitionErrorHelper
+            .CreateConsumerAsync(kafka.BootstrapServers, group, cancellationToken).ConfigureAwait(false);
+        consumer.Subscribe(topic);
+
+        var received = new HashSet<string>();
+        await ShareConsumerPartitionErrorHelper.ProduceAsync(producer, topic, "before-0", 5, cancellationToken,
+            partition: 0).ConfigureAwait(false);
+        await ShareConsumerPartitionErrorHelper.ProduceAsync(producer, topic, "before-1", 5, cancellationToken,
+            partition: 1).ConfigureAwait(false);
+        await ShareConsumerPartitionErrorHelper.ConsumeAsync(consumer, received, 10, TimeSpan.FromSeconds(60),
+            cancellationToken).ConfigureAwait(false);
+
+        await kafka.WaitForInSyncReplicasAsync(topic, expectedCount: 2, cancellationToken).ConfigureAwait(false);
+        await admin.AlterPartitionReassignmentsAsync(
+                new Dictionary<TopicPartition, Optional<NewPartitionReassignment>>
+                {
+                    [new TopicPartition(topic, 0)] = NewPartitionReassignment.ToReplicas([2, 1])
+                },
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        await WaitForLeaderAsync(admin, topic, expectedLeader: 2, elect: true, cancellationToken).ConfigureAwait(false);
+
+        // Three rounds after the move, so broker 1 handles several incremental requests after the
+        // one that forgets partition 0, and each round needs both brokers.
+        for (var round = 0; round < 3; round++)
+        {
+            await ShareConsumerPartitionErrorHelper.ProduceAsync(producer, topic, $"after-{round}-0", 5,
+                cancellationToken, partition: 0).ConfigureAwait(false);
+            await ShareConsumerPartitionErrorHelper.ProduceAsync(producer, topic, $"after-{round}-1", 5,
+                cancellationToken, partition: 1).ConfigureAwait(false);
+            await ShareConsumerPartitionErrorHelper.ConsumeAsync(consumer, received, 20 + round * 10, ResumeTimeout,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        await Assert.That(received.Count(static key => key.StartsWith("after-", StringComparison.Ordinal)))
+            .IsEqualTo(30);
+    }
+
     private static async Task WaitForLeaderAsync(
         IAdminClient admin, string topic, int expectedLeader, bool elect, CancellationToken cancellationToken)
     {
@@ -77,7 +133,7 @@ public sealed class ShareConsumerLeadershipTests(RackAwareKafkaContainer kafka)
                 if (active.Count == 0)
                 {
                     var descriptions = await admin.DescribeTopicsAsync([topic], timeout.Token).ConfigureAwait(false);
-                    var description = descriptions[topic].Partitions.Single();
+                    var description = descriptions[topic].Partitions.Single(static partition => partition.PartitionIndex == 0);
                     if (description.LeaderId == expectedLeader)
                         return;
                     if (elect && description.ReplicaNodes.Count > 0 && description.ReplicaNodes[0] == expectedLeader
@@ -164,13 +220,14 @@ internal static class ShareConsumerPartitionErrorHelper
 
     internal static async Task ProduceAsync(
         IKafkaProducer<string, string> producer, string topic, string prefix, int count,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, int? partition = null)
     {
         for (var index = 0; index < count; index++)
         {
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
+                Partition = partition,
                 Key = $"{prefix}-{index}",
                 Value = "value"
             }, cancellationToken).ConfigureAwait(false);

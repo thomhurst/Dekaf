@@ -1204,6 +1204,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     ShareFetchRequest.LowestSupportedVersion,
                     ShareFetchRequest.HighestSupportedVersion);
                 EnsureRenewalSupported(ApiKey.ShareFetch, version, isRenewAck);
+                // Capture the session's partitions before its epoch, so a reset between the two
+                // leaves this request with the old, unreachable set rather than the new session's.
+                var sessionPartitions = _sessionManager.GetSessionPartitions(brokerId);
                 // Read the epoch once. The poll checked it before selecting acknowledgements, but
                 // another request can reset the session while this one waits for its connection,
                 // and the request that opens a session cannot carry acknowledgements.
@@ -1211,6 +1214,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 if (sessionEpoch == 0 && brokerAcks is not null && _sessionManager.HadSession(brokerId))
                     return new ShareFetchBrokerResult(brokerId, 0, null, brokerAcks, null, CreateNoShareSessionException(brokerId));
                 var maxRecords = !isRenewAck && version >= 1 ? _options.MaxPollRecords : 0;
+                var topics = BuildShareFetchTopics(partitions, brokerAcks, version, out var sentTopics);
+                var sessionChanged = PrepareSessionPartitionsUpdate(
+                    brokerId, sessionEpoch, sessionPartitions, sentTopics,
+                    out var forgottenTopics, out var forgottenPartitions);
                 var request = new ShareFetchRequest
                 {
                     GroupId = _options.GroupId,
@@ -1223,7 +1230,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     BatchSize = isRenewAck ? 0 : maxRecords,
                     ShareAcquireMode = (sbyte)_options.ShareAcquireMode,
                     IsRenewAck = isRenewAck,
-                    Topics = BuildShareFetchTopics(partitions, brokerAcks, version, out var sentTopics)
+                    Topics = topics,
+                    ForgottenTopicsData = forgottenTopics
                 };
                 requestContext = PrepareFetchTelemetry(brokerId, request, requestContext);
                 ShareFetchResponse response;
@@ -1261,6 +1269,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     }
 
                     continue;
+                }
+
+                // The broker applied the session changes only when it accepted the request.
+                if (sessionChanged && response.ErrorCode == ErrorCode.None)
+                {
+                    ShareSessionManager.UpdateSessionPartitions(
+                        sessionPartitions, sessionEpoch == 0, sentTopics, forgottenPartitions);
                 }
 
                 return new ShareFetchBrokerResult(brokerId, version, response, brokerAcks, null, null)
@@ -2335,6 +2350,97 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         }
 
         return topics;
+    }
+
+    /// <summary>
+    /// Finds the share-session partitions that an incremental ShareFetch must forget: partitions it
+    /// no longer sends to this broker because they left the assignment, their leader moved, or their
+    /// topic was deleted or recreated. A partition that is only backing off stays in the session.
+    /// Returns whether the request changes the session. In the steady state it does not, and this
+    /// costs one lookup per sent partition and allocates nothing.
+    /// </summary>
+    private bool PrepareSessionPartitionsUpdate(
+        int brokerId,
+        int sessionEpoch,
+        Dictionary<TopicPartition, Guid> session,
+        Dictionary<string, (Guid TopicId, List<ShareFetchRequestPartition> Partitions)> sentTopics,
+        out List<ShareFetchForgottenTopic>? forgottenTopics,
+        out List<TopicPartition>? forgottenPartitions)
+    {
+        forgottenTopics = null;
+        forgottenPartitions = null;
+        // A request that opens a session (epoch 0) starts it empty, so it has nothing to forget.
+        if (sessionEpoch == 0)
+            return true;
+
+        var sentCount = 0;
+        var matched = 0;
+        foreach (var (topic, (topicId, partitions)) in sentTopics)
+        {
+            sentCount += partitions.Count;
+            foreach (var partition in partitions)
+            {
+                if (session.TryGetValue(new TopicPartition(topic, partition.PartitionIndex), out var sessionTopicId)
+                    && sessionTopicId == topicId)
+                {
+                    matched++;
+                }
+            }
+        }
+
+        // Every session partition is sent again, so only new partitions can change the session.
+        if (matched == session.Count)
+            return matched != sentCount;
+
+        var metadata = _metadataManager.Metadata;
+        Dictionary<Guid, List<int>>? forgottenByTopic = null;
+        foreach (var (topicPartition, topicId) in session)
+        {
+            // Sent partitions and partitions skipped while they back off stay in the session.
+            if (_assignmentSnapshot.Contains(topicPartition)
+                && metadata.GetTopic(topicPartition.Topic)?.TopicId == topicId
+                && metadata.GetPartitionLeader(topicPartition.Topic, topicPartition.Partition)?.NodeId == brokerId)
+            {
+                continue;
+            }
+
+            // Metadata can change while the request waits for its connection, so a partition
+            // grouped for this broker can be sent even though it no longer qualifies above.
+            if (IsSentPartition(sentTopics, topicPartition, topicId))
+                continue;
+
+            (forgottenPartitions ??= []).Add(topicPartition);
+            forgottenByTopic ??= [];
+            if (!forgottenByTopic.TryGetValue(topicId, out var forgotten))
+                forgottenByTopic[topicId] = forgotten = [];
+            forgotten.Add(topicPartition.Partition);
+        }
+
+        if (forgottenByTopic is not null)
+        {
+            forgottenTopics = new List<ShareFetchForgottenTopic>(forgottenByTopic.Count);
+            foreach (var (topicId, forgotten) in forgottenByTopic)
+                forgottenTopics.Add(new ShareFetchForgottenTopic { TopicId = topicId, Partitions = forgotten });
+        }
+
+        return true;
+    }
+
+    private static bool IsSentPartition(
+        Dictionary<string, (Guid TopicId, List<ShareFetchRequestPartition> Partitions)> sentTopics,
+        TopicPartition topicPartition,
+        Guid topicId)
+    {
+        if (!sentTopics.TryGetValue(topicPartition.Topic, out var sent) || sent.TopicId != topicId)
+            return false;
+
+        foreach (var partition in sent.Partitions)
+        {
+            if (partition.PartitionIndex == topicPartition.Partition)
+                return true;
+        }
+
+        return false;
     }
 
     private static Dictionary<TopicPartition, List<AcknowledgementBatchData>>? SelectAcknowledgements(

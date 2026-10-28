@@ -511,7 +511,8 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
             {
                 await using var admin = CreateAdminClient();
                 var descriptions = await admin.DescribeTopicsAsync([topic], token).ConfigureAwait(false);
-                return descriptions[topic].Partitions.Single().IsrNodes.Count;
+                // Every partition must restore its replicas; the smallest ISR decides.
+                return descriptions[topic].Partitions.Min(static partition => partition.IsrNodes.Count);
             },
             isComplete: count => count == expectedCount,
             maxAttempts: 120,
