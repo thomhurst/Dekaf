@@ -229,7 +229,7 @@ or Kafka's ISO-8601 form:
 }
 ```
 
-For KIP-1327 brokers, newly-expanded partitions can use an independent policy:
+With KIP-1327, newly-expanded partitions can use an independent policy. No released Kafka version ships KIP-1327 yet (Kafka 4.4.0 ships `ConsumerGroupHeartbeat` v0-1), so until then Dekaf applies the base policy to every partition:
 
 ```csharp
 .WithAutoOffsetResetNewPartitions(AutoOffsetReset.Earliest)

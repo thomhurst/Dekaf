@@ -38,7 +38,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
     }
 
     [Test]
-    [SupportsKafka(440)]
+    [Skip("KIP-1327 (ConsumerGroupHeartbeat v2) is not in any released Kafka version; Kafka 4.4.0 ships v0-1. Re-enable with the release that ships it (#3613).")]
     public async Task NewPartitionEarliest_WithBaseLatest_ConsumesHotExpansionRecord()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1).ConfigureAwait(false);

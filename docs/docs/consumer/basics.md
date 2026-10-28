@@ -146,9 +146,18 @@ var recentConsumer = await Kafka.CreateConsumer<string, string>()
 
 ### Protecting newly expanded partitions
 
-Kafka 4.4's KIP-1327 can apply a separate reset policy when a topic gains partitions. This
-avoids the blind window where a `Latest` consumer would otherwise skip records written before
-it discovers the new partition:
+KIP-1327 lets the group coordinator classify partitions that a topic gains, so the consumer can
+apply a separate reset policy to them. This avoids the blind window where a `Latest` consumer would
+otherwise skip records written before it discovers the new partition.
+
+:::caution
+KIP-1327 is not in any released Kafka version yet; Kafka 4.4.0 ships `ConsumerGroupHeartbeat`
+v0-1 only. Until a release ships it, Dekaf does not negotiate `ConsumerGroupHeartbeat` v2 and
+newly expanded partitions use the base policy.
+:::
+
+You can configure the policy now; it takes effect once Dekaf enables the KIP for a broker release
+that ships it:
 
 ```csharp
 var consumer = await Kafka.CreateConsumer<string, string>()
@@ -161,9 +170,8 @@ var consumer = await Kafka.CreateConsumer<string, string>()
 
 The new-partition policy is optional and supports `Earliest`, `Latest`, and `ByDuration` (through
 `WithAutoOffsetResetNewPartitionsByDuration`). Committed offsets always win. If a committed offset
-becomes out of range, the base policy is used. Brokers older than Kafka 4.4 omit the classification,
-so Dekaf safely keeps using the base policy until the coordinator supports
-`ConsumerGroupHeartbeat` v2. The option requires group subscription and is rejected for manual
+becomes out of range, the base policy is used. Brokers that do not send the classification leave
+Dekaf on the base policy. The option requires group subscription and is rejected for manual
 assignment.
 
 ## Error Handling

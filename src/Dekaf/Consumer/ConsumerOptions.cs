@@ -128,8 +128,8 @@ public sealed class ConsumerOptions
     /// <summary>
     /// Optional offset reset behavior for partitions that the group coordinator identifies as
     /// newly expanded through KIP-1327. When unset, <see cref="AutoOffsetReset"/> applies.
-    /// Requires a broker supporting ConsumerGroupHeartbeat v2; older brokers safely use the
-    /// base policy because they omit the new-partition classification.
+    /// Requires ConsumerGroupHeartbeat v2, which no released Kafka version ships yet (Kafka 4.4.0
+    /// ships v0-1), so Dekaf does not negotiate it and the base policy currently applies.
     /// </summary>
     public AutoOffsetReset? AutoOffsetResetNewPartitions { get; init; }
 
