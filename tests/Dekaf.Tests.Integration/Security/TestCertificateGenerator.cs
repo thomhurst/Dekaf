@@ -218,18 +218,64 @@ internal sealed class TestCertificateGenerator : IDisposable
     }
 
     /// <summary>
-    /// Generates another TLS server certificate signed by this generator's CA.
+    /// Generates another TLS server certificate signed by this generator's CA, or by
+    /// <paramref name="issuer"/> when given.
     /// </summary>
     public X509Certificate2 GenerateServerCertificate(
         DateTimeOffset? notBefore = null,
-        DateTimeOffset? notAfter = null)
+        DateTimeOffset? notAfter = null,
+        X509Certificate2? issuer = null)
         => GenerateSignedCertificate(
-            CaCertificate,
+            issuer ?? CaCertificate,
             "CN=kafka-broker, O=Dekaf Test, C=US",
             isServer: true,
             out _,
             notBefore,
             notAfter);
+
+    /// <summary>
+    /// Generates an intermediate CA certificate, with its private key, signed by this generator's CA.
+    /// </summary>
+    public X509Certificate2 GenerateIntermediateCaCertificate()
+    {
+        using var rsa = RSA.Create(2048);
+        var request = new CertificateRequest(
+            "CN=Dekaf Test Intermediate CA, O=Dekaf Test, C=US",
+            rsa,
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1);
+
+        request.CertificateExtensions.Add(
+            new X509BasicConstraintsExtension(
+                certificateAuthority: true,
+                hasPathLengthConstraint: true,
+                pathLengthConstraint: 0,
+                critical: true));
+
+        request.CertificateExtensions.Add(
+            new X509KeyUsageExtension(
+                X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign,
+                critical: true));
+
+        request.CertificateExtensions.Add(
+            new X509SubjectKeyIdentifierExtension(request.PublicKey, critical: false));
+
+        var serialNumber = new byte[16];
+        RandomNumberGenerator.Fill(serialNumber);
+        serialNumber[0] &= 0x7F; // Ensure positive serial number
+
+        using var cert = request.Create(
+            CaCertificate,
+            DateTimeOffset.UtcNow.AddMinutes(-5),
+            DateTimeOffset.UtcNow.AddYears(2),
+            serialNumber);
+        using var certWithKey = cert.CopyWithPrivateKey(rsa);
+
+        return LoadPkcs12(
+            certWithKey.Export(X509ContentType.Pfx, StorePassword),
+            StorePassword,
+            X509KeyStorageFlags.Exportable);
+    }
 
     private void ExportCertificates()
     {
@@ -293,7 +339,7 @@ internal sealed class TestCertificateGenerator : IDisposable
             X509KeyStorageFlags.Exportable);
     }
 
-    private static X509Certificate2 LoadCertificate(byte[] rawData)
+    internal static X509Certificate2 LoadCertificate(byte[] rawData)
     {
 #if NET10_0_OR_GREATER
         return X509CertificateLoader.LoadCertificate(rawData);

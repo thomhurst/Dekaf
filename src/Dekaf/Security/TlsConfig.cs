@@ -77,6 +77,8 @@ public sealed class TlsConfig
     /// <summary>
     /// Whether to check certificate revocation.
     /// Default is false for performance reasons.
+    /// When true, validation fails closed: a broker certificate whose revocation status cannot be
+    /// determined, for example because its CRL or OCSP endpoint is unreachable, is rejected.
     /// </summary>
     public bool CheckCertificateRevocation { get; init; }
 

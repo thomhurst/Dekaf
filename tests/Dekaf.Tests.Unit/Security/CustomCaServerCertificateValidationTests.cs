@@ -36,8 +36,9 @@ public class CustomCaServerCertificateValidationTests
         using var leaf = CreateCertificate("CN=broker", intermediate, isCa: false, ServerAuthOid);
 
         // On Linux and macOS SslStream passes the peer's intermediates in the chain's ExtraStore.
+        using var peerIntermediate = PublicOnly(intermediate);
         using var handshakeChain = new X509Chain();
-        handshakeChain.ChainPolicy.ExtraStore.Add(PublicOnly(intermediate));
+        handshakeChain.ChainPolicy.ExtraStore.Add(peerIntermediate);
 
         var isValid = Validate(leaf, handshakeChain, [PublicOnly(root)], X509RevocationMode.NoCheck, out var detail);
 
@@ -53,10 +54,12 @@ public class CustomCaServerCertificateValidationTests
         using var leaf = CreateCertificate("CN=broker", intermediate, isCa: false, ServerAuthOid);
 
         // A built handshake chain carries the intermediate in its elements, not in ExtraStore.
+        using var peerIntermediate = PublicOnly(intermediate);
+        using var peerLeaf = PublicOnly(leaf);
         using var handshakeChain = new X509Chain();
         handshakeChain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
-        handshakeChain.ChainPolicy.ExtraStore.Add(PublicOnly(intermediate));
-        handshakeChain.Build(PublicOnly(leaf));
+        handshakeChain.ChainPolicy.ExtraStore.Add(peerIntermediate);
+        handshakeChain.Build(peerLeaf);
         handshakeChain.ChainPolicy.ExtraStore.Clear();
         await Assert.That(handshakeChain.ChainElements.Count).IsGreaterThanOrEqualTo(2);
 
@@ -134,10 +137,11 @@ public class CustomCaServerCertificateValidationTests
         crlServer.Publish("root.crl", BuildCrl(root));
         crlServer.Publish("intermediate.crl", BuildCrl(intermediate, revokedLeaf));
 
+        using var peerIntermediate = PublicOnly(intermediate);
         using var goodHandshake = new X509Chain();
-        goodHandshake.ChainPolicy.ExtraStore.Add(PublicOnly(intermediate));
+        goodHandshake.ChainPolicy.ExtraStore.Add(peerIntermediate);
         using var revokedHandshake = new X509Chain();
-        revokedHandshake.ChainPolicy.ExtraStore.Add(PublicOnly(intermediate));
+        revokedHandshake.ChainPolicy.ExtraStore.Add(peerIntermediate);
 
         var goodIsValid = Validate(goodLeaf, goodHandshake, [PublicOnly(root)], X509RevocationMode.Online, out var goodDetail);
         var revokedIsValid = Validate(revokedLeaf, revokedHandshake, [PublicOnly(root)], X509RevocationMode.Online, out var revokedDetail);
