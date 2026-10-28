@@ -383,6 +383,46 @@ public class DefaultPartitionerTests
         await Assert.That(selected).IsEquivalentTo([2]);
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task InitialAdaptiveSelection_WeightsAboveInt32MaxValue_ReachesEveryHealthyPartition(bool rackLocal)
+    {
+        // 99 empty partitions weigh 32 MiB + 1 each, so the total weight is 3,321,888,868 and
+        // partitions 64-98 start above Int32.MaxValue in the cumulative distribution.
+        const int partitionCount = 100;
+        const int backedUpPartition = 99;
+        var allPartitions = Enumerable.Range(0, partitionCount).ToArray();
+        var partitioner = rackLocal
+            ? CreateRackAwarePartitioner(adaptivePartitioning: true)
+            : new DefaultPartitioner(adaptivePartitioning: true);
+        var uniform = (IUniformStickyPartitioner)partitioner;
+        uniform.SetPartitionQueueByteProvider(
+            static (_, partition) => partition == backedUpPartition ? 32L * 1024 * 1024 : 0);
+        if (rackLocal)
+            uniform.SetRackLocalPartitionsProvider((_, _, _) => allPartitions);
+
+        // Each new topic makes one initial weighted choice; one partitioner keeps one random stream.
+        // Every healthy partition carries ~1% of the weight, so 4,000 draws miss one with
+        // probability below 1e-15.
+        var selected = new HashSet<int>();
+        for (var i = 0; i < 4_000; i++)
+            selected.Add(partitioner.Partition($"topic-{i}", ReadOnlySpan<byte>.Empty, keyIsNull: true, partitionCount));
+
+        await Assert.That(selected.Count(static partition => partition >= 64 && partition < backedUpPartition)).IsEqualTo(35);
+    }
+
+    [Test]
+    public async Task RandomPartitionSelector_NextUInt64_ProducesValuesAboveUInt32Range()
+    {
+        var selector = new RandomPartitionSelector();
+        var sawHighBits = false;
+        for (var i = 0; i < 64 && !sawHighBits; i++)
+            sawHighBits = selector.NextUInt64() > uint.MaxValue;
+
+        await Assert.That(sawHighBits).IsTrue();
+    }
+
     private static DefaultPartitioner CreateRackAwarePartitioner(
         int stickyBatchSize = int.MaxValue,
         bool adaptivePartitioning = false,
