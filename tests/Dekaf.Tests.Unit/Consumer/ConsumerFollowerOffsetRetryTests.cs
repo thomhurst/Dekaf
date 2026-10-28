@@ -170,7 +170,7 @@ public sealed partial class ConsumerRackAwarenessTests
             await InvokeReplicaFetchAsync(consumer, 2, prefetch);
             var expected = reset == AutoOffsetReset.Earliest ? -2L : -1L;
             await Assert.That(GetFetchPosition(consumer)).IsEqualTo(expected);
-            await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(expected);
+            await Assert.That(consumer.GetRawPosition(Partition)).IsEqualTo(expected);
         }
         await Assert.That(currentLeaderOffset).IsEqualTo(42);
     }
@@ -234,7 +234,7 @@ public sealed partial class ConsumerRackAwarenessTests
             await InvokeReplicaFetchAsync(consumer, 1, prefetch);
             var expected = reset == AutoOffsetReset.Earliest ? -2L : -1L;
             await Assert.That(GetFetchPosition(consumer)).IsEqualTo(expected);
-            await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(expected);
+            await Assert.That(consumer.GetRawPosition(Partition)).IsEqualTo(expected);
         }
         await Assert.That(leaderRequestedOffset).IsEqualTo(42);
     }
@@ -285,7 +285,7 @@ public sealed partial class ConsumerRackAwarenessTests
             await fetch.WaitAsync(timeout.Token);
         }
         await Assert.That(GetFetchPosition(consumer)).IsEqualTo(-1);
-        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(-1);
+        await Assert.That(consumer.GetRawPosition(Partition)).IsEqualTo(-1);
     }
     [Test]
     [Arguments(false, 1, 2, AutoOffsetReset.None)]
@@ -656,7 +656,7 @@ public sealed partial class ConsumerRackAwarenessTests
             _ => 10L
         };
         await Assert.That(GetFetchPosition(consumer)).IsEqualTo(expected);
-        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(expected);
+        await Assert.That(consumer.GetRawPosition(Partition)).IsEqualTo(expected);
         // Publication must be possible again once the reset has committed.
         await Assert.That(metadata.TryUpdatePartitionLeader(Topic, 0, 2, 6)).IsTrue();
     }

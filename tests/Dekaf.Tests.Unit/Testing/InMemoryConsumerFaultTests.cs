@@ -447,6 +447,38 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task CommitAsync_ExplicitNegativeOffset_ThrowsBeforeFaultsOrCommit(bool withPendingFault)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await using var consumer = CreateConsumer(cluster, enableAutoOffsetStore: false);
+        if (withPendingFault)
+        {
+            cluster.FaultPlan.Fail(
+                new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId),
+                new InvalidOperationException("commit failed"));
+        }
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            consumer.CommitAsync([new TopicPartitionOffset(Topic, 0, -1)]).AsTask());
+
+        await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsNull();
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(withPendingFault ? 1 : 0);
+    }
+
+    [Test]
+    public async Task GetPosition_AfterSeekToNegativeSentinel_ReturnsNull()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await using var consumer = CreateConsumer(cluster, enableAutoOffsetStore: false);
+
+        consumer.Seek(new TopicPartitionOffset(Topic, 0, TopicPartitionTimestamp.Latest));
+
+        await Assert.That(consumer.GetPosition(Partition)).IsNull();
+    }
+
+    [Test]
     public async Task CommitAsync_ConcurrentCommitsReserveDistinctOrderedFaults()
     {
         var cluster = new InMemoryKafkaCluster();

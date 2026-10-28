@@ -180,7 +180,7 @@ public sealed partial class ConsumerAssignmentFastPathTests
         await harness.Consumer.EnsureAssignmentAsync(CancellationToken.None);
 
         var expected = ExpectedSeekOffset(kind);
-        await Assert.That(harness.Consumer.GetPosition(Partition1)).IsEqualTo(expected);
+        await Assert.That(harness.Consumer.GetRawPosition(Partition1)).IsEqualTo(expected);
         await Assert.That(GetFetchPositions(harness.Consumer)[Partition1]).IsEqualTo(expected);
     }
 

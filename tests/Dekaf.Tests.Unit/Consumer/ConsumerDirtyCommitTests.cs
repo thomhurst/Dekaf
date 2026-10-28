@@ -1403,6 +1403,45 @@ public sealed partial class ConsumerDirtyCommitTests
         await Assert.That(requests).IsEmpty();
     }
 
+    [Test]
+    [Arguments("SeekToBeginning")]
+    [Arguments("SeekToEnd")]
+    public async Task GetPosition_AfterSeekToBeginningOrEndBeforeFetch_ReturnsNullInsteadOfSentinel(string seekOperation)
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(requests, ErrorCode.None);
+        var partition = new TopicPartition("topic-a", 0);
+
+        consumer.Seek(new TopicPartitionOffset(partition.Topic, partition.Partition, 10));
+        ApplySeek(consumer, seekOperation, partition);
+
+        // The sentinel stays internal until the next fetch resolves it; an application that
+        // checkpoints GetPosition must not be handed -1 or -2 to commit.
+        await Assert.That(consumer.GetRawPosition(partition)).IsEqualTo(
+            seekOperation == "SeekToEnd" ? TopicPartitionTimestamp.Latest : TopicPartitionTimestamp.Earliest);
+        await Assert.That(consumer.GetPosition(partition)).IsNull();
+    }
+
+    [Test]
+    [Arguments("topic-a", 0, -1L)]
+    [Arguments("topic-a", 0, -2L)]
+    [Arguments("topic-a", -1, 5L)]
+    [Arguments("", 0, 5L)]
+    public async Task CommitAsync_ExplicitOffsets_RejectsInvalidEntryBeforeSendingAny(
+        string topic,
+        int partition,
+        long offset)
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(requests, ErrorCode.None);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => consumer.CommitAsync(
+            [new TopicPartitionOffset("topic-a", 1, 3), new TopicPartitionOffset(topic, partition, offset)],
+            CancellationToken.None).AsTask());
+
+        await Assert.That(requests).IsEmpty();
+    }
+
     private static KafkaConsumer<string, string> CreateConsumer(
         List<OffsetCommitRequest> requests,
         ErrorCode responseError,

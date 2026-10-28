@@ -3547,7 +3547,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             endOffsets.Add(partition, watermarks.High);
             startOffsets.Add(
                 partition,
-                GetPosition(partition)
+                GetRawPosition(partition)
                 ?? _fetchPositions.GetValueOrDefault(partition, watermarks.Low));
         }
 
@@ -3608,7 +3608,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             var resumeOffsets = new Dictionary<TopicPartition, long>(snapshot.StartOffsets.Count);
             foreach (var (partition, startOffset) in snapshot.StartOffsets)
-                resumeOffsets[partition] = GetPosition(partition) ?? startOffset;
+                resumeOffsets[partition] = GetRawPosition(partition) ?? startOffset;
 
             ClearFetchBufferForPartitions(snapshot.Assignment, stagePendingClear: true);
             foreach (var (partition, offset) in resumeOffsets)
@@ -9045,6 +9045,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             // Materialize to list to allow iteration for both commit tracking and interceptors
             var offsetsList = offsets as IReadOnlyList<TopicPartitionOffset> ?? offsets.ToArray();
+            TopicPartitionOffsetValidator.Validate(offsetsList, nameof(offsets));
 
             await coordinator.CommitOffsetsAsync(offsetsList, retryUntilApiTimeout: true, membershipVersion, apiTimeout.Token)
                 .ConfigureAwait(false);
@@ -9397,7 +9398,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    public long? GetPosition(TopicPartition partition)
+    public long? GetPosition(TopicPartition partition) =>
+        GetRawPosition(partition) is { } position && position >= 0 ? position : null;
+
+    /// <summary>
+    /// The position including an unresolved <see cref="TopicPartitionTimestamp.Earliest"/> or
+    /// <see cref="TopicPartitionTimestamp.Latest"/> seek sentinel, which internal resumes must preserve.
+    /// </summary>
+    internal long? GetRawPosition(TopicPartition partition)
     {
         if (_coordinator is { IsDeliveringAssignedCallback: true } coordinator
             && coordinator.TryGetAssignedCallbackRevocationSequence(partition, out _))
@@ -9426,7 +9434,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     internal long? GetRebalancePosition(TopicPartition partition) =>
         _pendingRebalanceSeeks.TryGetValue(partition, out var pending)
             ? pending.Offset
-            : GetPosition(partition);
+            : GetRawPosition(partition);
 
     /// <summary>
     /// The position of a partition an OnPartitionsAssigned callback announced, read from inside that

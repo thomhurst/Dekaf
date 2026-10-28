@@ -353,6 +353,8 @@ public interface IConsumerPositions
     /// Gets the current position (next offset to consume) for a partition.
     /// In auto-commit mode, reflects the last fully-processed batch boundary;
     /// for per-message accuracy, use manual commit mode.
+    /// Returns <see langword="null"/> when the partition has no position yet, including after
+    /// <c>SeekToBeginning</c> or <c>SeekToEnd</c> until the consumer resolves the seek to an offset.
     /// </summary>
     long? GetPosition(TopicPartition partition);
 

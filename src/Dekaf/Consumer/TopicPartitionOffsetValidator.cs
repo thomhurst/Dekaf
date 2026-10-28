@@ -16,4 +16,10 @@ internal static class TopicPartitionOffsetValidator
         if (offset.Offset < 0)
             throw new ArgumentOutOfRangeException(paramName, offset.Offset, "Offset must be non-negative.");
     }
+
+    internal static void Validate(IReadOnlyList<TopicPartitionOffset> offsets, string paramName)
+    {
+        for (var index = 0; index < offsets.Count; index++)
+            Validate(offsets[index], paramName);
+    }
 }
