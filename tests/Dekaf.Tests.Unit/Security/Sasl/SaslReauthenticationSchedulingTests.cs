@@ -184,18 +184,22 @@ public sealed class SaslReauthenticationSchedulingTests
         // Backoff is capped at half the time left before the last attempt can still finish.
         await Assert.That(KafkaConnection.ComputeReauthenticationRetryDelayMs(40_000, 30_000, 10))
             .IsEqualTo(5_000L);
-        await Assert.That(KafkaConnection.ComputeReauthenticationRetryDelayMs(30_050, 30_000, 1))
+        await Assert.That(KafkaConnection.ComputeReauthenticationRetryDelayMs(
+                30_000 + 2 * KafkaConnection.ReauthenticationRetryMinDelayMs, 30_000, 1))
             .IsEqualTo(KafkaConnection.ReauthenticationRetryMinDelayMs);
         await Assert.That(KafkaConnection.ComputeReauthenticationRetryDelayMs(long.MaxValue / 2, 30_000, int.MaxValue))
             .IsGreaterThan(0L);
     }
 
     [Test]
+    [Arguments(30_199L)]
+    [Arguments(30_050L)]
     [Arguments(30_000L)]
     [Arguments(10_000L)]
     [Arguments(-5_000L)]
     public async Task RetryDelay_RetiresWhenNoAttemptCanFinishBeforeExpiry(long remainingMs)
     {
+        // The minimum delay must still leave a request timeout before expiry; never schedule past it.
         await Assert.That(KafkaConnection.ComputeReauthenticationRetryDelayMs(remainingMs, 30_000, 1))
             .IsEqualTo(-1L);
     }
