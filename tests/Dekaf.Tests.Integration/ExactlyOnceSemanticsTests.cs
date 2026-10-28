@@ -662,4 +662,87 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : Transa
 
         await Assert.That(rereadResult).IsNull();
     }
+
+    [Test]
+    public async Task PendingTransactionalOffsetCommit_NewOwnerDeliversOtherPartitionsAndResumesAfterCommit()
+    {
+        // Issue #3796: the previous owner committed offsets for partition 1 inside a transaction
+        // that is still open. The next owner must keep delivering partition 0 past its request
+        // timeout instead of failing the poll, and pick partition 1 up once the transaction ends.
+        var inputTopic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
+        var consumerGroupId = $"eos-unstable-group-{Guid.NewGuid():N}";
+
+        await using (var seedProducer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync())
+        {
+            foreach (var (partition, value) in new[] { (0, "p0-0"), (1, "p1-0"), (1, "p1-1") })
+            {
+                await seedProducer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = inputTopic,
+                    Partition = partition,
+                    Key = value,
+                    Value = value
+                }, CancellationToken.None);
+            }
+        }
+
+        await using var txnProducer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithTransactionalId($"eos-unstable-txn-{Guid.NewGuid():N}")
+            .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        await txnProducer.InitTransactionsAsync();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+        await using var transaction = txnProducer.BeginTransaction();
+        await using (var previousOwner = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(consumerGroupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithIsolationLevel(IsolationLevel.ReadCommitted)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync())
+        {
+            previousOwner.Subscribe(inputTopic);
+            _ = await previousOwner.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token)
+                ?? throw new InvalidOperationException("The previous owner consumed nothing.");
+            var groupMetadata = previousOwner.ConsumerGroupMetadata
+                ?? throw new InvalidOperationException("Consumer group metadata was unavailable after assignment.");
+            await transaction.SendOffsetsToTransactionAsync(
+                [new TopicPartitionOffset(inputTopic, 1, 1)],
+                groupMetadata);
+        }
+
+        const int requestTimeoutMs = 3_000;
+        await using var nextOwner = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(consumerGroupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithIsolationLevel(IsolationLevel.ReadCommitted)
+            .WithRequestTimeout(TimeSpan.FromMilliseconds(requestTimeoutMs))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        nextOwner.Subscribe(inputTopic);
+
+        var first = await nextOwner.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+        await Assert.That(first?.Value).IsEqualTo("p0-0");
+
+        // Longer than the request timeout: partition 1 is still unreadable, and polling neither
+        // throws nor delivers from it.
+        var whileOpen = await nextOwner.ConsumeOneAsync(TimeSpan.FromMilliseconds(2 * requestTimeoutMs), cts.Token);
+        await Assert.That(whileOpen).IsNull();
+
+        await transaction.CommitAsync();
+
+        var resumed = await nextOwner.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+        await Assert.That(resumed?.Partition).IsEqualTo(1);
+        await Assert.That(resumed?.Offset).IsEqualTo(1L);
+        await Assert.That(resumed?.Value).IsEqualTo("p1-1");
+    }
 }
