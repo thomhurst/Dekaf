@@ -2465,7 +2465,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     LeaderChangeAcknowledgementHint(partition.AcknowledgeErrorCode));
                 var topicInfo = _metadataManager.Metadata.GetTopic(topic.TopicId);
                 if (topicInfo is null)
-                    return AcknowledgementFailures.ForAll(acknowledgements.Keys, error);
+                {
+                    AddUnknownTopicAcknowledgementFailure(acknowledgements, partition.PartitionIndex, error, ref errors);
+                    continue;
+                }
 
                 var topicPartition = new TopicPartition(topicInfo.Name, partition.PartitionIndex);
                 if (!acknowledgements.ContainsKey(topicPartition))
@@ -2497,7 +2500,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     partition.ErrorMessage + LeaderChangeAcknowledgementHint(partition.ErrorCode));
                 var topicInfo = _metadataManager.Metadata.GetTopic(topic.TopicId);
                 if (topicInfo is null)
-                    return AcknowledgementFailures.ForAll(acknowledgements.Keys, error);
+                {
+                    AddUnknownTopicAcknowledgementFailure(acknowledgements, partition.PartitionIndex, error, ref errors);
+                    continue;
+                }
 
                 var topicPartition = new TopicPartition(topicInfo.Name, partition.PartitionIndex);
                 if (!acknowledgements.ContainsKey(topicPartition))
@@ -2509,6 +2515,26 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         }
 
         return errors is null ? null : new AcknowledgementFailures(errors);
+    }
+
+    // The share session can keep reporting a topic after metadata has removed it, so an error for an
+    // unknown topic ID belongs only to acknowledgements whose topic metadata no longer knows either.
+    // Applying it to a known topic's acknowledgement would drop that acknowledgement as acquisition lost.
+    private void AddUnknownTopicAcknowledgementFailure(
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>> acknowledgements,
+        int partitionIndex,
+        KafkaException error,
+        ref Dictionary<TopicPartition, KafkaException>? errors)
+    {
+        var metadata = _metadataManager.Metadata;
+        foreach (var topicPartition in acknowledgements.Keys)
+        {
+            if (topicPartition.Partition == partitionIndex && metadata.GetTopic(topicPartition.Topic) is null)
+            {
+                errors ??= [];
+                errors.TryAdd(topicPartition, error);
+            }
+        }
     }
 
     private static void SplitAcknowledgements(
@@ -3074,17 +3100,6 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             }
 
             return FirstError;
-        }
-
-        internal static AcknowledgementFailures ForAll(
-            IEnumerable<TopicPartition> topicPartitions,
-            KafkaException error)
-        {
-            var errors = new Dictionary<TopicPartition, KafkaException>();
-            foreach (var topicPartition in topicPartitions)
-                errors[topicPartition] = error;
-
-            return new AcknowledgementFailures(errors);
         }
     }
 

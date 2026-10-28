@@ -277,6 +277,50 @@ public sealed partial class ShareConsumerRenewalTests
         await Assert.That(fixture.MetadataManager.Metadata.GetPartitionLeader("topic", 0)!.NodeId).IsEqualTo(2);
     }
 
+    [Test]
+    public async Task Commit_UnknownTopicAcknowledgementError_DoesNotDropOtherTopicsAcknowledgements()
+    {
+        // The share session still reports a topic that metadata has removed. Its error must not
+        // be applied to the known topic's acknowledgement, which failed with a retriable error.
+        var deletedTopic = new ShareAcknowledgeResponseTopic
+        {
+            TopicId = Guid.NewGuid(),
+            Partitions =
+            [
+                new ShareAcknowledgeResponsePartition
+                {
+                    PartitionIndex = 0,
+                    ErrorCode = ErrorCode.UnknownTopicId,
+                    CurrentLeader = new ShareAcknowledgeLeaderIdAndEpoch()
+                }
+            ]
+        };
+        var timedOut = CreateAcknowledgeResponse((0, ErrorCode.RequestTimedOut));
+        ShareAcknowledgementCommitResult[]? outcomes = null;
+        var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 2)
+        {
+            ShareAcknowledgeResponses = new Queue<ShareAcknowledgeResponse>(
+            [
+                new ShareAcknowledgeResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    Responses = [deletedTopic, .. timedOut.Responses],
+                    NodeEndpoints = []
+                },
+                CreateAcknowledgeResponse((0, ErrorCode.None))
+            ])
+        };
+        await using var fixture = CreateFixture(connection,
+            acknowledgementCommitCallback: results => outcomes = results.ToArray());
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 40));
+
+        await fixture.Consumer.CommitAsync();
+
+        await Assert.That(connection.ShareAcknowledgeRequests).Count().IsEqualTo(2);
+        await Assert.That(outcomes!.Single().Succeeded).IsTrue();
+    }
+
     private static ShareFetchResponse CreatePartitionErrorResponse(
         params (int Partition, ErrorCode ErrorCode, int LeaderId, int LeaderEpoch)[] partitions)
         => new()
