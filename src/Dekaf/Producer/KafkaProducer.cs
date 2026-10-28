@@ -4711,45 +4711,61 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
                     // Every partition is examined and the most severe error wins, so a retriable
                     // error on one partition cannot hide an abortable or fatal one on another.
+                    // A topic ID that no longer maps is retriable in the same way: it is recorded
+                    // and retried only when no partition reports an abortable or fatal error.
                     ErrorCode? commitError = null;
                     var commitClassification = TransactionErrorClassification.Retriable;
                     var commitRequiresMetadataRefresh = false;
                     string? commitContext = null;
-                    try
+                    Exception? topicMismatch = null;
+                    var responseSnapshot = topicIdMap?.CaptureResponseSnapshot();
+                    foreach (var topicResult in txnOffsetCommitResponse.Topics)
                     {
-                        var responseSnapshot = topicIdMap?.CaptureResponseSnapshot();
-                        foreach (var topicResult in txnOffsetCommitResponse.Topics)
+                        string topicName;
+                        if (topicIdMap is null)
                         {
-                            var topicName = topicIdMap is null
-                                ? topicResult.Name
-                                : topicIdMap.MatchResponseTopic(
+                            topicName = topicResult.Name;
+                        }
+                        else
+                        {
+                            try
+                            {
+                                topicName = topicIdMap.MatchResponseTopic(
                                     topicResult.TopicId,
                                     responseSnapshot!,
                                     "TxnOffsetCommit",
                                     responseMismatchIsRetriable: true);
-
-                            foreach (var partitionResult in topicResult.Partitions)
+                            }
+                            catch (Exception ex) when (
+                                !retryCancellationToken.IsCancellationRequested
+                                && RetryHelper.IsRetriableRequestFailure(ex))
                             {
-                                var partitionError = partitionResult.ErrorCode;
-                                if (partitionError == ErrorCode.None)
-                                    continue;
-
-                                commitRequiresMetadataRefresh |= partitionError.RequiresMetadataRefresh();
-                                var classification = TransactionErrorClassifier.ClassifyTxnOffsetCommit(partitionError, tv2);
-                                if (commitError.HasValue && classification <= commitClassification)
-                                    continue;
-
-                                commitError = partitionError;
-                                commitClassification = classification;
-                                commitContext = $"TxnOffsetCommit for {topicName}-{partitionResult.PartitionIndex}";
+                                topicMismatch ??= ex;
+                                topicName = topicResult.TopicId.ToString();
                             }
                         }
+
+                        foreach (var partitionResult in topicResult.Partitions)
+                        {
+                            var partitionError = partitionResult.ErrorCode;
+                            if (partitionError == ErrorCode.None)
+                                continue;
+
+                            commitRequiresMetadataRefresh |= partitionError.RequiresMetadataRefresh();
+                            var classification = TransactionErrorClassifier.ClassifyTxnOffsetCommit(partitionError, tv2);
+                            if (commitError.HasValue && classification <= commitClassification)
+                                continue;
+
+                            commitError = partitionError;
+                            commitClassification = classification;
+                            commitContext = $"TxnOffsetCommit for {topicName}-{partitionResult.PartitionIndex}";
+                        }
                     }
-                    catch (Exception ex) when (
-                        !retryCancellationToken.IsCancellationRequested
-                        && RetryHelper.IsRetriableRequestFailure(ex))
+
+                    if (topicMismatch is not null
+                        && commitClassification == TransactionErrorClassification.Retriable)
                     {
-                        lastTransportException = ex;
+                        lastTransportException = topicMismatch;
                         if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
                             break;
                         await RefreshTopicMetadataForRetryAsync(topicOffsets.Keys, retryCancellationToken)

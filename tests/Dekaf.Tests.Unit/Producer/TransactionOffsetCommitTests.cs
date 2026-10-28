@@ -211,6 +211,58 @@ public sealed class TransactionOffsetCommitTests
     }
 
     [Test]
+    [Arguments(ErrorCode.ProducerFenced, true)]
+    [Arguments(ErrorCode.ProducerFenced, false)]
+    [Arguments(ErrorCode.StaleMemberEpoch, true)]
+    [Arguments(ErrorCode.StaleMemberEpoch, false)]
+    public async Task TV2_V6TopicMismatch_DoesNotHideTerminalPartitionError(
+        ErrorCode partitionError,
+        bool mismatchFirst)
+    {
+        // A topic whose ID no longer maps is retriable on its own, but it must not discard a
+        // fatal or abortable error that another topic in the same response reports.
+        var outcomes = new Queue<object>([new UnrequestedTopicOutcome(partitionError, mismatchFirst)]);
+        await using var harness = CreateHarness(
+            transactionVersion: 2,
+            txnOffsetCommitMaxVersion: 6,
+            commitOutcomes: outcomes,
+            topicId: TopicId);
+
+        var exception = await Assert.That(() => harness.Producer.SendOffsetsToTransactionInternalAsync(
+                [new TopicPartitionOffset("orders", 0, 42)],
+                "group-1",
+                CancellationToken.None).AsTask())
+            .Throws<TransactionException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(partitionError);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(
+            partitionError == ErrorCode.ProducerFenced
+                ? TransactionState.FatalError
+                : TransactionState.AbortableError);
+        await Assert.That(harness.Connection.CommitRequests).Count().IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task TV2_V6TopicMismatch_WithoutTerminalError_RefreshesMetadataAndRetries()
+    {
+        var outcomes = new Queue<object>([new UnrequestedTopicOutcome(ErrorCode.None, MismatchFirst: false)]);
+        await using var harness = CreateHarness(
+            transactionVersion: 2,
+            txnOffsetCommitMaxVersion: 6,
+            commitOutcomes: outcomes,
+            topicId: TopicId);
+
+        await harness.Producer.SendOffsetsToTransactionInternalAsync(
+            [new TopicPartitionOffset("orders", 0, 42)],
+            "group-1",
+            CancellationToken.None);
+
+        await Assert.That(harness.Connection.CommitRequests).Count().IsEqualTo(2);
+        await Assert.That(harness.Connection.Requests.Count(static request =>
+            request.ApiKey == ApiKey.Metadata)).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task TV2_WithV5_SkipsAddOffsetsAndUsesV5()
     {
         await using var harness = CreateHarness(transactionVersion: 2, txnOffsetCommitMaxVersion: 5);
@@ -848,21 +900,35 @@ public sealed class TransactionOffsetCommitTests
 
             // One error code for every partition, or one per partition in request order.
             var partitionErrors = outcome as ErrorCode[];
+            var unrequestedTopic = outcome as UnrequestedTopicOutcome?;
             var partitionNumber = 0;
-            return new TxnOffsetCommitResponse
+            var topics = request.Topics.Select(topic => new TxnOffsetCommitResponseTopic
             {
-                Topics = request.Topics.Select(topic => new TxnOffsetCommitResponseTopic
+                Name = topic.Name,
+                TopicId = topic.TopicId,
+                Partitions = topic.Partitions.Select(partition =>
+                    new TxnOffsetCommitResponsePartition
+                    {
+                        PartitionIndex = partition.PartitionIndex,
+                        ErrorCode = unrequestedTopic?.PartitionError
+                            ?? partitionErrors?[partitionNumber++]
+                            ?? (ErrorCode)outcome
+                    }).ToArray()
+            }).ToList();
+
+            if (unrequestedTopic is { } extra)
+            {
+                // A topic ID the request never named, which the response map rejects.
+                var mismatch = new TxnOffsetCommitResponseTopic
                 {
-                    Name = topic.Name,
-                    TopicId = topic.TopicId,
-                    Partitions = topic.Partitions.Select(partition =>
-                        new TxnOffsetCommitResponsePartition
-                        {
-                            PartitionIndex = partition.PartitionIndex,
-                            ErrorCode = partitionErrors?[partitionNumber++] ?? (ErrorCode)outcome
-                        }).ToArray()
-                }).ToArray()
-            };
+                    Name = string.Empty,
+                    TopicId = Guid.NewGuid(),
+                    Partitions = [new TxnOffsetCommitResponsePartition { PartitionIndex = 0, ErrorCode = ErrorCode.None }]
+                };
+                topics.Insert(extra.MismatchFirst ? 0 : topics.Count, mismatch);
+            }
+
+            return new TxnOffsetCommitResponse { Topics = topics.ToArray() };
         }
 
         private EndTxnResponse CreateEndTxnResponse(EndTxnRequest request)
@@ -935,6 +1001,12 @@ public sealed class TransactionOffsetCommitTests
             where TResponse : IKafkaResponse
             => throw new NotSupportedException();
     }
+
+    /// <summary>
+    /// A response that reports <paramref name="PartitionError"/> for every requested partition and
+    /// adds an unrequested topic ID, before or after the requested topics.
+    /// </summary>
+    private readonly record struct UnrequestedTopicOutcome(ErrorCode PartitionError, bool MismatchFirst);
 
     private readonly record struct RecordedRequest(
         ApiKey ApiKey,
