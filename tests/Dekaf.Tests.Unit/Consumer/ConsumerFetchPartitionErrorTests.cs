@@ -25,15 +25,33 @@ public sealed class ConsumerFetchPartitionErrorTests
 
     [Test]
     [Arguments(ErrorCode.TopicAuthorizationFailed, true)]
+    [Arguments(ErrorCode.ClusterAuthorizationFailed, true)]
     [Arguments(ErrorCode.UnsupportedCompressionType, true)]
+    [Arguments(ErrorCode.UnsupportedVersion, true)]
     [Arguments(ErrorCode.UnknownServerError, false)]
     [Arguments(ErrorCode.KafkaStorageError, false)]
     [Arguments(ErrorCode.ReplicaNotAvailable, false)]
     [Arguments(ErrorCode.OffsetNotAvailable, false)]
     [Arguments(ErrorCode.CorruptMessage, false)]
-    public async Task IsFatalFetchPartitionError_ClassifiesByRetriability(ErrorCode errorCode, bool expected)
+    [Arguments(ErrorCode.LogDirNotFound, false)]
+    [Arguments(ErrorCode.BrokerNotAvailable, false)]
+    [Arguments(ErrorCode.FetchSessionTopicIdError, false)]
+    [Arguments((ErrorCode)32000, false)]
+    public async Task IsFatalFetchPartitionError_OnlyListedCodesAreFatal(ErrorCode errorCode, bool expected)
     {
         await Assert.That(KafkaConsumer<string, string>.IsFatalFetchPartitionError(errorCode)).IsEqualTo(expected);
+    }
+
+    [Test]
+    [Arguments(ErrorCode.TopicAuthorizationFailed)]
+    [Arguments(ErrorCode.ClusterAuthorizationFailed)]
+    [Arguments(ErrorCode.UnsupportedCompressionType)]
+    [Arguments(ErrorCode.UnsupportedVersion)]
+    public async Task FatalFetchPartitionError_EndsTheConsumeStream(ErrorCode errorCode)
+    {
+        var exception = KafkaException.FromErrorCode(errorCode, "fetch failed");
+
+        await Assert.That(KafkaConsumer<string, string>.IsFatalPrefetchError(exception)).IsTrue();
     }
 
     [Test]
@@ -69,6 +87,7 @@ public sealed class ConsumerFetchPartitionErrorTests
     [Arguments(ErrorCode.ReplicaNotAvailable)]
     [Arguments(ErrorCode.OffsetNotAvailable)]
     [Arguments(ErrorCode.UnknownServerError)]
+    [Arguments(ErrorCode.LogDirNotFound)]
     public async Task FetchFromBroker_RetriableError_BacksOffPartitionAndRefreshesMetadata(ErrorCode errorCode)
     {
         using var harness = new Harness(errorCode);

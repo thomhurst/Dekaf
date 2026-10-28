@@ -2015,7 +2015,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private static readonly long s_preferredReadReplicaMaxAgeTimestampDelta =
         (long)(TimeSpan.FromMinutes(5).TotalSeconds * Stopwatch.Frequency);
-    private const long NoPreferredReplicaExpiry = long.MaxValue;
+    private const long NoExpiry = long.MaxValue;
     private const int MaxRetainedUnassignedWatermarkSnapshots = 256;
 
     // ExpiresAtTimestamp is the earliest preferred read replica expiry or fetch backoff
@@ -12719,7 +12719,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         TopicPartition[] assignmentArray;
         int assignmentCount;
         var now = Stopwatch.GetTimestamp();
-        var fetchBackoffExpiresAtTimestamp = NoPreferredReplicaExpiry;
+        var fetchBackoffExpiresAtTimestamp = NoExpiry;
 
         lock (_partitionCacheLock)
         {
@@ -12753,7 +12753,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         var result = new Dictionary<int, List<TopicPartition>>();
-        var preferredReplicaExpiresAtTimestamp = NoPreferredReplicaExpiry;
+        var preferredReplicaExpiresAtTimestamp = NoExpiry;
         Task<PartitionFetchBrokerResolution>[]? brokerTasks = null;
         var brokerTaskCount = 0;
         try
@@ -13155,7 +13155,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private bool IsPartitionBrokerCacheValid(PartitionBrokerCacheEntry cached, long now)
     {
-        if (cached.ExpiresAtTimestamp == NoPreferredReplicaExpiry)
+        if (cached.ExpiresAtTimestamp == NoExpiry)
             return true;
 
         return cached.ExpiresAtTimestamp > now
@@ -13188,7 +13188,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         out BrokerNode? broker,
         out long preferredReplicaExpiresAtTimestamp)
     {
-        preferredReplicaExpiresAtTimestamp = NoPreferredReplicaExpiry;
+        preferredReplicaExpiresAtTimestamp = NoExpiry;
         var leader = _metadataManager.TryGetCachedPartitionLeader(partition.Topic, partition.Partition);
         if (leader is null)
         {
@@ -13207,7 +13207,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var leader = await _metadataManager.GetPartitionLeaderAsync(
             partition.Topic, partition.Partition, cancellationToken).ConfigureAwait(false);
         if (leader is null)
-            return new PartitionFetchBrokerResolution(partition, null, NoPreferredReplicaExpiry);
+            return new PartitionFetchBrokerResolution(partition, null, NoExpiry);
 
         var broker = GetPreferredReadReplicaBrokerOrLeader(
             partition,
@@ -13223,7 +13223,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         long now,
         out long preferredReplicaExpiresAtTimestamp)
     {
-        preferredReplicaExpiresAtTimestamp = NoPreferredReplicaExpiry;
+        preferredReplicaExpiresAtTimestamp = NoExpiry;
 
         if (string.IsNullOrEmpty(_options.ClientRack)
             || !_preferredReadReplicas.TryGetValue(partition, out var preferred))
@@ -14411,10 +14411,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// <summary>
     /// Fetch partition errors that refetching cannot fix, such as <see cref="ErrorCode.TopicAuthorizationFailed"/>.
     /// They end the consume stream, as the Java consumer throws them from <c>poll()</c>.
-    /// <see cref="ErrorCode.UnknownServerError"/> stays retriable, matching the Java consumer.
+    /// The list is explicit: every other code without a dedicated recovery path, including codes a
+    /// newer broker adds, backs off and refreshes metadata instead of ending the stream.
     /// </summary>
     internal static bool IsFatalFetchPartitionError(ErrorCode errorCode) =>
-        errorCode != ErrorCode.UnknownServerError && !errorCode.IsRetriable();
+        errorCode is ErrorCode.TopicAuthorizationFailed
+            or ErrorCode.ClusterAuthorizationFailed
+            or ErrorCode.UnsupportedCompressionType
+            or ErrorCode.UnsupportedVersion;
 
     private static void ThrowIfFatalFetchPartitionError(TopicPartition partition, ErrorCode errorCode)
     {
