@@ -21,10 +21,16 @@ public sealed class BrokerThrottleStateTests
     [Arguments(ApiKey.CreateTopics, 3, true)]
     [Arguments(ApiKey.DescribeConfigs, 1, false)]
     [Arguments(ApiKey.DescribeConfigs, 2, true)]
+    [Arguments(ApiKey.OffsetForLeaderEpoch, 1, false)]
+    [Arguments(ApiKey.OffsetForLeaderEpoch, 2, true)]
     [Arguments(ApiKey.AlterPartitionReassignments, 0, true)]
     [Arguments(ApiKey.DescribeTopicPartitions, 0, true)]
-    [Arguments(ApiKey.ConsumerGroupHeartbeat, 1, false)]
-    [Arguments(ApiKey.ShareFetch, 2, false)]
+    [Arguments(ApiKey.ConsumerGroupHeartbeat, 1, true)]
+    [Arguments(ApiKey.ShareFetch, 2, true)]
+    [Arguments(ApiKey.DescribeCluster, 0, true)]
+    [Arguments(ApiKey.AddRaftVoter, 0, true)]
+    [Arguments(ApiKey.DescribeQuorum, 2, false)]
+    [Arguments(ApiKey.SaslAuthenticate, 2, false)]
     public async Task ShouldClientThrottle_MatchesBrokerDelayVersionBoundary(
         ApiKey apiKey,
         short version,
@@ -35,9 +41,12 @@ public sealed class BrokerThrottleStateTests
     }
 
     [Test]
-    public async Task ShouldClientThrottle_CoversEverySupportedKip219Response()
+    public async Task ShouldClientThrottle_MatchesKafka44SchemaRule()
     {
-        (ApiKey ApiKey, short FirstClientThrottledVersion)[] expected =
+        // Kafka 4.4.0 RequestResponseTest.testClientThrottlesResponsesWithThrottleTime:
+        // a response is client-throttled when its schema has throttle_time_ms and its
+        // version is at or above the API's first post-KIP-219 version (default 0).
+        (ApiKey ApiKey, short Version)[] firstPostKip219Versions =
         [
             (ApiKey.Produce, 6),
             (ApiKey.Fetch, 8),
@@ -73,31 +82,117 @@ public sealed class BrokerThrottleStateTests
             (ApiKey.RenewDelegationToken, 1),
             (ApiKey.ExpireDelegationToken, 1),
             (ApiKey.DescribeDelegationToken, 1),
-            (ApiKey.DeleteGroups, 1),
+            (ApiKey.DeleteGroups, 1)
+        ];
+
+        // First version whose Kafka 4.4.0 response schema has ThrottleTimeMs
+        // (clients/src/main/resources/common/message/*Response.json), or null.
+        (ApiKey ApiKey, short? Version)[] firstThrottleTimeVersions =
+        [
+            (ApiKey.Produce, 1),
+            (ApiKey.Fetch, 1),
+            (ApiKey.ListOffsets, 2),
+            (ApiKey.Metadata, 3),
+            (ApiKey.LeaderAndIsr, null),
+            (ApiKey.StopReplica, null),
+            (ApiKey.UpdateMetadata, null),
+            (ApiKey.ControlledShutdown, null),
+            (ApiKey.OffsetCommit, 3),
+            (ApiKey.OffsetFetch, 3),
+            (ApiKey.FindCoordinator, 1),
+            (ApiKey.JoinGroup, 2),
+            (ApiKey.Heartbeat, 1),
+            (ApiKey.LeaveGroup, 1),
+            (ApiKey.SyncGroup, 1),
+            (ApiKey.DescribeGroups, 1),
+            (ApiKey.ListGroups, 1),
+            (ApiKey.SaslHandshake, null),
+            (ApiKey.ApiVersions, 1),
+            (ApiKey.CreateTopics, 2),
+            (ApiKey.DeleteTopics, 1),
+            (ApiKey.DeleteRecords, 0),
+            (ApiKey.InitProducerId, 0),
+            (ApiKey.OffsetForLeaderEpoch, 2),
+            (ApiKey.AddPartitionsToTxn, 0),
+            (ApiKey.AddOffsetsToTxn, 0),
+            (ApiKey.EndTxn, 0),
+            (ApiKey.WriteTxnMarkers, null),
+            (ApiKey.TxnOffsetCommit, 0),
+            (ApiKey.DescribeAcls, 0),
+            (ApiKey.CreateAcls, 0),
+            (ApiKey.DeleteAcls, 0),
+            (ApiKey.DescribeConfigs, 0),
+            (ApiKey.AlterConfigs, 0),
+            (ApiKey.AlterReplicaLogDirs, 0),
+            (ApiKey.DescribeLogDirs, 0),
+            (ApiKey.SaslAuthenticate, null),
+            (ApiKey.CreatePartitions, 0),
+            (ApiKey.CreateDelegationToken, 0),
+            (ApiKey.RenewDelegationToken, 0),
+            (ApiKey.ExpireDelegationToken, 0),
+            (ApiKey.DescribeDelegationToken, 0),
+            (ApiKey.DeleteGroups, 0),
             (ApiKey.ElectLeaders, 0),
             (ApiKey.IncrementalAlterConfigs, 0),
             (ApiKey.AlterPartitionReassignments, 0),
             (ApiKey.ListPartitionReassignments, 0),
             (ApiKey.OffsetDelete, 0),
+            (ApiKey.DescribeClientQuotas, 0),
+            (ApiKey.AlterClientQuotas, 0),
             (ApiKey.DescribeUserScramCredentials, 0),
             (ApiKey.AlterUserScramCredentials, 0),
+            (ApiKey.Vote, null),
+            (ApiKey.BeginQuorumEpoch, null),
+            (ApiKey.EndQuorumEpoch, null),
+            (ApiKey.DescribeQuorum, null),
+            (ApiKey.AlterPartition, 0),
+            (ApiKey.UpdateFeatures, 0),
+            (ApiKey.Envelope, null),
+            (ApiKey.FetchSnapshot, 0),
+            (ApiKey.DescribeCluster, 0),
+            (ApiKey.DescribeProducers, 0),
+            (ApiKey.BrokerRegistration, 0),
+            (ApiKey.BrokerHeartbeat, 0),
             (ApiKey.UnregisterBroker, 0),
+            (ApiKey.DescribeTransactions, 0),
+            (ApiKey.ListTransactions, 0),
+            (ApiKey.AllocateProducerIds, 0),
+            (ApiKey.ConsumerGroupHeartbeat, 0),
+            (ApiKey.ConsumerGroupDescribe, 0),
+            (ApiKey.ControllerRegistration, 0),
+            (ApiKey.GetTelemetrySubscriptions, 0),
+            (ApiKey.PushTelemetry, 0),
+            (ApiKey.AssignReplicasToDirs, 0),
+            (ApiKey.ListClientMetricsResources, 0),
             (ApiKey.DescribeTopicPartitions, 0),
+            (ApiKey.ShareGroupHeartbeat, 0),
+            (ApiKey.ShareGroupDescribe, 0),
+            (ApiKey.ShareFetch, 0),
+            (ApiKey.ShareAcknowledge, 0),
+            (ApiKey.AddRaftVoter, 0),
+            (ApiKey.RemoveRaftVoter, 0),
+            (ApiKey.StreamsGroupHeartbeat, 0),
+            (ApiKey.StreamsGroupDescribe, 0),
+            (ApiKey.DescribeShareGroupOffsets, 0),
+            (ApiKey.AlterShareGroupOffsets, 0),
+            (ApiKey.DeleteShareGroupOffsets, 0),
             (ApiKey.UnregisterController, 0)
         ];
 
-        var actual = Enum.GetValues<ApiKey>()
-            .Where(apiKey => BrokerThrottlePolicy.ShouldClientThrottle(apiKey, short.MaxValue))
-            .ToArray();
-        await Assert.That(actual).IsEquivalentTo(expected.Select(entry => entry.ApiKey));
+        // Every ApiKey needs a schema entry, so a new API cannot fall through untested.
+        await Assert.That(firstThrottleTimeVersions.Select(entry => entry.ApiKey))
+            .IsEquivalentTo(Enum.GetValues<ApiKey>());
 
-        foreach (var (apiKey, firstVersion) in expected)
+        var postKip219Versions = firstPostKip219Versions.ToDictionary(entry => entry.ApiKey, entry => entry.Version);
+        foreach (var (apiKey, throttleTimeVersion) in firstThrottleTimeVersions)
         {
-            await Assert.That(BrokerThrottlePolicy.ShouldClientThrottle(apiKey, firstVersion)).IsTrue();
-            if (firstVersion > 0)
+            var postKip219Version = postKip219Versions.GetValueOrDefault(apiKey);
+            for (short version = 0; version <= 20; version++)
             {
-                await Assert.That(BrokerThrottlePolicy.ShouldClientThrottle(apiKey, (short)(firstVersion - 1)))
-                    .IsFalse();
+                var expected = version >= throttleTimeVersion && version >= postKip219Version;
+                await Assert.That(BrokerThrottlePolicy.ShouldClientThrottle(apiKey, version))
+                    .IsEqualTo(expected)
+                    .Because($"{apiKey} v{version}");
             }
         }
     }

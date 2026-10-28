@@ -154,8 +154,10 @@ internal sealed class BrokerThrottleState(ClientTelemetryMetricCollector? teleme
 }
 
 /// <summary>
-/// Mirrors Apache Kafka's <c>AbstractResponse.shouldClientThrottle(version)</c>
-/// gates. Older response versions were already delayed by the broker.
+/// Mirrors Apache Kafka 4.4's <c>AbstractResponse.shouldClientThrottle(version)</c>.
+/// Responses that predate KIP-219 keep their per-API version gates because the
+/// broker already delayed them. Every other response version is client-throttled
+/// when its schema carries <c>ThrottleTimeMs</c>.
 /// </summary>
 internal static class BrokerThrottlePolicy
 {
@@ -197,17 +199,21 @@ internal static class BrokerThrottlePolicy
         ApiKey.ExpireDelegationToken => version >= 1,
         ApiKey.DescribeDelegationToken => version >= 1,
         ApiKey.DeleteGroups => version >= 1,
-        ApiKey.ElectLeaders => true,
-        ApiKey.IncrementalAlterConfigs => true,
-        ApiKey.AlterPartitionReassignments => true,
-        ApiKey.ListPartitionReassignments => true,
-        ApiKey.OffsetDelete => true,
-        ApiKey.DescribeUserScramCredentials => true,
-        ApiKey.AlterUserScramCredentials => true,
-        ApiKey.UnregisterBroker => true,
-        ApiKey.DescribeTopicPartitions => true,
-        ApiKey.UnregisterController => true,
-        _ => false
+        // No upstream override: the response schema decides.
+        ApiKey.OffsetForLeaderEpoch => version >= 2,
+        ApiKey.LeaderAndIsr
+            or ApiKey.StopReplica
+            or ApiKey.UpdateMetadata
+            or ApiKey.ControlledShutdown
+            or ApiKey.SaslHandshake
+            or ApiKey.WriteTxnMarkers
+            or ApiKey.SaslAuthenticate
+            or ApiKey.Vote
+            or ApiKey.BeginQuorumEpoch
+            or ApiKey.EndQuorumEpoch
+            or ApiKey.DescribeQuorum
+            or ApiKey.Envelope => false,
+        _ => true
     };
 }
 
