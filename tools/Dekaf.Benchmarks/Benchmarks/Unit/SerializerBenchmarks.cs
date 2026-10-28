@@ -39,6 +39,8 @@ public class SerializerBenchmarks
     private SerializationContext _context;
     private JsonSerializer<JsonPayload> _jsonSerializer = null!;
     private JsonPayload _jsonPayload = null!;
+    private JsonPayload _largeJsonPayload = null!;
+    private ArrayBufferWriter<byte> _largeJsonBuffer = null!;
 
     // Persistent buffers for ReusableBufferWriter, mirroring the producer's
     // thread-local KeySerializationBuffer/ValueSerializationBuffer.
@@ -64,6 +66,8 @@ public class SerializerBenchmarks
 
         _jsonSerializer = new JsonSerializer<JsonPayload>();
         _jsonPayload = new JsonPayload { Id = 42, Name = _mediumString };
+        _largeJsonPayload = new JsonPayload { Id = 42, Name = new string('x', 2 * 1024 * 1024) };
+        _largeJsonBuffer = new ArrayBufferWriter<byte>(3 * 1024 * 1024);
 
         // Pre-create string bytes for deserialization
         _stringBytes = System.Text.Encoding.UTF8.GetBytes(_mediumString);
@@ -132,6 +136,22 @@ public class SerializerBenchmarks
     {
         _buffer.ResetWrittenCount();
         _jsonSerializer.Serialize(_jsonPayload, ref _buffer, _context);
+    }
+
+    [BenchmarkCategory("Json")]
+    [Benchmark(Description = "Serialize JSON (2 MiB object)")]
+    public void SerializeJson_Large()
+    {
+        _largeJsonBuffer.ResetWrittenCount();
+        _jsonSerializer.Serialize(_largeJsonPayload, ref _largeJsonBuffer, _context);
+    }
+
+    [BenchmarkCategory("Json")]
+    [Benchmark(Description = "Serialize JSON (2 MiB then small)", OperationsPerInvoke = 2)]
+    public void SerializeJson_LargeThenSmall()
+    {
+        SerializeJson_Large();
+        SerializeJson_Small();
     }
 
     // ===== Batch Serialization (100 messages) =====

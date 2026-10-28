@@ -131,6 +131,63 @@ public class JsonSerializerTests
         await Assert.That(buffer.WrittenCount).IsEqualTo(0);
     }
 
+    [Test]
+    public async Task Serialize_RepeatedOversizedValues_DoesNotAllocateAfterWarmup()
+    {
+        var serializer = new JsonSerializer<string>();
+        var context = CreateContext();
+        var payload = new string('x', 2 * MaxRetainedBufferBytes);
+        var buffer = new ArrayBufferWriter<byte>(payload.Length + 2);
+
+        for (var i = 0; i < 8; i++)
+        {
+            buffer.ResetWrittenCount();
+            serializer.Serialize(payload, ref buffer, context);
+        }
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 8; i++)
+        {
+            buffer.ResetWrittenCount();
+            serializer.Serialize(payload, ref buffer, context);
+        }
+
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        var retained = JsonSerializer<string>.RetainedBufferCapacity;
+
+        await Assert.That(allocated).IsEqualTo(0);
+        await Assert.That(retained).IsEqualTo(0);
+        await Assert.That(serializer.Deserialize(buffer.WrittenMemory, context)).IsEqualTo(payload);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Serialize_OversizedValueWithThrowingDestination_ReleasesScratchBuffer(bool throwOnAdvance)
+    {
+        var serializer = new JsonSerializer<string>();
+        var context = CreateContext();
+        var payload = new string('x', 2 * MaxRetainedBufferBytes);
+        var destination = new ThrowingBufferWriter(throwOnAdvance, payload.Length + 2);
+        var thrown = false;
+        try
+        {
+            serializer.Serialize(payload, ref destination, context);
+        }
+        catch (InvalidOperationException)
+        {
+            thrown = true;
+        }
+
+        var retained = JsonSerializer<string>.RetainedBufferCapacity;
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize("ok", ref buffer, context);
+
+        await Assert.That(thrown).IsTrue();
+        await Assert.That(retained).IsEqualTo(0);
+        await Assert.That(serializer.Deserialize(buffer.WrittenMemory, context)).IsEqualTo("ok");
+    }
+
     #endregion
 
     #region Custom Options Tests
@@ -401,6 +458,23 @@ public class JsonSerializerTests
     }
 
     private sealed record ThrowingPayload(string Value);
+
+    private sealed class ThrowingBufferWriter(bool throwOnAdvance, int capacity) : IBufferWriter<byte>
+    {
+        private readonly byte[] _buffer = new byte[capacity];
+
+        public void Advance(int count) => throw new InvalidOperationException("destination failed");
+
+        public Memory<byte> GetMemory(int sizeHint = 0)
+        {
+            if (!throwOnAdvance)
+                throw new InvalidOperationException("destination failed");
+
+            return _buffer;
+        }
+
+        public Span<byte> GetSpan(int sizeHint = 0) => GetMemory(sizeHint).Span;
+    }
 
     private sealed class ThrowingPayloadConverter : JsonConverter<ThrowingPayload>
     {

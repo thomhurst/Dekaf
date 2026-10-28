@@ -11,12 +11,11 @@ namespace Dekaf.Serialization.Json;
 /// <typeparam name="T">Type to serialize.</typeparam>
 public sealed class JsonSerializer<T> : ISerde<T>
 {
-    // Keep the scratch buffer warm for typical payloads, but drop it after an oversized value so a
-    // one-off large message does not pin its peak size on every thread for the life of the process.
+    // Keep small scratch buffers warm; return oversized arrays to a shared, GC-trimmed pool.
     private const int MaxRetainedBufferBytes = 1024 * 1024;
 
     [ThreadStatic]
-    private static ArrayBufferWriter<byte>? t_sharedBuffer;
+    private static JsonBufferWriter? t_sharedBuffer;
 
     [ThreadStatic]
     private static Utf8JsonWriter? t_jsonWriter;
@@ -56,10 +55,10 @@ public sealed class JsonSerializer<T> : ISerde<T>
     {
         // Utf8JsonWriter cannot accept the generic TWriter directly because the
         // 'allows ref struct' constraint prevents boxing to IBufferWriter<byte>.
-        // A ThreadStatic ArrayBufferWriter is used as an intermediate buffer.
+        // A ThreadStatic JsonBufferWriter is used as an intermediate buffer.
         // This is safe because Serialize is fully synchronous (no await points),
         // so thread migration cannot occur mid-operation.
-        var sharedBuffer = t_sharedBuffer ??= new ArrayBufferWriter<byte>();
+        var sharedBuffer = t_sharedBuffer ??= new JsonBufferWriter();
         sharedBuffer.ResetWrittenCount();
 
         var jsonWriter = t_jsonWriter;
@@ -85,35 +84,28 @@ public sealed class JsonSerializer<T> : ISerde<T>
             }
 
             jsonWriter.Flush();
-        }
-        catch
-        {
-            t_jsonWriter = null;
-            ReleaseOversizedBuffer(sharedBuffer);
-            throw;
-        }
 
-        var written = sharedBuffer.WrittenSpan;
-        var span = destination.GetSpan(written.Length);
-        written.CopyTo(span);
-        destination.Advance(written.Length);
-        ReleaseOversizedBuffer(sharedBuffer);
+            var written = sharedBuffer.WrittenSpan;
+            var span = destination.GetSpan(written.Length);
+            written.CopyTo(span);
+            destination.Advance(written.Length);
+        }
+        finally
+        {
+            if (sharedBuffer.Capacity > MaxRetainedBufferBytes)
+            {
+                // Reset also releases the writer's Memory<byte> before the array is returned.
+                // Keep both wrapper objects reusable for sustained large-payload workloads.
+                jsonWriter.Reset(sharedBuffer);
+                sharedBuffer.ReleaseBuffer();
+            }
+        }
     }
 
     /// <summary>
     /// Capacity of the scratch buffer retained on the current thread, or 0 when none is cached.
     /// </summary>
     internal static int RetainedBufferCapacity => t_sharedBuffer?.Capacity ?? 0;
-
-    private static void ReleaseOversizedBuffer(ArrayBufferWriter<byte> sharedBuffer)
-    {
-        if (sharedBuffer.Capacity <= MaxRetainedBufferBytes)
-            return;
-
-        // The cached Utf8JsonWriter still references the buffer, so drop both.
-        t_sharedBuffer = null;
-        t_jsonWriter = null;
-    }
 
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = JsonSerializerAotMessages.ReflectionBranchJustification)]
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = JsonSerializerAotMessages.ReflectionBranchJustification)]
