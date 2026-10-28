@@ -77,12 +77,12 @@ All network I/O goes through `System.IO.Pipelines`, which gives us back-pressure
 
 ### Adaptive Connection Scaling
 
-Dekaf automatically scales up TCP connections per broker when the producer detects sustained buffer backpressure. This means the producer starts with a single connection and adds more only when needed—no manual tuning required.
+Dekaf automatically scales up TCP connections per broker when the producer detects sustained send pressure. By default the producer starts with a single connection and adds more only when needed—no manual tuning required. `ConnectionsPerBroker` sets the initial connection count, and scaling never goes below it.
 
 **How it works:**
 1. When the producer's buffer fills up (messages are being produced faster than the network can send them), `ReserveMemorySync` blocks the producer thread
-2. The send loop monitors buffer pressure events and utilization
-3. When pressure is sustained (100+ events, >80% buffer utilization, 30-second cooldown), a new connection is added to the broker
+2. The send loop also records when it reaches its in-flight request limit or has to leave ready batches for the next pass, and when produce calls wait on the per-broker unacked-byte admission budget
+3. When any of these signals is sustained after a cooldown since the last scale change (send-loop pressure alone, blocked admissions alone, or buffer-full events while the buffer is mostly full), connections are added to the broker, up to the configured maximum (default 3)
 4. More connections = more parallel TCP sends = faster buffer drainage = less backpressure
 
 **What you see in practice:** A producer under load might start at 300K msg/sec on one connection and automatically scale to 400K+ msg/sec as connections are added, without any configuration changes.
@@ -107,7 +107,7 @@ var fixedConnectionProducer = Kafka.CreateProducer<string, string>()
     .Build();
 ```
 
-**Note:** Adaptive scaling only applies to non-idempotent producers. Idempotent producers require partition affinity on a fixed connection count for sequence number ordering. Connections are only scaled up, never down—connections added during a traffic spike persist for the lifetime of the producer.
+**Note:** Adaptive scaling applies to idempotent and acknowledged non-idempotent producers. Idempotent producers keep each partition on one connection, so sequence order is preserved as connections are added. Transactional producers and `Acks.None` producers use a fixed connection count. Connections scale down again after sustained low buffer and in-flight utilization. A producer created through `Kafka.Connect(...)` stops using the extra connections but leaves them open in the shared pool.
 
 ### FIFO Buffer Backpressure
 
