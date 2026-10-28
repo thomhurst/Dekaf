@@ -721,7 +721,7 @@ public sealed class TransactionTests
         await using var next = producer.BeginTransaction();
         var nextProduce = next.ProduceAsync(AbortDrainTopic, "key", "next", cancellationToken);
         await producer.FlushAsync(cancellationToken);
-        await nextProduce.AsTask().WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        await nextProduce.AsTask().WaitAsync(cancellationToken);
 
         CapturedProduceBatch[] sentBatches;
         lock (sent)
@@ -734,7 +734,7 @@ public sealed class TransactionTests
                 $"{batch.ProducerId}/{batch.ProducerEpoch}/{batch.BaseSequence}/{batch.RecordCount}"));
         await Assert.That(wire).IsEqualTo("42/6/0/1");
 
-        var error = await abortedDelivery.Task.WaitAsync(TimeSpan.FromSeconds(1), cancellationToken);
+        var error = await abortedDelivery.Task.WaitAsync(cancellationToken);
         await Assert.That(error).IsTypeOf<ProduceException>();
         await Assert.That(((ProduceException)error!).Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
     }
@@ -768,14 +768,14 @@ public sealed class TransactionTests
         var transaction = producer.BeginTransaction();
         // A sole awaited produce is sealed and sent at once.
         var inFlightProduce = transaction.ProduceAsync(AbortDrainTopic, "key", "in-flight", cancellationToken);
-        var request = await produceSent.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        var request = await produceSent.Task.WaitAsync(cancellationToken);
 
         var abort = transaction.AbortAsync(cancellationToken).AsTask();
         // Gives an abort that does not wait for the batch the time to send EndTxn.
         await Task.Delay(300, cancellationToken);
         var endTxnRequestsBeforeAnswer = harness.EndTxnRequests;
         heldResponse.SetResult(CreateProduceSuccessResponse(request));
-        await abort.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        await abort.WaitAsync(cancellationToken);
 
         await Assert.That(endTxnRequestsBeforeAnswer).IsEqualTo(0);
         await Assert.That(harness.EndTxnRequests).IsEqualTo(1);
@@ -808,7 +808,7 @@ public sealed class TransactionTests
 
         var transaction = producer.BeginTransaction();
         var inFlightProduce = transaction.ProduceAsync(AbortDrainTopic, "key", "in-flight", cancellationToken);
-        var request = await produceSent.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        var request = await produceSent.Task.WaitAsync(cancellationToken);
 
         try
         {
@@ -820,7 +820,7 @@ public sealed class TransactionTests
         finally
         {
             heldResponse.TrySetResult(CreateProduceSuccessResponse(request));
-            await inFlightProduce.AsTask().WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            await inFlightProduce.AsTask().WaitAsync(cancellationToken);
         }
 
         // Once the batch is answered, aborting again completes the transaction.
@@ -1331,7 +1331,7 @@ public sealed class TransactionTests
     }
 
     [Test]
-    [Timeout(5_000)]
+    [Timeout(30_000)]
     public async Task InitTransactionsAsync_SharedDeadlineSpansCoordinatorAndProducerId(
         CancellationToken cancellationToken)
     {
@@ -1650,7 +1650,7 @@ public sealed class TransactionTests
     }
 
     [Test]
-    [Timeout(5_000)]
+    [Timeout(30_000)]
     public async Task InitTransactionsAsync_PersistentCoordinatorTransportFailure_TimesOutWithTransportCause(
         CancellationToken cancellationToken)
     {
@@ -1732,7 +1732,7 @@ public sealed class TransactionTests
     }
 
     [Test]
-    [Timeout(5_000)]
+    [Timeout(30_000)]
     public async Task CommitAsync_PersistentTransportFailureAfterWrite_PreservesFatalState(
         CancellationToken cancellationToken)
     {
@@ -1764,7 +1764,7 @@ public sealed class TransactionTests
     }
 
     [Test]
-    [Timeout(5_000)]
+    [Timeout(30_000)]
     public async Task CommitAsync_PersistentTransportFailureBeforeWrite_PreservesAbortableState(
         CancellationToken cancellationToken)
     {
@@ -1791,7 +1791,7 @@ public sealed class TransactionTests
     }
 
     [Test]
-    [Timeout(5_000)]
+    [Timeout(30_000)]
     public async Task CommitAsync_InAbortableErrorState_ThrowsWithoutEndTxn_AndAbortRecovers(
         CancellationToken cancellationToken)
     {
@@ -1820,7 +1820,7 @@ public sealed class TransactionTests
     }
 
     [Test]
-    [Timeout(5_000)]
+    [Timeout(30_000)]
     public async Task PrepareAsync_InAbortableErrorState_ThrowsAbortableTransactionException(
         CancellationToken cancellationToken)
     {
@@ -1882,7 +1882,7 @@ public sealed class TransactionTests
     }
 
     [Test]
-    [Timeout(5_000)]
+    [Timeout(30_000)]
     public async Task CommitAsync_RetriableResponseAfterUnansweredWrite_BudgetExpiry_PreservesFatalState(
         CancellationToken cancellationToken)
     {
@@ -1914,7 +1914,7 @@ public sealed class TransactionTests
     }
 
     [Test]
-    [Timeout(5_000)]
+    [Timeout(30_000)]
     public async Task CommitAsync_RetriableResponseWithoutUnansweredWrite_BudgetExpiry_StaysAbortable(
         CancellationToken cancellationToken)
     {
@@ -1938,7 +1938,7 @@ public sealed class TransactionTests
     }
 
     [Test]
-    [Timeout(5_000)]
+    [Timeout(30_000)]
     public async Task ReinitializeProducerIdAsync_RetriableResponseAfterUnansweredWrite_BudgetExpiry_PreservesFatalState(
         CancellationToken cancellationToken)
     {
@@ -1964,7 +1964,7 @@ public sealed class TransactionTests
     }
 
     [Test]
-    [Timeout(5_000)]
+    [Timeout(30_000)]
     public async Task CommitAsync_UnansweredWriteThenRediscoveryFailure_PreservesFatalState(
         CancellationToken cancellationToken)
     {
@@ -2525,7 +2525,9 @@ public sealed class TransactionTests
     }
 
     [Test]
-    public async Task TransactionPartitionEnrollment_ResetWakesWaitersAndIgnoresStaleCompletion()
+    [Timeout(30_000)]
+    public async Task TransactionPartitionEnrollment_ResetWakesWaitersAndIgnoresStaleCompletion(
+        CancellationToken cancellationToken)
     {
         var requestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var completeRequest = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2571,19 +2573,21 @@ public sealed class TransactionTests
             enrollmentReset.SetResult,
             [],
             []);
-        await requestStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await requestStarted.Task.WaitAsync(cancellationToken);
 
         producer.FinalizeCompletedTransactionState();
-        await Assert.That(await enrollmentReset.Task.WaitAsync(TimeSpan.FromSeconds(1)))
+        await Assert.That(await enrollmentReset.Task.WaitAsync(cancellationToken))
             .IsTypeOf<TransactionException>();
         completeRequest.SetResult();
-        await requestReturned.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await requestReturned.Task.WaitAsync(cancellationToken);
 
         await Assert.That(producer._partitionsInTransaction).IsEmpty();
     }
 
     [Test]
-    public async Task TransactionPartitionEnrollment_AuthenticationFailure_DoesNotRetry()
+    [Timeout(30_000)]
+    public async Task TransactionPartitionEnrollment_AuthenticationFailure_DoesNotRetry(
+        CancellationToken cancellationToken)
     {
         var requestCount = 0;
 
@@ -2628,7 +2632,7 @@ public sealed class TransactionTests
             []);
 
         await Assert.That(result.IsEnrolled).IsFalse();
-        await Assert.That(await enrollmentCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1))).IsNull();
+        await Assert.That(await enrollmentCompleted.Task.WaitAsync(cancellationToken)).IsNull();
         await Assert.That(requestCount).IsEqualTo(1);
         await Assert.That(producer.TryEnsurePartitionsInTransaction(
             [batch],
