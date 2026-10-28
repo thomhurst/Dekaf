@@ -429,9 +429,10 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
                 new TopicPartitionOffset(topic, 0, TopicPartitionTimestamp.Earliest)
             ]).AsTask());
 
-        // Assert - the group's committed offset is still the last valid commit
-        var committed = await consumer.GetCommittedOffsetAsync(tp);
-        await Assert.That(committed).IsEqualTo(3);
+        // Assert - the group's committed offset is still the last valid commit. Fetch it from the
+        // broker: GetCommittedOffsetAsync would answer from the cache the valid commit populated.
+        var committed = await consumer.GetCommittedOffsetsAsync([tp]);
+        await Assert.That(committed[tp].Offset).IsEqualTo(3);
     }
 
     [Test]
