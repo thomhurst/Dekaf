@@ -14448,9 +14448,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var expiresAtTimestamp = Stopwatch.GetTimestamp()
             + _options.RetryBackoffMs * Stopwatch.Frequency / 1000;
 
-        Interlocked.Increment(ref _assignmentVersion);
+        // Bump the version under the lock with the backoff write: a grouping rebuild captures
+        // the version under this lock, so it sees either both changes or neither and cannot
+        // cache a grouping that still contains the backing-off partition.
         lock (_partitionCacheLock)
         {
+            Interlocked.Increment(ref _assignmentVersion);
             _partitionFetchBackoffs[partition] = expiresAtTimestamp;
             _cachedPartitionsByBroker = null;
         }
