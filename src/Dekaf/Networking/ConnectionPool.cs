@@ -1318,7 +1318,16 @@ public sealed partial class ConnectionPool :
                     if (HasBrokerEndpointChanged(brokerId, host, port, out var current))
                         throw new BrokerEndpointChangedException(brokerId, host, port, current.Host, current.Port);
 
-                    return existing;
+                    if (!SkipsExpectedBrokerIdentity(existing, brokerId))
+                        return existing;
+
+                    // A bootstrap socket at this endpoint never sent the KIP-1242 identity, so a
+                    // misrouted endpoint would go undetected on it. Retire it (disposal waits for
+                    // its leases and in-flight requests) and open a broker connection instead.
+                    if (TryRemoveExact(_connectionsByEndpoint, endpoint, existing))
+                        RetireConnection(existing);
+
+                    existing = null;
                 }
 
                 // Dispose disconnected connection before creating a new one to avoid socket/pipe leaks.
@@ -2498,6 +2507,17 @@ public sealed partial class ConnectionPool :
             ErrorCode.NetworkException,
             $"Connection group for broker {brokerId} was replaced while it was being set up");
     }
+
+    /// <summary>
+    /// True when <paramref name="connection"/> is a bootstrap connection while the handshake for
+    /// <paramref name="brokerId"/> would carry the KIP-1242 identity. Without a known identity,
+    /// reuse is unchanged. Broker connections stay shared when several broker IDs advertise one
+    /// endpoint (a proxy or load balancer); retiring them would churn sockets on every lookup.
+    /// </summary>
+    private bool SkipsExpectedBrokerIdentity(IKafkaConnection connection, int brokerId) =>
+        brokerId >= 0
+        && connection.BrokerId < 0
+        && _metadataClusterIdentity.GetExpectedBrokerIdentity(brokerId) is not null;
 
     private bool HasBrokerEndpointChanged(int brokerId, string host, int port, out BrokerInfo current)
     {
