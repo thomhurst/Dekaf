@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using Dekaf.Metadata;
@@ -821,6 +822,153 @@ public class KafkaConnectionCapabilityHandshakeTests
 
         releaseSuccessfulConnection.SetResult();
         await serverTask;
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task ConnectionPool_Kip1242_BrokerLookupRetiresBootstrapConnectionAtSameEndpoint(
+        CancellationToken cancellationToken)
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        using var serverCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var requests = new ConcurrentQueue<ApiVersionsRequestRecord>();
+        var serverTask = ServeApiVersionsConnectionsAsync(listener, connectionCount: 2, requests, serverCts.Token);
+
+        await using var pool = new ConnectionPool(connectionOptions: new ConnectionOptions
+        {
+            ReconnectBackoff = TimeSpan.Zero,
+            ReconnectBackoffMax = TimeSpan.Zero
+        });
+        var identityPool = (IMetadataClusterIdentityPool)pool;
+        identityPool.ConfigureMetadataClusterCheck(enabled: true);
+
+        var bootstrap = await pool.GetConnectionAsync("127.0.0.1", port, cancellationToken);
+        await Assert.That(KafkaConnectionLease.TryAcquire(bootstrap, out var bootstrapLease)).IsTrue();
+
+        // Metadata from the bootstrap connection teaches the cluster ID and places broker 7 at
+        // the bootstrap endpoint.
+        identityPool.UpdateMetadataClusterId("cluster-a");
+        pool.RegisterBroker(7, "127.0.0.1", port);
+
+        IKafkaConnection broker;
+        try
+        {
+            broker = await pool.GetConnectionAsync(7, cancellationToken);
+
+            await Assert.That(broker).IsNotSameReferenceAs(bootstrap);
+            await Assert.That(broker.BrokerId).IsEqualTo(7);
+            await Assert.That(broker.IsConnected).IsTrue();
+            // The superseded bootstrap socket stays usable while a lease holder still has it.
+            await Assert.That(bootstrap.IsConnected).IsTrue();
+        }
+        finally
+        {
+            bootstrapLease.Dispose();
+        }
+
+        await WaitUntilAsync(() => !bootstrap.IsConnected, cancellationToken);
+        await Assert.That(await pool.GetConnectionAsync(7, cancellationToken)).IsSameReferenceAs(broker);
+
+        await serverCts.CancelAsync();
+        await serverTask;
+
+        var records = requests.ToArray();
+        await Assert.That(records.Any(static r => r.Connection == 0 && r.ClusterId is not null)).IsFalse();
+        await Assert.That(records.Any(static r =>
+            r.Connection == 1 && r.ClusterId == "cluster-a" && r.NodeId == 7)).IsTrue();
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    [Arguments(false, "cluster-a")]
+    [Arguments(true, null)]
+    public async Task ConnectionPool_Kip1242_WithoutKnownIdentityBrokerLookupReusesBootstrapConnection(
+        bool checkEnabled,
+        string? clusterId,
+        CancellationToken cancellationToken)
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        using var serverCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var requests = new ConcurrentQueue<ApiVersionsRequestRecord>();
+        var serverTask = ServeApiVersionsConnectionsAsync(listener, connectionCount: 1, requests, serverCts.Token);
+
+        await using var pool = new ConnectionPool(connectionOptions: new ConnectionOptions
+        {
+            ReconnectBackoff = TimeSpan.Zero,
+            ReconnectBackoffMax = TimeSpan.Zero
+        });
+        var identityPool = (IMetadataClusterIdentityPool)pool;
+        identityPool.ConfigureMetadataClusterCheck(checkEnabled);
+
+        var bootstrap = await pool.GetConnectionAsync("127.0.0.1", port, cancellationToken);
+        identityPool.UpdateMetadataClusterId(clusterId);
+        pool.RegisterBroker(7, "127.0.0.1", port);
+
+        var broker = await pool.GetConnectionAsync(7, cancellationToken);
+
+        await Assert.That(broker).IsSameReferenceAs(bootstrap);
+        await Assert.That(bootstrap.IsConnected).IsTrue();
+
+        await serverCts.CancelAsync();
+        await serverTask;
+        await Assert.That(requests.All(static r => r.Connection == 0)).IsTrue();
+    }
+
+    private readonly record struct ApiVersionsRequestRecord(int Connection, short Version, string? ClusterId, int NodeId);
+
+    /// <summary>
+    /// Accepts <paramref name="connectionCount"/> connections and answers every ApiVersions
+    /// request on them with v0-v5 support, recording each request's KIP-1242 identity.
+    /// </summary>
+    private static async Task ServeApiVersionsConnectionsAsync(
+        TcpListener listener,
+        int connectionCount,
+        ConcurrentQueue<ApiVersionsRequestRecord> requests,
+        CancellationToken cancellationToken)
+    {
+        var connections = new List<Task>(connectionCount);
+        try
+        {
+            for (var i = 0; i < connectionCount; i++)
+            {
+                var socket = await listener.AcceptSocketAsync(cancellationToken);
+                connections.Add(ServeConnectionAsync(socket, i));
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+
+        await Task.WhenAll(connections);
+
+        async Task ServeConnectionAsync(Socket socket, int connection)
+        {
+            using var ownedSocket = socket;
+            await using var stream = new NetworkStream(ownedSocket, ownsSocket: false);
+            try
+            {
+                while (true)
+                {
+                    var request = await ReadFrameAsync(stream, cancellationToken);
+                    var version = BinaryPrimitives.ReadInt16BigEndian(request.AsSpan(2));
+                    var (clusterId, nodeId) = version >= 5 ? ReadKip1242Identity(request) : (null, -1);
+                    requests.Enqueue(new ApiVersionsRequestRecord(connection, version, clusterId, nodeId));
+
+                    var correlationId = BinaryPrimitives.ReadInt32BigEndian(request.AsSpan(4));
+                    await stream.WriteAsync(
+                        BuildResponse(correlationId, ErrorCode.None, new ApiVersion(ApiKey.ApiVersions, 0, 5)),
+                        cancellationToken);
+                }
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or IOException or EndOfStreamException)
+            {
+                // The client closed the connection, or the test is over.
+            }
+        }
     }
 
     private static async Task ServeGenerationAsync(

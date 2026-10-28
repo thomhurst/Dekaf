@@ -150,6 +150,42 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     }
 
     [Test]
+    public async Task Connection_MetadataClusterCheck_BrokerLookupDoesNotReuseBootstrapConnection()
+    {
+        await using var admin = KafkaContainer.CreateAdminClient();
+        var cluster = await admin.DescribeClusterAsync();
+        var clusterId = cluster.ClusterId
+            ?? throw new InvalidOperationException("Broker did not return a cluster ID.");
+        var broker = cluster.Nodes[0];
+        var (host, port) = ParseBootstrapEndpoint(KafkaContainer.BootstrapServers);
+
+        await using var pool = new ConnectionPool(
+            "bootstrap-reuse-test",
+            new ConnectionOptions
+            {
+                RequestTimeout = TimeSpan.FromSeconds(30),
+                ReconnectBackoff = TimeSpan.Zero,
+                ReconnectBackoffMax = TimeSpan.Zero
+            },
+            loggerFactory: null);
+        var identityPool = (IMetadataClusterIdentityPool)pool;
+        identityPool.ConfigureMetadataClusterCheck(enabled: true);
+
+        var bootstrap = await pool.GetConnectionAsync(host, port, CancellationToken.None);
+        identityPool.UpdateMetadataClusterId(clusterId);
+        pool.RegisterBroker(broker.NodeId, host, port);
+
+        var connection = await pool.GetConnectionAsync(broker.NodeId);
+
+        await Assert.That(connection).IsNotSameReferenceAs(bootstrap);
+        await Assert.That(connection.BrokerId).IsEqualTo(broker.NodeId);
+        await Assert.That(connection.IsConnected).IsTrue();
+        // Later bootstrap lookups share the broker connection instead of opening another socket.
+        await Assert.That(await pool.GetConnectionAsync(host, port, CancellationToken.None))
+            .IsSameReferenceAs(connection);
+    }
+
+    [Test]
     public async Task Connection_BrokerEndpointChange_ReplacesLiveConnection()
     {
         await using var admin = KafkaContainer.CreateAdminClient();
