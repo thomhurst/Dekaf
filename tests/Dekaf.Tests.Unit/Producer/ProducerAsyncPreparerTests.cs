@@ -234,8 +234,9 @@ public class ProducerAsyncPreparerTests
         ISerializer<string> keySerializer = admission
             ? new GatedAdmissionSerializer(() => new ValueTask<SerializerPreparationAdmission>(keyGate.Task))
             : new PreparingSerializer(_ => new ValueTask(keyGate.Task));
-        var valueSerializer = new PreparingSerializer(
-            _ => throw new InvalidOperationException("value schema failed"));
+        ISerializer<string> valueSerializer = admission
+            ? new GatedAdmissionSerializer(() => throw new InvalidOperationException("value schema failed"))
+            : new PreparingSerializer(_ => throw new InvalidOperationException("value schema failed"));
 
         await using var producer = CreateProducer(keySerializer, valueSerializer);
         await ReadyProducerAsync(producer);
@@ -267,8 +268,9 @@ public class ProducerAsyncPreparerTests
         ISerializer<string> keySerializer = admission
             ? new GatedAdmissionSerializer(() => new ValueTask<SerializerPreparationAdmission>(keyFault))
             : new PreparingSerializer(_ => new ValueTask(keyFault));
-        var valueSerializer = new PreparingSerializer(
-            _ => throw new InvalidOperationException("value schema failed"));
+        ISerializer<string> valueSerializer = admission
+            ? new GatedAdmissionSerializer(() => throw new InvalidOperationException("value schema failed"))
+            : new PreparingSerializer(_ => throw new InvalidOperationException("value schema failed"));
 
         await using var producer = CreateProducer(keySerializer, valueSerializer);
         await ReadyProducerAsync(producer);
@@ -276,8 +278,10 @@ public class ProducerAsyncPreparerTests
         var (started, stopped, listener) = ListenForActivities();
         using var _ = listener;
 
+        // AwaitBothAsync surfaces the key fault first; the value fault escaping synchronously would not.
         await Assert.That(async () => await producer.ProduceAsync(NewMessage()))
-            .Throws<InvalidOperationException>();
+            .Throws<InvalidOperationException>()
+            .WithMessage("key schema failed");
         await Assert.That(producer.RecordAccumulator.BufferedBytes).IsEqualTo(0L);
 
         await Assert.That(started.Count).IsGreaterThan(0);
@@ -617,7 +621,7 @@ public class ProducerAsyncPreparerTests
     private sealed class ObservedSerializationException : Exception;
 
     // An admission serializer whose preparation result is supplied by the test, so key admission can
-    // be left pending or faulted while value preparation throws.
+    // be left pending or faulted and value admission can throw synchronously.
     private sealed class GatedAdmissionSerializer(Func<ValueTask<SerializerPreparationAdmission>> prepare) :
         ISerializer<string>,
         IAsyncSerializerPreparationAdmission<string>
