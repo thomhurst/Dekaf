@@ -1411,8 +1411,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                     }
                     finally
                     {
-                        // A failed or cancelled stop still releases the revocation callback:
-                        // the run is ending, and shutdown stops the remaining lanes.
+                        // A failed or cancelled stop still releases the revocation callback.
+                        // StopPartitionsAsync has stopped every revoked lane before it throws,
+                        // and the run is ending.
                         command.Completion?.TrySetResult();
                     }
 
@@ -1570,17 +1571,38 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         _shutdownCancellation.Cancel();
     }
 
-    private async ValueTask StopLaneAsync(
+    private ValueTask StopLaneAsync(
         PartitionLane<TKey, TValue> lane,
         PartitionStopReason reason,
         bool commitProcessed,
         CancellationToken cancellationToken)
-    {
-        var policy = reason is PartitionStopReason.Failure or PartitionStopReason.Lost
+        => FinishLaneStopAsync(
+            lane,
+            reason,
+            BeginLaneStop(lane, reason, cancellationToken),
+            commitProcessed,
+            cancellationToken);
+
+    private PartitionStopPolicy GetStopPolicy(PartitionStopReason reason)
+        => reason is PartitionStopReason.Failure or PartitionStopReason.Lost
             ? PartitionStopPolicy.Cancel
             : _options.StopPolicy;
-        var stopping = lane.StopAsync(policy, _options.StopTimeout,
+
+    private ValueTask<Exception?> BeginLaneStop(
+        PartitionLane<TKey, TValue> lane,
+        PartitionStopReason reason,
+        CancellationToken cancellationToken)
+        => lane.StopAsync(GetStopPolicy(reason), _options.StopTimeout,
             reason == PartitionStopReason.Shutdown ? cancellationToken : CancellationToken.None);
+
+    private async ValueTask FinishLaneStopAsync(
+        PartitionLane<TKey, TValue> lane,
+        PartitionStopReason reason,
+        ValueTask<Exception?> stopping,
+        bool commitProcessed,
+        CancellationToken cancellationToken)
+    {
+        var policy = GetStopPolicy(reason);
         var exception = policy == PartitionStopPolicy.Drain && !stopping.IsCompleted
             ? await DrainHandlerCommitsAsync(stopping.AsTask(), cancellationToken).ConfigureAwait(false)
             : await stopping.ConfigureAwait(false);
@@ -1649,13 +1671,45 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         CancellationToken cancellationToken)
     {
         RecordCallbackRevocation(partitions);
-        foreach (var partition in partitions)
+
+        // Every lane starts stopping before any is awaited, so the lanes stop in parallel. A
+        // revocation callback blocks the coordinator's heartbeats until it returns, so it must
+        // wait about one StopTimeout, not one per revoked lane. Allocated once per stop command.
+        var lanes = new PartitionLane<TKey, TValue>?[partitions.Length];
+        var stopping = new ValueTask<Exception?>[partitions.Length];
+        for (var i = 0; i < partitions.Length; i++)
         {
+            var partition = partitions[i];
             _stoppedByFailure.Remove(partition);
-            _pendingIgnoreRestarts.Remove(partition);
-            _ignoreRestartFailures.Remove(partition);
-            await StopPartitionAsync(partition, reason, cancellationToken).ConfigureAwait(false);
+            if (DetachLane(partition) is { } lane)
+            {
+                lanes[i] = lane;
+                stopping[i] = BeginLaneStop(lane, reason, cancellationToken);
+            }
         }
+
+        // Each lane is finished and committed even when an earlier one fails: the revocation
+        // callback releases every revoked partition when this returns, so none may still run.
+        var commitProcessed = reason == PartitionStopReason.Revoke && ShouldCommitOnPartitionStop();
+        Exception? failure = null;
+        for (var i = 0; i < lanes.Length; i++)
+        {
+            if (lanes[i] is not { } lane)
+                continue;
+
+            try
+            {
+                await FinishLaneStopAsync(lane, reason, stopping[i], commitProcessed, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                failure ??= exception;
+            }
+        }
+
+        if (failure is not null)
+            ExceptionDispatchInfo.Throw(failure);
 
         StartAssignedPartitions(ReadAssignment());
     }
@@ -1665,24 +1719,24 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         PartitionStopReason reason,
         CancellationToken cancellationToken)
     {
-        if (!_lanes.TryGetValue(partition, out var lane))
-        {
-            _pausedByRuntime.Remove(partition);
-            _pendingIgnoreRestarts.Remove(partition);
-            _ignoreRestartFailures.Remove(partition);
+        if (DetachLane(partition) is not { } lane)
             return;
-        }
-
-        _lanes.Remove(partition);
-        _pausedByRuntime.Remove(partition);
-        _pendingIgnoreRestarts.Remove(partition);
-        _ignoreRestartFailures.Remove(partition);
 
         await StopLaneAsync(
             lane,
             reason,
             commitProcessed: reason == PartitionStopReason.Revoke && ShouldCommitOnPartitionStop(),
             cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Removes <paramref name="partition"/>'s lane and its runtime pause and restart state.</summary>
+    private PartitionLane<TKey, TValue>? DetachLane(TopicPartition partition)
+    {
+        _lanes.Remove(partition, out var lane);
+        _pausedByRuntime.Remove(partition);
+        _pendingIgnoreRestarts.Remove(partition);
+        _ignoreRestartFailures.Remove(partition);
+        return lane;
     }
 
     private async ValueTask StopAllAsync(CancellationToken cancellationToken)

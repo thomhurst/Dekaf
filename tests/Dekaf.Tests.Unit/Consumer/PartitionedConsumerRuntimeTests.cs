@@ -1381,6 +1381,121 @@ public sealed class PartitionedConsumerRuntimeTests
         await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
     }
 
+    [Test]
+    public async Task RunPartitionedAsync_RevokeCallbackStopsRevokedLanesInParallel()
+    {
+        var slowPartition = new TopicPartition("topic-a", 0);
+        var cancellablePartition = new TopicPartition("topic-a", 1);
+        var consumer = new TestConsumer();
+        consumer.SetAssignment(slowPartition, cancellablePartition);
+        var slowStarted = NewCompletionSource();
+        var releaseSlow = NewCompletionSource();
+        var cancellableStarted = NewCompletionSource();
+        var cancellableStopped = NewCompletionSource();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, cancellationToken) =>
+            {
+                await foreach (var message in context.Messages.WithCancellation(CancellationToken.None))
+                {
+                    if (context.TopicPartition == slowPartition)
+                    {
+                        slowStarted.TrySetResult();
+                        // Ignores cancellation, so this lane stops only when released.
+                        await releaseSlow.Task.ConfigureAwait(false);
+                        return;
+                    }
+
+                    cancellableStarted.TrySetResult();
+                    try
+                    {
+                        await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        cancellableStopped.TrySetResult();
+                    }
+                }
+            },
+            new PartitionedProcessingOptions
+            {
+                StopPolicy = PartitionStopPolicy.Cancel,
+                StopTimeout = TimeSpan.FromSeconds(20)
+            },
+            cts.Token).AsTask();
+
+        consumer.Enqueue(CreateResult(slowPartition, 0), CreateResult(cancellablePartition, 0));
+        await slowStarted.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        await cancellableStarted.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+
+        // The coordinator sends no heartbeat while the callback runs, so the revoked lanes stop
+        // together: the second lane is cancelled while the first still runs, not after it.
+        var revoked = consumer.RevokeFromCoordinatorAsync(slowPartition, cancellablePartition);
+        await cancellableStopped.Task.WaitAsync(TimeSpan.FromSeconds(5), cts.Token).ConfigureAwait(false);
+        await Assert.That(revoked.IsCompleted).IsFalse();
+
+        releaseSlow.SetResult();
+        await revoked.WaitAsync(cts.Token).ConfigureAwait(false);
+
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+    }
+
+    [Test]
+    public async Task RunPartitionedAsync_RevokeCallbackWaitsForEveryRevokedLaneWhenACommitFails()
+    {
+        var firstPartition = new TopicPartition("topic-a", 0);
+        var secondPartition = new TopicPartition("topic-a", 1);
+        var consumer = new TestConsumer();
+        consumer.SetAssignment(firstPartition, secondPartition);
+        consumer.CommitFailures.Enqueue(new GroupException(ErrorCode.GroupAuthorizationFailed, "denied"));
+        var firstStarted = NewCompletionSource();
+        var releaseFirst = NewCompletionSource();
+        var secondStarted = NewCompletionSource();
+        var releaseSecond = NewCompletionSource();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, cancellationToken) =>
+            {
+                await foreach (var message in context.Messages.WithCancellation(cancellationToken))
+                {
+                    var first = context.TopicPartition == firstPartition;
+                    (first ? firstStarted : secondStarted).TrySetResult();
+                    await (first ? releaseFirst : releaseSecond).Task.ConfigureAwait(false);
+                    context.MarkProcessed(message);
+                }
+            },
+            new PartitionedProcessingOptions
+            {
+                StopPolicy = PartitionStopPolicy.Drain,
+                CommitPolicy = PartitionCommitPolicy.CommitCompletedOnRevoke,
+                StopTimeout = TimeSpan.FromSeconds(5)
+            },
+            cts.Token).AsTask();
+
+        consumer.Enqueue(CreateResult(firstPartition, 0), CreateResult(secondPartition, 0));
+        await firstStarted.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        await secondStarted.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+
+        var revoked = consumer.RevokeFromCoordinatorAsync(firstPartition, secondPartition);
+
+        // The first lane's commit fails. The callback must still wait for the second lane:
+        // returning would release a partition whose lane still processes records.
+        releaseFirst.SetResult();
+        await Assert.That(() => consumer.CommitFailures.IsEmpty).Eventually(static empty => empty.IsTrue(), TimeSpan.FromSeconds(5));
+        await Task.Delay(100, cts.Token).ConfigureAwait(false);
+        await Assert.That(revoked.IsCompleted).IsFalse();
+
+        releaseSecond.SetResult();
+        await revoked.WaitAsync(cts.Token).ConfigureAwait(false);
+        await Assert.That(consumer.CommitCalls.SelectMany(static offsets => offsets).ToArray())
+            .IsEquivalentTo(new[] { new TopicPartitionOffset("topic-a", 1, 1) });
+
+        var exception = await Assert.ThrowsAsync<GroupException>(async () => await runTask.WaitAsync(cts.Token).ConfigureAwait(false));
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.GroupAuthorizationFailed);
+    }
+
     /// <summary>
     /// Starts a Drain runtime whose handler holds the partition's first record until released.
     /// </summary>
