@@ -1249,7 +1249,8 @@ public readonly struct ConsumeResult<TKey, TValue>
 
     /// <summary>
     /// Indicates whether this result represents a partition end-of-file (EOF) event.
-    /// When true, the consumer has reached the end of the partition (caught up to the high watermark).
+    /// When true, the consumer has reached the end of the partition (caught up to the high watermark,
+    /// or to the last stable offset under read_committed).
     /// Key and Value will be default when this is true.
     /// </summary>
     public bool IsPartitionEof => (_flags & PartitionEofFlag) != 0;

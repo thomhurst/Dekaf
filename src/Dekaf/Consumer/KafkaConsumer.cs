@@ -1721,7 +1721,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
 
     // Partition EOF tracking
-    private readonly ConcurrentDictionary<TopicPartition, long> _highWatermarks = new();  // High watermark per partition (thread-safe for prefetch)
+    private readonly ConcurrentDictionary<TopicPartition, long> _lagEndOffsets = new();  // Visible end offset per partition for the lag gauge (thread-safe for prefetch)
     private readonly ConcurrentDictionary<TopicPartition, byte> _eofEmitted = new(); // Partitions where EOF has been emitted (lock-free)
     private readonly ConcurrentQueue<(TopicPartition Partition, long Offset)> _pendingEofEvents = new(); // Pending EOF events to yield (thread-safe for prefetch thread)
 
@@ -5735,8 +5735,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             continue;
                         }
 
-                        // Update high watermark from response (thread-safe with ConcurrentDictionary)
-                        _highWatermarks[tp] = partitionResponse.HighWatermark;
+                        // The visible end: the LSO under read_committed, else the high watermark. EOF
+                        // and the lag gauge both measure against it. Once per partition response.
+                        var visibleEndOffset = GetVisibleEndOffset(partitionResponse);
+                        _lagEndOffsets[tp] = visibleEndOffset;
 
                         // Cache Records reference to avoid repeated Volatile.Read from the pool guard
                         var records = partitionResponse.Records;
@@ -5762,7 +5764,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         }
                         else
                         {
-                            var stuckError = HandleEmptyFetchResponse(tp, records, partitionResponse.HighWatermark, fetchBufferEpoch);
+                            var stuckError = HandleEmptyFetchResponse(tp, records, visibleEndOffset, fetchBufferEpoch);
                             if (stuckError is not null)
                             {
                                 DisposePendingFetches(pendingItems);
@@ -6606,7 +6608,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     internal Errors.ConsumeException? HandleEmptyFetchResponse(
         TopicPartition partition,
         IReadOnlyList<RecordBatch>? records,
-        long highWatermark,
+        long visibleEndOffset,
         int fetchBufferEpoch)
     {
         // FetchResponsePartition creates Records only when record bytes were present.
@@ -6625,8 +6627,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             return stuckError;
         }
 
-        if (_options.EnablePartitionEof && fetchPosition >= highWatermark)
-            TryQueuePartitionEof(partition, highWatermark, fetchBufferEpoch);
+        if (_options.EnablePartitionEof && fetchPosition >= visibleEndOffset)
+            TryQueuePartitionEof(partition, visibleEndOffset, fetchBufferEpoch);
 
         return null;
     }
@@ -6671,12 +6673,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// from a response that passed its stale check before that invalidation must not be queued
     /// afterwards, ahead of the records the new position refetches. Revalidating here, and
     /// reading the position here, closes that window as prefetched record publication does.
-    /// Runs only when a response reaches the high watermark, never per record, and takes the
-    /// lock only until the partition's EOF has been reported.
+    /// Runs only when a response reaches the visible end (<see cref="GetVisibleEndOffset"/>),
+    /// never per record, and takes the lock only until the partition's EOF has been reported.
     /// </summary>
-    private void TryQueuePartitionEof(TopicPartition partition, long highWatermark, int fetchBufferEpoch)
+    private void TryQueuePartitionEof(TopicPartition partition, long visibleEndOffset, int fetchBufferEpoch)
     {
-        // Lock-free fast path for partitions idling at the high watermark: their EOF is already
+        // Lock-free fast path for partitions idling at the visible end: their EOF is already
         // reported, so unrelated fetch handlers never serialize here. A clear (seek, revocation,
         // release) that races this read only defers the EOF to the next empty response, which
         // derives it again; once the marker is gone the locked path below runs.
@@ -6687,7 +6689,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             var fetchPosition = _fetchPositions.GetValueOrDefault(partition, 0);
             if (ShouldDropStaleFetchPartition(partition, fetchBufferEpoch)
-                || fetchPosition < highWatermark
+                || fetchPosition < visibleEndOffset
                 || !_eofEmitted.TryAdd(partition, 0))
             {
                 return;
@@ -6697,6 +6699,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
+    /// <summary>
+    /// The end of the records this consumer can see in a partition: the last stable offset
+    /// under read_committed (records past it belong to open transactions), else the high
+    /// watermark. A broker that does not report the LSO (-1) falls back to the high watermark.
+    /// </summary>
+    private long GetVisibleEndOffset(FetchResponsePartition response) =>
+        _options.IsolationLevel == IsolationLevel.ReadCommitted && response.LastStableOffset >= 0
+            ? response.LastStableOffset
+            : response.HighWatermark;
+
     private PendingFetchData? TryCreateSnapshotEndMarker(
         TopicPartition partition,
         FetchResponsePartition response)
@@ -6705,11 +6717,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (snapshot is null)
             return null;
 
-        var visibleEndOffset = _options.IsolationLevel == IsolationLevel.ReadCommitted
-                               && response.LastStableOffset >= 0
-            ? response.LastStableOffset
-            : response.HighWatermark;
-        return snapshot.TryQueueEndMarker(partition, visibleEndOffset, out var endOffset)
+        return snapshot.TryQueueEndMarker(partition, GetVisibleEndOffset(response), out var endOffset)
             ? PendingFetchData.CreateSnapshotEnd(
                 partition.Topic,
                 partition.Partition,
@@ -9730,7 +9738,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             _lastConsumedLeaderEpochs.TryRemove(partition, out _);
             _lastFetchedLeaderEpochs.TryRemove(partition, out _);
             _committed.TryRemove(partition, out _);
-            _highWatermarks.TryRemove(partition, out _);
+            _lagEndOffsets.TryRemove(partition, out _);
             // IConsumerOffsets exposes the last cached broker watermarks even while
             // unassigned. A later assignment removes them before position reuse.
             _eofEmitted.TryRemove(partition, out _);
@@ -13089,7 +13097,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         ClearStoredOffset(partition);
                         _pendingRebalanceSeeks.TryRemove(partition, out _);
                         _committed.TryRemove(partition, out _);
-                        _highWatermarks.TryRemove(partition, out _);
+                        _lagEndOffsets.TryRemove(partition, out _);
                         _eofEmitted.TryRemove(partition, out _);
 
                         var topicInfo = metadataSnapshot.Topics[partition.Topic];
@@ -13581,8 +13589,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         continue;
                     }
 
-                    // Update high watermark from response (thread-safe with ConcurrentDictionary)
-                    _highWatermarks[tp] = partitionResponse.HighWatermark;
+                    // The visible end: the LSO under read_committed, else the high watermark. EOF
+                    // and the lag gauge both measure against it. Once per partition response.
+                    var visibleEndOffset = GetVisibleEndOffset(partitionResponse);
+                    _lagEndOffsets[tp] = visibleEndOffset;
 
                     // Cache Records reference to avoid repeated Volatile.Read from the pool guard
                     var records = partitionResponse.Records;
@@ -13606,7 +13616,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     }
                     else
                     {
-                        var stuckError = HandleEmptyFetchResponse(tp, records, partitionResponse.HighWatermark, fetchBufferEpoch);
+                        var stuckError = HandleEmptyFetchResponse(tp, records, visibleEndOffset, fetchBufferEpoch);
                         if (stuckError is not null)
                         {
                             if (pendingItems is not null)
@@ -13856,15 +13866,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (partitionResponse.HighWatermark >= 0)
         {
             var low = partitionResponse.LogStartOffset >= 0 ? partitionResponse.LogStartOffset : 0;
-            var lagEndOffset = _options.IsolationLevel == IsolationLevel.ReadCommitted
-                && partitionResponse.LastStableOffset >= 0
-                    ? partitionResponse.LastStableOffset
-                    : partitionResponse.HighWatermark;
             UpdateCachedWatermarks(
                 partition,
                 low,
                 partitionResponse.HighWatermark,
-                lagEndOffset,
+                GetVisibleEndOffset(partitionResponse),
                 fetchBufferEpoch,
                 leaderEpoch,
                 watermarkUpdateSequence);
@@ -16230,16 +16236,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// <summary>
     /// Callback for the observable consumer lag gauge. Invoked only during metric collection
     /// (typically every 5-60s by an OTel exporter), not on the hot path.
-    /// Returns one measurement per assigned partition: highWatermark - consumedPosition.
+    /// Returns one measurement per assigned partition: visibleEndOffset - consumedPosition, where
+    /// the visible end is the last stable offset under read_committed, else the high watermark.
     /// </summary>
-    private IEnumerable<Measurement<long>> ObserveConsumerLag()
+    internal IEnumerable<Measurement<long>> ObserveConsumerLag()
     {
-        foreach (var (tp, highWatermark) in _highWatermarks)
+        foreach (var (tp, visibleEndOffset) in _lagEndOffsets)
         {
             // Use consumed position (ConcurrentDictionary — safe for cross-thread reads).
             var consumedPosition = _positions.GetValueOrDefault(tp, 0);
 
-            var lag = Math.Max(0, highWatermark - consumedPosition);
+            var lag = Math.Max(0, visibleEndOffset - consumedPosition);
 
             yield return new Measurement<long>(lag,
                 new System.Diagnostics.TagList

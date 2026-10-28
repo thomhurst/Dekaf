@@ -2601,7 +2601,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <summary>
     /// Enables partition end-of-file (EOF) events.
     /// When enabled, the consumer will emit a special ConsumeResult with IsPartitionEof=true
-    /// when it reaches the end of a partition (caught up to the high watermark).
+    /// when it reaches the end of a partition: caught up to the high watermark, or to the last
+    /// stable offset under read_committed.
     /// </summary>
     /// <param name="enabled">Whether to enable partition EOF events. Default is true.</param>
     public ConsumerBuilder<TKey, TValue> WithPartitionEof(bool enabled = true)

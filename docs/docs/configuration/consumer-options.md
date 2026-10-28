@@ -416,7 +416,8 @@ Custom deserializers:
 
 ### WithPartitionEof
 
-Receive notification when reaching end of partition:
+Receive notification when reaching end of partition. Under `IsolationLevel.ReadCommitted` the end is the
+last stable offset, so EOF fires even while a transaction is open on the partition:
 
 ```csharp
 .WithPartitionEof(true)
