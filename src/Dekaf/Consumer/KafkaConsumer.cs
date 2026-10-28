@@ -1655,6 +1655,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // OffsetFetch snapshots must not replace commits that complete after the request starts.
     private readonly ConcurrentDictionary<TopicPartition, CommittedOffsetCacheEntry> _committed = new();
     private long _committedOffsetGeneration;
+    // Position initialization leaves a partition without a position while its committed offset
+    // cannot be read yet (a pending transaction's offsets, or a lookup that kept failing for a
+    // retriable reason). Monotonic time at which a poll retries it (0 = nothing deferred), and how many
+    // passes in a row deferred partitions, for the backoff.
+    private long _deferredPositionRetryDueMs;
+    private int _deferredPositionAttempts;
     private readonly ConcurrentDictionary<TopicPartition, WatermarkCacheEntry> _watermarks = new(); // Cached watermark offsets from fetch responses
     private readonly ConcurrentDictionary<TopicPartition, int> _watermarkAssignmentVersions = new();
     // Fetch generation at which each assigned partition's current ownership began, and the latest
@@ -7057,13 +7063,31 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private bool IsAutoCommitRunning() => Volatile.Read(ref _autoCommitTask) is { IsCompleted: false };
 
+    // The polling paths: a due deferred-position retry needs a sync pass too.
     private bool IsCoordinatorAssignmentSyncCurrent(
+        ConsumerCoordinator coordinator,
+        out int assignmentVersion)
+        => IsCoordinatorAssignmentSynchronized(coordinator, out assignmentVersion)
+           && !IsDeferredPositionRetryDue();
+
+    // Whether the coordinator's assignment is synchronized, regardless of a due retry. Callback
+    // seeks use this: a retry pass initializes only the deferred partitions, so a seek it would
+    // leave staged for an initialized partition is never applied.
+    private bool IsCoordinatorAssignmentSynchronized(
         ConsumerCoordinator coordinator,
         out int assignmentVersion)
     {
         assignmentVersion = coordinator.AssignmentVersion;
         return Volatile.Read(ref _lastCoordinatorAssignmentVersion) == assignmentVersion
                && coordinator.IsAssignmentSyncCurrent(assignmentVersion);
+    }
+
+    // One volatile read per poll while nothing is deferred; the clock is read only while a
+    // committed-offset lookup waits for its retry.
+    private bool IsDeferredPositionRetryDue()
+    {
+        var dueMs = Volatile.Read(ref _deferredPositionRetryDueMs);
+        return dueMs != 0 && Dekaf.MonotonicClock.GetMilliseconds() >= dueMs;
     }
 
 #if NET
@@ -9400,7 +9424,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // A callback that polls synchronizes its own assignment (the poll does not wait for the
         // callback it runs in); the position is then the new ownership's.
         if (!_acknowledgedCoordinatorAssignment.Contains(partition)
-            || !IsCoordinatorAssignmentSyncCurrent(coordinator, out _))
+            || !IsCoordinatorAssignmentSynchronized(coordinator, out _))
         {
             return null;
         }
@@ -9456,7 +9480,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             if (_coordinator is { } coordinator
                 && _acknowledgedCoordinatorAssignment.Contains(partition)
-                && IsCoordinatorAssignmentSyncCurrent(coordinator, out _))
+                && IsCoordinatorAssignmentSynchronized(coordinator, out _))
             {
                 ApplyPendingRebalanceSeek(partition);
             }
@@ -11651,6 +11675,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         if (coordinator.AssignmentVersion != coordinatorAssignmentVersion)
                             continue;
 
+                        // A seek or revocation gave every deferred partition a position meanwhile.
+                        ClearDeferredPositionRetry();
+
                         Volatile.Write(ref _lastCoordinatorAssignmentVersion, coordinatorAssignmentVersion);
                         if (coordinator.AcknowledgeAssignmentSync(coordinatorAssignmentVersion))
                             CompleteAcknowledgedSync();
@@ -11956,16 +11983,43 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // Fetch committed offsets for all partitions
             // Runs under the assignment lock, so a fenced fetch must not rejoin (and run rebalance
             // callbacks) here; EnsureAssignmentAsync rejoins once the lock is released.
-            var committedOffsets = await coordinator.FetchOffsetsAsync(
-                    partitions,
-                    rejoinOnMembershipLoss: false,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            // A pending transaction's offsets (KIP-447) are not waited out here, and a lookup that
+            // keeps failing for a retriable reason does not fail the poll: as in Java's consumer,
+            // those partitions stay without a position, so they are not fetched, while every
+            // other partition is initialized and fetched. A later poll retries them.
+            var unstablePartitions = new HashSet<TopicPartition>();
+            IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>? committedOffsets;
+            KafkaException? lookupFailure = null;
+            try
+            {
+                committedOffsets = await coordinator.FetchOffsetsAsync(
+                        partitions,
+                        rejoinOnMembershipLoss: false,
+                        unstablePartitions,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (KafkaException ex) when (
+                !cancellationToken.IsCancellationRequested
+                && (ex.IsRetriable || ex is KafkaTimeoutException))
+            {
+                // The retry loop surfaces a non-retriable error at once, so a timeout also means
+                // the lookup kept failing for a retriable reason, for example a coordinator that
+                // is still loading its offsets after a failover.
+                committedOffsets = null;
+                lookupFailure = ex;
+            }
 
+            var deferredCount = 0;
             foreach (var partition in partitions)
             {
                 var isNewlyExpanded = newlyExpandedPartitions.Contains(partition);
-                if (committedOffsets.TryGetValue(partition, out var committedOffset) && committedOffset.Offset >= 0)
+                // For a deferred partition neither the committed offset nor the reset policy
+                // decides the position yet; only a seek the rebalance callback staged does.
+                var deferred = committedOffsets is null || unstablePartitions.Contains(partition);
+                if (committedOffsets is not null
+                    && committedOffsets.TryGetValue(partition, out var committedOffset)
+                    && committedOffset.Offset >= 0)
                 {
                     // Use committed offset
                     SetPosition(partition, committedOffset.Offset, dirty: false);
@@ -11976,7 +12030,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     SetFetchPosition(partition, committedOffset.Offset);
                     _ = TryCacheCommittedOffset(partition, committedOffset.Offset, cacheGeneration);
                 }
-                else
+                else if (!deferred)
                 {
                     // No committed offset, use auto offset reset
                     var offset = await GetResetOffsetAsync(
@@ -11991,8 +12045,40 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                 ApplyPendingRebalanceSeek(partition, untilSyncAcknowledged: true);
 
+                // A deferred partition that keeps a position from before this pass (reclassified
+                // as newly expanded) keeps fetching from it.
+                if (deferred && !_fetchPositions.ContainsKey(partition))
+                {
+                    deferredCount++;
+                    continue;
+                }
+
                 if (isNewlyExpanded)
                     (initializedNewPartitions ??= []).Add(partition);
+            }
+
+            if (deferredCount == 0)
+            {
+                ClearDeferredPositionRetry();
+            }
+            else
+            {
+                var attempts = ++_deferredPositionAttempts;
+                var retryMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
+                    _options.RetryBackoffMs,
+                    _options.RetryBackoffMaxMs,
+                    attempts);
+                // Nonzero, so the retry stays scheduled even with a zero backoff.
+                Volatile.Write(
+                    ref _deferredPositionRetryDueMs,
+                    Math.Max(1, Dekaf.MonotonicClock.GetMilliseconds() + retryMs));
+                LogPositionInitializationDeferred(
+                    lookupFailure,
+                    deferredCount,
+                    lookupFailure is null
+                        ? "a pending transaction committed their offsets"
+                        : "the committed-offset lookup failed with a retriable error",
+                    retryMs);
             }
         }
         finally
@@ -12000,6 +12086,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (initializedNewPartitions is not null)
                 coordinator.AcknowledgeInitializedPartitions(initializedNewPartitions, assignmentVersion);
         }
+    }
+
+    // Caller holds _assignmentLock.
+    private void ClearDeferredPositionRetry()
+    {
+        _deferredPositionAttempts = 0;
+        Volatile.Write(ref _deferredPositionRetryDueMs, 0);
     }
 
     /// <param name="untilSyncAcknowledged">
@@ -16163,6 +16256,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "CommitAsync from a rebalance callback of Unsubscribe or a switch to manual assignment ran after the group was left (the callback overran the {RebalanceTimeoutMs} ms rebalance timeout); nothing was committed because the partitions may already belong to another member")]
     private partial void LogLeaveCallbackCommitAfterLeave(int rebalanceTimeoutMs);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Committed offsets for {Count} assigned partitions are not available yet because {Reason}; those partitions are not fetched until a retry in {RetryMs} ms reads them")]
+    private partial void LogPositionInitializationDeferred(Exception? exception, int count, string reason, int retryMs);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Error in prefetch loop")]
     private partial void LogPrefetchLoopError(Exception exception);
