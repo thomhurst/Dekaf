@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Diagnostics;
 using System.Reflection;
+using System.Threading.Tasks.Sources;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Engines;
 using Dekaf.Benchmarks.Infrastructure;
@@ -226,7 +227,7 @@ public class ProducerFireHotPathBenchmarks
         public ValueTask PrepareAsync(
             string value,
             SerializationContext context,
-            CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+            CancellationToken cancellationToken = default) => new(CompletedPreparationSource.Instance, 0);
 
         public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
             where TWriter : IBufferWriter<byte>
@@ -234,5 +235,24 @@ public class ProducerFireHotPathBenchmarks
             , allows ref struct
 #endif
             => Serializers.String.Serialize(value, ref destination, context);
+    }
+
+    // Source-backed like a pooled custom preparer, so the measured fast path includes consuming
+    // the completed ValueTask through IValueTaskSource.GetResult.
+    private sealed class CompletedPreparationSource : IValueTaskSource
+    {
+        internal static readonly CompletedPreparationSource Instance = new();
+
+        public ValueTaskSourceStatus GetStatus(short token) => ValueTaskSourceStatus.Succeeded;
+
+        public void OnCompleted(
+            Action<object?> continuation,
+            object? state,
+            short token,
+            ValueTaskSourceOnCompletedFlags flags) => continuation(state);
+
+        public void GetResult(short token)
+        {
+        }
     }
 }

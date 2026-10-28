@@ -1169,7 +1169,12 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         static ValueTask<SerializerPreparationAdmission> AwaitPreparationAsync(ValueTask preparation)
         {
             if (preparation.IsCompletedSuccessfully)
+            {
+                // A custom preparer may return a pooled IValueTaskSource that is released in
+                // GetResult, so consume it exactly once. The status check proves completion.
+                preparation.GetAwaiter().GetResult();
                 return default;
+            }
 
             return AwaitAsync(preparation);
 

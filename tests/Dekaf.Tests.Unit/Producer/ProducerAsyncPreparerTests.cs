@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
+using System.Threading.Tasks.Sources;
 using Dekaf.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Metadata;
@@ -179,6 +180,44 @@ public class ProducerAsyncPreparerTests
         valueGate.SetException(new InvalidOperationException("value schema failed"));
 
         await Assert.That(async () => await produce).Throws<Exception>();
+    }
+
+    // --- A preparer's ValueTask is consumed exactly once before serialization, on both the
+    //     synchronously-completed and the asynchronous branch (regression: the synchronous
+    //     branch dropped it, so a pooled IValueTaskSource never had GetResult called). ---
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task ProduceAsync_ConsumesPreparationValueTaskExactlyOnceBeforeSerialization(
+        bool keyPreparer,
+        bool completesAfterStatusCheck)
+    {
+        var source = new TrackingValueTaskSource();
+        if (!completesAfterStatusCheck)
+            source.Complete();
+
+        var serializer = new ConsumptionObservingSerializer(source);
+        await using var producer = keyPreparer
+            ? CreateProducer(serializer, Serializers.String)
+            : CreateProducer(Serializers.String, serializer);
+        await ReadyProducerAsync(producer);
+        SeedProducerMetadata(producer);
+
+        var produce = producer.ProduceAsync(NewMessage()).AsTask();
+        if (completesAfterStatusCheck)
+        {
+            await Assert.That(produce.IsCompleted).IsFalse();
+            await Assert.That(source.GetResultCount).IsEqualTo(0);
+            source.Complete();
+        }
+
+        await Assert.That(async () => await produce).Throws<ObservedSerializationException>();
+
+        await Assert.That(serializer.GetResultCountAtSerialize).IsEqualTo(1);
+        await Assert.That(source.GetResultCount).IsEqualTo(1);
     }
 
     // --- Cancellation during preparation is "pre-append": it throws and nothing is buffered. ---
@@ -411,6 +450,62 @@ public class ProducerAsyncPreparerTests
 #endif
             => Serializers.String.Serialize(value, ref destination, context);
     }
+
+    // A preparer whose ValueTask is backed by an IValueTaskSource, so a test can observe whether
+    // the producer consumed it, and how many times, before serialization ran.
+    private sealed class ConsumptionObservingSerializer(TrackingValueTaskSource source)
+        : ISerializer<string>, IAsyncSerializerPreparer<string>
+    {
+        public int GetResultCountAtSerialize { get; private set; } = -1;
+
+        public ValueTask PrepareAsync(string value, SerializationContext context, CancellationToken cancellationToken = default)
+            => new(source, 0);
+
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            GetResultCountAtSerialize = source.GetResultCount;
+            throw new ObservedSerializationException();
+        }
+    }
+
+    private sealed class TrackingValueTaskSource : IValueTaskSource
+    {
+        private Action<object?>? _continuation;
+        private object? _state;
+        private volatile bool _completed;
+        private int _getResultCount;
+
+        public int GetResultCount => Volatile.Read(ref _getResultCount);
+
+        public void Complete()
+        {
+            _completed = true;
+            Interlocked.Exchange(ref _continuation, null)?.Invoke(_state);
+        }
+
+        public ValueTaskSourceStatus GetStatus(short token)
+            => _completed ? ValueTaskSourceStatus.Succeeded : ValueTaskSourceStatus.Pending;
+
+        public void OnCompleted(
+            Action<object?> continuation,
+            object? state,
+            short token,
+            ValueTaskSourceOnCompletedFlags flags)
+        {
+            _state = state;
+            Volatile.Write(ref _continuation, continuation);
+            if (_completed)
+                Interlocked.Exchange(ref _continuation, null)?.Invoke(state);
+        }
+
+        public void GetResult(short token) => Interlocked.Increment(ref _getResultCount);
+    }
+
+    private sealed class ObservedSerializationException : Exception;
 
     private sealed class AdmittedPreparingSerializer :
         ISerializer<string>,
