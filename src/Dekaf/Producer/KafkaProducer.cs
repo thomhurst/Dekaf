@@ -1775,9 +1775,12 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
         ThrowIfNotInitialized();
-        // Read before serialization: the append commit point rejects the record if a transaction
-        // abort starts while serializers or interceptors run (non-transactional: a constant).
-        return FireMessageAsync(message, CaptureTransactionalAppendGeneration());
+        // Read before the state check and serialization: the append commit point rejects the
+        // record if a transaction abort or commit starts while serializers or interceptors run
+        // (non-transactional: a constant).
+        var transactionalGeneration = CaptureTransactionalAppendGeneration();
+        ThrowIfTransactionCannotProduce();
+        return FireMessageAsync(message, transactionalGeneration);
     }
 
     /// <summary>
@@ -1914,9 +1917,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
         ThrowIfNotInitialized();
-        // Read before serialization: the append commit point rejects the record if a transaction
-        // abort starts while serializers or interceptors run (non-transactional: a constant).
+        // Read before the state check and serialization: the append commit point rejects the
+        // record if a transaction abort or commit starts while serializers or interceptors run
+        // (non-transactional: a constant).
         var transactionalGeneration = CaptureTransactionalAppendGeneration();
+        ThrowIfTransactionCannotProduce();
 
         // When interceptors are configured, fall back to ProducerMessage overload
         // so interceptors can inspect/modify the message before serialization.
@@ -2442,11 +2447,24 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
         ThrowIfNotInitialized();
-        // Read before serialization: the append commit point rejects the record if a transaction
-        // abort starts while serializers or interceptors run (non-transactional: a constant).
+        // Read before the state check and serialization: the append commit point rejects the
+        // record if a transaction abort or commit starts while serializers or interceptors run
+        // (non-transactional: a constant).
         var transactionalGeneration = CaptureTransactionalAppendGeneration();
 
         ArgumentNullException.ThrowIfNull(deliveryHandler);
+
+        // A refused produce is reported through the handler, like the other synchronous failures.
+        if (_options.TransactionalId is not null)
+        {
+            var txnState = _transactionState;
+            if (txnState != TransactionState.InTransaction)
+            {
+                var refused = CreateTransactionCannotProduceException(txnState);
+                try { deliveryHandler(default, refused); } catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
+                return default;
+            }
+        }
 
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
@@ -4076,6 +4094,15 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         {
             try
             {
+                await FlushAsync(timeoutCts.Token).ConfigureAwait(false);
+
+                // A produce admitted before the commit began can still be awaiting topic metadata
+                // or a serializer, or append while the flush seals. Sent after EndTxn, its record
+                // would open a broker transaction the producer does not track. Advancing the
+                // generation rejects every such append from here on (TransactionAborted); the
+                // second flush sends what appended before that, so it joins this commit. Usually
+                // the fast path: nothing appended since the first flush. Commit path only.
+                _accumulator.AdvanceTransactionalAppendGeneration();
                 await FlushAsync(timeoutCts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
@@ -6015,13 +6042,27 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         ThrowIfNotInitialized();
 
-        // KIP-1050 fail-fast: once a transaction is broken, reject new produces so the caller must
-        // abort (abortable) or close the producer (fatal) before continuing. Single volatile read
-        // on the hot path; only transactional producers ever reach the error states.
-        if (_options.TransactionalId is not null)
-        {
-            ThrowIfTransactionCannotProduce();
-        }
+        ThrowIfTransactionCannotProduce();
+    }
+
+    /// <summary>
+    /// A transactional producer produces only inside an open transaction, as in Java
+    /// (<c>TransactionManager.failIfNotReadyForSend</c>) and librdkafka. Outside one the broker
+    /// would open a transaction the producer does not track: it would join the next transaction
+    /// or be aborted at <c>transaction.timeout.ms</c> after its produce reported success. This
+    /// also covers KIP-1050 fail-fast, so the caller must abort (abortable) or close the producer
+    /// (fatal) before continuing. One volatile read on the hot path, for transactional producers
+    /// only.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ThrowIfTransactionCannotProduce()
+    {
+        if (_options.TransactionalId is null)
+            return;
+
+        var txnState = _transactionState;
+        if (txnState != TransactionState.InTransaction)
+            ThrowTransactionCannotProduce(txnState);
     }
 
     /// <summary>
@@ -6074,36 +6115,41 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private void ThrowIfTransactionCannotProduce()
+    private void ThrowTransactionCannotProduce(TransactionState txnState) =>
+        throw CreateTransactionCannotProduceException(txnState);
+
+    /// <summary>The error that refuses a produce in <paramref name="txnState"/> (anything but InTransaction).</summary>
+    private Exception CreateTransactionCannotProduceException(TransactionState txnState)
     {
-        var txnState = _transactionState;
         if (txnState == TransactionState.AbortableError)
-            throw CreateAbortableTransactionError("Cannot produce");
+            return CreateAbortableTransactionError("Cannot produce");
 
         if (txnState == TransactionState.FatalError)
-        {
-            ThrowFatalTransactionError("Cannot produce");
-        }
+            return CreateFatalTransactionError("Cannot produce");
 
-        if (txnState == TransactionState.PreparedTransaction)
+        var message = txnState switch
         {
-            throw new TransactionException(ErrorCode.InvalidTxnState,
-                "Cannot produce: the current transaction is prepared. Only commit, abort, or complete are permitted.")
-            {
-                TransactionalId = _options.TransactionalId
-            };
-        }
+            TransactionState.Uninitialized =>
+                "Cannot produce: transactions are not initialized. Call InitTransactionsAsync(), then BeginTransaction(), before producing.",
+            TransactionState.Ready =>
+                "Cannot produce: no transaction is open. Call BeginTransaction() before producing.",
+            TransactionState.PreparedTransaction =>
+                "Cannot produce: the current transaction is prepared. Only commit, abort, or complete are permitted.",
+            // The commit also fences produces admitted before it that have not appended yet
+            // (KafkaProducer.CommitTransactionAsync).
+            TransactionState.CommittingTransaction =>
+                "Cannot produce: the current transaction is being committed.",
+            // The accumulator also rejects an append that passed this check before the abort
+            // began (RecordAccumulator.CloseTransactionalAppends).
+            TransactionState.AbortingTransaction =>
+                "Cannot produce: the current transaction is being aborted.",
+            _ => $"Cannot produce in transaction state {txnState}."
+        };
 
-        // Java refuses send while aborting too. The accumulator also rejects an append that
-        // passed this check before the abort began (RecordAccumulator.CloseTransactionalAppends).
-        if (txnState == TransactionState.AbortingTransaction)
+        return new TransactionException(ErrorCode.InvalidTxnState, message)
         {
-            throw new TransactionException(ErrorCode.InvalidTxnState,
-                "Cannot produce: the current transaction is being aborted.")
-            {
-                TransactionalId = _options.TransactionalId
-            };
-        }
+            TransactionalId = _options.TransactionalId
+        };
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -6114,14 +6160,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private void ThrowFatalTransactionError(string operation)
-    {
-        throw new FatalTransactionException(_lastTransactionError,
-            $"{operation}: the producer is in a fatal error state and must be closed.")
+    private void ThrowFatalTransactionError(string operation) => throw CreateFatalTransactionError(operation);
+
+    private FatalTransactionException CreateFatalTransactionError(string operation) =>
+        new(_lastTransactionError, $"{operation}: the producer is in a fatal error state and must be closed.")
         {
             TransactionalId = _options.TransactionalId
         };
-    }
 
     /// <summary>
     /// Commit and prepare must refuse an abortable transaction exactly as produce does: records

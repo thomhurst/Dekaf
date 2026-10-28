@@ -367,7 +367,60 @@ public sealed class TransactionalProduceFaultTests
     }
 
     /// <summary>
-    /// The fire-and-forget form of the test above: a FireAsync admitted before the abort that is
+    /// The commit form of the test above. A produce admitted while the transaction was open but
+    /// still awaiting its async serializer when the commit ends is not part of the commit. Once it
+    /// resumes it must fail with <see cref="ProduceErrorKind.TransactionAborted"/>; it must not be
+    /// appended after EndTxn and then be sent outside any transaction the producer tracks. A record
+    /// that appended before the commit is sent and committed.
+    /// </summary>
+    [Test]
+    [Arguments((short)1)]
+    [Arguments((short)2)]
+    [Timeout(60_000)]
+    public async Task CommitAsync_ProduceStillSerializingWhenTheCommitEnds_FailsAndIsNeverSent(
+        short transactionVersion,
+        CancellationToken cancellationToken)
+    {
+        var serializer = new HeldAsyncStringSerializer(heldValue: "admitted-before-commit");
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion,
+            produceError: static (_, _) => ErrorCode.None,
+            asyncValueSerializer: serializer);
+
+        var committed = harness.Producer.BeginTransaction();
+        await committed.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "committed",
+            Partition = 0
+        }, cancellationToken);
+        var stale = committed.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "admitted-before-commit",
+            Partition = 0
+        }, cancellationToken).AsTask();
+        await serializer.Entered.WaitAsync(cancellationToken);
+
+        await committed.CommitAsync(cancellationToken);
+        await committed.DisposeAsync();
+        await Assert.That(harness.Broker.ProducedBatches.Sum(batch => batch.RecordCount)).IsEqualTo(1);
+        var sentBeforeRelease = harness.Broker.ProducedBatches.Count;
+
+        serializer.Release();
+        var exception = await Assert.That(async () => await stale).Throws<ProduceException>();
+        await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+
+        await harness.CommitOneRecordAsync(partition: 0, cancellationToken);
+        var sentAfterRelease = harness.Broker.ProducedBatches.Skip(sentBeforeRelease).ToArray();
+        await Assert.That(sentAfterRelease.Length).IsEqualTo(1);
+        await Assert.That(sentAfterRelease[0].RecordCount).IsEqualTo(1);
+    }
+
+    /// <summary>
+    /// The fire-and-forget form of the abort test above: a FireAsync admitted before the abort that is
     /// still awaiting its async serializer when the abort ends must not append after the abort
     /// reopens appends. With a delivery handler the handler receives
     /// <see cref="ProduceErrorKind.TransactionAborted"/>; either way the record is never sent.

@@ -1,5 +1,6 @@
 using Dekaf.Errors;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 
 namespace Dekaf.Tests.Integration;
@@ -69,6 +70,78 @@ public class TransactionTests(KafkaTestContainer kafka) : TransactionalKafkaInte
 
         await Assert.That(consumed).IsNotNull();
         await Assert.That(consumed!.Value.Value).IsEqualTo("txn-value");
+    }
+
+    /// <summary>
+    /// A transactional producer refuses a produce outside an open transaction (#3748): before
+    /// InitTransactionsAsync it would be a plain non-idempotent write, and after a commit the
+    /// broker would open a transaction the producer does not track, which the next commit would
+    /// silently include. Only the records produced inside each transaction reach the topic.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task Produce_OutsideOpenTransaction_IsRefusedAndNeverReachesTheTopic(
+        CancellationToken cancellationToken)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithTransactionalId($"txn-outside-{Guid.NewGuid():N}")
+            .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+
+        var beforeInit = await Assert.That(
+                () => producer.ProduceAsync(topic, "stray", "before-init", cancellationToken).AsTask())
+            .Throws<TransactionException>();
+        await Assert.That(beforeInit!.ErrorCode).IsEqualTo(ErrorCode.InvalidTxnState);
+
+        await producer.InitTransactionsAsync(cancellationToken);
+
+        await using (var first = producer.BeginTransaction())
+        {
+            await first.ProduceAsync(topic, "key", "first", cancellationToken);
+            await first.CommitAsync(cancellationToken);
+        }
+
+        var afterCommit = await Assert.That(
+                () => producer.ProduceAsync(topic, "stray", "after-commit", cancellationToken).AsTask())
+            .Throws<TransactionException>();
+        await Assert.That(afterCommit!.ErrorCode).IsEqualTo(ErrorCode.InvalidTxnState);
+        await Assert.That(() => producer.FireAsync(topic, "stray", "fire-after-commit").AsTask())
+            .Throws<TransactionException>();
+
+        await using (var second = producer.BeginTransaction())
+        {
+            await producer.ProduceAsync(topic, "key", "second", cancellationToken);
+            await second.CommitAsync(cancellationToken);
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId($"txn-outside-consumer-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
+            .WithIsolationLevel(IsolationLevel.ReadUncommitted)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync(cancellationToken);
+        consumer.Subscribe(topic);
+
+        // Read uncommitted, so a stray record would show up whatever its transaction's outcome.
+        var values = new List<string>();
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(TimeSpan.FromSeconds(30));
+        while (values.Count < 2)
+        {
+            var record = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+            if (record is null)
+                break;
+            values.Add(record.Value.Value);
+        }
+
+        await Assert.That(values).IsEquivalentTo(["first", "second"]);
+        var watermarks = await consumer.QueryWatermarkOffsetsAsync(new TopicPartition(topic, 0), cts.Token);
+        // Two records and two commit markers: nothing else was written.
+        await Assert.That(watermarks.High).IsEqualTo(4);
     }
 
     [Test]
