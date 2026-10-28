@@ -83,6 +83,47 @@ public sealed class ClientQuotaTypesTests
     }
 
     [Test]
+    public async Task ClientQuotaEntity_Equality_DoesNotAllocate()
+    {
+        var first = ClientQuotaEntity.For(
+            ClientQuotaEntityComponent.User("alice"),
+            ClientQuotaEntityComponent.ClientId(null));
+        var second = ClientQuotaEntity.For(
+            ClientQuotaEntityComponent.ClientId(null),
+            ClientQuotaEntityComponent.User("alice"));
+        var different = ClientQuotaEntity.For(
+            ClientQuotaEntityComponent.User("alice"),
+            ClientQuotaEntityComponent.User("alice"));
+        _ = first.Equals(second);
+        _ = first.Equals(different);
+        _ = first.GetHashCode();
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var equal = first.Equals(second);
+        var unequal = first.Equals(different);
+        _ = first.GetHashCode();
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(equal).IsTrue();
+        await Assert.That(unequal).IsFalse();
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ClientQuotaEntity_Equality_MatchesEachComponentOnce()
+    {
+        var duplicated = ClientQuotaEntity.For(
+            ClientQuotaEntityComponent.User("alice"),
+            ClientQuotaEntityComponent.User("alice"));
+        var mixed = ClientQuotaEntity.For(
+            ClientQuotaEntityComponent.User("alice"),
+            ClientQuotaEntityComponent.ClientId("alice"));
+
+        await Assert.That(duplicated.Equals(mixed)).IsFalse();
+        await Assert.That(mixed.Equals(duplicated)).IsFalse();
+    }
+
+    [Test]
     public async Task ClientQuotaEntity_CanBeUsedAsDictionaryKey()
     {
         var dictionary = new Dictionary<ClientQuotaEntity, string>

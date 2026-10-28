@@ -1,3 +1,4 @@
+using System.Buffers;
 using Dekaf.Admin;
 using Dekaf.Errors;
 using Dekaf.Metadata;
@@ -310,6 +311,129 @@ public sealed class AdminClientStreamsGroupTests
     }
 
     [Test]
+    public async Task DescribeStreamsGroupsAsync_OnV1Broker_MapsEachGroupsAssignorName()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections(streamsGroupDescribeMaxVersion: 1);
+        var connection = connections[1];
+        StubCoordinator(connection);
+
+        connection.SendAsync<StreamsGroupDescribeRequest, StreamsGroupDescribeResponse>(
+                Arg.Any<StreamsGroupDescribeRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new StreamsGroupDescribeResponse
+            {
+                Groups =
+                [
+                    DescribedGroup("default", 0, null, assignorName: "sticky"),
+                    DescribedGroup("custom", 0, null, assignorName: "rack-balanced"),
+                    DescribedGroup("unreported", 0, null)
+                ]
+            }));
+
+        var descriptions = await admin.DescribeStreamsGroupsAsync(["default", "custom", "unreported"]);
+
+        await Assert.That(descriptions["default"].AssignorName).IsEqualTo("sticky");
+        await Assert.That(descriptions["custom"].AssignorName).IsEqualTo("rack-balanced");
+        await Assert.That(descriptions["unreported"].AssignorName).IsNull();
+        await connection.Received(1).SendAsync<StreamsGroupDescribeRequest, StreamsGroupDescribeResponse>(
+            Arg.Any<StreamsGroupDescribeRequest>(),
+            1,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task DescribeStreamsGroupsAsync_OnV0Broker_ReportsNoAssignorName()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections(streamsGroupDescribeMaxVersion: 0);
+        var connection = connections[1];
+        StubCoordinator(connection);
+
+        connection.SendAsync<StreamsGroupDescribeRequest, StreamsGroupDescribeResponse>(
+                Arg.Any<StreamsGroupDescribeRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo => ValueTask.FromResult(RoundTrip(
+                new StreamsGroupDescribeResponse
+                {
+                    Groups = [DescribedGroup("streams-a", 0, null, assignorName: "sticky")]
+                },
+                callInfo.ArgAt<short>(1))));
+
+        var descriptions = await admin.DescribeStreamsGroupsAsync(["streams-a"]);
+
+        await Assert.That(descriptions["streams-a"].AssignorName).IsNull();
+        await Assert.That(descriptions["streams-a"].TopologyDescriptionStatus).IsEqualTo(StreamsGroupTopologyDescriptionStatus.NotRequested);
+        await connection.Received(1).SendAsync<StreamsGroupDescribeRequest, StreamsGroupDescribeResponse>(
+            Arg.Any<StreamsGroupDescribeRequest>(),
+            0,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task IncrementalAlterConfigsAsync_StreamsAssignorName_TargetsTheGroupResource()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections();
+        var requests = new List<IncrementalAlterConfigsRequest>();
+        connections[1].SendAsync<IncrementalAlterConfigsRequest, IncrementalAlterConfigsResponse>(
+                Arg.Any<IncrementalAlterConfigsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var request = callInfo.Arg<IncrementalAlterConfigsRequest>();
+                requests.Add(request);
+                return ValueTask.FromResult(new IncrementalAlterConfigsResponse
+                {
+                    Responses = request.Resources.Select(static resource => new IncrementalAlterConfigsResourceResponse
+                    {
+                        ResourceType = resource.ResourceType,
+                        ResourceName = resource.ResourceName,
+                        ErrorCode = ErrorCode.None
+                    }).ToArray()
+                });
+            });
+
+        await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+        {
+            [new ConfigResource { Type = ConfigResourceType.Group, Name = "streams-a" }] =
+                [ConfigAlter.Set("streams.assignor.name", "rack-balanced")]
+        });
+
+        var resource = requests.Single().Resources.Single();
+        await Assert.That(resource.ResourceType).IsEqualTo((sbyte)ConfigResourceType.Group);
+        await Assert.That(resource.ResourceName).IsEqualTo("streams-a");
+        var change = resource.Configs.Single();
+        await Assert.That(change.Name).IsEqualTo("streams.assignor.name");
+        await Assert.That(change.ConfigOperation).IsEqualTo((sbyte)ConfigAlterOperation.Set);
+        await Assert.That(change.Value).IsEqualTo("rack-balanced");
+    }
+
+    [Test]
+    public async Task IncrementalAlterConfigsAsync_UnregisteredStreamsAssignor_PreservesInvalidConfig()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections();
+        var group = new ConfigResource { Type = ConfigResourceType.Group, Name = "streams-a" };
+        const string brokerMessage = "streams.assignor.name 'missing' is not a registered task assignor. Registered assignors are: [sticky].";
+        AdminClientDetailedConfigTests.Setup(connections[1], incremental: true, _ => [(group, ErrorCode.InvalidConfig, brokerMessage)]);
+        var configs = new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+        {
+            [group] = [ConfigAlter.Set("streams.assignor.name", "missing")]
+        };
+
+        var exception = await Assert.That(async () => await admin.IncrementalAlterConfigsAsync(configs))
+            .Throws<KafkaException>();
+        var detailed = await admin.IncrementalAlterConfigsDetailedAsync(configs);
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.InvalidConfig);
+        await Assert.That(exception.IsRetriable).IsFalse();
+        await Assert.That(exception.Message).Contains(brokerMessage);
+        await Assert.That(detailed[group].Outcome).IsEqualTo(AdminMutationOutcome.Failed);
+        await Assert.That(detailed[group].ErrorCode).IsEqualTo(ErrorCode.InvalidConfig);
+        await Assert.That(detailed[group].ErrorMessage).IsEqualTo(brokerMessage);
+    }
+
+    [Test]
     public async Task DescribeStreamsGroupsAsync_OptionsWithoutCapability_ThrowsNotSupported()
     {
         var admin = Substitute.For<IAdminClient>();
@@ -343,15 +467,27 @@ public sealed class AdminClientStreamsGroupTests
     private static StreamsGroupDescribeGroup DescribedGroup(
         string groupId,
         sbyte topologyDescriptionStatus,
-        StreamsTopologyDescriptionData? topologyDescription) => new()
+        StreamsTopologyDescriptionData? topologyDescription,
+        string? assignorName = null) => new()
     {
         ErrorCode = ErrorCode.None,
         GroupId = groupId,
         GroupState = "Stable",
         Members = [],
         TopologyDescription = topologyDescription,
-        TopologyDescriptionStatus = topologyDescriptionStatus
+        TopologyDescriptionStatus = topologyDescriptionStatus,
+        AssignorName = assignorName
     };
+
+    // Encodes and decodes at the negotiated version, so a v0 exchange drops the v1-only fields.
+    private static StreamsGroupDescribeResponse RoundTrip(StreamsGroupDescribeResponse response, short version)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        response.Write(ref writer, version);
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        return (StreamsGroupDescribeResponse)StreamsGroupDescribeResponse.Read(ref reader, version);
+    }
 
     private static StreamsTopologyDescriptionNodeData Node(
         string name,
@@ -446,6 +582,7 @@ public sealed class AdminClientStreamsGroupTests
         metadataManager.SetApiVersion(ApiKey.FindCoordinator, 4, 5);
         metadataManager.SetApiVersion(ApiKey.ListGroups, 5, 5);
         metadataManager.SetApiVersion(ApiKey.StreamsGroupDescribe, 0, streamsGroupDescribeMaxVersion);
+        metadataManager.SetApiVersion(ApiKey.IncrementalAlterConfigs, 0, 1);
 
         var admin = new AdminClient(
             new AdminClientOptions { BootstrapServers = ["localhost:9092"] },

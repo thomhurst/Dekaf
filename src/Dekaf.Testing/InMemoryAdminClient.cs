@@ -1372,7 +1372,8 @@ public sealed partial class InMemoryAdminClient :
 
     /// <summary>
     /// Describes streams groups. The in-memory cluster stores no topology descriptions, so a requested
-    /// description reports <see cref="StreamsGroupTopologyDescriptionStatus.NotStored"/>.
+    /// description reports <see cref="StreamsGroupTopologyDescriptionStatus.NotStored"/>. It has no broker task
+    /// assignors either, so <see cref="StreamsGroupDescription.AssignorName"/> is null.
     /// </summary>
     public async ValueTask<IReadOnlyDictionary<string, StreamsGroupDescription>> DescribeStreamsGroupsAsync(
         IEnumerable<string> groupIds,

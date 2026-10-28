@@ -161,4 +161,70 @@ Without a description, the member never publishes.
 `StreamsGroupHeartbeatResult.TopologyDescriptionRequired` still reports the
 coordinator's request.
 
+## Task assignor selection
+
+Kafka 4.4 lets a Streams group choose its broker-side task assignor
+([KIP-1357][kip1357]). StreamsGroupDescribe v1 reports the selection as
+`StreamsGroupDescription.AssignorName`:
+
+```csharp
+var described = await admin.DescribeStreamsGroupsAsync(["orders-streams"]);
+Console.WriteLine(described["orders-streams"].AssignorName); // "sticky" unless the group selects another
+```
+
+`AssignorName` is the assignor for the next assignment computation, not
+necessarily the one that produced the current assignment. It is `null` when the
+coordinator only supports StreamsGroupDescribe v0, and the in-memory admin client
+always reports `null`.
+
+Select an assignor for one group with the `streams.assignor.name` group
+configuration. Dekaf uses the existing group config support, so no
+Streams-specific method is needed:
+
+```csharp
+await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+{
+    [new ConfigResource { Type = ConfigResourceType.Group, Name = "orders-streams" }] =
+        [ConfigAlter.Set("streams.assignor.name", "rack-balanced")]
+});
+```
+
+Changing the configuration does not trigger a rebalance. The new assignor takes
+effect the next time the coordinator computes an assignment, for example when
+a member joins or leaves or the topology changes. Delete the configuration with
+`ConfigAlter.Delete("streams.assignor.name")` to return the group to the broker
+default.
+
+The name must be registered in `group.streams.assignors` (see below). Otherwise
+Kafka rejects the change with `ErrorCode.InvalidConfig`. `IncrementalAlterConfigsAsync` throws a
+non-retriable `KafkaException` that carries the broker's message, which lists the
+registered assignors. `IncrementalAlterConfigsDetailedAsync` reports the same
+error for that resource.
+
+### Installing a custom assignor
+
+Dekaf only selects and reports assignors. The assignor itself is a Java
+`org.apache.kafka.coordinator.group.api.streams.assignor.TaskAssignor` that runs
+inside the group coordinator:
+
+1. Put the assignor's JAR on the classpath of every broker and every KRaft
+   controller, for example in each node's `libs` directory. Brokers run the
+   assignor in the group coordinator; controllers load it to validate
+   `streams.assignor.name` changes.
+2. Add the class to the `group.streams.assignors` setting on the same nodes. Each entry is
+   either the name of a built-in assignor (Kafka 4.4 ships `sticky`) or the fully
+   qualified class name of a custom assignor. The first entry is the default
+   for groups that set no `streams.assignor.name`. Keep `sticky` first unless
+   you mean to change that default. Changing the default does not trigger a
+   rebalance either.
+3. Restart those nodes to load the assignor. Each assignor's `name()` becomes the value accepted by
+   `streams.assignor.name`. A custom assignor cannot reuse a built-in name, and
+   two configured assignors cannot share a name.
+
+Keep the setting identical on every broker and controller. A controller that
+does not list the assignor rejects a configuration that selects it, and a
+broker that does not list it cannot run it when it becomes the group's
+coordinator.
+
 [kip1331]: https://cwiki.apache.org/confluence/spaces/KAFKA/pages/421957212/KIP-1331+Streams+Group+Topology+Description+Plugin
+[kip1357]: https://cwiki.apache.org/confluence/spaces/KAFKA/pages/430408758/KIP-1357+Add+broker+side+custom+assignors+for+streams+groups

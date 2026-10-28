@@ -25,6 +25,14 @@ public sealed class StreamsGroupDescription
     /// still described.
     /// </summary>
     public StreamsGroupTopologyDescriptionStatus TopologyDescriptionStatus { get; init; }
+
+    /// <summary>
+    /// The broker-side task assignor that the next assignment computation uses (KIP-1357): the group's
+    /// <c>streams.assignor.name</c> configuration, or the first assignor in the broker's
+    /// <c>group.streams.assignors</c> list when the group selects none. Changing the configuration does not
+    /// trigger a rebalance by itself. Null when the coordinator negotiates StreamsGroupDescribe v0.
+    /// </summary>
+    public string? AssignorName { get; init; }
 }
 
 /// <summary>
