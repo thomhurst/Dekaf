@@ -78,6 +78,32 @@ public static class DekafDiagnostics
     /// <summary>Cached box for boolean tags — SetTag(string, object) would box a fresh bool per call.</summary>
     internal static readonly object BoxedTrue = true;
 
+    // messaging.destination.partition.id is a string attribute in the messaging semconv.
+    // One cached string per partition keeps traced sends, consume spans and lag observations
+    // free of per-call formatting and int boxing. Ids past the table go to a dictionary, so large
+    // topics also format each id once; it holds only ids this process has tagged. Negative ids are
+    // not real partitions and are formatted per call.
+    private const int CachedPartitionIdCount = 1024;
+    private static readonly string?[] PartitionIds = new string?[CachedPartitionIdCount];
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, string> OverflowPartitionIds = new();
+
+    /// <summary>
+    /// The <see cref="MessagingDestinationPartitionId"/> tag value for <paramref name="partition"/>.
+    /// Concurrent first calls may each format the same id; either string is correct.
+    /// </summary>
+    internal static string PartitionIdTagValue(int partition)
+    {
+        if ((uint)partition < (uint)PartitionIds.Length)
+            return PartitionIds[partition] ??= FormatPartitionId(partition);
+
+        return partition < 0
+            ? FormatPartitionId(partition)
+            : OverflowPartitionIds.GetOrAdd(partition, static id => FormatPartitionId(id));
+    }
+
+    private static string FormatPartitionId(int partition) =>
+        partition.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
     /// <summary>
     /// Span name per messaging semconv: "{operation name} {destination}". Derived from the
     /// same constants as the messaging.operation.name tag so the two cannot desynchronize.

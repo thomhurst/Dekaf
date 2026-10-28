@@ -13782,7 +13782,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, isProcessSpan
                 ? Diagnostics.DekafDiagnostics.OperationTypeProcess
                 : Diagnostics.DekafDiagnostics.OperationTypeReceive);
-            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationPartitionId, pending.PartitionIndex);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationPartitionId, Diagnostics.DekafDiagnostics.PartitionIdTagValue(pending.PartitionIndex));
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingKafkaOffset, offset);
             // messaging.message.body.size is Opt-In in the OTel messaging conventions.
             // Dekaf does not expose that opt-in, so avoid its tag node and per-record int box.
@@ -16262,7 +16262,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 new System.Diagnostics.TagList
                 {
                     { Diagnostics.DekafDiagnostics.MessagingDestinationName, tp.Topic },
-                    { Diagnostics.DekafDiagnostics.MessagingDestinationPartitionId, tp.Partition },
+                    { Diagnostics.DekafDiagnostics.MessagingDestinationPartitionId, Diagnostics.DekafDiagnostics.PartitionIdTagValue(tp.Partition) },
                     { Diagnostics.DekafDiagnostics.MessagingConsumerGroupName, _options.GroupId }
                 });
         }

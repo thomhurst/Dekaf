@@ -565,6 +565,8 @@ public class KafkaProducerFastPathTests
         await Assert.That(sendSpans[0].Parent).IsSameReferenceAs(callerSpan);
         await Assert.That(sendSpans[1].Parent).IsSameReferenceAs(callerSpan);
         await Assert.That(sendSpans[1].TraceId == sendSpans[0].TraceId).IsEqualTo(withCallerSpan);
+        // The messaging semconv types messaging.destination.partition.id as a string.
+        await Assert.That(sendSpans[0].GetTagItem(DekafDiagnostics.MessagingDestinationPartitionId)).IsEqualTo("0");
     }
 
     [Test]

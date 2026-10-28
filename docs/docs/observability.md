@@ -77,11 +77,10 @@ Both spans set `messaging.system = kafka` plus:
 | `messaging.kafka.message.key` | ✓ (string-convertible keys) | |
 | `messaging.destination.partition.id` | ✓ (on delivery) | ✓ |
 | `messaging.kafka.offset` | ✓ (on delivery) | ✓ |
-| `messaging.message.body.size` | | ✓ |
 | `messaging.kafka.message.tombstone` | ✓ (null-value messages) | ✓ (tombstone records) |
 | `messaging.consumer.group.name` | | ✓ |
 
-`messaging.message.body.size` is set on consume spans only, and is the value payload only — the key is not part of the message body; tombstones report `0`.
+`messaging.destination.partition.id` is a string (for example `"3"`), as the messaging conventions specify, on spans and on the `dekaf.consumer.lag` gauge. Dekaf does not set the opt-in `messaging.message.body.size` attribute.
 
 Failures set the span status to `Error`, set `error.type` to the exception's fully-qualified type name, and record an `exception` event with `exception.type`, `exception.message`, and `exception.stacktrace`. Successful spans leave the status unset, per the OTel span-status guidance.
 

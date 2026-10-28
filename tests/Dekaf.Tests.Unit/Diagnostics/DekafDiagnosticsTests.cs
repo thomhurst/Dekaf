@@ -7,6 +7,40 @@ namespace Dekaf.Tests.Unit.Diagnostics;
 public sealed class DekafDiagnosticsTests
 {
     [Test]
+    [Arguments(0)]
+    [Arguments(3)]
+    [Arguments(1023)]
+    public async Task PartitionIdTagValue_CachedPartition_ReturnsSameInvariantString(int partition)
+    {
+        var first = DekafDiagnostics.PartitionIdTagValue(partition);
+        var second = DekafDiagnostics.PartitionIdTagValue(partition);
+
+        await Assert.That(first).IsEqualTo(partition.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        await Assert.That(second).IsSameReferenceAs(first);
+    }
+
+    [Test]
+    [Arguments(1024)]
+    [Arguments(5000)]
+    [Arguments(int.MaxValue)]
+    public async Task PartitionIdTagValue_PastTable_ReturnsSameInvariantString(int partition)
+    {
+        var first = DekafDiagnostics.PartitionIdTagValue(partition);
+        var second = DekafDiagnostics.PartitionIdTagValue(partition);
+
+        await Assert.That(first).IsEqualTo(partition.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        await Assert.That(second).IsSameReferenceAs(first);
+    }
+
+    [Test]
+    [Arguments(-1, "-1")]
+    [Arguments(int.MinValue, "-2147483648")]
+    public async Task PartitionIdTagValue_Negative_FormatsInvariantString(int partition, string expected)
+    {
+        await Assert.That(DekafDiagnostics.PartitionIdTagValue(partition)).IsEqualTo(expected);
+    }
+
+    [Test]
     public async Task StartActivity_WithListener_ReturnsActivity()
     {
         using var listener = new ActivityListener
@@ -122,7 +156,7 @@ public sealed class DekafDiagnosticsTests
         activity.SetTag(DekafDiagnostics.MessagingOperationType, DekafDiagnostics.OperationTypeSend);
         activity.SetTag(DekafDiagnostics.MessagingClientId, "my-producer");
         activity.SetTag(DekafDiagnostics.MessagingMessageKey, "order-123");
-        activity.SetTag(DekafDiagnostics.MessagingDestinationPartitionId, "2");
+        activity.SetTag(DekafDiagnostics.MessagingDestinationPartitionId, DekafDiagnostics.PartitionIdTagValue(2));
         activity.SetTag(DekafDiagnostics.MessagingKafkaOffset, "42");
         activity.SetTag(DekafDiagnostics.MessagingMessageBodySize, 1024);
 
@@ -157,7 +191,7 @@ public sealed class DekafDiagnosticsTests
         activity.SetTag(DekafDiagnostics.MessagingOperationName, DekafDiagnostics.OperationNameProcess);
         activity.SetTag(DekafDiagnostics.MessagingOperationType, DekafDiagnostics.OperationTypeProcess);
         activity.SetTag(DekafDiagnostics.MessagingClientId, "my-consumer");
-        activity.SetTag(DekafDiagnostics.MessagingDestinationPartitionId, "0");
+        activity.SetTag(DekafDiagnostics.MessagingDestinationPartitionId, DekafDiagnostics.PartitionIdTagValue(0));
         activity.SetTag(DekafDiagnostics.MessagingKafkaOffset, "100");
         activity.SetTag(DekafDiagnostics.MessagingMessageBodySize, 512);
         activity.SetTag(DekafDiagnostics.MessagingConsumerGroupName, "my-group");
