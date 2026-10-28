@@ -83,7 +83,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         for (var index = 0; index < results.Length; index++)
         {
             if (results[index].Error is OperationCanceledException)
-                results[index] = results[index] with { Error = null };
+                results[index] = results[index].WithoutRequestError();
         }
     }
 

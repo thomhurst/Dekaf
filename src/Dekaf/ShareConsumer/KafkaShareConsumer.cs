@@ -3154,20 +3154,75 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         }
     }
 
-    private readonly record struct ShareFetchBrokerResult(
-        int BrokerId,
-        short Version,
-        ShareFetchResponse? Response,
-        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? SentAcknowledgements,
-        Exception? Error,
-        Exception? AcknowledgementError)
+    // Copied into every Task<T> box and result array per broker per poll, so keep it at 48 bytes:
+    // Error and AcknowledgementError are never two different exceptions, so they share one
+    // reference and two flags that fit in the padding after Version.
+    private readonly struct ShareFetchBrokerResult
     {
+        private readonly Exception? _failure;
+        private readonly bool _failsRequest;
+        private readonly bool _failsAcknowledgements;
+
+        public ShareFetchBrokerResult(
+            int brokerId,
+            short version,
+            ShareFetchResponse? response,
+            Dictionary<TopicPartition, List<AcknowledgementBatchData>>? sentAcknowledgements,
+            Exception? error,
+            Exception? acknowledgementError)
+        {
+            System.Diagnostics.Debug.Assert(
+                error is null || acknowledgementError is null || ReferenceEquals(error, acknowledgementError));
+            BrokerId = brokerId;
+            Version = version;
+            Response = response;
+            SentAcknowledgements = sentAcknowledgements;
+            _failure = error ?? acknowledgementError;
+            _failsRequest = error is not null;
+            _failsAcknowledgements = acknowledgementError is not null;
+        }
+
+        public int BrokerId { get; }
+
+        public short Version { get; }
+
+        public ShareFetchResponse? Response { get; }
+
+        public Dictionary<TopicPartition, List<AcknowledgementBatchData>>? SentAcknowledgements { get; }
+
+        public Exception? Error => _failsRequest ? _failure : null;
+
+        public Exception? AcknowledgementError => _failsAcknowledgements ? _failure : null;
+
         // Capture before awaiting other brokers or preparing deserializers. Every record in
         // this response shares the same local receipt time, including records buffered for yield.
         public long ReceivedTimestamp { get; init; }
 
         // The request's topic name to ID map, so acknowledgement errors resolve against the sent IDs.
         public Dictionary<string, (Guid TopicId, List<ShareFetchRequestPartition> Partitions)>? SentTopics { get; init; }
+
+        public ShareFetchBrokerResult WithoutRequestError()
+            => new(BrokerId, Version, Response, SentAcknowledgements, null, AcknowledgementError)
+            {
+                ReceivedTimestamp = ReceivedTimestamp,
+                SentTopics = SentTopics
+            };
+
+        public void Deconstruct(
+            out int brokerId,
+            out short version,
+            out ShareFetchResponse? response,
+            out Dictionary<TopicPartition, List<AcknowledgementBatchData>>? sentAcknowledgements,
+            out Exception? error,
+            out Exception? acknowledgementError)
+        {
+            brokerId = BrokerId;
+            version = Version;
+            response = Response;
+            sentAcknowledgements = SentAcknowledgements;
+            error = Error;
+            acknowledgementError = AcknowledgementError;
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
