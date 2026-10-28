@@ -3233,6 +3233,12 @@ public sealed partial class KafkaConnection :
                     return;
                 }
 
+                // The wait can end between the deadline read and the flag read. Its restamp
+                // is published before the flag clears, so a changed deadline means fresh
+                // progress: evaluate it again instead of expiring on the stale value.
+                if (Volatile.Read(ref _receiveTimeoutDeadlineTimestamp) != deadlineTimestamp)
+                    continue;
+
                 Volatile.Write(ref _receiveTimeoutExpired, 1);
 
                 // Reads are not cancellable — aborting the source is how the timer interrupts an
