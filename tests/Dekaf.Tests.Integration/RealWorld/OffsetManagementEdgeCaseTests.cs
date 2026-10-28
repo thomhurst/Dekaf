@@ -191,6 +191,112 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
     }
 
     [Test]
+    [Arguments(AutoOffsetReset.Latest)]
+    [Arguments(AutoOffsetReset.Earliest)]
+    [Arguments(AutoOffsetReset.None)]
+    public async Task ManualAssignment_WithGroup_ResumesFromCommittedOffset(AutoOffsetReset autoOffsetReset)
+    {
+        // Issue #3791: a manually assigned partition without an explicit position must start from
+        // the group's committed offset, not from AutoOffsetReset.
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var groupId = $"test-group-{Guid.NewGuid():N}";
+        var tp = new TopicPartition(topic, 0);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer-manual-resume")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        for (var i = 0; i < 10; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"key-{i}",
+                Value = $"value-{i}"
+            }, CancellationToken.None);
+        }
+
+        // Consume offsets 0..3 under manual assignment and commit position 4
+        await using (var consumer1 = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-consumer-manual-resume-1")
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
+        {
+            consumer1.Assign(tp);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var consumed = 0;
+            await foreach (var msg in consumer1.ConsumeAsync(cts.Token))
+            {
+                await Assert.That(msg.Offset).IsEqualTo(consumed);
+                if (++consumed >= 4) break;
+            }
+
+            await consumer1.CommitAsync([new TopicPartitionOffset(topic, 0, 4)]);
+        }
+
+        // A new consumer of the same group, manually assigned without a position, resumes at 4
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-consumer-manual-resume-2")
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(autoOffsetReset)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+        // An unset offset (Confluent's Offset.Unset) leaves the position to initialization
+        consumer2.IncrementalAssign([new TopicPartitionOffset(topic, 0, -1001)]);
+
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var result = await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts2.Token);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Offset).IsEqualTo(4);
+        await Assert.That(result.Value.Value).IsEqualTo("value-4");
+    }
+
+    [Test]
+    public async Task ManualAssignment_WithGroup_NoCommittedOffset_UsesAutoOffsetReset()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var groupId = $"test-group-{Guid.NewGuid():N}";
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer-manual-no-commit")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "key-0",
+            Value = "value-0"
+        }, CancellationToken.None);
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-consumer-manual-no-commit")
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+        consumer.Assign(new TopicPartition(topic, 0));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts.Token);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Offset).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task GetCommittedOffset_Uncommitted_ReturnsNull()
     {
         // Arrange

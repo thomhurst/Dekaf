@@ -3291,7 +3291,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             ClearLastConsumedLeaderEpoch(tp);
                         SetFetchPosition(tp, tpo.Offset);
                     }
-                    // Otherwise, positions will be initialized lazily based on auto.offset.reset
+                    // Otherwise the position initializes lazily: from the group's committed
+                    // offset when there is one, else by auto.offset.reset
                 }
 
                 PublishAssignmentSnapshot();
@@ -11883,13 +11884,59 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private async ValueTask InitializeManualAssignmentPositionsAsync(List<TopicPartition> partitions, CancellationToken cancellationToken)
     {
-        // For manual assignment without a group, use auto offset reset to determine starting position
+        // With a group, a manually assigned partition resumes from the group's committed offset,
+        // as in the Java client and librdkafka; auto offset reset applies only when nothing is
+        // committed. Manual assignment has no membership, so the fetch is sent as a non-member
+        // and never rejoins (it runs under the assignment lock).
+        IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>? committedOffsets = null;
+        var cacheGeneration = 0L;
+        if (_coordinator is { } coordinator)
+        {
+            cacheGeneration = Interlocked.Increment(ref _committedOffsetGeneration);
+            committedOffsets = await coordinator.FetchOffsetsAsync(
+                    partitions,
+                    rejoinOnMembershipLoss: false,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         foreach (var partition in partitions)
         {
-            var offset = await GetResetOffsetAsync(partition, cancellationToken).ConfigureAwait(false);
-            SetPosition(partition, offset, dirty: false);
-            ClearLastConsumedLeaderEpoch(partition);
-            SetFetchPosition(partition, offset);
+            long offset;
+            var leaderEpoch = -1;
+            if (committedOffsets is not null
+                && committedOffsets.TryGetValue(partition, out var committedOffset)
+                && committedOffset.Offset >= 0)
+            {
+                offset = committedOffset.Offset;
+                leaderEpoch = committedOffset.LeaderEpoch;
+                _ = TryCacheCommittedOffset(partition, offset, cacheGeneration);
+            }
+            else if (_fetchPositions.ContainsKey(partition))
+            {
+                // A Seek during an earlier await already positioned the partition. Skip the reset
+                // policy, which throws for AutoOffsetReset.None.
+                continue;
+            }
+            else
+            {
+                offset = await GetResetOffsetAsync(partition, cancellationToken).ConfigureAwait(false);
+            }
+
+            // Seek does not take the assignment lock, so it can position the partition while the
+            // lookups above await. Apply under Seek's lock, and let an explicit position win.
+            lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+            {
+                if (_fetchPositions.ContainsKey(partition))
+                    continue;
+
+                SetPosition(partition, offset, dirty: false);
+                if (leaderEpoch >= 0)
+                    SetLastConsumedLeaderEpoch(partition, leaderEpoch);
+                else
+                    ClearLastConsumedLeaderEpoch(partition);
+                SetFetchPosition(partition, offset);
+            }
         }
     }
 
