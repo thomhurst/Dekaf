@@ -1461,8 +1461,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
     /// <summary>
     /// Awaits a completion source with cancellation support.
-    /// If cancellation fires, sets the completion source to cancelled state so that
-    /// GetResult() is called and the pool item is properly returned.
+    /// If cancellation fires, completes the caller's wait as cancelled. The batch still holds the
+    /// completion source, so GetResult() abandons it instead of returning it to the pool.
     /// The message delivery continues in background regardless.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

@@ -7,7 +7,10 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// Measures the awaited-produce completion source lifecycle: <see cref="ValueTaskSourcePool{T}.Rent"/>
 /// on the caller thread and the automatic return from GetResult after completion. The cross-thread
 /// case completes and returns each source on a dedicated thread as soon as it is rented, matching
-/// production where completions run on other threads while callers keep renting. No broker.
+/// production where completions run on other threads while callers keep renting. The cancellable
+/// case registers a live, never-fired token per source, as an awaited produce with a caller token
+/// does, so the registration disposal and the canceled-by-registration check in GetResult are
+/// measured on the path that still reuses the source. No broker.
 /// </summary>
 [MemoryDiagnoser]
 public class ValueTaskSourcePoolBenchmarks
@@ -17,6 +20,7 @@ public class ValueTaskSourcePoolBenchmarks
 
     private readonly ValueTaskSourcePool<int> _pool = new(PoolSize);
     private readonly PooledValueTaskSource<int>[] _ring = new PooledValueTaskSource<int>[SourcesPerInvoke];
+    private readonly CancellationTokenSource _liveTokenSource = new();
     private Thread? _returner;
     private long _published;
     private long _consumed;
@@ -34,6 +38,7 @@ public class ValueTaskSourcePoolBenchmarks
     {
         _stop = true;
         _returner?.Join();
+        _liveTokenSource.Dispose();
         _pool.DisposeAsync().GetAwaiter().GetResult();
     }
 
@@ -45,6 +50,25 @@ public class ValueTaskSourcePoolBenchmarks
     {
         for (var i = 0; i < SourcesPerInvoke; i++)
             _ring[i] = _pool.Rent();
+
+        for (var i = 0; i < SourcesPerInvoke; i++)
+            CompleteAndReturn(_ring[i], i);
+    }
+
+    /// <summary>
+    /// Rent, register a live caller token, complete and return on one thread: an awaited produce
+    /// with a cancellable token whose cancellation never fires.
+    /// </summary>
+    [Benchmark(OperationsPerInvoke = SourcesPerInvoke)]
+    public void RentRegisterCancellationReturnSameThread()
+    {
+        var token = _liveTokenSource.Token;
+        for (var i = 0; i < SourcesPerInvoke; i++)
+        {
+            var source = _pool.Rent();
+            source.RegisterCancellation(token);
+            _ring[i] = source;
+        }
 
         for (var i = 0; i < SourcesPerInvoke; i++)
             CompleteAndReturn(_ring[i], i);
