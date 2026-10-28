@@ -1,7 +1,10 @@
 using System.Diagnostics;
 using Dekaf.Admin;
 using Dekaf.Consumer;
+using Dekaf.Networking;
 using Dekaf.Producer;
+using Dekaf.Protocol;
+using Dekaf.Protocol.Messages;
 
 namespace Dekaf.Tests.Integration;
 
@@ -22,7 +25,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
             .Build();
     }
 
-    private static async Task WaitForProducerQuotaAsync(
+    private static async Task WaitForClientQuotaAsync(
         IAdminClient admin,
         ClientQuotaEntity quotaEntity,
         string clientId,
@@ -140,7 +143,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                 ClientQuotaAlteration.Set(quotaEntity, quotaKey, bytesPerSecond)
             ]);
 
-            await WaitForProducerQuotaAsync(
+            await WaitForClientQuotaAsync(
                 admin, quotaEntity, clientId, quotaKey, bytesPerSecond);
 
             await using var producer = await Kafka.CreateProducer<string, string>()
@@ -203,6 +206,81 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
 
             var duplicate = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
             await Assert.That(duplicate).IsNull();
+        }
+        finally
+        {
+            try
+            {
+                await admin.AlterClientQuotasAsync(
+                [
+                    ClientQuotaAlteration.Remove(quotaEntity, quotaKey)
+                ]);
+            }
+            catch (Errors.KafkaException)
+            {
+                // Cleanup best-effort; unique client ID prevents leakage into other tests.
+            }
+        }
+    }
+
+    [Test]
+    public async Task RequestQuota_DescribeClusterThrottle_DelaysNextRequest()
+    {
+        // DescribeCluster has ThrottleTimeMs from v0 and became client-throttled with the
+        // Kafka 4.4 schema rule. A tiny request_percentage quota makes the broker report a
+        // non-zero throttle; the connection must then hold the next request until it ends.
+        const string quotaKey = "request_percentage";
+        const double requestPercentage = 0.01;
+        const int maxRequests = 500;
+
+        var clientId = $"test-request-throttle-{Guid.NewGuid():N}";
+        var quotaEntity = ClientQuotaEntity.For(ClientQuotaEntityComponent.ClientId(clientId));
+
+        await using var admin = CreateAdminClient();
+        try
+        {
+            await admin.AlterClientQuotasAsync(
+            [
+                ClientQuotaAlteration.Set(quotaEntity, quotaKey, requestPercentage)
+            ]);
+
+            await WaitForClientQuotaAsync(
+                admin, quotaEntity, clientId, quotaKey, requestPercentage);
+
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            await using var pool = new ConnectionPool(
+                clientId,
+                new ConnectionOptions { RequestTimeout = TimeSpan.FromSeconds(30) },
+                loggerFactory: null);
+            var endpoint = BootstrapServerList.Parse(KafkaContainer.BootstrapServers);
+            var connection = await pool.GetConnectionAsync(endpoint.Host, endpoint.Port, timeout.Token);
+            var throttleState = pool.GetBrokerThrottleStateForTest(-1, endpoint.Host, endpoint.Port);
+            var version = ((IKafkaCapabilityProvider)connection).Capabilities.NegotiateVersion(
+                ApiKey.DescribeCluster,
+                DescribeClusterRequest.LowestSupportedVersion,
+                DescribeClusterRequest.HighestSupportedVersion);
+
+            var reportedThrottleMs = 0;
+            for (var i = 0; i < maxRequests && reportedThrottleMs == 0; i++)
+            {
+                var response = await connection.SendAsync<DescribeClusterRequest, DescribeClusterResponse>(
+                    new DescribeClusterRequest(), version, timeout.Token);
+                reportedThrottleMs = response.ThrottleTimeMs;
+            }
+
+            await Assert.That(reportedThrottleMs).IsGreaterThan(0);
+            await Assert.That(throttleState.MaxObservedThrottleTimeMs).IsGreaterThanOrEqualTo(reportedThrottleMs);
+
+            // The deadline is a lower bound on when the next request can be sent, so a slow
+            // thread pool only lengthens the measured delay.
+            var remainingMs = throttleState.GetRemainingMilliseconds();
+            var stopwatch = Stopwatch.StartNew();
+            await connection.SendAsync<DescribeClusterRequest, DescribeClusterResponse>(
+                new DescribeClusterRequest(), version, timeout.Token);
+            stopwatch.Stop();
+
+            // Allow one millisecond for the monotonic clock's granularity.
+            await Assert.That(stopwatch.ElapsedMilliseconds).IsGreaterThanOrEqualTo(Math.Max(0, remainingMs - 1));
         }
         finally
         {

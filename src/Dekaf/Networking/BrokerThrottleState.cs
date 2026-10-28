@@ -154,61 +154,91 @@ internal sealed class BrokerThrottleState(ClientTelemetryMetricCollector? teleme
 }
 
 /// <summary>
-/// Mirrors Apache Kafka's <c>AbstractResponse.shouldClientThrottle(version)</c>
-/// gates. Older response versions were already delayed by the broker.
+/// Mirrors Apache Kafka 4.4's <c>AbstractResponse.shouldClientThrottle(version)</c>.
+/// Responses that predate KIP-219 keep their per-API version gates because the
+/// broker already delayed them. Every other response version is client-throttled
+/// when its schema carries <c>ThrottleTimeMs</c>.
 /// </summary>
 internal static class BrokerThrottlePolicy
 {
+    // Never is above every response version, so those APIs are never client-throttled.
+    private const byte Never = byte.MaxValue;
+
+    /// <summary>
+    /// The first client-throttled response version, indexed by <see cref="ApiKey"/>.
+    /// Keys past the end (FetchSnapshot onwards) carry <c>ThrottleTimeMs</c> from v0.
+    /// A table keeps the per-response check to one bounds check and one compare.
+    /// </summary>
+    private static ReadOnlySpan<byte> FirstThrottledVersion =>
+    [
+        6,     // 0 Produce
+        8,     // 1 Fetch
+        3,     // 2 ListOffsets
+        6,     // 3 Metadata
+        Never, // 4 LeaderAndIsr
+        Never, // 5 StopReplica
+        Never, // 6 UpdateMetadata
+        Never, // 7 ControlledShutdown
+        4,     // 8 OffsetCommit
+        4,     // 9 OffsetFetch
+        2,     // 10 FindCoordinator
+        3,     // 11 JoinGroup
+        2,     // 12 Heartbeat
+        2,     // 13 LeaveGroup
+        2,     // 14 SyncGroup
+        2,     // 15 DescribeGroups
+        2,     // 16 ListGroups
+        Never, // 17 SaslHandshake
+        2,     // 18 ApiVersions
+        3,     // 19 CreateTopics
+        2,     // 20 DeleteTopics
+        1,     // 21 DeleteRecords
+        1,     // 22 InitProducerId
+        2,     // 23 OffsetForLeaderEpoch (schema, no upstream override)
+        1,     // 24 AddPartitionsToTxn
+        1,     // 25 AddOffsetsToTxn
+        1,     // 26 EndTxn
+        Never, // 27 WriteTxnMarkers
+        1,     // 28 TxnOffsetCommit
+        1,     // 29 DescribeAcls
+        1,     // 30 CreateAcls
+        1,     // 31 DeleteAcls
+        2,     // 32 DescribeConfigs
+        1,     // 33 AlterConfigs
+        1,     // 34 AlterReplicaLogDirs
+        1,     // 35 DescribeLogDirs
+        Never, // 36 SaslAuthenticate
+        1,     // 37 CreatePartitions
+        1,     // 38 CreateDelegationToken
+        1,     // 39 RenewDelegationToken
+        1,     // 40 ExpireDelegationToken
+        1,     // 41 DescribeDelegationToken
+        1,     // 42 DeleteGroups
+        0,     // 43 ElectLeaders
+        0,     // 44 IncrementalAlterConfigs
+        0,     // 45 AlterPartitionReassignments
+        0,     // 46 ListPartitionReassignments
+        0,     // 47 OffsetDelete
+        0,     // 48 DescribeClientQuotas
+        0,     // 49 AlterClientQuotas
+        0,     // 50 DescribeUserScramCredentials
+        0,     // 51 AlterUserScramCredentials
+        Never, // 52 Vote
+        Never, // 53 BeginQuorumEpoch
+        Never, // 54 EndQuorumEpoch
+        Never, // 55 DescribeQuorum
+        0,     // 56 AlterPartition
+        0,     // 57 UpdateFeatures
+        Never, // 58 Envelope
+    ];
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool ShouldClientThrottle(ApiKey apiKey, short version) => apiKey switch
+    public static bool ShouldClientThrottle(ApiKey apiKey, short version)
     {
-        ApiKey.Produce => version >= 6,
-        ApiKey.Fetch => version >= 8,
-        ApiKey.ListOffsets => version >= 3,
-        ApiKey.Metadata => version >= 6,
-        ApiKey.OffsetCommit => version >= 4,
-        ApiKey.OffsetFetch => version >= 4,
-        ApiKey.FindCoordinator => version >= 2,
-        ApiKey.JoinGroup => version >= 3,
-        ApiKey.Heartbeat => version >= 2,
-        ApiKey.LeaveGroup => version >= 2,
-        ApiKey.SyncGroup => version >= 2,
-        ApiKey.DescribeGroups => version >= 2,
-        ApiKey.ListGroups => version >= 2,
-        ApiKey.ApiVersions => version >= 2,
-        ApiKey.CreateTopics => version >= 3,
-        ApiKey.DeleteTopics => version >= 2,
-        ApiKey.DeleteRecords => version >= 1,
-        ApiKey.InitProducerId => version >= 1,
-        ApiKey.AddPartitionsToTxn => version >= 1,
-        ApiKey.AddOffsetsToTxn => version >= 1,
-        ApiKey.EndTxn => version >= 1,
-        ApiKey.TxnOffsetCommit => version >= 1,
-        ApiKey.DescribeAcls => version >= 1,
-        ApiKey.CreateAcls => version >= 1,
-        ApiKey.DeleteAcls => version >= 1,
-        ApiKey.DescribeConfigs => version >= 2,
-        ApiKey.AlterConfigs => version >= 1,
-        ApiKey.AlterReplicaLogDirs => version >= 1,
-        ApiKey.DescribeLogDirs => version >= 1,
-        ApiKey.CreatePartitions => version >= 1,
-        ApiKey.CreateDelegationToken => version >= 1,
-        ApiKey.RenewDelegationToken => version >= 1,
-        ApiKey.ExpireDelegationToken => version >= 1,
-        ApiKey.DescribeDelegationToken => version >= 1,
-        ApiKey.DeleteGroups => version >= 1,
-        ApiKey.ElectLeaders => true,
-        ApiKey.IncrementalAlterConfigs => true,
-        ApiKey.AlterPartitionReassignments => true,
-        ApiKey.ListPartitionReassignments => true,
-        ApiKey.OffsetDelete => true,
-        ApiKey.DescribeUserScramCredentials => true,
-        ApiKey.AlterUserScramCredentials => true,
-        ApiKey.UnregisterBroker => true,
-        ApiKey.DescribeTopicPartitions => true,
-        ApiKey.UnregisterController => true,
-        _ => false
-    };
+        var table = FirstThrottledVersion;
+        var index = (uint)(short)apiKey;
+        return index >= (uint)table.Length || version >= table[(int)index];
+    }
 }
 
 internal interface IBrokerThrottleProvider
