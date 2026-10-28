@@ -412,7 +412,10 @@ the next revoke or reassignment.
 
 `Ignore` logs the exception, pauses the partition for an exponential backoff, and
 then resumes it and restarts the failed lane. Healthy partitions keep running
-during the backoff. Prefer handling retries and
+during the backoff. The records the failed processor received, including the
+one it failed on, are skipped. The partition rewinds to the first record the
+processor never received, so the restarted lane processes every record that
+was still queued. Prefer handling retries and
 dead-letter routing inside your processor so unexpected exceptions remain
 visible.
 

@@ -680,7 +680,8 @@ public enum PartitionWorkerErrorPolicy
     StopPartition,
 
     /// <summary>
-    /// Restart the failed partition lane and keep the rest of the run active.
+    /// Restart the failed partition lane and keep the rest of the run active. Records the failed
+    /// processor received are skipped; the restarted lane receives the records it did not.
     /// </summary>
     Ignore
 }
@@ -745,6 +746,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     private readonly object _failureGate = new();
     private ExceptionDispatchInfo? _failure;
     private DateTimeOffset _nextPeriodicCommit;
+    // The record a backpressured route has enumerated but not yet queued to _heldRecordLane.
+    private PartitionLane<TKey, TValue>? _heldRecordLane;
+    private TopicPartitionOffset _heldRecordOffset;
 
     public PartitionedConsumerRuntime(
         IKafkaConsumer<TKey, TValue> consumer,
@@ -1195,7 +1199,27 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                 while (!lane.TryEnqueue(records.Current, completionBatch))
                 {
                     PauseIfNeeded(lane);
-                    await DrainCommandsAsync(cancellationToken).ConfigureAwait(false);
+                    // The consumer position already counts the held record. A lane that fails
+                    // while commands drain must rewind to it unless it rewinds further back.
+                    if (!records.Current.IsPartitionEof)
+                    {
+                        _heldRecordLane = lane;
+                        _heldRecordOffset = new TopicPartitionOffset(
+                            lane.TopicPartition.Topic,
+                            lane.TopicPartition.Partition,
+                            records.Current.Offset,
+                            records.Current.LeaderEpoch ?? -1);
+                    }
+
+                    try
+                    {
+                        await DrainCommandsAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        _heldRecordLane = null;
+                    }
+
                     ThrowIfFailed();
 
                     if (lane.IsCompleted
@@ -1463,6 +1487,12 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             if (_pausedByRuntime.Add(lane.TopicPartition))
                 _consumer.Partitions.Pause(lane.TopicPartition);
 
+            // The consumer position is past every record routed to the failed lane. Rewind to
+            // the first record its processor never received, so the restarted lane processes
+            // those records instead of committing past them.
+            if (GetFirstUndeliveredOffset(lane) is { } rewindOffset)
+                _consumer.Seek(rewindOffset);
+
             _pendingIgnoreRestarts.Add(lane.TopicPartition);
             ScheduleIgnoreRestart(lane.TopicPartition, restartDelay);
         }
@@ -1470,6 +1500,15 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         {
             _consumer.Partitions.Resume(lane.TopicPartition);
         }
+    }
+
+    private TopicPartitionOffset? GetFirstUndeliveredOffset(PartitionLane<TKey, TValue> lane)
+    {
+        // Records left in the lane precede the record a backpressured route still holds.
+        if (lane.FirstUndeliveredOffset is { } abandoned)
+            return abandoned;
+
+        return ReferenceEquals(_heldRecordLane, lane) ? _heldRecordOffset : null;
     }
 
     private void RestartLaneIfStillAssigned(TopicPartition partition)
@@ -1915,6 +1954,7 @@ internal sealed class PartitionLane<TKey, TValue>
     private int _lastCommittedLeaderEpoch = -1;
     private long _committedOffset = -1;
     private AutomaticPartitionProgress? _automaticProgress;
+    private TopicPartitionOffset? _firstUndeliveredOffset;
 
     public PartitionLane(
         TopicPartition topicPartition,
@@ -1959,6 +1999,12 @@ internal sealed class PartitionLane<TKey, TValue>
         }
     }
 
+    /// <summary>
+    /// The first record queued to this lane that its processor never received, or null when
+    /// the processor received every queued record. Read only after the processor task completes.
+    /// </summary>
+    public TopicPartitionOffset? FirstUndeliveredOffset => _firstUndeliveredOffset;
+
     public bool IsFull => Volatile.Read(ref _bufferedCount) >= _capacity;
 
     public bool HasCapacity => Volatile.Read(ref _bufferedCount) < _capacity;
@@ -1993,6 +2039,15 @@ internal sealed class PartitionLane<TKey, TValue>
                 CompleteWriter();
                 while (_channel.Reader.TryRead(out var abandoned))
                 {
+                    if (!abandoned.IsPartitionEof && _firstUndeliveredOffset is null)
+                    {
+                        _firstUndeliveredOffset = new TopicPartitionOffset(
+                            TopicPartition.Topic,
+                            TopicPartition.Partition,
+                            abandoned.Offset,
+                            abandoned.LeaderEpoch ?? -1);
+                    }
+
                     abandoned.ReleaseStorage();
                 }
                 lock (_completedRanges)
