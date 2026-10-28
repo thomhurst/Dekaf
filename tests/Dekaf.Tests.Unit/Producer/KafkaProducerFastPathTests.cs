@@ -398,6 +398,60 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
+    public async Task ProduceAsync_CancelledAfterAppend_EarlierBatchAckDoesNotCompleteNextProduce()
+    {
+        // Issue #3716: the cancelled produce's completion source must not be re-rented while its
+        // batch still holds it, or that batch's acknowledgement completes the next produce.
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000,
+            // Keep both records in their open batches until the test seals them.
+            DeliveryLatencyTargetMs = 0
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+        await StopProducerBackgroundLoopsAsync(producer);
+        // Two partitions give each produce its own batch, so the first batch can be acknowledged
+        // while the second produce's record is still unsent.
+        SeedProducerMetadata(producer, partitionCount: 2);
+        SetInstanceField(producer, "_initialized", true);
+
+        using var cts = new CancellationTokenSource();
+        var cancelledProduce = producer.ProduceAsync(
+            new ProducerMessage<string, string> { Topic = Topic, Key = "key-a", Value = "value-a", Partition = 0 },
+            cts.Token);
+        cts.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await cancelledProduce);
+
+        var nextProduce = producer.ProduceAsync(
+            new ProducerMessage<string, string> { Topic = Topic, Key = "key-b", Value = "value-b", Partition = 1 })
+            .AsTask();
+        var firstBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        var secondBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 1));
+        await Assert.That(GetKeyString(firstBatch.RecordBatch.Records[0])).IsEqualTo("key-a");
+        await Assert.That(GetKeyString(secondBatch.RecordBatch.Records[0])).IsEqualTo("key-b");
+
+        firstBatch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
+        await Assert.That(nextProduce.IsCompleted).IsFalse();
+
+        secondBatch.CompleteSend(baseOffset: 9, DateTimeOffset.UtcNow);
+
+        var metadata = await nextProduce;
+        await Assert.That(metadata.Partition).IsEqualTo(1);
+        await Assert.That(metadata.Offset).IsEqualTo(9);
+    }
+
+    [Test]
     public async Task ProduceAsync_Tracing_RestoresCallerOwnedHeadersAfterAppend()
     {
         using var listener = new ActivityListener

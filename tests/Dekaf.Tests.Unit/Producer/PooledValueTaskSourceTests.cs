@@ -141,7 +141,7 @@ public class PooledValueTaskSourceTests
     }
 
     [Test]
-    public async Task RegisterCancellation_PreCanceledToken_ReturnsToPoolAfterAwait()
+    public async Task RegisterCancellation_PreCanceledToken_IsNotReturnedToPool()
     {
         var pool = new ValueTaskSourcePool<int>(maxPoolSize: 1);
         var source = pool.Rent();
@@ -155,10 +155,54 @@ public class PooledValueTaskSourceTests
             await source.Task.ConfigureAwait(false);
         });
 
-        var reused = pool.Rent();
-        await Assert.That(reused).IsSameReferenceAs(source);
-        reused.SetResult(42);
-        await reused.Task.ConfigureAwait(false);
+        var next = pool.Rent();
+        await Assert.That(next).IsNotSameReferenceAs(source);
+        next.SetResult(42);
+        await Assert.That(await next.Task.ConfigureAwait(false)).IsEqualTo(42);
+    }
+
+    [Test]
+    public async Task RegisterCancellation_LateHolderCompletion_IsNoOpAfterAwait()
+    {
+        // Issue #3716: a batch that still holds the source completes it after the caller's
+        // cancellation was observed. That completion must not reach any later rental.
+        var pool = new ValueTaskSourcePool<int>(maxPoolSize: 1);
+        var source = pool.Rent();
+        using var cts = new CancellationTokenSource();
+
+        source.RegisterCancellation(cts.Token);
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+        {
+            await source.Task.ConfigureAwait(false);
+        });
+
+        var next = pool.Rent();
+
+        await Assert.That(source.TrySetResult(1)).IsFalse();
+        await Assert.That(source.TrySetException(new InvalidOperationException())).IsFalse();
+        await Assert.That(source.TrySetCanceled(CancellationToken.None)).IsFalse();
+        await Assert.That(((IValueTaskSource<int>)next).GetStatus(next.Version))
+            .IsEqualTo(ValueTaskSourceStatus.Pending);
+
+        next.SetResult(2);
+        await Assert.That(await next.Task.ConfigureAwait(false)).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task RegisterCancellation_HolderCompletesFirst_ReturnsToPool()
+    {
+        var pool = new ValueTaskSourcePool<int>(maxPoolSize: 1);
+        var source = pool.Rent();
+        using var cts = new CancellationTokenSource();
+
+        source.RegisterCancellation(cts.Token);
+        source.SetResult(1);
+        cts.Cancel();
+
+        await Assert.That(await source.Task.ConfigureAwait(false)).IsEqualTo(1);
+        await Assert.That(pool.Rent()).IsSameReferenceAs(source);
     }
 
     [Test]

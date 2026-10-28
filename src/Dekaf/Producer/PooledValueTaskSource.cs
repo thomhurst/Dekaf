@@ -14,6 +14,13 @@ namespace Dekaf.Producer;
 /// Thread-safety: All completion methods (SetResult, SetException, TrySetResult, TrySetException,
 /// TrySetCanceled) use CAS on _hasCompleted and are safe to race against each other.
 /// Only the first to complete wins; subsequent calls are no-ops.
+///
+/// Ownership: a producer batch, append work item or pending append can still hold a reference
+/// to this source after the awaiting caller has stopped waiting. A source completed by the
+/// caller's own cancellation registration is therefore abandoned instead of reset and pooled:
+/// the holder's later completion stays a no-op on it and can never reach another operation
+/// that re-rented the instance (issue #3716). Only the cancellation path pays the replacement
+/// allocation; normal completions reuse the source as before.
 /// </remarks>
 /// <typeparam name="T">The result type.</typeparam>
 public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
@@ -26,7 +33,13 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     // netstandard2.0 only: token observed by the closure-free cancellation callback.
     private CancellationToken _registeredCancellationToken;
 #endif
-    private int _hasCompleted; // 0 = not completed, 1 = completed
+    private int _hasCompleted; // Pending, Completed or CanceledByRegistration
+
+    private const int Pending = 0;
+    private const int Completed = 1;
+    // Completed by the caller's cancellation registration while a producer-side holder may still
+    // reference the source. GetResult leaves it completed and does not return it to the pool.
+    private const int CanceledByRegistration = 2;
 
     /// <summary>
     /// Gets a <see cref="ValueTask{T}"/> bound to this source.
@@ -71,7 +84,7 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     /// <param name="result">The result value.</param>
     public void SetResult(T result)
     {
-        if (Interlocked.CompareExchange(ref _hasCompleted, 1, 0) != 0)
+        if (Interlocked.CompareExchange(ref _hasCompleted, Completed, Pending) != Pending)
             return; // Already completed
         _core.SetResult(result);
     }
@@ -86,7 +99,7 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     {
         // Check our own flag first to avoid the race in ManualResetValueTaskSourceCore
         // where _result is set before _completed is checked
-        if (Interlocked.CompareExchange(ref _hasCompleted, 1, 0) != 0)
+        if (Interlocked.CompareExchange(ref _hasCompleted, Completed, Pending) != Pending)
         {
             return false;
         }
@@ -101,7 +114,7 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     /// <param name="exception">The exception.</param>
     public void SetException(Exception exception)
     {
-        if (Interlocked.CompareExchange(ref _hasCompleted, 1, 0) != 0)
+        if (Interlocked.CompareExchange(ref _hasCompleted, Completed, Pending) != Pending)
             return; // Already completed
         _core.SetException(exception);
     }
@@ -116,7 +129,7 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     {
         // Check our own flag first to avoid the race in ManualResetValueTaskSourceCore
         // where _result is set before _completed is checked
-        if (Interlocked.CompareExchange(ref _hasCompleted, 1, 0) != 0)
+        if (Interlocked.CompareExchange(ref _hasCompleted, Completed, Pending) != Pending)
         {
             return false;
         }
@@ -135,13 +148,25 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     {
         // Check our own flag first to avoid the race in ManualResetValueTaskSourceCore
         // where _result is set before _completed is checked
-        if (Interlocked.CompareExchange(ref _hasCompleted, 1, 0) != 0)
+        if (Interlocked.CompareExchange(ref _hasCompleted, Completed, Pending) != Pending)
         {
             return false;
         }
 
         _core.SetException(new OperationCanceledException(cancellationToken));
         return true;
+    }
+
+    /// <summary>
+    /// Cancellation-registration callback target. Completes the caller's wait as canceled and marks
+    /// the source so GetResult abandons it rather than returning it to the pool.
+    /// </summary>
+    private void CancelFromRegistration(CancellationToken cancellationToken)
+    {
+        if (Interlocked.CompareExchange(ref _hasCompleted, CanceledByRegistration, Pending) != Pending)
+            return;
+
+        _core.SetException(new OperationCanceledException(cancellationToken));
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -153,7 +178,7 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
         _cancellationRegistration.Dispose();
 #if NET
         _cancellationRegistration = cancellationToken.UnsafeRegister(
-            static (state, token) => ((PooledValueTaskSource<T>)state!).TrySetCanceled(token),
+            static (state, token) => ((PooledValueTaskSource<T>)state!).CancelFromRegistration(token),
             this);
 #else
         // netstandard2.0: the Polyfill package's UnsafeRegister shim wraps the (state, token)
@@ -188,7 +213,7 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
                 var token = source._registeredCancellationToken;
                 if (token.IsCancellationRequested)
                 {
-                    source.TrySetCanceled(token);
+                    source.CancelFromRegistration(token);
                 }
             },
             this);
@@ -197,7 +222,8 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
 
     /// <summary>
     /// Gets the result of the operation. Called by the awaiter.
-    /// After this call, the source is reset and returned to the pool.
+    /// After this call, the source is reset and returned to the pool, unless the caller's
+    /// cancellation registration completed it (see the type remarks).
     /// </summary>
     T IValueTaskSource<T>.GetResult(short token)
     {
@@ -231,11 +257,17 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
             // Clear handler before returning to pool
             _deliveryHandler = null;
 
-            // Reset completion flag and core for reuse
-            Volatile.Write(ref _hasCompleted, 0);
-            _core.Reset();
-            _core.RunContinuationsAsynchronously = true;
-            pool?.Return(this);
+            // A producer-side holder may still complete a source the caller's registration
+            // cancelled. Leave it completed so that late completion is a no-op, and let GC
+            // reclaim it instead of handing it to the next rental.
+            if (Volatile.Read(ref _hasCompleted) != CanceledByRegistration)
+            {
+                // Reset completion flag and core for reuse
+                Volatile.Write(ref _hasCompleted, Pending);
+                _core.Reset();
+                _core.RunContinuationsAsynchronously = true;
+                pool?.Return(this);
+            }
         }
     }
 
