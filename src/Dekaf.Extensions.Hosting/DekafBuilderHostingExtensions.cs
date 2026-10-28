@@ -253,6 +253,12 @@ public static class DekafBuilderHostingExtensions
         DekafBuilder builder, object? serviceKey, bool deadLetterConfigured)
         where TService : KafkaConsumerService<TKey, TValue>
     {
+        // The service initializes its consumer with restart-on-transient-failure, so keep it out of
+        // eager startup initialization, which would fault the host instead.
+        builder.Services.AddSingleton(sp => new HostedServiceOwnedClient(serviceKey is null
+            ? sp.GetRequiredService<IKafkaConsumer<TKey, TValue>>()
+            : sp.GetRequiredKeyedService<IKafkaConsumer<TKey, TValue>>(serviceKey)));
+
         if (serviceKey is null && !deadLetterConfigured)
         {
             builder.Services.AddHostedService<TService>();
