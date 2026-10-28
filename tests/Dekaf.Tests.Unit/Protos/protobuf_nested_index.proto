@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package dekaf.tests.nested;
+
+option csharp_namespace = "Dekaf.Tests.Unit.SchemaRegistry.ProtobufFixtures";
+
+message NestedIndexOuter {
+  message Target {
+    int32 id = 1;
+  }
+}

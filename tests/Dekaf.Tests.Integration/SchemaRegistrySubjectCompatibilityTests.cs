@@ -163,6 +163,35 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
     }
 
     [Test]
+    public async Task Protobuf_UseLatestVersion_ReorderedSchema_WritesIndexesOfRegisteredMessage(
+        CancellationToken cancellationToken)
+    {
+        var topic = $"proto-latest-indexes-{Guid.NewGuid():N}";
+        var subject = $"{topic}-value";
+        var reordered = TestPerson.Descriptor.File.ToProto();
+        reordered.MessageType.Insert(0, new Google.Protobuf.Reflection.DescriptorProto { Name = "Envelope" });
+        using var registryClient = CreateDekafClient();
+        var schemaId = await registryClient.RegisterSchemaAsync(subject, new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = reordered.ToByteString().ToBase64()
+        }, cancellationToken);
+        var latest = await registryClient.GetSchemaBySubjectAsync(subject, cancellationToken: cancellationToken);
+        await Assert.That(latest.Schema.SchemaString).Contains("message Envelope");
+
+        await using var serializer = new ProtobufSchemaRegistrySerializer<TestPerson>(
+            registryClient,
+            new ProtobufSerializerConfig { AutoRegisterSchemas = false, UseLatestVersion = true });
+        var destination = new ArrayBufferWriter<byte>();
+        serializer.Serialize(new TestPerson { Id = 7, Name = "Latest" }, ref destination, CreateDekafContext(topic));
+
+        // Zigzag varints: one index, value 1, so TestPerson is the second message of the registered schema.
+        var written = destination.WrittenMemory.ToArray();
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(written.AsSpan(1, 4))).IsEqualTo(schemaId);
+        await Assert.That(written[5..7]).IsEquivalentTo(new byte[] { 2, 2 });
+    }
+
+    [Test]
     public async Task Protobuf_DekafRegisteredReferences_CanBeConsumedByConfluent(CancellationToken cancellationToken)
     {
         var topic = $"proto-reference-{Guid.NewGuid():N}";
