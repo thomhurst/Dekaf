@@ -13,12 +13,18 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         Timeout = TimeSpan.FromSeconds(2)
     };
 
+    // Expiring credentials refresh this long before they expire. Credentials without an expiration
+    // (environment variables, shared profiles) are re-resolved after this long, so rotated keys and
+    // session tokens are picked up without restarting the client.
+    internal static readonly TimeSpan CacheRefreshInterval = TimeSpan.FromMinutes(5);
+
     private readonly HttpClient _httpClient;
     private readonly string? _profileName;
     private readonly string? _region;
     private readonly string _webIdentitySessionName = "dekaf-" + Guid.NewGuid().ToString("N");
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
-    private AwsCredentials? _cachedCredentials;
+    private readonly Func<DateTimeOffset> _utcNow;
+    private CachedCredentials? _cachedCredentials;
 
     /// <summary>
     /// Creates the default AWS credentials provider.
@@ -28,28 +34,34 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
     {
     }
 
-    internal AwsMskIamDefaultCredentialsProvider(HttpClient httpClient, string? profileName = null, string? region = null)
+    internal AwsMskIamDefaultCredentialsProvider(
+        HttpClient httpClient,
+        string? profileName = null,
+        string? region = null,
+        Func<DateTimeOffset>? utcNow = null)
     {
         ArgumentNullException.ThrowIfNull(httpClient);
 
         _httpClient = httpClient;
         _profileName = profileName;
         _region = region;
+        _utcNow = utcNow ?? (static () => DateTimeOffset.UtcNow);
     }
 
     /// <inheritdoc />
     public async ValueTask<AwsCredentials> GetCredentialsAsync(CancellationToken cancellationToken = default)
     {
         var cached = _cachedCredentials;
-        if (cached is not null && !cached.IsExpired(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(5)))
-            return cached;
+        if (cached is not null && _utcNow() < cached.RefreshAt)
+            return cached.Credentials;
 
         await _refreshLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             cached = _cachedCredentials;
-            if (cached is not null && !cached.IsExpired(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(5)))
-                return cached;
+            var now = _utcNow();
+            if (cached is not null && now < cached.RefreshAt)
+                return cached.Credentials;
 
             var credentials =
                 TryGetEnvironmentCredentials() ??
@@ -64,13 +76,23 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
                     "Unable to resolve AWS credentials for AWS_MSK_IAM. Checked environment variables, web identity, shared AWS profiles, ECS credentials, and EC2 instance metadata.");
             }
 
-            _cachedCredentials = credentials;
+            var refreshAt = credentials.Expiration is { } expiration
+                ? expiration - CacheRefreshInterval
+                : now + CacheRefreshInterval;
+            _cachedCredentials = new CachedCredentials(credentials, refreshAt);
             return credentials;
         }
         finally
         {
             _refreshLock.Release();
         }
+    }
+
+    private sealed class CachedCredentials(AwsCredentials credentials, DateTimeOffset refreshAt)
+    {
+        public AwsCredentials Credentials { get; } = credentials;
+
+        public DateTimeOffset RefreshAt { get; } = refreshAt;
     }
 
     private static AwsCredentials? TryGetEnvironmentCredentials()

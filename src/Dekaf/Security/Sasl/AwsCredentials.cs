@@ -42,9 +42,6 @@ public sealed class AwsCredentials
     /// Optional expiration time for temporary credentials.
     /// </summary>
     public DateTimeOffset? Expiration { get; }
-
-    internal bool IsExpired(DateTimeOffset now, TimeSpan refreshBuffer)
-        => Expiration is { } expiration && expiration <= now.Add(refreshBuffer);
 }
 
 /// <summary>
