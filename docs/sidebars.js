@@ -103,6 +103,7 @@ const sidebars = {
         'admin/group-listing',
         'admin/share-group-offset-queries',
         'admin/member-removal',
+        'admin/controller-unregistration',
       ],
     },
     {

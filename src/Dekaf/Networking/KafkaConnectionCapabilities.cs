@@ -15,7 +15,8 @@ internal interface IKafkaCapabilityProvider
 /// </summary>
 internal sealed class KafkaConnectionCapabilities
 {
-    private const int ApiKeyCount = (int)ApiKey.DeleteShareGroupOffsets + 1;
+    // Must cover the highest ApiKey value: Create drops any advertised key beyond the table.
+    private const int ApiKeyCount = (int)ApiKey.UnregisterController + 1;
     private const int MissingRange = -1;
 
     private readonly int[] _apiRanges;

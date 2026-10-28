@@ -82,7 +82,8 @@ public sealed class BrokerThrottleStateTests
             (ApiKey.DescribeUserScramCredentials, 0),
             (ApiKey.AlterUserScramCredentials, 0),
             (ApiKey.UnregisterBroker, 0),
-            (ApiKey.DescribeTopicPartitions, 0)
+            (ApiKey.DescribeTopicPartitions, 0),
+            (ApiKey.UnregisterController, 0)
         ];
 
         var actual = Enum.GetValues<ApiKey>()

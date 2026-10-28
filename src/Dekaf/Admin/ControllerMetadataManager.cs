@@ -260,7 +260,8 @@ internal sealed class ControllerMetadataManager : IDisposable
             or ApiKey.DescribeQuorum
             or ApiKey.AddRaftVoter
             or ApiKey.RemoveRaftVoter
-            or ApiKey.UnregisterBroker)
+            or ApiKey.UnregisterBroker
+            or ApiKey.UnregisterController)
         {
             return;
         }

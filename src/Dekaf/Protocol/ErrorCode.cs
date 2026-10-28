@@ -141,7 +141,8 @@ public enum ErrorCode : short
     StreamsTopologyFenced = 132,
     ShareSessionLimitReached = 133,
     GroupDeletionFailed = 134,
-    StreamsTopologyDescriptionUpdateFailed = 135
+    StreamsTopologyDescriptionUpdateFailed = 135,
+    ControllerIdNotRegistered = 136
 }
 
 /// <summary>

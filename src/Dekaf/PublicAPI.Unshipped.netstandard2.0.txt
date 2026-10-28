@@ -752,3 +752,34 @@ Dekaf.Streams.StreamsGroupStatusCode.MissingInternalTopics = 3 -> Dekaf.Streams.
 Dekaf.Streams.StreamsGroupStatusCode.MissingSourceTopics = 1 -> Dekaf.Streams.StreamsGroupStatusCode
 Dekaf.Streams.StreamsGroupStatusCode.ShutdownApplication = 4 -> Dekaf.Streams.StreamsGroupStatusCode
 Dekaf.Streams.StreamsGroupStatusCode.StaleTopology = 0 -> Dekaf.Streams.StreamsGroupStatusCode
+Dekaf.Admin.AdminClient.UnregisterControllerAsync(int controllerId, Dekaf.Admin.UnregisterControllerOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Admin.AdminClientControllerRegistrationExtensions
+Dekaf.Admin.IControllerRegistrationAdminClient
+Dekaf.Admin.IControllerRegistrationAdminClient.UnregisterControllerAsync(int controllerId, Dekaf.Admin.UnregisterControllerOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Admin.UnregisterControllerOptions
+Dekaf.Admin.UnregisterControllerOptions.TimeoutMs.get -> int
+Dekaf.Admin.UnregisterControllerOptions.TimeoutMs.init -> void
+Dekaf.Admin.UnregisterControllerOptions.UnregisterControllerOptions() -> void
+Dekaf.Protocol.ApiKey.UnregisterController = 94 -> Dekaf.Protocol.ApiKey
+Dekaf.Protocol.ErrorCode.ControllerIdNotRegistered = 136 -> Dekaf.Protocol.ErrorCode
+Dekaf.Protocol.Messages.UnregisterControllerRequest
+Dekaf.Protocol.Messages.UnregisterControllerRequest.ControllerId.get -> int
+Dekaf.Protocol.Messages.UnregisterControllerRequest.ControllerId.init -> void
+Dekaf.Protocol.Messages.UnregisterControllerRequest.UnregisterControllerRequest() -> void
+Dekaf.Protocol.Messages.UnregisterControllerRequest.Write(ref Dekaf.Protocol.KafkaProtocolWriter writer, short version) -> void
+Dekaf.Protocol.Messages.UnregisterControllerResponse
+Dekaf.Protocol.Messages.UnregisterControllerResponse.ErrorCode.get -> Dekaf.Protocol.ErrorCode
+Dekaf.Protocol.Messages.UnregisterControllerResponse.ErrorCode.init -> void
+Dekaf.Protocol.Messages.UnregisterControllerResponse.ErrorMessage.get -> string?
+Dekaf.Protocol.Messages.UnregisterControllerResponse.ErrorMessage.init -> void
+Dekaf.Protocol.Messages.UnregisterControllerResponse.ThrottleTimeMs.get -> int
+Dekaf.Protocol.Messages.UnregisterControllerResponse.ThrottleTimeMs.init -> void
+Dekaf.Protocol.Messages.UnregisterControllerResponse.UnregisterControllerResponse() -> void
+static Dekaf.Admin.AdminClientControllerRegistrationExtensions.UnregisterControllerAsync(this Dekaf.Admin.IAdminClient! adminClient, int controllerId, Dekaf.Admin.UnregisterControllerOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+static Dekaf.Protocol.Messages.UnregisterControllerRequest.ApiKey.get -> Dekaf.Protocol.ApiKey
+static Dekaf.Protocol.Messages.UnregisterControllerRequest.HighestSupportedVersion.get -> short
+static Dekaf.Protocol.Messages.UnregisterControllerRequest.LowestSupportedVersion.get -> short
+static Dekaf.Protocol.Messages.UnregisterControllerResponse.ApiKey.get -> Dekaf.Protocol.ApiKey
+static Dekaf.Protocol.Messages.UnregisterControllerResponse.HighestSupportedVersion.get -> short
+static Dekaf.Protocol.Messages.UnregisterControllerResponse.LowestSupportedVersion.get -> short
+static Dekaf.Protocol.Messages.UnregisterControllerResponse.Read(ref Dekaf.Protocol.KafkaProtocolReader reader, short version) -> Dekaf.Protocol.IKafkaResponse!

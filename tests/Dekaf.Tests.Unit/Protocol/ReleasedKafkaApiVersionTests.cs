@@ -99,6 +99,7 @@ public sealed class ReleasedKafkaApiVersionTests
         [ApiKey.DescribeShareGroupOffsets] = 1,
         [ApiKey.AlterShareGroupOffsets] = 0,
         [ApiKey.DeleteShareGroupOffsets] = 0,
+        [ApiKey.UnregisterController] = 0,
     };
 
     private static readonly IReadOnlyList<Type> MessageTypes = typeof(IKafkaMessage).Assembly

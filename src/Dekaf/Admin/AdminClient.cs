@@ -29,6 +29,7 @@ public sealed partial class AdminClient :
     ITransactionRemediationAdminClient,
     IShareGroupDeletionAdminClient,
     IPartitionExpansionAdminClient,
+    IControllerRegistrationAdminClient,
     IKafkaClientInstanceIdentity,
     IKafkaClientStatusProvider
 {
@@ -6264,7 +6265,8 @@ public sealed partial class AdminClient :
             or nameof(DescribeMetadataQuorumAsync)
             or nameof(AddRaftVoterAsync)
             or nameof(RemoveRaftVoterAsync)
-            or nameof(UnregisterBrokerAsync))
+            or nameof(UnregisterBrokerAsync)
+            or nameof(UnregisterControllerAsync))
         {
             return;
         }

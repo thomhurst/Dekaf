@@ -1,0 +1,17 @@
+﻿Response: Dekaf.Protocol.Messages.UnregisterControllerResponse
+API key: UnregisterController (94)
+Version: 0
+Header version: 1
+Body length: 52 bytes
+
+0000: 00 00 00 00 00 88 2D 43  6F 6E 74 72 6F 6C 6C 65 |......-Controlle|
+0010: 72 20 49 44 20 33 20 69  73 20 6E 6F 74 20 63 75 |r ID 3 is not cu|
+0020: 72 72 65 6E 74 6C 79 20  72 65 67 69 73 74 65 72 |rrently register|
+0030: 65 64 2E 00                                      |ed..|
+
+Decoded:
+{
+  "ErrorCode": "ControllerIdNotRegistered",
+  "ErrorMessage": "Controller ID 3 is not currently registered.",
+  "ThrottleTimeMs": 0
+}

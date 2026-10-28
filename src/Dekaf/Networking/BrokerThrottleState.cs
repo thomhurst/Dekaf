@@ -206,6 +206,7 @@ internal static class BrokerThrottlePolicy
         ApiKey.AlterUserScramCredentials => true,
         ApiKey.UnregisterBroker => true,
         ApiKey.DescribeTopicPartitions => true,
+        ApiKey.UnregisterController => true,
         _ => false
     };
 }

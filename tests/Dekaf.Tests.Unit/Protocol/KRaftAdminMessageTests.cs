@@ -19,6 +19,12 @@ public sealed class KRaftAdminMessageTests
 
         await Assert.That(RemoveRaftVoterRequest.ApiKey).IsEqualTo(ApiKey.RemoveRaftVoter);
         await Assert.That(UnregisterBrokerRequest.ApiKey).IsEqualTo(ApiKey.UnregisterBroker);
+
+        await Assert.That(UnregisterControllerRequest.ApiKey).IsEqualTo(ApiKey.UnregisterController);
+        await Assert.That((short)UnregisterControllerRequest.ApiKey).IsEqualTo((short)94);
+        await Assert.That(UnregisterControllerResponse.ApiKey).IsEqualTo(ApiKey.UnregisterController);
+        await Assert.That(UnregisterControllerRequest.LowestSupportedVersion).IsEqualTo((short)0);
+        await Assert.That(UnregisterControllerRequest.HighestSupportedVersion).IsEqualTo((short)0);
     }
 
     [Test]
@@ -216,6 +222,55 @@ public sealed class KRaftAdminMessageTests
         await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.None);
         await Assert.That(response.ErrorMessage).IsEqualTo("ok");
         await Assert.That(remaining).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task UnregisterControllerRequest_Write_V0_EncodesFlexibleControllerId()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        new UnregisterControllerRequest { ControllerId = 0x01020304 }.Write(ref writer, version: 0);
+
+        // ControllerId (int32) followed by an empty tagged-field section.
+        await Assert.That(buffer.WrittenSpan.ToArray()).IsEquivalentTo(new byte[] { 0x01, 0x02, 0x03, 0x04, 0x00 });
+    }
+
+    [Test]
+    [Arguments(null)]
+    [Arguments("Controller ID 3 is not currently registered.")]
+    public async Task UnregisterControllerResponse_Read_V0_ParsesNullableErrorMessage(string? errorMessage)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        writer.WriteInt32(7);
+        writer.WriteInt16((short)ErrorCode.ControllerIdNotRegistered);
+        writer.WriteCompactNullableString(errorMessage);
+        writer.WriteEmptyTaggedFields();
+
+        UnregisterControllerResponse response;
+        long remaining;
+        {
+            var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+            response = (UnregisterControllerResponse)UnregisterControllerResponse.Read(ref reader, version: 0);
+            remaining = reader.Remaining;
+        }
+
+        await Assert.That(response.ThrottleTimeMs).IsEqualTo(7);
+        await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.ControllerIdNotRegistered);
+        await Assert.That(response.ErrorMessage).IsEqualTo(errorMessage);
+        await Assert.That(remaining).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ControllerIdNotRegistered_MapsToKafkaErrorCode136AndIsNotRetriable()
+    {
+        var exception = Dekaf.Errors.KafkaException.FromErrorCode((ErrorCode)136, "not registered");
+
+        await Assert.That(exception.ErrorCode).IsEqualTo(ErrorCode.ControllerIdNotRegistered);
+        await Assert.That(exception.ErrorCode!.Value.IsRetriable()).IsFalse();
+        await Assert.That(exception.IsRetriable).IsFalse();
     }
 
     private static void WriteReplicaState(
