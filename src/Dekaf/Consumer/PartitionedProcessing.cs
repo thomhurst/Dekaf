@@ -1724,7 +1724,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             FailOnLaneStopException(laneExceptions[i]);
 
         if (failure is not null)
-            ExceptionDispatchInfo.Throw(failure);
+            ExceptionDispatchInfo.Capture(failure).Throw();
 
         StartAssignedPartitions(ReadAssignment());
     }

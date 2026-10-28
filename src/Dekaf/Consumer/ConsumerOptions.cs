@@ -691,7 +691,7 @@ internal interface IConsumerRebalanceEventSource
     /// True while the consumer leaves its group (unsubscribe, close, or a switch to manual
     /// assignment). Revocations delivered meanwhile end the membership.
     /// </summary>
-    bool IsLeavingGroup => false;
+    bool IsLeavingGroup { get; }
 }
 
 /// <summary>Whether the member still owns a delivered record's partition under the ownership the record was fetched in.</summary>
