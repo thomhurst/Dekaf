@@ -71,6 +71,11 @@ var serializer = new TypeRoutingSerializer<IEvent>()
 Topic routes validate that the value matches the registered derived serializer type. Runtime-type
 routes use exact type matching; derived subclasses need their own registration or a fallback.
 
+Both serializers forward the producer's asynchronous preparation to the selected route, including
+fallbacks and nested routers. Schema Registry serializers therefore resolve their schema, and any
+asynchronous subject-name strategy, before serialization without a manual warmup, and the produce
+cancellation token reaches that lookup.
+
 ## Inspect the raw record key
 
 During value deserialization, `SerializationContext.KeyData` exposes the raw key bytes without a

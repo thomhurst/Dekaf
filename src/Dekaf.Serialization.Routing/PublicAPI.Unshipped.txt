@@ -27,3 +27,5 @@ Dekaf.Serialization.Routing.TypeRoutingSerializer<TBase>.Register<TDerived>(Deka
 Dekaf.Serialization.Routing.TypeRoutingSerializer<TBase>.Serialize<TWriter>(TBase! value, ref TWriter destination, Dekaf.Serialization.SerializationContext context) -> void
 Dekaf.Serialization.Routing.TypeRoutingSerializer<TBase>.SetFallback(Dekaf.Serialization.ISerializer<TBase!>! serializer) -> Dekaf.Serialization.Routing.TypeRoutingSerializer<TBase!>!
 Dekaf.Serialization.Routing.TypeRoutingSerializer<TBase>.TypeRoutingSerializer() -> void
+Dekaf.Serialization.Routing.TopicRoutingSerializer<TBase>.PrepareAsync(TBase! value, Dekaf.Serialization.SerializationContext context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Serialization.Routing.TypeRoutingSerializer<TBase>.PrepareAsync(TBase! value, Dekaf.Serialization.SerializationContext context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask

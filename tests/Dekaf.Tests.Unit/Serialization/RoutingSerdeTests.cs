@@ -1,9 +1,12 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Threading.Tasks.Sources;
 using Dekaf.Consumer;
 using Dekaf.Errors;
+using Dekaf.SchemaRegistry;
 using Dekaf.Serialization;
 using Dekaf.Serialization.Routing;
+using Dekaf.Tests.Unit.SchemaRegistry;
 
 namespace Dekaf.Tests.Unit.Serialization;
 
@@ -374,6 +377,170 @@ public sealed class RoutingSerdeTests
         await Assert.That(emptyKey.Context.KeyData.IsEmpty).IsTrue();
     }
 
+    [Test]
+    public async Task Serializers_WithoutPreparingRoutes_CompletePreparationSynchronously()
+    {
+        var topicRouter = new TopicRoutingSerializer<EventBase>()
+            .Register("alpha", new EventSerializer<AlphaEvent>(1))
+            .Freeze();
+        var typeRouter = new TypeRoutingSerializer<EventBase>()
+            .Register(new EventSerializer<AlphaEvent>(1))
+            .Freeze();
+        IAsyncSerializerPreparationAdmission<EventBase> topicAdmission = topicRouter;
+        IAsyncSerializerPreparationAdmission<EventBase> typeAdmission = typeRouter;
+
+        var topicPreparation = topicAdmission.PrepareForSerializationAsync(Alpha, Context("alpha"));
+        var typePreparation = typeAdmission.PrepareForSerializationAsync(Alpha, Context());
+
+        await Assert.That(((ISerializerPreparationRequirement)topicRouter).RequiresPreparation).IsFalse();
+        await Assert.That(((ISerializerPreparationRequirement)typeRouter).RequiresPreparation).IsFalse();
+        await Assert.That(topicPreparation.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(topicPreparation.Result.IsPrepared).IsFalse();
+        await Assert.That(typePreparation.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(typePreparation.Result.IsPrepared).IsFalse();
+    }
+
+    [Test]
+    public async Task TopicSerializer_ForwardsPreparationToSelectedRouteBeforeSerialization()
+    {
+        var alpha = new PreparingSerializer<AlphaEvent>(1);
+        var fallback = new PreparingSerializer<EventBase>(2);
+        var router = new TopicRoutingSerializer<EventBase>()
+            .Register("alpha", alpha)
+            .SetFallback(fallback)
+            .Freeze();
+
+        await router.PrepareAsync(Alpha, Context("alpha"));
+        var alphaBytes = Serialize(router, Alpha, Context("alpha"));
+        await router.PrepareAsync(Beta, Context("other"));
+        var fallbackBytes = Serialize(router, Beta, Context("other"));
+
+        await Assert.That(((ISerializerPreparationRequirement)router).RequiresPreparation).IsTrue();
+        await Assert.That(alpha.PrepareCount).IsEqualTo(1);
+        await Assert.That(fallback.PrepareCount).IsEqualTo(1);
+        await Assert.That(alphaBytes).IsEquivalentTo(new byte[] { 1 });
+        await Assert.That(fallbackBytes).IsEquivalentTo(new byte[] { 2 });
+    }
+
+    [Test]
+    public async Task NestedSerializers_ForwardExactPreparationAdmission()
+    {
+        var alpha = new AdmittedSerializer<AlphaEvent>(schemaId: 31);
+        var inner = new TypeRoutingSerializer<EventBase>()
+            .Register(alpha)
+            .Freeze();
+        var router = new TopicRoutingSerializer<EventBase>()
+            .Register("alpha", inner)
+            .Freeze();
+        IAsyncSerializerPreparationAdmission<EventBase> admission = router;
+        var context = Context("alpha");
+
+        var prepared = await admission.PrepareForSerializationAsync(Alpha, context);
+        var buffer = new ArrayBufferWriter<byte>();
+        admission.SerializePrepared(Alpha, ref buffer, context, in prepared);
+
+        await Assert.That(((ISerializerPreparationRequirement)router).RequiresPreparation).IsTrue();
+        await Assert.That(prepared.IsPrepared).IsTrue();
+        await Assert.That(alpha.PrepareCount).IsEqualTo(1);
+        await Assert.That(alpha.SerializePreparedCount).IsEqualTo(1);
+        await Assert.That(alpha.SerializeCount).IsEqualTo(0);
+        await Assert.That(buffer.WrittenSpan.ToArray()).IsEquivalentTo(new byte[] { 31 });
+    }
+
+    [Test]
+    public async Task OuterSerializer_FrozenBeforeNestedRegistration_StillForwardsPreparation()
+    {
+        var alpha = new PreparingSerializer<AlphaEvent>(1);
+        var inner = new TypeRoutingSerializer<EventBase>();
+        var router = new TopicRoutingSerializer<EventBase>()
+            .Register("alpha", inner)
+            .Freeze();
+        inner.Register(alpha).Freeze();
+
+        await router.PrepareAsync(Alpha, Context("alpha"));
+
+        await Assert.That(alpha.PrepareCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task TopicSerializer_ConsumesCompletedSourceBackedPreparation()
+    {
+        var alpha = new SourceBackedPreparingSerializer<AlphaEvent>();
+        var router = new TopicRoutingSerializer<EventBase>()
+            .Register("alpha", alpha)
+            .Freeze();
+        IAsyncSerializerPreparationAdmission<EventBase> admission = router;
+
+        var preparation = admission.PrepareForSerializationAsync(Alpha, Context("alpha"));
+
+        await Assert.That(preparation.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(preparation.Result.IsPrepared).IsFalse();
+        await Assert.That(alpha.GetResultCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task TypeSerializer_PropagatesCancellationDuringColdPreparation()
+    {
+        var alpha = new BlockingPreparingSerializer<AlphaEvent>();
+        var router = new TypeRoutingSerializer<EventBase>()
+            .Register(alpha)
+            .Freeze();
+        IAsyncSerializerPreparationAdmission<EventBase> admission = router;
+        using var cts = new CancellationTokenSource();
+
+        var preparation = admission.PrepareForSerializationAsync(Alpha, Context(), cts.Token).AsTask();
+        await alpha.Started.Task;
+        await Assert.That(preparation.IsCompleted).IsFalse();
+        await cts.CancelAsync();
+
+        await Assert.That(async () => await preparation).Throws<OperationCanceledException>();
+        await Assert.That(alpha.ObservedToken).IsEqualTo(cts.Token);
+    }
+
+    [Test]
+    public async Task TopicSerializer_AsyncSubjectStrategyWorksWithoutManualWarmup()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var strategy = new YieldingSubjectNameStrategy();
+        await using var schemaSerializer = new SchemaRegistrySerializer<AlphaEvent>(
+            registry,
+            static (_, writer) =>
+            {
+                writer.GetSpan(1)[0] = 9;
+                writer.Advance(1);
+            },
+            strategy,
+            static () => new Schema
+            {
+                SchemaType = SchemaType.Avro,
+                SchemaString = """{"type":"record","name":"Alpha","namespace":"test","fields":[]}"""
+            });
+        var router = new TopicRoutingSerializer<EventBase>()
+            .Register("alpha", schemaSerializer)
+            .Freeze();
+        IAsyncSerializerPreparationAdmission<EventBase> admission = router;
+        var context = Context("alpha");
+
+        var prepared = await admission.PrepareForSerializationAsync(Alpha, context);
+        var buffer = new ArrayBufferWriter<byte>();
+        admission.SerializePrepared(Alpha, ref buffer, context, in prepared);
+        var plainBytes = Serialize(router, Alpha, context);
+
+        await Assert.That(prepared.IsPrepared).IsTrue();
+        await Assert.That(strategy.AsyncResolutionCount).IsEqualTo(1);
+        await Assert.That(await registry.GetAllSubjectsAsync()).Contains("routed-alpha");
+        await Assert.That(buffer.WrittenSpan[0]).IsEqualTo((byte)0);
+        await Assert.That(buffer.WrittenSpan[^1]).IsEqualTo((byte)9);
+        await Assert.That(plainBytes).IsEquivalentTo(buffer.WrittenSpan.ToArray());
+    }
+
+    private static byte[] Serialize<T>(ISerializer<T> serializer, T value, SerializationContext context)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(value, ref buffer, context);
+        return buffer.WrittenSpan.ToArray();
+    }
+
     private static SerializationContext Context(string topic = "events") => new()
     {
         Topic = topic,
@@ -501,6 +668,171 @@ public sealed class RoutingSerdeTests
             context.Headers!.Add("identity", [1]);
             destination.GetSpan(1)[0] = 1;
             destination.Advance(1);
+        }
+    }
+
+    private sealed class PreparingSerializer<T>(byte marker) : ISerializer<T>, IAsyncSerializerPreparer<T>
+    {
+        private bool _prepared;
+
+        public int PrepareCount { get; private set; }
+
+        public ValueTask PrepareAsync(
+            T value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            PrepareCount++;
+            _prepared = true;
+            return ValueTask.CompletedTask;
+        }
+
+        public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            if (!_prepared)
+                throw new InvalidOperationException("Serializer was not prepared.");
+
+            destination.GetSpan(1)[0] = marker;
+            destination.Advance(1);
+        }
+    }
+
+    private sealed class BlockingPreparingSerializer<T> : ISerializer<T>, IAsyncSerializerPreparer<T>
+    {
+        public TaskCompletionSource Started { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public CancellationToken ObservedToken { get; private set; }
+
+        public async ValueTask PrepareAsync(
+            T value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            ObservedToken = cancellationToken;
+            Started.TrySetResult();
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+        }
+
+        public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+            => throw new InvalidOperationException("Serializer was not prepared.");
+    }
+
+    // Completes synchronously through an IValueTaskSource, which must be consumed to be recycled.
+    private sealed class SourceBackedPreparingSerializer<T> :
+        ISerializer<T>,
+        IAsyncSerializerPreparer<T>,
+        IValueTaskSource
+    {
+        public int GetResultCount { get; private set; }
+
+        public ValueTask PrepareAsync(
+            T value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            new(this, token: 0);
+
+        public ValueTaskSourceStatus GetStatus(short token) => ValueTaskSourceStatus.Succeeded;
+
+        public void GetResult(short token) => GetResultCount++;
+
+        public void OnCompleted(
+            Action<object?> continuation,
+            object? state,
+            short token,
+            ValueTaskSourceOnCompletedFlags flags) =>
+            continuation(state);
+
+        public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            destination.GetSpan(1)[0] = 1;
+            destination.Advance(1);
+        }
+    }
+
+    private sealed class AdmittedSerializer<T>(int schemaId) :
+        ISerializer<T>,
+        IAsyncSerializerPreparationAdmission<T>
+    {
+        private static readonly object PreparedSchema = new();
+
+        public int PrepareCount { get; private set; }
+        public int SerializePreparedCount { get; private set; }
+        public int SerializeCount { get; private set; }
+
+        public ValueTask PrepareAsync(
+            T value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Router must request an exact admission.");
+
+        public ValueTask<SerializerPreparationAdmission> PrepareForSerializationAsync(
+            T value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            PrepareCount++;
+            return new ValueTask<SerializerPreparationAdmission>(
+                new SerializerPreparationAdmission("subject", schemaId, PreparedSchema));
+        }
+
+        public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            SerializeCount++;
+            throw new InvalidOperationException("Admission was not forwarded.");
+        }
+
+        public void SerializePrepared<TWriter>(
+            T value,
+            ref TWriter destination,
+            SerializationContext context,
+            in SerializerPreparationAdmission admission)
+            where TWriter : IBufferWriter<byte>
+#if NET9_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            SerializePreparedCount++;
+            destination.GetSpan(1)[0] = (byte)admission.SchemaId;
+            destination.Advance(1);
+        }
+    }
+
+    private sealed class YieldingSubjectNameStrategy : IAsyncSubjectNameStrategy
+    {
+        private string? _subject;
+
+        public int AsyncResolutionCount { get; private set; }
+
+        // Completes asynchronously until warmed, like a strategy backed by a registry lookup.
+        public ValueTask<string> GetSubjectNameAsync(
+            string topic,
+            string? recordType,
+            bool isKey,
+            CancellationToken cancellationToken = default) =>
+            _subject is { } subject ? new(subject) : ResolveAsync(topic);
+
+        private async ValueTask<string> ResolveAsync(string topic)
+        {
+            AsyncResolutionCount++;
+            await Task.Yield();
+            return _subject = "routed-" + topic;
         }
     }
 }

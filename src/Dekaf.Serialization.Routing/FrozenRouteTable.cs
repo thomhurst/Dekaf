@@ -12,11 +12,17 @@ internal sealed class FrozenRouteTable<TKey, TRoute>(IEqualityComparer<TKey>? co
     private TRoute? _fallback;
     private bool _producesRecordHeaders;
     private bool _requiresDeserializerPreparation;
+    private bool _requiresSerializerPreparation;
 
     internal bool IsFrozen => Volatile.Read(ref _routes) is not null;
     internal bool ProducesRecordHeaders => Volatile.Read(ref _producesRecordHeaders);
     internal bool RequiresDeserializerPreparation =>
         Volatile.Read(ref _requiresDeserializerPreparation);
+
+    // Conservatively true until Freeze() settles it, so a router nested before its own
+    // registrations finish is never reported as preparation-free.
+    internal bool RequiresSerializerPreparation =>
+        Volatile.Read(ref _routes) is null || Volatile.Read(ref _requiresSerializerPreparation);
 
     internal void Register(TKey key, TRoute route)
     {
@@ -85,6 +91,21 @@ internal sealed class FrozenRouteTable<TKey, TRoute>(IEqualityComparer<TKey>? co
                 Volatile.Write(
                     ref _requiresDeserializerPreparation,
                     requiresDeserializerPreparation);
+                var requiresSerializerPreparation =
+                    _fallback is ISerializerPreparationRequirement { RequiresPreparation: true };
+                if (!requiresSerializerPreparation)
+                {
+                    foreach (var route in _registrations.Values)
+                    {
+                        if (route is ISerializerPreparationRequirement { RequiresPreparation: true })
+                        {
+                            requiresSerializerPreparation = true;
+                            break;
+                        }
+                    }
+                }
+
+                Volatile.Write(ref _requiresSerializerPreparation, requiresSerializerPreparation);
                 Volatile.Write(
                     ref _routes,
                     _registrations.ToFrozenDictionary(comparer: _registrations.Comparer));
