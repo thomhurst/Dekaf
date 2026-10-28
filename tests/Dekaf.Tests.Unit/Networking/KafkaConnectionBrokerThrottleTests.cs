@@ -1,6 +1,5 @@
 using System.Buffers;
 using System.Buffers.Binary;
-using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using Dekaf.Errors;
@@ -21,6 +20,8 @@ public sealed class KafkaConnectionBrokerThrottleTests
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var throttledResponseWritten = new TaskCompletionSource<long>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var followUpReceived = new TaskCompletionSource<long>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var serverTask = Task.Run(async () =>
@@ -33,7 +34,8 @@ public sealed class KafkaConnectionBrokerThrottleTests
             await using var secondStream = new NetworkStream(secondSocket, ownsSocket: false);
             await CompleteApiVersionsRequestAsync(secondStream, throttleTimeMs: 0, cancellationToken);
 
-            await CompleteApiVersionsRequestAsync(firstStream, throttleTimeMs, cancellationToken);
+            await CompleteThrottledApiVersionsRequestAsync(
+                firstStream, throttleTimeMs, throttledResponseWritten, cancellationToken);
             var secondRequest = await ReadFrameAsync(secondStream, cancellationToken);
             followUpReceived.TrySetResult(MonotonicClock.GetMilliseconds());
             await WriteApiVersionsResponseAsync(secondStream, secondRequest, 0, cancellationToken);
@@ -50,25 +52,19 @@ public sealed class KafkaConnectionBrokerThrottleTests
             3,
             cancellationToken);
 
-        var followUpStartedMs = MonotonicClock.GetMilliseconds();
-        var remainingThrottleMs = throttleState.GetRemainingMilliseconds();
-        await Assert.That(remainingThrottleMs).IsGreaterThan(0);
-        var followUpTask = second.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+        await Assert.That(throttleState.MaxObservedThrottleTimeMs).IsEqualTo(throttleTimeMs);
+
+        // The client starts the shared deadline only after it reads the throttled
+        // response, so the deadline is at least the server's write time plus the
+        // throttle. Measuring from that write time keeps the bound valid however
+        // late this continuation runs.
+        _ = await second.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
             CreateApiVersionsRequest(),
             3,
             cancellationToken);
-
-        var earlyProgress = await Task.WhenAny(
-            followUpReceived.Task,
-            Task.Delay(Math.Max(1, remainingThrottleMs / 2), cancellationToken));
-        await Assert.That(earlyProgress).IsNotSameReferenceAs(followUpReceived.Task);
-
-        _ = await followUpTask;
+        var writtenAtMs = await throttledResponseWritten.Task;
         var receivedAtMs = await followUpReceived.Task;
-        var elapsedMs = receivedAtMs - followUpStartedMs;
-        const int clockResolutionToleranceMs = 1;
-        await Assert.That(elapsedMs + clockResolutionToleranceMs)
-            .IsGreaterThanOrEqualTo(remainingThrottleMs);
+        await Assert.That(receivedAtMs - writtenAtMs).IsGreaterThanOrEqualTo(throttleTimeMs);
         await serverTask;
     }
 
@@ -171,6 +167,8 @@ public sealed class KafkaConnectionBrokerThrottleTests
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var throttledResponseWritten = new TaskCompletionSource<long>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var secondConnectionAccepted = new TaskCompletionSource<long>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseSecondConnection = new TaskCompletionSource(
@@ -181,10 +179,11 @@ public sealed class KafkaConnectionBrokerThrottleTests
             using var firstSocket = await listener.AcceptSocketAsync(cancellationToken);
             await using var firstStream = new NetworkStream(firstSocket, ownsSocket: false);
             await CompleteApiVersionsRequestAsync(firstStream, 0, cancellationToken);
-            await CompleteApiVersionsRequestAsync(firstStream, throttleTimeMs, cancellationToken);
+            await CompleteThrottledApiVersionsRequestAsync(
+                firstStream, throttleTimeMs, throttledResponseWritten, cancellationToken);
 
             using var secondSocket = await listener.AcceptSocketAsync(cancellationToken);
-            secondConnectionAccepted.TrySetResult(Stopwatch.GetTimestamp());
+            secondConnectionAccepted.TrySetResult(MonotonicClock.GetMilliseconds());
             await using var secondStream = new NetworkStream(secondSocket, ownsSocket: false);
             using var handshakeCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             var handshakeTask = CompleteApiVersionsRequestAsync(secondStream, 0, handshakeCts.Token);
@@ -217,17 +216,14 @@ public sealed class KafkaConnectionBrokerThrottleTests
         var brokerThrottleState = pool.GetBrokerThrottleStateForTest(1, "127.0.0.1", port);
         await Assert.That(brokerThrottleState).IsSameReferenceAs(bootstrapThrottleState);
 
-        var reconnectStarted = Stopwatch.GetTimestamp();
-        var remainingThrottleMs = brokerThrottleState.GetRemainingMilliseconds();
-        var leaseTask = pool.LeaseConnectionAsync(1, cancellationToken).AsTask();
-        await Assert.That(remainingThrottleMs).IsGreaterThan(0);
+        await Assert.That(brokerThrottleState.MaxObservedThrottleTimeMs).IsEqualTo(throttleTimeMs);
 
-        using var lease = await leaseTask;
-        var acceptedAt = await secondConnectionAccepted.Task;
-        var elapsedMs = (acceptedAt - reconnectStarted) * 1000d / Stopwatch.Frequency;
-        const double clockResolutionToleranceMs = 2;
-        await Assert.That(elapsedMs + clockResolutionToleranceMs)
-            .IsGreaterThanOrEqualTo(remainingThrottleMs);
+        // Measured from the server's write of the throttled response, which precedes
+        // the client's deadline, so the bound holds however late this continuation runs.
+        using var lease = await pool.LeaseConnectionAsync(1, cancellationToken);
+        var writtenAtMs = await throttledResponseWritten.Task;
+        var acceptedAtMs = await secondConnectionAccepted.Task;
+        await Assert.That(acceptedAtMs - writtenAtMs).IsGreaterThanOrEqualTo(throttleTimeMs);
         releaseSecondConnection.TrySetResult();
         await serverTask;
     }
@@ -367,6 +363,17 @@ public sealed class KafkaConnectionBrokerThrottleTests
         CancellationToken cancellationToken)
     {
         var request = await ReadFrameAsync(stream, cancellationToken);
+        await WriteApiVersionsResponseAsync(stream, request, throttleTimeMs, cancellationToken);
+    }
+
+    private static async Task CompleteThrottledApiVersionsRequestAsync(
+        NetworkStream stream,
+        int throttleTimeMs,
+        TaskCompletionSource<long> responseWritten,
+        CancellationToken cancellationToken)
+    {
+        var request = await ReadFrameAsync(stream, cancellationToken);
+        responseWritten.TrySetResult(MonotonicClock.GetMilliseconds());
         await WriteApiVersionsResponseAsync(stream, request, throttleTimeMs, cancellationToken);
     }
 
