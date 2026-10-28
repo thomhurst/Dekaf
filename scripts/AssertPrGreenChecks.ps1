@@ -2,15 +2,10 @@
 # (scripts/Test-AssertPrGreenChecks.ps1).
 
 # Workflows whose every job feeds a required check (`CI Passed` aggregates all of ci.yml;
-# `Dependency Review` is its own workflow). GitHub's auto-merge waits for required checks, so
-# only these may still be pending when auto-merge is armed. Test-AssertPrGreenChecks.ps1 pins
-# the aggregator's coverage of ci.yml.
-$AutoMergeAwaitedWorkflows = @('CI', 'Dependency Review')
-
-# Path-filtered pull_request workflows that skip drafts and are not required checks. When a PR
-# changes their paths, their verdict on the current head must be in before merging or arming:
-# auto-merge would not wait for them.
-$DeferredVerdictWorkflows = @('performance-gate.yml', 'performance-harness-tests.yml', 'review-helper-tests.yml')
+# `Micro A1/B/A2 screen` aggregates the performance gate; `Dependency Review` is its own
+# workflow). GitHub's auto-merge waits for required checks, so only these may still be pending
+# when auto-merge is armed. Test-AssertPrGreenChecks.ps1 pins both aggregators' coverage.
+$AutoMergeAwaitedWorkflows = @('CI', 'Performance gate', 'Dependency Review')
 
 $PassingConclusions = @('SUCCESS', 'SKIPPED', 'NEUTRAL')
 $PendingStates = @('EXPECTED', 'REQUESTED', 'WAITING', 'QUEUED', 'PENDING', 'IN_PROGRESS')
@@ -83,61 +78,17 @@ function Get-CheckDenial {
     }
 }
 
-# Reads `name:` and the `on.pull_request.paths` list from a workflow file. Only the flat
-# block-sequence form used in this repository is supported; anything else fails closed.
-function Get-WorkflowPathFilter {
+# The performance gate's required check also passes on a head pushed after the PR left draft,
+# which it does not measure. Only a run that selected benchmark classes on this head measured it;
+# arming may proceed while that selection is still queued, because auto-merge waits for the verdict.
+function Get-PerformanceGateDenial {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Path)
+    param([AllowNull()][object[]]$Checks, [switch]$ForAutoMerge)
 
-    $lines = Get-Content -LiteralPath $Path
-    $name = ($lines | Where-Object { $_ -match '^name:\s*(.+?)\s*$' } | Select-Object -First 1) -replace '^name:\s*', ''
-    $name = $name.Trim().Trim("'", '"')
-    $patterns = [Collections.Generic.List[string]]::new()
-    $section = $null
-    foreach ($line in $lines) {
-        if ($line -match '^\S') { $section = if ($line -match '^on:\s*$') { 'on' } else { $null }; continue }
-        if ($section -eq 'on' -and $line -match '^  \S') { $section = if ($line -match '^  pull_request:\s*$') { 'pr' } else { 'on' }; continue }
-        if ($section -eq 'pr' -and $line -match '^    \S') { $section = if ($line -match '^    paths:\s*$') { 'paths' } else { 'pr' }; continue }
-        if ($section -eq 'paths') {
-            if ($line -match '^\s+-\s+[''"]?([^''"#]+?)[''"]?\s*(#.*)?$') { $patterns.Add($Matches[1]) }
-            elseif ($line.Trim() -and -not $line.Trim().StartsWith('#')) { $section = 'pr' }
-        }
-    }
-    if (-not $name -or $patterns.Count -eq 0) { throw "could not read the name and pull_request paths of $Path" }
-    [pscustomobject]@{ Name = $name; Patterns = $patterns.ToArray() }
-}
-
-# GitHub paths-filter glob subset: `**` crosses directories (`**/` also matches none), `*` does not.
-function Test-PathMatchesPattern {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string[]]$Patterns)
-
-    foreach ($pattern in $Patterns) {
-        $regex = '^' + ([regex]::Escape($pattern) -replace '\\\*\\\*/', '(?:.*/)?' -replace '\\\*\\\*', '.*' -replace '\\\*', '[^/]*') + '$'
-        if ($Path -match $regex) { return $true }
-    }
-    return $false
-}
-
-# A deferred-verdict workflow whose paths the PR changes must have run on the current head
-# (at least one successful job) and must be finished: neither merging nor auto-merge waits for it.
-function Get-DeferredVerdictDenial {
-    [CmdletBinding()]
-    param(
-        [AllowNull()][object[]]$Checks,
-        [AllowNull()][string[]]$ChangedFiles,
-        [Parameter(Mandatory)][object[]]$Workflows
-    )
-
-    foreach ($workflow in $Workflows) {
-        if (-not @($ChangedFiles | Where-Object { Test-PathMatchesPattern -Path $_ -Patterns $workflow.Patterns }).Count) { continue }
-        $own = @($Checks | Where-Object { [string]$_.workflowName -eq $workflow.Name })
-        if (@($own | Where-Object { (Get-CheckState $_) -eq 'SUCCESS' }).Count -eq 0 -or
-            @($own | Where-Object { $PendingStates -contains (Get-CheckState $_) }).Count -gt 0) {
-            "'$($workflow.Name)' has no finished run on this head; it is not a required check, so its verdict must be in first" +
-                $(if ($workflow.Name -eq 'Performance gate') { ' (a head pushed after the PR left draft is measured when it leaves draft again or carries the performance label)' } else { '' })
-        }
-    }
+    $plan = @($Checks | Where-Object { [string]$_.workflowName -eq 'Performance gate' -and (Get-CheckLabel $_) -eq 'Select benchmark classes' })
+    $state = if ($plan.Count) { Get-CheckState $plan[-1] } else { '' }
+    if ($state -eq 'SUCCESS' -or ($ForAutoMerge -and $PendingStates -contains $state)) { return }
+    "'Performance gate' has not measured this head (a head pushed after the PR left draft is measured when it leaves draft again or carries the performance label)"
 }
 
 # The Claude review workflow posts one issue comment per run that starts with

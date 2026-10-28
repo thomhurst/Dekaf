@@ -69,6 +69,8 @@ jobs:
     outputs:
       code: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.code }}
       docs: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.docs }}
+      perf_tooling: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.perf_tooling }}
+      review_helper: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.review_helper }}
     steps:
       - name: Filter changed paths
         id: filter
@@ -111,6 +113,23 @@ jobs:
               - 'Directory.Build.props'
               - 'Directory.Build.targets'
               - 'Directory.Packages.props'
+              - '.github/workflows/ci.yml'
+            perf_tooling:
+              - '.github/scripts/**'
+              - '.github/benchmarks/README.md'
+              - '.github/benchmarks/STANDARD-TOOLS.md'
+              - '.github/workflows/performance-gate.yml'
+              - '.github/workflows/ci.yml'
+              - 'tools/Dekaf.Benchmarks/**'
+              - 'global.json'
+              - 'Directory.Packages.props'
+              - 'Directory.Build.*'
+              - 'src/**'
+            review_helper:
+              - '.github/scripts/pr-review-comment.sh'
+              - '.github/scripts/pr_review_comment.py'
+              - '.github/scripts/test_pr_review_comment.py'
+              - '.github/workflows/claude-code-review.yml'
               - '.github/workflows/ci.yml'
 
   doc-snippets:
@@ -943,6 +962,72 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # Tests of the performance gate and stress tooling, plus a short BenchmarkDotNet export smoke.
+  # They run here, not in their own workflow, so `CI Passed` (and therefore auto-merge) waits for them.
+  performance-tooling:
+    name: Performance tooling tests
+    needs: changes
+    if: needs.changes.outputs.perf_tooling == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          global-json-file: global.json
+      - name: Test benchmark and stress result validation
+        run: |
+          for test in test_performance_gate.py test_check_repository_artifacts.py test_stress_warmup.py test_stress_aba.py test_stress_aba_startup.py; do
+            python3 -m unittest discover -s .github/scripts -p "$test"
+          done
+      - name: Verify the benchmark project exports what the gate screens
+        working-directory: tools/Dekaf.Benchmarks
+        env:
+          MSBUILDDISABLENODEREUSE: '1'
+          DOTNET_CLI_USE_MSBUILD_SERVER: '0'
+        run: |
+          results="$GITHUB_WORKSPACE/.artifacts/bdn-smoke"
+          mkdir -p "$results"
+          # BDN searches for a solution to discover the project for its generated worker (PR #3180).
+          dotnet new sln --name GateBenchmarkExecution --format sln > "$results/solution.log"
+          dotnet sln GateBenchmarkExecution.sln add Dekaf.Benchmarks.csproj >> "$results/solution.log"
+          dotnet build Dekaf.Benchmarks.csproj -c Release --disable-build-servers > "$results/build.log" 2>&1
+          dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- \
+            --filter '*.Unit.ValueTaskSourcePoolBenchmarks.RentReturnSameThread' '*.Unit.ConsumerHotPathBenchmarks.ConsumeBatch_String_Deserialize' \
+            --warmupCount 3 --iterationCount 3 --iterationTime 100 --launchCount 1 --outliers DontRemove \
+            --exporters fulljson --buildTimeout 900 --artifacts "$results/timing" > "$results/timing.log" 2>&1
+          # Identical exports in every phase must screen PASS with both a 0 B/op and an allocating case.
+          python3 "$GITHUB_WORKSPACE/.github/scripts/performance_gate.py" screen --a1 "$results/timing" --b "$results/timing" \
+            --a2 "$results/timing" --iterations 3 --name smoke --output "$results/same.json" --markdown "$results/same.md"
+          python3 - "$results/same.json" <<'EOF'
+          import json, sys
+          report = json.load(open(sys.argv[1]))
+          assert report['screen'] == 'PASS' and len(report['cases']) == 2, report['screen']
+          allocated = sorted(case['B']['allocated_bytes'] for case in report['cases'])
+          assert allocated[0] == 0 < allocated[1], allocated
+          EOF
+          cat "$results/same.md" >> "$GITHUB_STEP_SUMMARY"
+          echo 'Standard BenchmarkDotNet export smoke passed; this short run is not performance acceptance.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain original exports and logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: performance-tooling-tests
+          path: .artifacts/bdn-smoke/
+
+  review-helper:
+    name: Review helper tests
+    needs: changes
+    if: needs.changes.outputs.review_helper == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: python3 -m unittest discover -s .github/scripts -p test_pr_review_comment.py -v
+
   code-quality:
     name: Code Quality
     needs: changes
@@ -1070,7 +1155,7 @@ jobs:
     # required check (a skipped check counts as passing). Auto-merge armed right after a PR
     # leaves draft therefore waits for the ready run.
     name: ${{ needs.changes.result == 'success' && 'CI Passed' || 'CI Passed (incomplete)' }}
-    needs: [disarm-auto-merge, changes, doc-snippets, build, gssapi-packages, unit-net8, unit-net10, aspire-hosting, leak-gates-debug, integration, eventhubs-integration, redpanda-integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality]
+    needs: [disarm-auto-merge, changes, doc-snippets, build, gssapi-packages, unit-net8, unit-net10, aspire-hosting, leak-gates-debug, integration, eventhubs-integration, redpanda-integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality, performance-tooling, review-helper]
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 5

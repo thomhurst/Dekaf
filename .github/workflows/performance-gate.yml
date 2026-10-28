@@ -10,18 +10,13 @@ run-name: 'Performance gate ${{ github.event.pull_request.number && format(''PR 
 # measured. Later pushes are measured only while the PR carries the `performance` label; adding the
 # label measures the current head. Converting back to draft cancels an in-flight measurement.
 # Unrelated label and push events get their own concurrency group so they never cancel a run.
+#
+# `Micro A1/B/A2 screen` is a required check of the `Main` ruleset, so auto-merge armed right after a
+# PR leaves draft waits for the verdict. The workflow therefore has no paths filter: every ready head
+# must report the check, and the class selection passes PRs that touch no benchmarked code.
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled]
-    paths:
-      - 'src/**'
-      - 'tools/Dekaf.Benchmarks/**'
-      - 'Directory.Packages.props'
-      - 'Directory.Build.props'
-      - 'Directory.Build.targets'
-      - 'global.json'
-      - '.github/workflows/performance-gate.yml'
-      - '.github/scripts/performance_gate.py'
   workflow_dispatch:
     inputs:
       base_sha:
@@ -274,9 +269,16 @@ jobs:
           retention-days: 30
 
   gate:
-    name: Micro A1/B/A2 screen
+    # The required check name is computed: a job skipped by `if:` never evaluates `name`, so a
+    # draft or ignored-event run reports this expression text instead of `Micro A1/B/A2 screen`
+    # and cannot satisfy the required check (a skipped check counts as passing).
+    name: ${{ needs.plan.result != 'cancelled' && 'Micro A1/B/A2 screen' || 'Micro A1/B/A2 screen (cancelled)' }}
     needs: [plan, measure]
-    if: always() && needs.plan.result != 'skipped'
+    # A push to a ready PR without the `performance` label is not measured, but its head still
+    # needs the required check; Assert-PrGreen.ps1 keeps agents from merging such a head.
+    if: >-
+      always() && (needs.plan.result != 'skipped'
+      || github.event.action == 'synchronize' && github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -286,6 +288,10 @@ jobs:
           APPLICABLE: ${{ needs.plan.outputs.applicable }}
           MEASURE_RESULT: ${{ needs.measure.result }}
         run: |
+          if [[ "$PLAN_RESULT" == skipped ]]; then
+            echo 'This head was pushed after the PR left draft and is not measured; convert to draft and back, or add the `performance` label, to measure it.' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           if [[ "$PLAN_RESULT" != success ]]; then
             echo '::error::Selecting benchmark classes failed; no verdict is available.'
             exit 1

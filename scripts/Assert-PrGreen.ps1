@@ -9,17 +9,18 @@
 #     conclusion in SUCCESS/SKIPPED/NEUTRAL; StatusContext: state=SUCCESS). Only the newest
 #     execution of each check counts, so a run superseded on the same head (a skipped draft
 #     run, or one cancelled by `converted_to_draft`) does not deny forever.
-#   - every non-required, path-filtered workflow the PR triggers has finished on this head
-#     ($DeferredVerdictWorkflows in AssertPrGreenChecks.ps1)
+#   - the performance gate measured this head (its required check also passes a head pushed
+#     after the PR left draft, which it does not measure)
 #   - no current-head top-level review has actionable finding headings
 #   - no unresolved review threads
 #
 # -ForAutoMerge is the gate for arming native auto-merge (Enable-AutoMerge.ps1). GitHub's
 # auto-merge waits only for the `Main` ruleset's required checks, so this mode lets checks of
-# the workflows those aggregate (CI, Dependency Review) still be pending, and nothing else:
+# the workflows those aggregate (CI, Performance gate, Dependency Review) still be pending, and
+# nothing else:
 #   - mergeStateStatus may be BLOCKED or UNSTABLE while required checks run
 #   - every other check is terminal and passing, and no check has failed
-#   - every non-required, path-filtered workflow the PR triggers has finished on this head
+#   - the performance gate is measuring (or has measured) this head
 #   - the Claude review workflow has posted its review of the current head
 #   - no actionable top-level review and no unresolved review threads
 #
@@ -88,18 +89,8 @@ if ($bad.Count -gt 0) {
     Deny ("checks not green: " + ($bad -join '; '))
 }
 
-# Changed paths decide which path-filtered workflows must have reported.
-$files = @(gh api "repos/$owner/$name/pulls/$Pr/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)' 2>$null)
-if ($LASTEXITCODE -ne 0 -or $files.Count -eq 0) { Deny "could not list the PR's changed files (exit $LASTEXITCODE)" }
-try {
-    $workflowRoot = Join-Path $PSScriptRoot '../.github/workflows'
-    $deferred = @($DeferredVerdictWorkflows | ForEach-Object { Get-WorkflowPathFilter -Path (Join-Path $workflowRoot $_) })
-}
-catch {
-    Deny "could not read deferred-verdict workflow filters: $($_.Exception.Message)"
-}
-$waiting = @(Get-DeferredVerdictDenial -Checks $checks -ChangedFiles $files -Workflows $deferred)
-if ($waiting.Count -gt 0) { Deny ($waiting -join '; ') }
+$unmeasured = @(Get-PerformanceGateDenial -Checks $checks -ForAutoMerge:$ForAutoMerge)
+if ($unmeasured.Count -gt 0) { Deny ($unmeasured -join '; ') }
 
 if ($ForAutoMerge) {
     $firstLines = @(gh api "repos/$owner/$name/issues/$Pr/comments" --paginate `

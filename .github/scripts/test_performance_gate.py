@@ -424,7 +424,10 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("github.event.action == 'labeled' && github.event.label.name == 'performance'", workflow)
         self.assertIn("github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'performance')", workflow)
         self.assertIn("format('-ignored-{0}', github.run_id)", workflow)
-        self.assertIn("- 'tools/Dekaf.Benchmarks/**'", workflow)
+        # A required check: every ready head reports it, and a skipped draft run cannot.
+        self.assertNotIn('    paths:', workflow)
+        self.assertIn("name: ${{ needs.plan.result != 'cancelled' && 'Micro A1/B/A2 screen' || 'Micro A1/B/A2 screen (cancelled)' }}", workflow)
+        self.assertIn("|| github.event.action == 'synchronize' && github.event.pull_request.draft == false)", workflow)
         self.assertNotIn('ubicloud', workflow)
         self.assertNotIn('jq ', workflow)
         self.assertIn('runs-on: ubuntu-latest', measure)
