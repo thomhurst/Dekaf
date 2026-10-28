@@ -4798,6 +4798,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
         }
 
+        void ReleaseDetachedBatchBytesIfSafe()
+        {
+            if (!ownsRotation && sealedBatchToEnqueue is null && sealedBatchBytesToRelease > 0)
+            {
+                var bytesToRelease = sealedBatchBytesToRelease;
+                sealedBatchBytesToRelease = 0;
+                ReleaseMemory(bytesToRelease);
+            }
+        }
+
         try
         {
             while (true)
@@ -4997,12 +5007,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     }
                 }
 
-                if (!ownsRotation && sealedBatchToEnqueue is null && sealedBatchBytesToRelease > 0)
-                {
-                    var bytesToRelease = sealedBatchBytesToRelease;
-                    sealedBatchBytesToRelease = 0;
-                    ReleaseMemory(bytesToRelease);
-                }
+                ReleaseDetachedBatchBytesIfSafe();
 
                 if (disposed)
                 {
@@ -5039,8 +5044,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     if (batchToComplete is not null)
                     {
                         CompleteDetachedBatchAndPublish(pd, batchToComplete);
+                        ownsRotation = false;
                     }
 
+                    // A rotation whose new batch sealed at once still holds the rotated batch's
+                    // seal refund; release it now that the rotation has been handed off.
+                    ReleaseDetachedBatchBytesIfSafe();
                     if (drainPendingAfterAppend)
                         DrainPendingAppends();
 
