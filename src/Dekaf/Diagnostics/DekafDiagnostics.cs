@@ -26,7 +26,8 @@ public static class DekafDiagnostics
     /// <summary>
     /// Parent for send spans started on this async flow in place of <see cref="Activity.Current"/>;
     /// default means none. The outbox relay sets it so a send continues the row's stored trace
-    /// even when the relay span itself is not sampled.
+    /// even when the relay span itself is not sampled. A non-default value also tells the
+    /// producer to replace the stored propagation headers only after creating a send span.
     /// </summary>
     internal static readonly AsyncLocal<ActivityContext> SendParentContext = new();
     internal static readonly Meter Meter = new(MeterName);

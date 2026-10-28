@@ -12,6 +12,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\Shared\ActivityListenerIsolation.cs" Link="ActivityListenerIsolation.cs" Condition="'$(PublishAot)' != 'true'" />
     <ProjectReference Include="..\..\src\Dekaf\Dekaf.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Aspire\Dekaf.Aspire.csproj" Condition="'$(PublishAot)' != 'true'" />
     <ProjectReference Include="..\..\src\Dekaf.Aspire.SchemaRegistry\Dekaf.Aspire.SchemaRegistry.csproj" Condition="'$(PublishAot)' != 'true'" />
@@ -42,6 +43,8 @@
 
   <ItemGroup Condition="'$(PublishAot)' == 'true'">
     <Compile Remove="OutboxRelayIntegrationTests.cs" />
+    <!-- Sampling isolation reflects over TUnit internals; this matrix runs in the JIT legs. -->
+    <Compile Remove="OutboxTracePropagationTests.cs" />
     <Compile Remove="OutboxRelationalMetricsTests.cs" />
     <Compile Remove="OutboxRelationalLeaseTests.cs" />
     <Compile Remove="OutboxDynamoDb*.cs" />

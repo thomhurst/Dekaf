@@ -6,6 +6,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\Shared\ActivityListenerIsolation.cs" Link="ActivityListenerIsolation.cs" />
     <Compile Include="..\..\tools\Dekaf.Benchmarks\Infrastructure\BenchmarkJobSelection.cs"
              Link="Benchmarks\BenchmarkJobSelection.cs" />
     <ProjectReference Include="..\..\src\Dekaf\Dekaf.csproj" />

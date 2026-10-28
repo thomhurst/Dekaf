@@ -18,7 +18,7 @@ namespace Dekaf.Outbox;
 /// producer's send span becomes its child and replaces the stored <c>traceparent</c> and
 /// <c>tracestate</c> headers, so consumers continue the enqueuing request's trace. When the
 /// relay span is not sampled, the send span parents directly to the stored context. Without a
-/// listener the stored headers are published unchanged.
+/// listener, or when no send activity is created, the stored headers are published unchanged.
 /// </remarks>
 public sealed class DekafOutboxPublisher : IOutboxPublisher
 {
@@ -90,7 +90,7 @@ public sealed class DekafOutboxPublisher : IOutboxPublisher
                 // finally restores the relay loop's own context.
                 var previousActivity = Activity.Current;
                 var previousSendParent = DekafDiagnostics.SendParentContext.Value;
-                var hasStoredContext = TryTakeStoredTraceContext(headers, out var storedContext);
+                var hasStoredContext = TryReadStoredTraceContext(headers, out var storedContext);
                 if (hasStoredContext)
                 {
                     activity = StartRelayActivity(message, storedContext);
@@ -182,12 +182,12 @@ public sealed class DekafOutboxPublisher : IOutboxPublisher
     }
 
     /// <summary>
-    /// Reads the trace context stored on the row and drops the stored trace headers, so the
-    /// producer's send span context is the only one published. Like consumer extraction, the
-    /// last <c>traceparent</c> and <c>tracestate</c> win. Returns false, leaving the headers
-    /// unchanged, when no listener is attached or the row carries no valid stored context.
+    /// Reads the trace context stored on the row without removing its propagation headers.
+    /// The producer replaces them only when a send activity is created. Like consumer
+    /// extraction, the last <c>traceparent</c> and <c>tracestate</c> win. Returns false when
+    /// no listener is attached or the row carries no valid stored context.
     /// </summary>
-    private static bool TryTakeStoredTraceContext(Headers headers, out ActivityContext storedContext)
+    private static bool TryReadStoredTraceContext(Headers headers, out ActivityContext storedContext)
     {
         storedContext = default;
         if (!DekafDiagnostics.Source.HasListeners())
@@ -210,8 +210,6 @@ public sealed class DekafOutboxPublisher : IOutboxPublisher
             return false;
         }
 
-        headers.Remove(TraceContextPropagator.TraceparentHeader);
-        headers.Remove(TraceContextPropagator.TracestateHeader);
         return true;
     }
 
