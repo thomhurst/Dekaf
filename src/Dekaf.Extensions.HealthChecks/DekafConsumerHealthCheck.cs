@@ -66,7 +66,9 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
             {
                 var position = positions.GetPosition(topicPartition);
 
-                if (position is not null)
+                // A negative position is an unresolved seek sentinel (-2 earliest, -1 latest),
+                // not an offset; treat it as unmeasured like GetCurrentLag does.
+                if (position is >= 0)
                 {
                     partitionsWithPositions.Add((topicPartition, position.Value));
                 }
