@@ -3695,11 +3695,33 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (pendingList.Count == 0) continue;
 
             var removedAny = false;
+            // First entry this scan skipped as incomplete. A connection completes its responses
+            // in request order, but an earlier response can complete after the scan skipped it
+            // and before the scan reaches a later completed one. Going back keeps the order, so a
+            // rejected batch is queued before a later batch of its partition is judged (#3823).
+            var firstSkipped = -1;
             for (var i = 0; i < pendingList.Count; i++)
             {
                 var pending = pendingList[i];
+                if (pending.IsClaimed)
+                {
+                    continue;
+                }
+
                 if (!pending.ResponseTask.IsCompleted)
                 {
+                    if (firstSkipped < 0)
+                        firstSkipped = i;
+                    continue;
+                }
+
+                if (firstSkipped >= 0 && pendingList[firstSkipped].ResponseTask.IsCompleted)
+                {
+                    // Restart at the skipped entry; the loop increment lands on it. Each restart
+                    // claims that entry, so the scan ends. A skipped entry that is still
+                    // incomplete means a genuine out-of-order completion: process as before.
+                    i = firstSkipped - 1;
+                    firstSkipped = -1;
                     continue;
                 }
 

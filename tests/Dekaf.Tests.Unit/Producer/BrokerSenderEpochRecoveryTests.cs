@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Threading.Tasks.Sources;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
@@ -1459,6 +1460,83 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
     }
 
     /// <summary>
+    /// A's rejection arrives after the response scan has looked at A and before it looks at B,
+    /// which is already answered OutOfOrderSequenceNumber. The scan goes back to A first, so B
+    /// sees A queued for its resend and the transaction is kept (#3823 review).
+    /// </summary>
+    [Test]
+    public async Task OutOfOrderSequence_PredecessorAnsweredDuringTheScan_IsHandledFirst(CancellationToken cancellationToken)
+    {
+        var responses = Enumerable.Range(0, 2).Select(_ => NewResponseSource()).ToArray();
+        var (pool, connection) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>(responses));
+        connection.CaptureProduceRequests = true;
+        var answerA = new ScanGatedResponseSource();
+        var answerB = new ScanGatedResponseSource();
+        answerA.ReadyWhen = () => answerB.Inspected;
+        connection.PipelinedResponseSourceForSend = send => send switch
+        {
+            1 => answerA,
+            2 => answerB,
+            _ => null,
+        };
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(
+            maxInFlightRequestsPerConnection: 2,
+            retryBackoffMs: 0,
+            transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var transactionFailures = 0;
+        accumulator.OnTransactionalBatchFailed = (_, _, _, _) =>
+        {
+            Interlocked.Increment(ref transactionFailures);
+            return true;
+        };
+        var behindPredecessor = new EventLogger("LogOutOfOrderSequenceBehindRejectedPredecessor");
+        var sender = CreateSender(
+            pool, options, accumulator, (_, _, _, _, _) => { },
+            produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
+            isTransactional: true,
+            usesTransactionV2: true,
+            logger: behindPredecessor);
+
+        try
+        {
+            var (batchA, deliveryA) = CreateTrackedBatch(valueTaskSourcePool, Partition0, producerId: 1234, producerEpoch: 5);
+            sender.Enqueue(batchA);
+            await WaitForSendsAsync(connection, 1, cancellationToken);
+            var (batchB, deliveryB) = CreateTrackedBatch(valueTaskSourcePool, Partition0, producerId: 1234, producerEpoch: 5, recordCount: 2);
+            sender.Enqueue(batchB);
+            await WaitForSendsAsync(connection, 2, cancellationToken);
+
+            answerA.Answer(CreateErrorResponse(Topic, 0, ErrorCode.NotEnoughReplicas));
+            answerB.Answer(CreateErrorResponse(Topic, 0, ErrorCode.OutOfOrderSequenceNumber));
+            await behindPredecessor.WaitAsync(cancellationToken);
+
+            await WaitForSendsAsync(connection, 3, cancellationToken);
+            responses[0].SetResult(CreateSuccessResponse(Topic, 0, baseOffset: 0));
+            await WaitForSendsAsync(connection, 4, cancellationToken);
+            responses[1].SetResult(CreateSuccessResponse(Topic, 0, baseOffset: 1));
+
+            await Assert.That((await deliveryA.WaitAsync(cancellationToken)).Offset).IsEqualTo(0L);
+            await Assert.That((await deliveryB.WaitAsync(cancellationToken)).Offset).IsEqualTo(1L);
+            await Assert.That(StampsOf(connection, request: 2)).IsEquivalentTo([(0, 1, 1234L, (short)5, 0)]);
+            await Assert.That(StampsOf(connection, request: 3)).IsEquivalentTo([(0, 2, 1234L, (short)5, 1)]);
+            await Assert.That(Volatile.Read(ref transactionFailures)).IsEqualTo(0);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Assert.Fail($"A wait was cancelled before the send loop got there. Requests written so far:{Environment.NewLine}{DescribeRequests(connection)}");
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
     /// A first send that is merely unanswered is no rejected predecessor: when B is answered
     /// OutOfOrderSequenceNumber ahead of A, the epoch recovery still runs (#3823 keeps it).
     /// </summary>
@@ -1768,6 +1846,70 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
     }
 
     /// <summary>Signals once the sender logs the event named <paramref name="eventName"/>.</summary>
+    /// <summary>
+    /// A pipelined answer that reads as pending until <see cref="ReadyWhen"/> holds, so a test can
+    /// make it complete at a chosen point of the sender's response scan. <see cref="Inspected"/>
+    /// records that the sender looked at the answer after it arrived.
+    /// </summary>
+    private sealed class ScanGatedResponseSource : IPipelinedResponseSource<ProduceResponse>
+    {
+        private readonly List<(Action<object?> Continuation, object? State)> _continuations = [];
+        private ProduceResponse? _response;
+        private volatile bool _inspected;
+
+        public Func<bool> ReadyWhen { get; set; } = static () => true;
+
+        public bool Inspected => _inspected;
+
+        public void Answer(ProduceResponse response)
+        {
+            (Action<object?> Continuation, object? State)[] continuations;
+            lock (_continuations)
+            {
+                Volatile.Write(ref _response, response);
+                continuations = [.. _continuations];
+                _continuations.Clear();
+            }
+
+            foreach (var (continuation, state) in continuations)
+                ThreadPool.QueueUserWorkItem(continuation, state, preferLocal: false);
+        }
+
+        public ValueTaskSourceStatus GetStatus(short token)
+        {
+            if (Volatile.Read(ref _response) is null)
+                return ValueTaskSourceStatus.Pending;
+
+            _inspected = true;
+            return ReadyWhen() ? ValueTaskSourceStatus.Succeeded : ValueTaskSourceStatus.Pending;
+        }
+
+        public ProduceResponse GetResult(short token) =>
+            Volatile.Read(ref _response) ?? throw new InvalidOperationException("Not answered yet.");
+
+        public void OnCompleted(
+            Action<object?> continuation,
+            object? state,
+            short token,
+            ValueTaskSourceOnCompletedFlags flags)
+        {
+            lock (_continuations)
+            {
+                if (Volatile.Read(ref _response) is null)
+                {
+                    _continuations.Add((continuation, state));
+                    return;
+                }
+            }
+
+            ThreadPool.QueueUserWorkItem(continuation, state, preferLocal: false);
+        }
+
+        public void Abandon(short token)
+        {
+        }
+    }
+
     private sealed class EventLogger(string eventName) : Microsoft.Extensions.Logging.ILogger
     {
         private readonly TaskCompletionSource _logged = new(TaskCreationOptions.RunContinuationsAsynchronously);

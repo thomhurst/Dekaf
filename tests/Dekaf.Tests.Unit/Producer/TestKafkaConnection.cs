@@ -95,6 +95,13 @@ internal sealed class TestKafkaConnection :
     /// </summary>
     public Func<CapturedProduceRequest, ValueTask<Task<ProduceResponse>>>? SendProducePipelinedAfterWriteForRequest { get; set; }
     public IPipelinedResponseSource<ProduceResponse>? PipelinedResponseSource { get; set; }
+
+    /// <summary>
+    /// Per-request variant of <see cref="PipelinedResponseSource"/>: receives the 1-based index of
+    /// the pipelined send and returns the source that answers it, or null to fall through to the
+    /// other response hooks. Takes precedence over <see cref="PipelinedResponseSource"/>.
+    /// </summary>
+    public Func<int, IPipelinedResponseSource<ProduceResponse>?>? PipelinedResponseSourceForSend { get; set; }
     public Func<ValueTask>? SendProduceFireAndForgetWithCallerTimeout { get; set; }
     public Func<Type, object>? SendResponse { get; set; }
     public Func<int>? ActiveOperationCountProvider { get; set; }
@@ -205,7 +212,7 @@ internal sealed class TestKafkaConnection :
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
-        Interlocked.Increment(ref SendPipelinedAfterWriteCalls);
+        var sendIndex = Interlocked.Increment(ref SendPipelinedAfterWriteCalls);
 
         CapturedProduceRequest? captured = null;
         if ((CaptureProduceRequests || SendProducePipelinedAfterWriteForRequest is not null)
@@ -218,6 +225,9 @@ internal sealed class TestKafkaConnection :
                     CapturedProduceRequests.Add(captured);
             }
         }
+
+        if (PipelinedResponseSourceForSend?.Invoke(sendIndex) is { } sendSource)
+            return new PipelinedResponse<TResponse>((IPipelinedResponseSource<TResponse>)(object)sendSource, token: 0);
 
         if (PipelinedResponseSource is not null)
         {
