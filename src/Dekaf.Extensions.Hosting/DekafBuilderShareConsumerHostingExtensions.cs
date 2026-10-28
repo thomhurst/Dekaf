@@ -243,6 +243,11 @@ public static class DekafBuilderShareConsumerHostingExtensions
             builder.Services.AddKeyedSingleton<IKafkaShareConsumer<TKey, TValue>>(serviceKey, (provider, _) =>
                 provider.GetRequiredKeyedService<IKafkaShareConsumer<TKey, TValue>>(registrationKey));
 
+        // The service initializes its consumer with restart-on-transient-failure, so keep it out of
+        // eager startup initialization, which would fault the host instead.
+        builder.Services.AddSingleton(provider => new HostedServiceOwnedClient(
+            provider.GetRequiredKeyedService<IKafkaShareConsumer<TKey, TValue>>(registrationKey)));
+
         builder.Services.AddSingleton<IHostedService>(provider =>
         {
             var consumer = provider.GetRequiredKeyedService<IKafkaShareConsumer<TKey, TValue>>(registrationKey);
