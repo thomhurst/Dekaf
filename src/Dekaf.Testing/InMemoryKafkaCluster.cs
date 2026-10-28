@@ -1998,6 +1998,13 @@ public sealed partial class InMemoryKafkaCluster
 
         if (partitioner is not null)
         {
+            // No producer batches exist here, so sticky state cannot receive batch callbacks.
+            if (partitioner is IUniformStickyPartitioner sticky && sticky.UsesStickyPartition(key, isKeyNull))
+            {
+                throw new NotSupportedException(
+                    "In-memory producers do not support sticky partition selection. Use an explicit partition or a partitioner that does not require batch callbacks.");
+            }
+
             var selectedByPartitioner = partitioner.Partition(topic.Name, key, isKeyNull, topic.Partitions.Count);
             if ((uint)selectedByPartitioner >= (uint)topic.Partitions.Count)
             {

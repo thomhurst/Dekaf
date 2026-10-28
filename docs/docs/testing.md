@@ -115,6 +115,8 @@ var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions
 });
 ```
 
+The cluster calls `IPartitioner.Partition` only. It does not simulate producer batches or call batch callbacks. Configured `DefaultPartitioner` and `StickyPartitioner` instances can hash nonempty keys, but a record that needs their sticky selection throws `NotSupportedException`: null or empty keys, or any key when `ignoreKeys: true`. An explicit record partition bypasses the partitioner. Use a real broker to test sticky batch placement.
+
 ## Admin and offsets
 
 `InMemoryAdminClient` supports common unit-test operations such as creating, deleting, listing, and describing topics, altering/listing group offsets, deleting records, creating partitions, and listing offsets. Broker-only APIs such as ACL, SCRAM, and config mutation are accepted as no-ops or return empty results.

@@ -32,6 +32,10 @@ public sealed class InMemoryKafkaClusterOptions
     /// with a null or empty key rotate across partitions. Set this to the partitioner the
     /// application configures, for example <see cref="Murmur2RandomPartitioner"/>, so that tests see
     /// the same placement. The partitioner is called under the cluster's lock.
+    /// The cluster does not simulate producer batches or call partitioner batch callbacks.
+    /// <see cref="DefaultPartitioner"/> and <see cref="StickyPartitioner"/> are supported only
+    /// when they hash a nonempty key; selecting a sticky partition throws
+    /// <see cref="NotSupportedException"/>. An explicit record partition bypasses the partitioner.
     /// </remarks>
     public IPartitioner? Partitioner { get; set; }
 
