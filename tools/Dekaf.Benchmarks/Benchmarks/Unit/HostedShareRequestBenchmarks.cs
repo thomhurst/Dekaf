@@ -104,16 +104,21 @@ public class HostedShareRequestBenchmarks
             .CreateDelegate<Func<int, List<TopicPartition>, Dictionary<TopicPartition, List<AcknowledgementBatchData>>, CancellationToken, Task>>(_consumer);
         _close = typeof(KafkaShareConsumer<string, string>).GetMethod("CloseSessionForBrokerAsync", flags)!
             .CreateDelegate<Func<int, List<TopicPartition>, CancellationToken, Task>>(_consumer);
-        // Older products have four parameters; batch-session cleanup adds an optional fifth.
-        // Bind the same direct-call adapter on both revisions outside measurement.
+        // Older products have four parameters; later revisions add optional trailing flags.
+        // Bind the same direct-call adapter on every revision outside measurement.
         var acknowledge = typeof(KafkaShareConsumer<string, string>).GetMethod("SendAcknowledgeAsync", flags)!;
         var broker = Expression.Parameter(typeof(int));
         var acknowledgements = Expression.Parameter(typeof(Dictionary<TopicPartition, List<AcknowledgementBatchData>>));
         var retry = Expression.Parameter(typeof(bool));
         var cancellation = Expression.Parameter(typeof(CancellationToken));
-        Expression[] arguments = [broker, acknowledgements, retry, cancellation];
-        if (acknowledge.GetParameters().Length == 5)
-            arguments = [.. arguments, Expression.Constant(false)];
+        var parameters = acknowledge.GetParameters();
+        var arguments = new Expression[parameters.Length];
+        arguments[0] = broker;
+        arguments[1] = acknowledgements;
+        arguments[2] = retry;
+        arguments[3] = cancellation;
+        for (var index = 4; index < parameters.Length; index++)
+            arguments[index] = Expression.Constant(parameters[index].DefaultValue, parameters[index].ParameterType);
         _acknowledge = Expression.Lambda<Func<int, Dictionary<TopicPartition, List<AcknowledgementBatchData>>, bool, CancellationToken, Task>>(
             Expression.Call(Expression.Constant(_consumer), acknowledge, arguments),
             broker, acknowledgements, retry, cancellation).Compile();

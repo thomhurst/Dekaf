@@ -486,7 +486,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 ShareMetrics?.BeginPollWait();
                 try
                 {
-                    await CommitCoreAsync(cancellationToken, releaseImplicit: false).ConfigureAwait(false);
+                    await CommitCoreAsync(cancellationToken, releaseImplicit: false, reportPartitionErrors: true)
+                        .ConfigureAwait(false);
                 }
                 finally
                 {
@@ -799,10 +800,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     // deferWithoutSession: a commit outside the poll loop leaves acknowledgements for a reset
     // session pending for the ShareFetch that reopens it. The poll loop's own commits keep
     // sending, because they run before that fetch and would otherwise wait for it forever.
+    // reportPartitionErrors: like acknowledgements carried by a ShareFetch, the drain that runs while
+    // records stay buffered reports partition-level failures through the commit callback only. One
+    // failed partition, such as one of a deleted topic, must not stop delivery of the buffered records.
     private async ValueTask CommitCoreAsync(
         CancellationToken cancellationToken,
         bool releaseImplicit = false,
-        bool deferWithoutSession = false)
+        bool deferWithoutSession = false,
+        bool reportPartitionErrors = false)
     {
         // A detached fetch can still advance the session epochs these requests carry, and may
         // hold inline acknowledgements already taken from the tracker, so settle it first.
@@ -848,7 +853,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 ref acknowledgementErrors,
                 unresolvedAcknowledgements,
                 exception);
-            firstError = exception;
+            if (!reportPartitionErrors)
+                firstError = exception;
         }
 
         foreach (var result in results)
@@ -865,6 +871,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             AddAcknowledgementErrors(ref acknowledgementErrors, result.Errors);
             if (result.Error is not null)
                 AddAcknowledgementErrors(ref acknowledgementErrors, result.FailedAcknowledgements, result.Error);
+            if (reportPartitionErrors && !result.RequestFailed)
+                continue;
             if (result.Error is OperationCanceledException && cancellationToken.IsCancellationRequested)
                 firstError = result.Error;
             else
@@ -908,7 +916,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             unresolved.Clear();
             tasks.Add(Task.FromResult(error is OperationCanceledException && cancellationToken.IsCancellationRequested
                 ? AcknowledgeBrokerResult.NotSent(failed)
-                : new AcknowledgeBrokerResult(null, failed, error, null)));
+                : new AcknowledgeBrokerResult(null, failed, error, null, RequestFailed: true)));
             return await Task.WhenAll(tasks).ConfigureAwait(false);
         }
         var resolved = GroupAcksByLeader(unresolved, out var remaining);
@@ -941,7 +949,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         }
         catch (Exception ex)
         {
-            return new AcknowledgeBrokerResult(null, acknowledgements, ex, null);
+            return new AcknowledgeBrokerResult(null, acknowledgements, ex, null, RequestFailed: true);
         }
     }
 
@@ -1444,7 +1452,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                         successfulAcknowledgements,
                         failedAcknowledgements,
                         firstError ?? noSession,
-                        acknowledgementErrors);
+                        acknowledgementErrors,
+                        RequestFailed: true);
                 }
 
                 var request = new ShareAcknowledgeRequest
@@ -1579,7 +1588,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     successfulAcknowledgements,
                     failedAcknowledgements,
                     ex,
-                    acknowledgementErrors);
+                    acknowledgementErrors,
+                    RequestFailed: true);
             }
             catch (Exception ex) when (!responseReceived && !closeSession)
             {
@@ -1597,7 +1607,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     successfulAcknowledgements,
                     failedAcknowledgements,
                     firstError ?? ex,
-                    acknowledgementErrors);
+                    acknowledgementErrors,
+                    RequestFailed: true);
             }
             catch (Exception ex) when (retryRetriableFailures
                                        && attempt < RetryHelper.MaxRetries
@@ -1615,7 +1626,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                         successfulAcknowledgements,
                         failedAcknowledgements,
                         cancellationException,
-                        acknowledgementErrors);
+                        acknowledgementErrors,
+                        RequestFailed: true);
                 }
             }
             catch (Exception ex)
@@ -1629,7 +1641,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     successfulAcknowledgements,
                     failedAcknowledgements,
                     firstError ?? ex,
-                    acknowledgementErrors);
+                    acknowledgementErrors,
+                    RequestFailed: true);
             }
         }
     }
@@ -3274,7 +3287,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? SuccessfulAcknowledgements,
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? FailedAcknowledgements,
         Exception? Error,
-        Dictionary<TopicPartition, Exception>? Errors)
+        Dictionary<TopicPartition, Exception>? Errors,
+        // False when Error comes only from partition-level acknowledgement errors in a response.
+        bool RequestFailed = false)
     {
         // Pending acknowledgements without a response or failure were never submitted.
         // Reuse the existing representation without enlarging every broker result.
