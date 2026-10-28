@@ -2105,7 +2105,13 @@ public sealed class InMemoryConsumerFaultTests
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic(Topic, partitionCount: 2);
         var producer = new InMemoryProducer<string, string>(cluster);
-        await producer.ProduceAsync(Topic, "key", "value");
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "value",
+            Partition = 0
+        });
         await using var consumer = CreateConsumer(
             cluster,
             enableAutoOffsetStore: true,

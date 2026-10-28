@@ -102,6 +102,21 @@ services.AddDekafInMemory(options =>
 
 Register `ISerializer<T>` and `IDeserializer<T>` in DI when your application uses custom payload types. Built-in Dekaf serializers are used automatically for common primitive types.
 
+## Partitioning
+
+Records produced without an explicit partition go where the real producer's default partitioner puts them: keyed records use Kafka-compatible Murmur2, so a key lands on the same partition as with `KafkaProducer` or the Java client. Records with a null or empty key rotate across partitions; the real producer uses sticky partitioning for them, so tests should not depend on their placement.
+
+When your application configures a different partitioner, set the same one on the cluster options so tests see the same placement:
+
+```csharp
+var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions
+{
+    Partitioner = new Murmur2RandomPartitioner()
+});
+```
+
+The cluster calls `IPartitioner.Partition` only. It does not simulate producer batches or call batch callbacks. Configured `DefaultPartitioner` and `StickyPartitioner` instances can hash nonempty keys, but a record that needs their sticky selection throws `NotSupportedException`: null or empty keys, or any key when `ignoreKeys: true`. An explicit record partition bypasses the partitioner. Use a real broker to test sticky batch placement.
+
 ## Admin and offsets
 
 `InMemoryAdminClient` supports common unit-test operations such as creating, deleting, listing, and describing topics, altering/listing group offsets, deleting records, creating partitions, and listing offsets. Broker-only APIs such as ACL, SCRAM, and config mutation are accepted as no-ops or return empty results.

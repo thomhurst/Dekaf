@@ -1978,7 +1978,15 @@ public sealed partial class InMemoryKafkaCluster
         return topic.Partitions[partition];
     }
 
-    private static int SelectPartition(TopicState topic, int? requestedPartition, byte[] key, bool isKeyNull)
+    private int SelectPartition(TopicState topic, int? requestedPartition, byte[] key, bool isKeyNull)
+        => SelectPartition(topic, requestedPartition, key, isKeyNull, _options.Partitioner);
+
+    private static int SelectPartition(
+        TopicState topic,
+        int? requestedPartition,
+        byte[] key,
+        bool isKeyNull,
+        IPartitioner? partitioner)
     {
         if (requestedPartition is { } partition)
         {
@@ -1988,27 +1996,33 @@ public sealed partial class InMemoryKafkaCluster
             return partition;
         }
 
+        if (partitioner is not null)
+        {
+            // No producer batches exist here, so sticky state cannot receive batch callbacks.
+            if (partitioner is IUniformStickyPartitioner sticky && sticky.UsesStickyPartition(key, isKeyNull))
+            {
+                throw new NotSupportedException(
+                    "In-memory producers do not support sticky partition selection. Use an explicit partition or a partitioner that does not require batch callbacks.");
+            }
+
+            var selectedByPartitioner = partitioner.Partition(topic.Name, key, isKeyNull, topic.Partitions.Count);
+            if ((uint)selectedByPartitioner >= (uint)topic.Partitions.Count)
+            {
+                throw new InvalidOperationException(
+                    $"Partitioner returned partition {selectedByPartitioner} for topic '{topic.Name}' with {topic.Partitions.Count} partitions.");
+            }
+
+            return selectedByPartitioner;
+        }
+
+        // Same mapping as the producer's DefaultPartitioner: Kafka-compatible Murmur2 for keyed
+        // records. Null and empty keys use sticky partitioning there; rotate here instead.
         if (!isKeyNull && key.Length > 0)
-            return (int)(Fnv1A(key) % (uint)topic.Partitions.Count);
+            return Murmur2.Partition(key, topic.Partitions.Count);
 
         var selected = topic.NextPartition;
         topic.NextPartition = (topic.NextPartition + 1) % topic.Partitions.Count;
         return selected;
-    }
-
-    private static uint Fnv1A(ReadOnlySpan<byte> bytes)
-    {
-        const uint offset = 2166136261;
-        const uint prime = 16777619;
-
-        var hash = offset;
-        foreach (var value in bytes)
-        {
-            hash ^= value;
-            hash *= prime;
-        }
-
-        return hash;
     }
 
     private static IReadOnlyList<Header> CopyHeaders(IReadOnlyList<Header>? headers)
