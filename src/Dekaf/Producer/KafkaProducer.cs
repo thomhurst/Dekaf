@@ -4001,58 +4001,60 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     continue;
                 }
 
-                // Check for retriable errors in the response
-                var hasRetriableError = false;
+                // Act on the most severe partition error. Every code the classifier treats as
+                // retriable (including UnknownTopicOrPartition while the coordinator's metadata
+                // catches up with a new topic or partition) is retried, never taken as enrollment.
+                // OperationNotAttempted only reports that a sibling partition failed, so it names
+                // the cause only when no other partition carries one.
+                var tv2 = _currentTransactionUsesTV2;
                 var needsCoordinatorRediscovery = false;
-                ErrorCode? firstNonRetriableError = null;
+                ErrorCode? partitionError = null;
+                var partitionClassification = TransactionErrorClassification.Retriable;
                 string? errorContext = null;
 
                 foreach (var topicResult in response.Results)
                 {
                     foreach (var partitionResult in topicResult.Partitions)
                     {
-                        if (partitionResult.ErrorCode == ErrorCode.None)
+                        var errorCode = partitionResult.ErrorCode;
+                        if (errorCode == ErrorCode.None)
                             continue;
 
-                        if (partitionResult.ErrorCode is ErrorCode.ConcurrentTransactions
-                            or ErrorCode.CoordinatorLoadInProgress
-                            or ErrorCode.CoordinatorNotAvailable)
+                        needsCoordinatorRediscovery |= errorCode == ErrorCode.NotCoordinator;
+                        var classification = TransactionErrorClassifier.Classify(errorCode, tv2);
+                        if (partitionError is { } current
+                            && (errorCode == ErrorCode.OperationNotAttempted
+                                || (current != ErrorCode.OperationNotAttempted
+                                    && classification <= partitionClassification)))
                         {
-                            hasRetriableError = true;
+                            continue;
                         }
-                        else if (partitionResult.ErrorCode == ErrorCode.NotCoordinator)
-                        {
-                            hasRetriableError = true;
-                            needsCoordinatorRediscovery = true;
-                        }
-                        else
-                        {
-                            firstNonRetriableError = partitionResult.ErrorCode;
-                            errorContext = $"{topicResult.Name}-{partitionResult.PartitionIndex}";
-                        }
+
+                        partitionError = errorCode;
+                        partitionClassification = classification;
+                        errorContext = $"{topicResult.Name}-{partitionResult.PartitionIndex}";
                     }
                 }
 
-                if (needsCoordinatorRediscovery && !firstNonRetriableError.HasValue)
+                if (partitionError is not { } failedPartitionError)
+                {
+                    return; // Success
+                }
+
+                // Runs on the BrokerSender background path: transitioning to AbortableError/FatalError
+                // here is what makes subsequent ProduceAsync calls fail fast. Returns only for a
+                // retriable error.
+                var operation = $"AddPartitionsToTxn for {errorContext}";
+                ThrowIfNonRetriableTransactionError(
+                    failedPartitionError,
+                    partitionClassification,
+                    operation,
+                    $"{operation} failed: {failedPartitionError}");
+
+                if (needsCoordinatorRediscovery)
                 {
                     await FindTransactionCoordinatorAsync(retryBudget, retryCancellationToken)
                         .ConfigureAwait(false);
-                }
-
-                if (firstNonRetriableError.HasValue)
-                {
-                    // Runs on the BrokerSender background path: transitioning to AbortableError/FatalError
-                    // here is what makes subsequent ProduceAsync calls fail fast. This error is not in the
-                    // classifier's retriable set, so the call always throws (never returns).
-                    ThrowIfNonRetriableTransactionError(
-                        firstNonRetriableError.Value,
-                        $"AddPartitionsToTxn for {errorContext}",
-                        _currentTransactionUsesTV2);
-                }
-
-                if (!hasRetriableError)
-                {
-                    return; // Success
                 }
 
                 if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
