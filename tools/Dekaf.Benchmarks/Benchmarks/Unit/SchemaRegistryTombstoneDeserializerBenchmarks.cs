@@ -28,6 +28,7 @@ public class SchemaRegistryTombstoneDeserializerBenchmarks
     private AvroSchemaRegistryDeserializer<GenericRecord> _avro = null!;
     private ProtobufSchemaRegistryDeserializer<StringValue> _protobuf = null!;
     private JsonSchemaRegistryDeserializer<string> _json = null!;
+    private SchemaRegistryDeserializer<int> _generic = null!;
     private byte[] _avroWireData = null!;
     private byte[] _protobufWireData = null!;
     private byte[] _jsonWireData = null!;
@@ -56,6 +57,10 @@ public class SchemaRegistryTombstoneDeserializerBenchmarks
         _avro = new AvroSchemaRegistryDeserializer<GenericRecord>(avroRegistry, ownsClient: true);
         _protobuf = new ProtobufSchemaRegistryDeserializer<StringValue>(protobufRegistry, ownsClient: true);
         _json = new JsonSchemaRegistryDeserializer<string>(jsonRegistry, ownsClient: true);
+        _generic = SchemaRegistryDeserializer.Create<int>(
+            new BenchmarkSchemaRegistryClient(new Schema { SchemaType = SchemaType.Json, SchemaString = "{}" }),
+            static (payload, _) => payload.Length,
+            ownsClient: true);
 
         await _avro.WarmupAsync(SchemaId).ConfigureAwait(false);
         _avroWireData = CreateAvroWireData();
@@ -80,6 +85,7 @@ public class SchemaRegistryTombstoneDeserializerBenchmarks
         await _avro.DisposeAsync().ConfigureAwait(false);
         await _protobuf.DisposeAsync().ConfigureAwait(false);
         await _json.DisposeAsync().ConfigureAwait(false);
+        await _generic.DisposeAsync().ConfigureAwait(false);
     }
 
     [Benchmark]
@@ -92,6 +98,9 @@ public class SchemaRegistryTombstoneDeserializerBenchmarks
     public string JsonNonNull() => _json.Deserialize(_jsonWireData, _valueContext);
 
     [Benchmark]
+    public int GenericNonNull() => _generic.Deserialize(_jsonWireData, _valueContext);
+
+    [Benchmark]
     public GenericRecord? AvroTombstone() => _avro.Deserialize(ReadOnlyMemory<byte>.Empty, _tombstoneContext);
 
     [Benchmark]
@@ -99,6 +108,21 @@ public class SchemaRegistryTombstoneDeserializerBenchmarks
 
     [Benchmark]
     public string? JsonTombstone() => _json.Deserialize(ReadOnlyMemory<byte>.Empty, _tombstoneContext);
+
+    [Benchmark]
+    public int GenericTombstone()
+    {
+        // Before #3729 the generic deserializer threw on tombstones; catching keeps the baseline
+        // revision measurable for the performance gate. The fixed path never throws.
+        try
+        {
+            return _generic.Deserialize(ReadOnlyMemory<byte>.Empty, _tombstoneContext);
+        }
+        catch (InvalidOperationException)
+        {
+            return -1;
+        }
+    }
 
     private static byte[] CreateAvroWireData()
     {
