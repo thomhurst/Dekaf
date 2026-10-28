@@ -18,7 +18,9 @@ are measured only while the PR carries the `performance` label:
   that VM. If the PR fixtures need APIs the baseline lacks, the baseline builds its own
   fixtures; cases whose fixture file differs between the revisions are then reported as
   `NOT COMPARED` rather than screened, because matching names do not prove equal work, and a
-  class the PR adds is measured on the candidate alone. Nothing has to land on `main` first.
+  class the PR adds is measured on the candidate alone. A case that a baseline phase fails
+  to measure (for example a hang the PR fixes) is also measured on the candidate alone and
+  reported as `NOT COMPARED`. Nothing has to land on `main` first.
 - `performance_gate.py screen` compares medians against both controls with a tolerance
   that widens for small operations (20% under 100 ns, 15% under 1 µs, 10% from 1 µs) and an
   allocation floor of one object (24 B/op) and 1%. A regression is re-measured

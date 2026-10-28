@@ -250,6 +250,28 @@ class ScreenTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'A1: no benchmark cases'):
             gate.screen([], fresh, [], uncomparable_types={'FreshBenchmarks'})
 
+    def test_case_the_baseline_failed_is_measured_on_the_candidate_alone_and_not_compared(self):
+        # BenchmarkDotNet exports a case it could not measure (a hang or an exception) without statistics.
+        failed = dict(benchmark(method='Stalls'), Statistics=None, Metrics=[])
+        fixed = benchmark(method='Stalls', median=1200, allocated=70)
+        result = gate.screen([benchmark(), failed], [benchmark(median=200), fixed], [benchmark(), failed])
+        self.assertEqual(('REGRESSION', 1, [], []), (result['screen'], len(result['cases']), result['candidate_only'],
+                                                     result['baseline_only']))
+        self.assertEqual(['Dekaf.Benchmarks.Benchmarks.Unit AppendBenchmarks Stalls'], [item['case'] for item in result['baseline_failed']])
+        self.assertIn('| AppendBenchmarks Stalls | failed | 1.20 us | | | | | | - / 70 / - | NOT COMPARED | the baseline failed', gate.markdown(result))
+        # One failed control is enough: the case has no second control to compare against.
+        result = gate.screen([benchmark(), failed], [benchmark(), fixed], [benchmark(), fixed])
+        self.assertEqual(('PASS', 1, 1), (result['screen'], len(result['cases']), len(result['baseline_failed'])))
+        self.assertEqual('NOT COMPARED', gate.screen([failed], [fixed], [failed])['screen'])
+        with self.assertRaisesRegex(ValueError, 'B: .* no finite positive median'):
+            gate.screen([failed], [dict(fixed, Statistics={})], [failed])
+        with self.assertRaisesRegex(ValueError, 'which the candidate did not measure either'):
+            gate.screen([benchmark(), failed], [benchmark()], [benchmark(), failed])
+        with self.assertRaisesRegex(ValueError, 'different case sets'):
+            gate.screen([benchmark(), failed], [benchmark(), fixed], [benchmark()])
+        with self.assertRaisesRegex(ValueError, 'A1: no benchmark cases'):
+            gate.screen([], [fixed], [failed])
+
     def test_repeat_must_reproduce_a_regression(self):
         first = gate.screen(*phases(a1=100, b=130, a2=100))
         self.assertEqual('REGRESSION', first['screen'])
@@ -264,6 +286,21 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual('REGRESSION', cleared['cases'][0]['first_round']['screen'])
         with self.assertRaisesRegex(ValueError, 'did not measure'):
             gate.confirm(first, gate.screen(*phases(method='Other')))
+
+    def test_regressed_case_whose_repeat_baseline_fails_is_reported_not_compared(self):
+        first = gate.screen([benchmark(), benchmark(method='Slow')], [benchmark(), benchmark(method='Slow', median=140)],
+                            [benchmark(), benchmark(method='Slow')])
+        failed = dict(benchmark(method='Slow'), Statistics=None, Metrics=[])
+        repeat = gate.screen([failed], [benchmark(method='Slow', median=135, allocated=70)], [benchmark(method='Slow')])
+        final = gate.confirm(first, repeat)
+        self.assertEqual(('PASS', 2, ['PASS']), (final['screen'], final['round'], [case['screen'] for case in final['cases']]))
+        self.assertEqual(['Dekaf.Benchmarks.Benchmarks.Unit AppendBenchmarks Slow'], [item['case'] for item in final['baseline_failed']])
+        self.assertEqual('REGRESSION', final['baseline_failed'][0]['first_round']['screen'])
+        self.assertIn("| AppendBenchmarks Slow | failed | 135.0 ns | | | | | | - / 70 / - | NOT COMPARED | regressed in the first round",
+                      gate.markdown(final))
+        # The candidate must still measure the case on the repeat.
+        with self.assertRaisesRegex(ValueError, 'which the candidate did not measure either'):
+            gate.screen([failed], [benchmark()], [failed])
 
     def test_passing_cases_are_not_repeated(self):
         first = gate.screen([benchmark(), benchmark(method='Slow')], [benchmark(), benchmark(method='Slow', median=140)],
@@ -323,6 +360,15 @@ class CommandTests(unittest.TestCase):
             final = json.loads(out.read_text(encoding='utf-8'))
             self.assertEqual(('NOT COMPARED', 1, True), (final['screen'], len(final['candidate_only']), final['baseline_lacks_filter']))
             self.assertIn('Candidate-only cases, not compared (the baseline has no benchmark', md.read_text(encoding='utf-8'))
+            # A case the baseline failed to measure: reported with a warning, the rest is compared.
+            failed = self.write_phase(root, 'failed', [benchmark(), dict(benchmark(method='Stalls'), Statistics=None, Metrics=[])])
+            fixed = self.write_phase(root, 'fixed', [benchmark(), benchmark(method='Stalls')])
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(0, gate.main(['screen', '--a1', failed, '--b', fixed, '--a2', failed, '--name', 'Append',
+                                               '--output', str(out)]))
+            self.assertIn('::warning::Append: 1 case(s) not compared because a baseline phase failed', output.getvalue())
+            final = json.loads(out.read_text(encoding='utf-8'))
+            self.assertEqual(('PASS', 1, 1), (final['screen'], len(final['cases']), len(final['baseline_failed'])))
 
 
 class WorkflowTests(unittest.TestCase):
@@ -442,6 +488,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('touch "$GATE/baseline-lacks-filter"', measure)
         self.assertIn('FIXTURE_DIFF+=(--baseline-lacks-filter)', measure)
         self.assertIn('if ! wait "$candidate_build"; then', measure)
+        self.assertIn(') || code=$?', measure)
+        self.assertIn('if [[ $code -ne 0 && $role == A ]]; then', measure)
         self.assertIn('git merge-base --is-ancestor "$base" "$head"', workflow)
         settings = re.search(r"BDN_SETTINGS: '([^']+)'", workflow).group(1)
         for setting in ('--warmupCount 10', '--iterationCount 15', '--iterationTime 500', '--launchCount 1',

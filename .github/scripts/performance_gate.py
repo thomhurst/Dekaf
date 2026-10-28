@@ -15,6 +15,8 @@ Why the gate is reliable on hosted runners (see .github/workflows/performance-ga
 - When the baseline had to build its own fixture source, cases from fixture files that differ
   between the revisions are reported but not compared: matching names do not prove equal work.
   A class the PR adds has no baseline at all; the candidate is measured alone and reported.
+- A case that fails on a baseline phase (no statistics, for example a hang or an exception the
+  PR fixes) has no control; the candidate's measurement is reported, not compared.
 """
 import argparse
 import json
@@ -188,12 +190,19 @@ def load_reports(directory):
     return benchmarks
 
 
-def phase_table(benchmarks, iterations, phase, may_be_empty=False):
-    """Index one phase by case and reject incomplete measurements."""
+def phase_table(benchmarks, iterations, phase, may_be_empty=False, failed=None):
+    """Index one phase by case and reject incomplete measurements.
+
+    failed: for a baseline phase, a set that collects cases BenchmarkDotNet could not measure at
+    all (no statistics); they have no control instead of making the measurement invalid."""
     cases, fatal = {}, []
     for benchmark in benchmarks:
         key = case_key(benchmark)
-        statistics = benchmark.get('Statistics') or {}
+        statistics = benchmark.get('Statistics')
+        if failed is not None and not statistics:
+            failed.add(key)
+            continue
+        statistics = statistics or {}
         median, samples, bytes_per_op = statistics.get('Median'), statistics.get('N'), allocated(benchmark)
         if key in cases:
             fatal.append(f'{phase}: duplicate case {key}')
@@ -252,12 +261,26 @@ def screen(a1, b, a2, iterations=DEFAULT_ITERATIONS, name=None, uncomparable_typ
     (None means every class). Their cases are reported, never compared.
     baseline_lacks_filter: the baseline built its own fixtures and lists no benchmark for the
     filter (the PR adds the class), so A1 and A2 are empty by design and every candidate case
-    is reported, not compared. Any other empty control phase is an invalid measurement."""
-    x, fatal = phase_table(a1, iterations, 'A1', may_be_empty=baseline_lacks_filter)
+    is reported, not compared. Any other empty control phase is an invalid measurement.
+    A case that a baseline phase failed to measure (no statistics) is reported, not compared;
+    the candidate must still measure it."""
+    failed_a1, failed_a2 = set(), set()
+    x, fatal = phase_table(a1, iterations, 'A1', may_be_empty=baseline_lacks_filter or bool(a1), failed=failed_a1)
     y, more = phase_table(b, iterations, 'B')
-    z, last = phase_table(a2, iterations, 'A2', may_be_empty=baseline_lacks_filter)
+    z, last = phase_table(a2, iterations, 'A2', may_be_empty=baseline_lacks_filter or bool(a2), failed=failed_a2)
     if fatal or more or last:
         raise ValueError('; '.join(fatal + more + last))
+    baseline_failed = failed_a1 | failed_a2
+    if (x.keys() | failed_a1) != (z.keys() | failed_a2):
+        raise ValueError('A1 and A2 report different case sets for identical code: '
+                         f'A1 only {sorted((x.keys() | failed_a1) - (z.keys() | failed_a2))}, '
+                         f'A2 only {sorted((z.keys() | failed_a2) - (x.keys() | failed_a1))}')
+    missing = sorted(baseline_failed - y.keys())
+    if missing:
+        raise ValueError(f'the baseline failed {missing}, which the candidate did not measure either')
+    for key in baseline_failed:
+        x.pop(key, None)
+        z.pop(key, None)
     if baseline_lacks_filter:
         if x or z:
             raise ValueError('the baseline lists no benchmark for the filter, yet A1/A2 exported cases')
@@ -265,19 +288,17 @@ def screen(a1, b, a2, iterations=DEFAULT_ITERATIONS, name=None, uncomparable_typ
         if unchanged:
             raise ValueError('the baseline lists no benchmark for the filter, but the fixture files of '
                              f'{unchanged} are unchanged between the revisions')
-    if x.keys() != z.keys():
-        raise ValueError('A1 and A2 report different case sets for identical code: '
-                         f'A1 only {sorted(x.keys() - z.keys())}, A2 only {sorted(z.keys() - x.keys())}')
     common = sorted(x.keys() & y.keys())
     uncomparable = [key for key in common if uncomparable_types is None or y[key]['type'] in uncomparable_types]
     cases = [screen_case(key, x[key], y[key], z[key]) for key in common if key not in uncomparable]
     fixture_changed = [{'case': key, 'short': y[key]['short'], 'A1': x[key], 'B': y[key], 'A2': z[key]}
                        for key in uncomparable]
-    candidate_only = [{'case': key, **y[key]} for key in sorted(y.keys() - x.keys())]
-    if not cases and not candidate_only and not fixture_changed:
+    candidate_only = [{'case': key, **y[key]} for key in sorted(y.keys() - x.keys() - baseline_failed)]
+    failed = [{'case': key, **y[key]} for key in sorted(baseline_failed)]
+    if not cases and not candidate_only and not fixture_changed and not failed:
         raise ValueError('no common or candidate-only cases were measured')
     return {'name': name, 'round': 1, 'iterations': iterations, 'cases': cases, 'candidate_only': candidate_only,
-            'fixture_changed': fixture_changed, 'baseline_only': sorted(x.keys() - y.keys()),
+            'fixture_changed': fixture_changed, 'baseline_failed': failed, 'baseline_only': sorted(x.keys() - y.keys()),
             'baseline_lacks_filter': baseline_lacks_filter, 'screen': overall(cases)}
 
 
@@ -288,13 +309,20 @@ def overall(cases):
 
 
 def confirm(previous, repeat):
-    """Keep a first-round REGRESSION only when the repeat of that case regressed as well."""
+    """Keep a first-round REGRESSION only when the repeat of that case regressed as well.
+
+    A regressed case that a baseline phase of the repeat failed to measure has no repeat control,
+    so it cannot reproduce; it is reported with the baseline failures, not compared."""
     repeated = {case['case']: case for case in repeat['cases']}
-    cases = []
+    repeat_failed = {item['case']: item for item in repeat.get('baseline_failed', [])}
+    cases, failed = [], list(previous.get('baseline_failed', []))
     for first in previous['cases']:
         again = repeated.get(first['case'])
         if first['screen'] != 'REGRESSION':
             cases.append(first)
+            continue
+        if first['case'] in repeat_failed:
+            failed.append(dict(repeat_failed[first['case']], first_round=first))
             continue
         if again is None:
             raise ValueError(f'the repeat did not measure the regressed case {first["case"]}')
@@ -306,7 +334,7 @@ def confirm(previous, repeat):
         else:
             merged.update(screen='PASS', notes=again['notes'] + [f'not reproduced on repeat ({summary})'])
         cases.append(merged)
-    return dict(previous, cases=cases, round=2, screen=overall(cases))
+    return dict(previous, cases=cases, baseline_failed=failed, round=2, screen=overall(cases))
 
 
 def regressed_filters(comparison):
@@ -336,6 +364,11 @@ def markdown(comparison):
             short=item['short'].replace('|', '/'), a1=_ns(item['A1']['median_ns']), b=_ns(item['B']['median_ns']),
             a2=_ns(item['A2']['median_ns']),
             alloc=' / '.join(f'{item[phase]["allocated_bytes"]:,.0f}' for phase in ('A1', 'B', 'A2'))))
+    for item in comparison.get('baseline_failed', []):
+        why = ("regressed in the first round, but the repeat's baseline failed to measure this case" if 'first_round' in item
+               else 'the baseline failed to measure this case')
+        rows.append('| {short} | failed | {b} | | | | | | {alloc} | NOT COMPARED | {why} |'.format(
+            short=item['short'].replace('|', '/'), b=_ns(item['median_ns']), alloc=f'- / {item["allocated_bytes"]:,.0f} / -', why=why))
     if comparison['candidate_only']:
         why = ' (the baseline has no benchmark for this filter; the PR adds the class)' if comparison.get('baseline_lacks_filter') else ''
         rows += ['', f'Candidate-only cases, not compared{why}: ' + ', '.join(
@@ -408,6 +441,9 @@ def main(argv=None):
     if comparison['fixture_changed']:
         print(f'::warning::{args.name or "screen"}: {len(comparison["fixture_changed"])} case(s) not compared because '
               'their fixture source differs between the revisions; see the table.')
+    if comparison['baseline_failed']:
+        print(f'::warning::{args.name or "screen"}: {len(comparison["baseline_failed"])} case(s) not compared because a '
+              'baseline phase failed to measure them (see that phase log in the artifact); the candidate measured them.')
     if comparison['baseline_lacks_filter']:
         print(f'::warning::{args.name or "screen"}: {len(comparison["candidate_only"])} candidate-only case(s) not compared '
               'because the baseline has no benchmark for this filter; run the class locally against main if that comparison matters.')
