@@ -77,6 +77,12 @@ without `WithGroupId(...)` must persist offsets in its own storage, as shown bel
 store offsets while retaining manual partition assignment, configure `WithGroupId(...)` before
 building the consumer.
 
+With a group ID, a manually assigned partition that has no explicit position (`Assign`, or
+`IncrementalAssign` with a negative offset) starts from the group's committed offset, as in the
+Java client and librdkafka. `AutoOffsetReset` applies only when the group has no committed offset
+for that partition. A position set with `Seek` or a non-negative `IncrementalAssign` offset takes
+precedence.
+
 ```csharp
 using Dekaf;
 
