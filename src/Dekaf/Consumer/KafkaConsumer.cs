@@ -11925,6 +11925,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             committedOffsets = await coordinator.FetchOffsetsAsync(
                     partitions,
                     rejoinOnMembershipLoss: false,
+                    unstablePartitions: null,
                     cancellationToken)
                 .ConfigureAwait(false);
         }
