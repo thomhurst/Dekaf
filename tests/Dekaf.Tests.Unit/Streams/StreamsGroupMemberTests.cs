@@ -1,11 +1,19 @@
+using System.Collections.Concurrent;
 using System.Reflection;
+using System.Threading.Channels;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Streams;
+using Microsoft.Extensions.Logging;
 using NSubstitute;
+using StreamsGroupGlobalStore = Dekaf.Admin.StreamsGroupGlobalStore;
+using StreamsGroupTopologyDescription = Dekaf.Admin.StreamsGroupTopologyDescription;
+using StreamsGroupTopologyDescriptionSubtopology = Dekaf.Admin.StreamsGroupTopologyDescriptionSubtopology;
+using StreamsGroupTopologyNode = Dekaf.Admin.StreamsGroupTopologyNode;
+using StreamsGroupTopologyNodeType = Dekaf.Admin.StreamsGroupTopologyNodeType;
 
 namespace Dekaf.Tests.Unit.Streams;
 
@@ -1796,10 +1804,236 @@ public sealed class StreamsGroupMemberTests
         await Assert.That(connection.HeartbeatRequests[2].MemberEpoch).IsEqualTo(-1);
     }
 
+    [Test]
+    public async Task TopologyDescriptionRequired_WithDescription_PublishesForCurrentTopologyEpoch()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(RequiresDescription(Success(epoch: 1)));
+        connection.EnqueuePublication(PublicationResponse(ErrorCode.None));
+        await using var fixture = CreateFixture(connection);
+
+        var result = await fixture.Member.JoinAsync(CreateInitialUpdate(topologyEpoch: 4, CreateDescription()));
+        var attempt = await connection.PublicationAttempts.Reader.ReadAsync();
+        await GetPublicationTask(fixture.Member)!;
+
+        await Assert.That(result.TopologyDescriptionRequired).IsTrue();
+        await Assert.That(attempt.Version).IsEqualTo((short)0);
+        await Assert.That(attempt.Request.GroupId).IsEqualTo("streams-group");
+        await Assert.That(attempt.Request.MemberId).IsEqualTo("member-1");
+        await Assert.That(attempt.Request.TopologyEpoch).IsEqualTo(4);
+        var subtopology = attempt.Request.TopologyDescription.Subtopologies.Single();
+        await Assert.That(subtopology.SubtopologyId).IsEqualTo("0");
+        await Assert.That(subtopology.Nodes.Select(static node => node.NodeType)).IsEquivalentTo([(sbyte)1, (sbyte)3]);
+        await Assert.That(subtopology.Nodes[0].SourceTopics).IsEquivalentTo(["input"]);
+        await Assert.That(subtopology.Nodes[0].Successors).IsEquivalentTo(["sink"]);
+        await Assert.That(subtopology.Nodes[1].SinkTopic).IsEqualTo("output");
+        var globalStore = attempt.Request.TopologyDescription.GlobalStores.Single();
+        await Assert.That(globalStore.Processor.Stores).IsEquivalentTo(["global-store"]);
+        await Assert.That(connection.PublicationAttemptCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task TopologyDescriptionRequired_WithoutDescription_DoesNotPublish()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(RequiresDescription(Success(epoch: 1)));
+        await using var fixture = CreateFixture(connection);
+
+        var result = await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await Assert.That(result.TopologyDescriptionRequired).IsTrue();
+        await Assert.That(GetPublicationTask(fixture.Member) is null).IsTrue();
+        await Assert.That(connection.PublicationAttemptCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task TopologyDescriptionPublication_DoesNotBlockHeartbeats()
+    {
+        var connection = new ScriptedConnection();
+        var pendingPublication = new TaskCompletionSource<StreamsGroupTopologyDescriptionUpdateResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.EnqueueHeartbeat(RequiresDescription(Success(epoch: 1)));
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        connection.EnqueuePublication(_ => pendingPublication.Task);
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate(topologyEpoch: 0, CreateDescription()));
+        var attempt = await connection.PublicationAttempts.Reader.ReadAsync();
+
+        await Assert.That(fixture.Member.QueueHeartbeatForTesting()).IsTrue();
+        await connection.SecondHeartbeatCompleted.Task;
+
+        await Assert.That(fixture.Member.Snapshot.MemberEpoch).IsEqualTo(2);
+        await Assert.That(attempt.CancellationToken.IsCancellationRequested).IsFalse();
+        await Assert.That(attempt.Completed.Task.IsCompleted).IsFalse();
+        pendingPublication.SetResult(PublicationResponse(ErrorCode.None));
+        await GetPublicationTask(fixture.Member)!;
+    }
+
+    [Test]
+    public async Task TopologyEpochChange_CancelsInFlightPublicationAndPublishesNewEpoch()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(RequiresDescription(Success(epoch: 1)));
+        connection.EnqueueHeartbeat(RequiresDescription(Success(epoch: 2)));
+        connection.EnqueuePublication(static _ => new TaskCompletionSource<StreamsGroupTopologyDescriptionUpdateResponse>().Task);
+        connection.EnqueuePublication(PublicationResponse(ErrorCode.None));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate(topologyEpoch: 0, CreateDescription("first-input")));
+        var first = await connection.PublicationAttempts.Reader.ReadAsync();
+
+        await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
+            Topology = CreateTopology(epoch: 1, CreateDescription("second-input"))
+        });
+        var second = await connection.PublicationAttempts.Reader.ReadAsync();
+        await GetPublicationTask(fixture.Member)!;
+
+        await Assert.That(first.CancellationToken.IsCancellationRequested).IsTrue();
+        await Assert.That(first.Completed.Task.IsCompleted).IsTrue();
+        await Assert.That(first.Request.TopologyEpoch).IsEqualTo(0);
+        await Assert.That(second.Request.TopologyEpoch).IsEqualTo(1);
+        await Assert.That(second.Request.TopologyDescription.Subtopologies[0].Nodes[0].SourceTopics)
+            .IsEquivalentTo(["second-input"]);
+        await Assert.That(connection.PublicationAttemptCount).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task TopologyDescriptionPublication_CoordinatorMoved_RediscoversAndRetries()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(RequiresDescription(Success(epoch: 1)));
+        connection.EnqueuePublication(PublicationResponse(ErrorCode.NotCoordinator));
+        connection.EnqueuePublication(PublicationResponse(ErrorCode.CoordinatorLoadInProgress));
+        connection.EnqueuePublication(PublicationResponse(ErrorCode.None));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate(topologyEpoch: 0, CreateDescription()));
+
+        await GetPublicationTask(fixture.Member)!;
+
+        await Assert.That(connection.PublicationAttemptCount).IsEqualTo(3);
+        // One lookup for the join and one after NotCoordinator; CoordinatorLoadInProgress keeps the coordinator.
+        await Assert.That(connection.FindCoordinatorRequestCount).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task TopologyDescriptionPublication_RetriesRetriableTransportFailure()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(RequiresDescription(Success(epoch: 1)));
+        connection.EnqueuePublication(static _ => Task.FromException<StreamsGroupTopologyDescriptionUpdateResponse>(
+            new IOException("connection reset")));
+        connection.EnqueuePublication(PublicationResponse(ErrorCode.None));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate(topologyEpoch: 0, CreateDescription()));
+
+        await GetPublicationTask(fixture.Member)!;
+
+        await Assert.That(connection.PublicationAttemptCount).IsEqualTo(2);
+    }
+
+    [Test]
+    [Arguments(ErrorCode.StreamsTopologyDescriptionUpdateFailed)]
+    [Arguments(ErrorCode.GroupAuthorizationFailed)]
+    [Arguments(ErrorCode.InvalidRequest)]
+    public async Task TopologyDescriptionPublication_NonRetriableError_StopsUntilRequestedAgain(ErrorCode errorCode)
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(RequiresDescription(Success(epoch: 1)));
+        connection.EnqueueHeartbeat(RequiresDescription(Success(epoch: 1)));
+        connection.EnqueuePublication(new StreamsGroupTopologyDescriptionUpdateResponse
+        {
+            ErrorCode = errorCode,
+            ErrorMessage = "description rejected"
+        });
+        connection.EnqueuePublication(PublicationResponse(ErrorCode.None));
+        var logger = new CapturingLogger();
+        await using var fixture = CreateFixture(connection, logger: logger);
+        await fixture.Member.JoinAsync(CreateInitialUpdate(topologyEpoch: 0, CreateDescription()));
+
+        await GetPublicationTask(fixture.Member)!;
+
+        await Assert.That(connection.PublicationAttemptCount).IsEqualTo(1);
+        await Assert.That(fixture.Member.Snapshot.IsJoined).IsTrue();
+        var warning = logger.Messages.Single(entry => entry.Level == LogLevel.Warning).Message;
+        await Assert.That(warning).Contains(errorCode.ToString());
+        await Assert.That(warning).Contains("description rejected");
+
+        await Assert.That(fixture.Member.QueueHeartbeatForTesting()).IsTrue();
+        await connection.SecondHeartbeatCompleted.Task;
+        _ = await connection.PublicationAttempts.Reader.ReadAsync();
+        _ = await connection.PublicationAttempts.Reader.ReadAsync();
+        await GetPublicationTask(fixture.Member)!;
+
+        await Assert.That(connection.PublicationAttemptCount).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task TopologyDescriptionPublication_UnknownMember_HeartbeatsAndRejoins()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(RequiresDescription(Success(epoch: 1)));
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.UnknownMemberId,
+            MemberId = string.Empty
+        });
+        connection.EnqueueHeartbeat(Success(epoch: 3));
+        connection.EnqueuePublication(PublicationResponse(ErrorCode.UnknownMemberId));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate(topologyEpoch: 0, CreateDescription()));
+
+        await GetPublicationTask(fixture.Member)!;
+        await connection.ThirdHeartbeatStarted.Task;
+
+        await Assert.That(connection.HeartbeatRequests[1].MemberEpoch).IsEqualTo(1);
+        await Assert.That(connection.HeartbeatRequests[2].MemberEpoch).IsEqualTo(0);
+        await Assert.That(connection.HeartbeatRequests[2].Topology!.Epoch).IsEqualTo(0);
+        await Assert.That(connection.PublicationAttemptCount).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(StreamsGroupMembershipOperation.LeaveGroup)]
+    [Arguments(StreamsGroupMembershipOperation.RemainInGroup)]
+    public async Task Close_CancelsAndAwaitsInFlightPublication(StreamsGroupMembershipOperation operation)
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(RequiresDescription(Success(epoch: 1)));
+        connection.EnqueueHeartbeat(Success(epoch: -1));
+        connection.EnqueuePublication(static _ => new TaskCompletionSource<StreamsGroupTopologyDescriptionUpdateResponse>().Task);
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate(topologyEpoch: 0, CreateDescription()));
+        var attempt = await connection.PublicationAttempts.Reader.ReadAsync();
+
+        await fixture.Member.CloseAsync(new StreamsGroupCloseOptions { GroupMembershipOperation = operation });
+
+        await Assert.That(attempt.CancellationToken.IsCancellationRequested).IsTrue();
+        await Assert.That(attempt.Completed.Task.IsCompleted).IsTrue();
+        await Assert.That(GetPublicationTask(fixture.Member) is null).IsTrue();
+        await Assert.That(connection.PublicationAttemptCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task DisposeAsync_CancelsAndAwaitsInFlightPublication()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(RequiresDescription(Success(epoch: 1)));
+        connection.EnqueueHeartbeat(Success(epoch: -1));
+        connection.EnqueuePublication(static _ => new TaskCompletionSource<StreamsGroupTopologyDescriptionUpdateResponse>().Task);
+        var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate(topologyEpoch: 0, CreateDescription()));
+        var attempt = await connection.PublicationAttempts.Reader.ReadAsync();
+
+        await fixture.DisposeMemberAndMetadataAsync();
+
+        await Assert.That(attempt.CancellationToken.IsCancellationRequested).IsTrue();
+        await Assert.That(attempt.Completed.Task.IsCompleted).IsTrue();
+    }
+
     private static Fixture CreateFixture(
         ScriptedConnection connection,
         string? instanceId = null,
-        short? brokerHeartbeatMaxVersion = null)
+        short? brokerHeartbeatMaxVersion = null,
+        ILogger? logger = null)
     {
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
@@ -1813,6 +2047,10 @@ public sealed class StreamsGroupMemberTests
             ApiKey.StreamsGroupHeartbeat,
             StreamsGroupHeartbeatRequest.LowestSupportedVersion,
             brokerHeartbeatMaxVersion ?? StreamsGroupHeartbeatRequest.HighestSupportedVersion);
+        metadataManager.SetApiVersion(
+            ApiKey.StreamsGroupTopologyDescriptionUpdate,
+            StreamsGroupTopologyDescriptionUpdateRequest.LowestSupportedVersion,
+            StreamsGroupTopologyDescriptionUpdateRequest.HighestSupportedVersion);
         metadataManager.Metadata.Update(new MetadataResponse
         {
             Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
@@ -1828,19 +2066,18 @@ public sealed class StreamsGroupMemberTests
             pool,
             metadataManager,
             retryBackoffMs: 0,
-            retryBackoffMaxMs: 0);
+            retryBackoffMaxMs: 0,
+            logger: logger);
         member.MarkInitializedForTesting();
         return new Fixture(member, metadataManager);
     }
 
-    private static StreamsGroupMemberUpdate CreateInitialUpdate(int topologyEpoch = 0) => new()
+    private static StreamsGroupMemberUpdate CreateInitialUpdate(
+        int topologyEpoch = 0,
+        StreamsGroupTopologyDescription? description = null) => new()
     {
         EndpointInformationEpoch = 0,
-        Topology = new StreamsGroupTopology
-        {
-            Epoch = topologyEpoch,
-            Subtopologies = []
-        },
+        Topology = CreateTopology(topologyEpoch, description),
         ActiveTasks = [],
         StandbyTasks = [],
         WarmupTasks = [],
@@ -1849,6 +2086,91 @@ public sealed class StreamsGroupMemberTests
         TaskOffsets = [],
         TaskEndOffsets = []
     };
+
+    private static StreamsGroupTopology CreateTopology(
+        int epoch,
+        StreamsGroupTopologyDescription? description = null) => new()
+    {
+        Epoch = epoch,
+        Subtopologies = [],
+        Description = description
+    };
+
+    private static StreamsGroupTopologyDescription CreateDescription(string sourceTopic = "input") => new()
+    {
+        Subtopologies =
+        [
+            new StreamsGroupTopologyDescriptionSubtopology
+            {
+                SubtopologyId = "0",
+                Nodes =
+                [
+                    new StreamsGroupTopologyNode
+                    {
+                        Name = "source",
+                        NodeType = StreamsGroupTopologyNodeType.Source,
+                        SourceTopics = [sourceTopic],
+                        Stores = [],
+                        Successors = ["sink"]
+                    },
+                    new StreamsGroupTopologyNode
+                    {
+                        Name = "sink",
+                        NodeType = StreamsGroupTopologyNodeType.Sink,
+                        SourceTopics = [],
+                        SinkTopic = "output",
+                        Stores = [],
+                        Successors = []
+                    }
+                ]
+            }
+        ],
+        GlobalStores =
+        [
+            new StreamsGroupGlobalStore
+            {
+                Source = new StreamsGroupTopologyNode
+                {
+                    Name = "global-source",
+                    NodeType = StreamsGroupTopologyNodeType.Source,
+                    SourceTopics = ["global-input"],
+                    Stores = [],
+                    Successors = ["global-processor"]
+                },
+                Processor = new StreamsGroupTopologyNode
+                {
+                    Name = "global-processor",
+                    NodeType = StreamsGroupTopologyNodeType.Processor,
+                    SourceTopics = [],
+                    Stores = ["global-store"],
+                    Successors = []
+                }
+            }
+        ]
+    };
+
+    private static StreamsGroupHeartbeatResponse RequiresDescription(StreamsGroupHeartbeatResponse response) => new()
+    {
+        ErrorCode = response.ErrorCode,
+        MemberId = response.MemberId,
+        MemberEpoch = response.MemberEpoch,
+        HeartbeatIntervalMs = response.HeartbeatIntervalMs,
+        ActiveTasks = response.ActiveTasks,
+        TopologyDescriptionRequired = true
+    };
+
+    private static StreamsGroupTopologyDescriptionUpdateResponse PublicationResponse(ErrorCode errorCode) => new()
+    {
+        ErrorCode = errorCode
+    };
+
+    private static Task? GetPublicationTask(StreamsGroupMember member)
+    {
+        var publication = TopologyDescriptionPublicationField.GetValue(member);
+        return publication is null
+            ? null
+            : (Task)publication.GetType().GetProperty("Task")!.GetValue(publication)!;
+    }
 
     private static StreamsGroupHeartbeatTaskIds TaskIds(string id, params int[] partitions) => new()
     {
@@ -1873,6 +2195,8 @@ public sealed class StreamsGroupMemberTests
     private static readonly FieldInfo CoordinatorIdField = GetMemberField("_coordinatorId");
     private static readonly FieldInfo CommandsField = GetMemberField("_commands");
     private static readonly FieldInfo WorkerTaskField = GetMemberField("_workerTask");
+    private static readonly FieldInfo TopologyDescriptionPublicationField =
+        GetMemberField("_topologyDescriptionPublication");
     private static readonly MethodInfo ProcessBackgroundHeartbeatMethod = typeof(StreamsGroupMember).GetMethod(
         "ProcessBackgroundHeartbeatAsync",
         BindingFlags.Instance | BindingFlags.NonPublic)!;
@@ -1947,6 +2271,9 @@ public sealed class StreamsGroupMemberTests
         private readonly Queue<Task<FindCoordinatorResponse>> _findCoordinatorResponses = new();
         private readonly Queue<Task<StreamsGroupHeartbeatResponse>> _heartbeatResponses = new();
         private readonly Queue<Exception> _preWriteHeartbeatFailures = new();
+        private readonly ConcurrentQueue<Func<CancellationToken, Task<StreamsGroupTopologyDescriptionUpdateResponse>>>
+            _publicationResponses = new();
+        private int _publicationAttemptCount;
 
         public int BrokerId => 1;
         public string Host => "localhost";
@@ -1963,6 +2290,16 @@ public sealed class StreamsGroupMemberTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource ThirdHeartbeatStarted { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        public Channel<PublicationAttempt> PublicationAttempts { get; } =
+            Channel.CreateUnbounded<PublicationAttempt>();
+        public int PublicationAttemptCount => Volatile.Read(ref _publicationAttemptCount);
+
+        public void EnqueuePublication(StreamsGroupTopologyDescriptionUpdateResponse response) =>
+            _publicationResponses.Enqueue(_ => Task.FromResult(response));
+
+        public void EnqueuePublication(
+            Func<CancellationToken, Task<StreamsGroupTopologyDescriptionUpdateResponse>> response) =>
+            _publicationResponses.Enqueue(response);
 
         public void EnqueueFindCoordinator(FindCoordinatorResponse response) =>
             _findCoordinatorResponses.Enqueue(Task.FromResult(response));
@@ -2019,6 +2356,24 @@ public sealed class StreamsGroupMemberTests
                 return (TResponse)(IKafkaResponse)response;
             }
 
+            if (request is StreamsGroupTopologyDescriptionUpdateRequest publication)
+            {
+                Interlocked.Increment(ref _publicationAttemptCount);
+                var attempt = new PublicationAttempt(publication, apiVersion, cancellationToken);
+                PublicationAttempts.Writer.TryWrite(attempt);
+                try
+                {
+                    if (!_publicationResponses.TryDequeue(out var respond))
+                        throw new InvalidOperationException("No scripted topology description response.");
+                    var response = await respond(cancellationToken).WaitAsync(cancellationToken);
+                    return (TResponse)(IKafkaResponse)response;
+                }
+                finally
+                {
+                    attempt.Completed.TrySetResult();
+                }
+            }
+
             if (request is StreamsGroupHeartbeatRequest heartbeat)
             {
                 HeartbeatRequests.Add(heartbeat);
@@ -2066,6 +2421,14 @@ public sealed class StreamsGroupMemberTests
 
         public ValueTask ConnectAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        internal sealed record PublicationAttempt(
+            StreamsGroupTopologyDescriptionUpdateRequest Request,
+            short Version,
+            CancellationToken CancellationToken)
+        {
+            public TaskCompletionSource Completed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
 
         internal static FindCoordinatorResponse SuccessfulCoordinator() => new()
         {

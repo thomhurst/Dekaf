@@ -1,0 +1,26 @@
+﻿Request: Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateRequest
+API key: StreamsGroupTopologyDescriptionUpdate (93)
+Version: 0
+Header version: 2
+Correlation ID: 270544960 (0x10203040)
+Client ID: dekaf-snapshot
+Frame length: 279 bytes (275-byte payload)
+
+0000: 00 00 01 13 00 5D 00 00  10 20 30 40 00 0E 64 65 |.....]... 0@..de|
+0010: 6B 61 66 2D 73 6E 61 70  73 68 6F 74 00 0B 77 69 |kaf-snapshot..wi|
+0020: 72 65 2D 67 72 6F 75 70  0E 77 69 72 65 2D 6D 65 |re-group.wire-me|
+0030: 6D 62 65 72 69 64 00 00  00 03 02 13 77 69 72 65 |mberid......wire|
+0040: 2D 73 75 62 74 6F 70 6F  6C 6F 67 79 69 64 02 0A |-subtopologyid..|
+0050: 77 69 72 65 2D 6E 61 6D  65 01 02 0B 77 69 72 65 |wire-name...wire|
+0060: 2D 74 6F 70 69 63 0B 77  69 72 65 2D 74 6F 70 69 |-topic.wire-topi|
+0070: 63 02 0C 77 69 72 65 2D  73 74 6F 72 65 73 02 10 |c..wire-stores..|
+0080: 77 69 72 65 2D 73 75 63  63 65 73 73 6F 72 73 00 |wire-successors.|
+0090: 00 02 0A 77 69 72 65 2D  6E 61 6D 65 01 02 0B 77 |...wire-name...w|
+00A0: 69 72 65 2D 74 6F 70 69  63 0B 77 69 72 65 2D 74 |ire-topic.wire-t|
+00B0: 6F 70 69 63 02 0C 77 69  72 65 2D 73 74 6F 72 65 |opic..wire-store|
+00C0: 73 02 10 77 69 72 65 2D  73 75 63 63 65 73 73 6F |s..wire-successo|
+00D0: 72 73 00 0A 77 69 72 65  2D 6E 61 6D 65 01 02 0B |rs..wire-name...|
+00E0: 77 69 72 65 2D 74 6F 70  69 63 0B 77 69 72 65 2D |wire-topic.wire-|
+00F0: 74 6F 70 69 63 02 0C 77  69 72 65 2D 73 74 6F 72 |topic..wire-stor|
+0100: 65 73 02 10 77 69 72 65  2D 73 75 63 63 65 73 73 |es..wire-success|
+0110: 6F 72 73 00 00 00 00                             |ors....|

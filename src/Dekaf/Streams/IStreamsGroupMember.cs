@@ -156,6 +156,15 @@ public sealed class StreamsGroupHeartbeatResult
 
     /// <summary>Gets endpoint partition changes, or <see langword="null"/> when unchanged.</summary>
     public IReadOnlyList<StreamsGroupEndpointAssignment>? PartitionsByUserEndpoint { get; init; }
+
+    /// <summary>
+    /// Gets whether the coordinator lacks an up-to-date topology description for the group (KIP-1331).
+    /// </summary>
+    /// <remarks>
+    /// The member publishes <see cref="StreamsGroupTopology.Description"/> when one was supplied.
+    /// StreamsGroupHeartbeat v0 brokers always report <see langword="false"/>.
+    /// </remarks>
+    public bool TopologyDescriptionRequired { get; init; }
 }
 
 /// <summary>A complete point-in-time membership snapshot.</summary>
@@ -230,6 +239,19 @@ public sealed class StreamsGroupTopology
 
     /// <summary>Gets subtopologies in protocol index order.</summary>
     public required IReadOnlyList<StreamsGroupSubtopology> Subtopologies { get; init; }
+
+    /// <summary>
+    /// Gets the processing-graph description of this topology epoch, or <see langword="null"/> to never publish one.
+    /// </summary>
+    /// <remarks>
+    /// Supplying a description opts in to KIP-1331 publication: when a heartbeat reports
+    /// <see cref="StreamsGroupHeartbeatResult.TopologyDescriptionRequired"/>, the member sends it to the
+    /// coordinator with StreamsGroupTopologyDescriptionUpdate (Kafka 4.4+) in the background, without
+    /// delaying heartbeats. Retriable failures are retried; other failures end the attempt until the
+    /// coordinator requests the description again. A new topology, leaving the group, or closing the
+    /// member cancels an in-flight publication.
+    /// </remarks>
+    public Admin.StreamsGroupTopologyDescription? Description { get; init; }
 }
 
 /// <summary>A subtopology and its external/internal topic metadata.</summary>

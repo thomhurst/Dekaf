@@ -64,6 +64,7 @@ internal static class DeterministicResponseFixtureFactory
             ["StreamsGroupDescribeResponse.v1"] = Encode(WriteStreamsGroupDescribeResponseV1),
             ["StreamsGroupHeartbeatResponse.v0"] = EncodeStreamsGroupHeartbeatResponse(version: 0),
             ["StreamsGroupHeartbeatResponse.v1"] = EncodeStreamsGroupHeartbeatResponse(version: 1),
+            ["StreamsGroupTopologyDescriptionUpdateResponse.v0"] = Encode(WriteStreamsGroupTopologyDescriptionUpdateResponse),
             ["UpdateFeaturesResponse.v0"] = EncodeUpdateFeaturesResponse(version: 0),
             ["UpdateFeaturesResponse.v1"] = EncodeUpdateFeaturesResponse(version: 1),
             ["UpdateFeaturesResponse.v2"] = EncodeUpdateFeaturesResponse(version: 2)
@@ -112,6 +113,14 @@ internal static class DeterministicResponseFixtureFactory
         WriteEmptyTaggedFields(ref writer);
         WriteEmptyTaggedFields(ref writer);
         return buffer.WrittenSpan.ToArray();
+    }
+
+    private static void WriteStreamsGroupTopologyDescriptionUpdateResponse(ref KafkaProtocolWriter writer)
+    {
+        writer.WriteInt32(17);
+        writer.WriteInt16((short)ErrorCode.StreamsTopologyDescriptionUpdateFailed);
+        writer.WriteCompactNullableString("plugin rejected the description");
+        WriteEmptyTaggedFields(ref writer);
     }
 
     // One described group whose v1 topology description covers every node type, a null sink

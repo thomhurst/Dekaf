@@ -72,7 +72,8 @@ public sealed class KafkaClient : IAsyncDisposable
             _infrastructure.ConnectionPool,
             _infrastructure.MetadataManager,
             _infrastructure.RetryBackoffMs,
-            _infrastructure.RetryBackoffMaxMs);
+            _infrastructure.RetryBackoffMaxMs,
+            _infrastructure.LoggerFactory?.CreateLogger<StreamsGroupMember>());
     }
 
     public async ValueTask DisposeAsync()
