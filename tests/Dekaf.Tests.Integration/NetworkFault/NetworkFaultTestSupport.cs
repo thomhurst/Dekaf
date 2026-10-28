@@ -6,16 +6,12 @@ using TUnit.Logging.Microsoft;
 namespace Dekaf.Tests.Integration.NetworkFault;
 
 /// <summary>
-/// Counts the connections a client opens, by the first ApiVersions request of each handshake.
+/// Counts the connections a client opens, by the ApiVersions request of each handshake.
 /// A fault test waits for a handshake that started after the fault was injected: proof that the
 /// fault actually cut the client's connections, so a test cannot pass because the fault never bit.
 /// </summary>
 internal sealed class ConnectionHandshakeObserver : IDisposable
 {
-    // Every handshake opens with ApiVersions at this version; the identity follow-up uses the
-    // highest version, so counting this one counts connections rather than requests.
-    private const short HandshakeOpeningVersion = 3;
-
     private readonly object _sync = new();
     private readonly List<Waiter> _waiters = [];
     private readonly CapturingLoggerProvider _provider;
@@ -68,9 +64,7 @@ internal sealed class ConnectionHandshakeObserver : IDisposable
         if (entry.CategoryName != typeof(KafkaConnection).FullName
             || entry.EventId.Id != KafkaConnection.SendingRequestEventId
             || !entry.TryGetProperty<ApiKey>("ApiKey", out var apiKey)
-            || apiKey != ApiKey.ApiVersions
-            || !entry.TryGetProperty<short>("Version", out var version)
-            || version != HandshakeOpeningVersion)
+            || apiKey != ApiKey.ApiVersions)
         {
             return;
         }

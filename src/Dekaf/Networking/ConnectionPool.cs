@@ -246,9 +246,6 @@ public sealed partial class ConnectionPool :
     void IMetadataClusterIdentityPool.UpdateMetadataClusterId(string? clusterId)
         => _metadataClusterIdentity.UpdateClusterId(clusterId);
 
-    void IMetadataClusterIdentityPool.BeginMetadataRebootstrap()
-        => _metadataClusterIdentity.BeginRebootstrap();
-
     void IMetadataClusterIdentityPool.RequestMetadataRebootstrap()
         => _metadataClusterIdentity.RequestRebootstrap();
 

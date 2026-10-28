@@ -119,9 +119,16 @@ public class KafkaConnectionCapabilityHandshakeTests
 
     [Test]
     [Timeout(5_000)]
-    public async Task ConnectAsync_WhenV3IsUnsupported_RetriesBrokerSupportedVersionOnSameConnection(
+    [Arguments(false, (short)2)]
+    [Arguments(true, (short)2)]
+    [Arguments(true, (short)4)]
+    public async Task ConnectAsync_WhenInitialVersionIsUnsupported_RetriesBrokerSupportedVersionOnSameConnection(
+        bool knownIdentity,
+        short brokerMaxVersion,
         CancellationToken cancellationToken)
     {
+        // A known identity sends v5 first (KIP-1242); otherwise the broadly-compatible v3 probe.
+        var initialVersion = knownIdentity ? (short)5 : (short)3;
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
@@ -134,25 +141,28 @@ public class KafkaConnectionCapabilityHandshakeTests
 
             var initialRequest = await ReadFrameAsync(stream, cancellationToken);
             await Assert.That(BinaryPrimitives.ReadInt16BigEndian(initialRequest)).IsEqualTo((short)ApiKey.ApiVersions);
-            await Assert.That(BinaryPrimitives.ReadInt16BigEndian(initialRequest.AsSpan(2))).IsEqualTo((short)3);
+            await Assert.That(BinaryPrimitives.ReadInt16BigEndian(initialRequest.AsSpan(2))).IsEqualTo(initialVersion);
             var initialCorrelationId = BinaryPrimitives.ReadInt32BigEndian(initialRequest.AsSpan(4));
             await stream.WriteAsync(
                 BuildV0Response(
                     initialCorrelationId,
                     ErrorCode.UnsupportedVersion,
-                    new ApiVersion(ApiKey.ApiVersions, 0, 2)),
+                    new ApiVersion(ApiKey.ApiVersions, 0, brokerMaxVersion)),
                 cancellationToken);
 
             var retryRequest = await ReadFrameAsync(stream, cancellationToken);
             await Assert.That(BinaryPrimitives.ReadInt16BigEndian(retryRequest)).IsEqualTo((short)ApiKey.ApiVersions);
-            await Assert.That(BinaryPrimitives.ReadInt16BigEndian(retryRequest.AsSpan(2))).IsEqualTo((short)2);
+            await Assert.That(BinaryPrimitives.ReadInt16BigEndian(retryRequest.AsSpan(2))).IsEqualTo(brokerMaxVersion);
             var retryCorrelationId = BinaryPrimitives.ReadInt32BigEndian(retryRequest.AsSpan(4));
+            var versions = new[]
+            {
+                new ApiVersion(ApiKey.ApiVersions, 0, brokerMaxVersion),
+                new ApiVersion(ApiKey.Metadata, 5, 12)
+            };
             await stream.WriteAsync(
-                BuildLegacyResponse(
-                    retryCorrelationId,
-                    ErrorCode.None,
-                    new ApiVersion(ApiKey.ApiVersions, 0, 2),
-                    new ApiVersion(ApiKey.Metadata, 5, 12)),
+                brokerMaxVersion >= 3
+                    ? BuildResponse(retryCorrelationId, ErrorCode.None, versions)
+                    : BuildLegacyResponse(retryCorrelationId, ErrorCode.None, versions),
                 cancellationToken);
             await releaseServer.Task.WaitAsync(cancellationToken);
         });
@@ -165,14 +175,14 @@ public class KafkaConnectionCapabilityHandshakeTests
             options: null,
             logger: null,
             ResponseBufferPool.Default,
-            metadataClusterIdentity: CreateExpectedIdentity());
+            metadataClusterIdentity: knownIdentity ? CreateExpectedIdentity() : null);
         try
         {
             await connection.ConnectAsync(cancellationToken);
 
             var capabilities = ((IKafkaCapabilityProvider)connection).Capabilities;
             await Assert.That(connection.IsConnected).IsTrue();
-            await Assert.That(capabilities.NegotiateVersion(ApiKey.ApiVersions, 0, 5)).IsEqualTo((short)2);
+            await Assert.That(capabilities.NegotiateVersion(ApiKey.ApiVersions, 0, 5)).IsEqualTo(brokerMaxVersion);
             await Assert.That(capabilities.NegotiateVersion(ApiKey.Metadata, 9, 13)).IsEqualTo((short)12);
         }
         finally
@@ -355,26 +365,34 @@ public class KafkaConnectionCapabilityHandshakeTests
         {
             using var socket = await listener.AcceptSocketAsync(cancellationToken);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
-            var discoveryRequest = await ReadFrameAsync(stream, cancellationToken);
-            await Assert.That(BinaryPrimitives.ReadInt16BigEndian(discoveryRequest.AsSpan(2))).IsEqualTo((short)3);
-            var discoveryCorrelationId = BinaryPrimitives.ReadInt32BigEndian(discoveryRequest.AsSpan(4));
-            await stream.WriteAsync(
-                BuildResponse(
-                    discoveryCorrelationId,
-                    ErrorCode.None,
-                    new ApiVersion(ApiKey.ApiVersions, 0, 5)),
-                cancellationToken);
-
+            // The identity goes out on the first request: no v3 discovery round trip.
             var request = await ReadFrameAsync(stream, cancellationToken);
             var (clusterId, nodeId) = ReadKip1242Identity(request);
 
+            await Assert.That(BinaryPrimitives.ReadInt16BigEndian(request)).IsEqualTo((short)ApiKey.ApiVersions);
             await Assert.That(BinaryPrimitives.ReadInt16BigEndian(request.AsSpan(2))).IsEqualTo((short)5);
             await Assert.That(clusterId).IsEqualTo("cluster-a");
             await Assert.That(nodeId).IsEqualTo(7);
 
             var correlationId = BinaryPrimitives.ReadInt32BigEndian(request.AsSpan(4));
-            await stream.WriteAsync(BuildResponse(correlationId, ErrorCode.None), cancellationToken);
+            await stream.WriteAsync(
+                BuildResponse(
+                    correlationId,
+                    ErrorCode.None,
+                    new ApiVersion(ApiKey.ApiVersions, 0, 5),
+                    new ApiVersion(ApiKey.Metadata, 9, 12)),
+                cancellationToken);
             await releaseServer.Task.WaitAsync(cancellationToken);
+
+            // Nothing else was sent before the client closed the connection.
+            try
+            {
+                await Assert.That(await stream.ReadAsync(new byte[1], cancellationToken)).IsEqualTo(0);
+            }
+            catch (IOException exception) when (exception.InnerException is SocketException)
+            {
+                // KafkaConnection disposal aborts its socket, which can surface as a reset.
+            }
         });
 
         await using var connection = new KafkaConnection(
@@ -391,45 +409,211 @@ public class KafkaConnectionCapabilityHandshakeTests
         {
             await connection.ConnectAsync(cancellationToken);
             await Assert.That(connection.IsConnected).IsTrue();
+            await Assert.That(((IKafkaCapabilityProvider)connection).Capabilities
+                    .NegotiateVersion(ApiKey.Metadata, 9, 13))
+                .IsEqualTo((short)12);
         }
         finally
         {
+            await connection.DisposeAsync();
             releaseServer.TrySetResult();
         }
 
         await serverTask;
     }
 
+    // A broker older than KIP-1242 rejects the v5 identity request once. Reconnects start at the
+    // version it reported, so they do not pay the UNSUPPORTED_VERSION round trip again.
     [Test]
     [Timeout(5_000)]
-    public async Task ConnectAsync_Kip1242_ErrorResponseRetainsDiscoveryCapabilities(
+    public async Task ConnectAsync_Kip1242_ReconnectToPreKip1242BrokerStartsAtReportedVersion(
         CancellationToken cancellationToken)
     {
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        var releaseServer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var identity = CreateExpectedIdentity();
+        var versions = new[]
+        {
+            new ApiVersion(ApiKey.ApiVersions, 0, 4),
+            new ApiVersion(ApiKey.Metadata, 9, 12)
+        };
+        var initialVersions = new List<short>();
+
+        var serverTask = StartServerEagerly(async () =>
+        {
+            for (var connectionIndex = 0; connectionIndex < 2; connectionIndex++)
+            {
+                using var socket = await listener.AcceptSocketAsync(cancellationToken);
+                await using var stream = new NetworkStream(socket, ownsSocket: false);
+                var request = await ReadFrameAsync(stream, cancellationToken);
+                var version = BinaryPrimitives.ReadInt16BigEndian(request.AsSpan(2));
+                initialVersions.Add(version);
+                var correlationId = BinaryPrimitives.ReadInt32BigEndian(request.AsSpan(4));
+                if (version == 5)
+                {
+                    await stream.WriteAsync(
+                        BuildV0Response(correlationId, ErrorCode.UnsupportedVersion, versions[0]),
+                        cancellationToken);
+                    request = await ReadFrameAsync(stream, cancellationToken);
+                    await Assert.That(BinaryPrimitives.ReadInt16BigEndian(request.AsSpan(2))).IsEqualTo((short)4);
+                    correlationId = BinaryPrimitives.ReadInt32BigEndian(request.AsSpan(4));
+                }
+
+                await stream.WriteAsync(BuildResponse(correlationId, ErrorCode.None, versions), cancellationToken);
+
+                // Hold the socket until the client closes it.
+                try
+                {
+                    while (await stream.ReadAsync(new byte[1], cancellationToken) != 0)
+                    {
+                    }
+                }
+                catch (IOException exception) when (exception.InnerException is SocketException)
+                {
+                    // KafkaConnection disposal aborts its socket, which can surface as a reset.
+                }
+            }
+        });
+
+        for (var connectionIndex = 0; connectionIndex < 2; connectionIndex++)
+        {
+            var connection = new KafkaConnection(
+                7,
+                "127.0.0.1",
+                port,
+                clientId: null,
+                options: null,
+                logger: null,
+                ResponseBufferPool.Default,
+                metadataClusterIdentity: identity);
+            try
+            {
+                await connection.ConnectAsync(cancellationToken);
+                await Assert.That(connection.IsConnected).IsTrue();
+            }
+            finally
+            {
+                await connection.DisposeAsync();
+            }
+        }
+
+        await serverTask;
+        await Assert.That(initialVersions.Count).IsEqualTo(2);
+        await Assert.That(initialVersions[0]).IsEqualTo((short)5);
+        await Assert.That(initialVersions[1]).IsEqualTo((short)4);
+    }
+
+    // Some servers (the Azure Event Hubs emulator) drop the connection on an ApiVersions version
+    // they do not know instead of answering UNSUPPORTED_VERSION. The maximum the bootstrap
+    // connection reported caps the first connection to every broker, so it is never exceeded.
+    [Test]
+    [Timeout(5_000)]
+    public async Task ConnectAsync_Kip1242_FirstBrokerConnectionStartsAtVersionBootstrapReported(
+        CancellationToken cancellationToken)
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var identity = new MetadataClusterIdentity();
+        identity.Configure(enabled: true);
+        var versions = new[]
+        {
+            new ApiVersion(ApiKey.ApiVersions, 0, 3),
+            new ApiVersion(ApiKey.Metadata, 9, 12)
+        };
+        var initialVersions = new List<short>();
+
+        var serverTask = StartServerEagerly(async () =>
+        {
+            for (var connectionIndex = 0; connectionIndex < 2; connectionIndex++)
+            {
+                using var socket = await listener.AcceptSocketAsync(cancellationToken);
+                await using var stream = new NetworkStream(socket, ownsSocket: false);
+                var request = await ReadFrameAsync(stream, cancellationToken);
+                initialVersions.Add(BinaryPrimitives.ReadInt16BigEndian(request.AsSpan(2)));
+                var correlationId = BinaryPrimitives.ReadInt32BigEndian(request.AsSpan(4));
+                await stream.WriteAsync(BuildResponse(correlationId, ErrorCode.None, versions), cancellationToken);
+
+                // Hold the socket until the client closes it.
+                try
+                {
+                    while (await stream.ReadAsync(new byte[1], cancellationToken) != 0)
+                    {
+                    }
+                }
+                catch (IOException exception) when (exception.InnerException is SocketException)
+                {
+                    // KafkaConnection disposal aborts its socket, which can surface as a reset.
+                }
+            }
+        });
+
+        // Bootstrap: no broker ID and no trusted cluster ID yet.
+        var bootstrap = new KafkaConnection(
+            -1,
+            "127.0.0.1",
+            port,
+            clientId: null,
+            options: null,
+            logger: null,
+            ResponseBufferPool.Default,
+            metadataClusterIdentity: identity);
+        try
+        {
+            await bootstrap.ConnectAsync(cancellationToken);
+        }
+        finally
+        {
+            await bootstrap.DisposeAsync();
+        }
+
+        identity.UpdateClusterId("cluster-a");
+        var broker = new KafkaConnection(
+            7,
+            "127.0.0.1",
+            port,
+            clientId: null,
+            options: null,
+            logger: null,
+            ResponseBufferPool.Default,
+            metadataClusterIdentity: identity);
+        try
+        {
+            await broker.ConnectAsync(cancellationToken);
+            await Assert.That(broker.IsConnected).IsTrue();
+        }
+        finally
+        {
+            await broker.DisposeAsync();
+        }
+
+        await serverTask;
+        await Assert.That(initialVersions).IsEquivalentTo(new short[] { 3, 3 });
+    }
+
+    [Test]
+    [Timeout(5_000)]
+    public async Task ConnectAsync_Kip1242_WhenV5IsRejectedButReportedSupported_ThrowsBrokerVersionException(
+        CancellationToken cancellationToken)
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
 
         var serverTask = StartServerEagerly(async () =>
         {
             using var socket = await listener.AcceptSocketAsync(cancellationToken);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
-            var discoveryRequest = await ReadFrameAsync(stream, cancellationToken);
-            var discoveryCorrelationId = BinaryPrimitives.ReadInt32BigEndian(discoveryRequest.AsSpan(4));
+            var request = await ReadFrameAsync(stream, cancellationToken);
+            await Assert.That(BinaryPrimitives.ReadInt16BigEndian(request.AsSpan(2))).IsEqualTo((short)5);
+            var correlationId = BinaryPrimitives.ReadInt32BigEndian(request.AsSpan(4));
             await stream.WriteAsync(
-                BuildResponse(
-                    discoveryCorrelationId,
-                    ErrorCode.None,
-                    new ApiVersion(ApiKey.ApiVersions, 0, 5),
-                    new ApiVersion(ApiKey.Metadata, 9, 12)),
+                BuildV0Response(
+                    correlationId,
+                    ErrorCode.UnsupportedVersion,
+                    new ApiVersion(ApiKey.ApiVersions, 0, 5)),
                 cancellationToken);
-
-            var identityRequest = await ReadFrameAsync(stream, cancellationToken);
-            var identityCorrelationId = BinaryPrimitives.ReadInt32BigEndian(identityRequest.AsSpan(4));
-            await stream.WriteAsync(
-                BuildResponse(identityCorrelationId, ErrorCode.InvalidRequest),
-                cancellationToken);
-            await releaseServer.Task.WaitAsync(cancellationToken);
         });
 
         await using var connection = new KafkaConnection(
@@ -441,20 +625,9 @@ public class KafkaConnectionCapabilityHandshakeTests
             logger: null,
             ResponseBufferPool.Default,
             metadataClusterIdentity: CreateExpectedIdentity());
-
-        try
-        {
-            await connection.ConnectAsync(cancellationToken);
-            var capabilities = ((IKafkaCapabilityProvider)connection).Capabilities;
-
-            await Assert.That(capabilities.NegotiateVersion(ApiKey.Metadata, 9, 13))
-                .IsEqualTo((short)12);
-        }
-        finally
-        {
-            releaseServer.TrySetResult();
-        }
-
+        await Assert.That(async () => await connection.ConnectAsync(cancellationToken))
+            .Throws<BrokerVersionException>()
+            .WithMessageContaining("rejected ApiVersions v5 but reported it as supported");
         await serverTask;
     }
 
@@ -473,15 +646,6 @@ public class KafkaConnectionCapabilityHandshakeTests
         {
             using var socket = await listener.AcceptSocketAsync(cancellationToken);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
-            var discoveryRequest = await ReadFrameAsync(stream, cancellationToken);
-            var discoveryCorrelationId = BinaryPrimitives.ReadInt32BigEndian(discoveryRequest.AsSpan(4));
-            await stream.WriteAsync(
-                BuildResponse(
-                    discoveryCorrelationId,
-                    ErrorCode.None,
-                    new ApiVersion(ApiKey.ApiVersions, 0, 5)),
-                cancellationToken);
-
             _ = await ReadFrameAsync(stream, cancellationToken);
             identityRequestReceived.TrySetResult();
             try
@@ -575,7 +739,7 @@ public class KafkaConnectionCapabilityHandshakeTests
 
     [Test]
     [Timeout(5_000)]
-    public async Task ConnectAsync_Kip1242_RebootstrapRequiredPreservesIdentityUntilRebootstrap(
+    public async Task ConnectAsync_Kip1242_RebootstrapRequiredPreservesIdentity(
         CancellationToken cancellationToken)
     {
         using var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -589,16 +753,8 @@ public class KafkaConnectionCapabilityHandshakeTests
         {
             using var socket = await listener.AcceptSocketAsync(cancellationToken);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
-            var discoveryRequest = await ReadFrameAsync(stream, cancellationToken);
-            var discoveryCorrelationId = BinaryPrimitives.ReadInt32BigEndian(discoveryRequest.AsSpan(4));
-            await stream.WriteAsync(
-                BuildResponse(
-                    discoveryCorrelationId,
-                    ErrorCode.None,
-                    new ApiVersion(ApiKey.ApiVersions, 0, 5)),
-                cancellationToken);
-
             var request = await ReadFrameAsync(stream, cancellationToken);
+            await Assert.That(BinaryPrimitives.ReadInt16BigEndian(request.AsSpan(2))).IsEqualTo((short)5);
             var correlationId = BinaryPrimitives.ReadInt32BigEndian(request.AsSpan(4));
             await stream.WriteAsync(
                 BuildResponse(correlationId, ErrorCode.RebootstrapRequired),
@@ -624,8 +780,6 @@ public class KafkaConnectionCapabilityHandshakeTests
             .IsEqualTo(new ExpectedBrokerIdentity("cluster-a", 7));
         await Assert.That(identity.TryConsumeRebootstrapRequest()).IsTrue();
         await Assert.That(identity.TryConsumeRebootstrapRequest()).IsFalse();
-        identity.BeginRebootstrap();
-        await Assert.That(identity.GetExpectedBrokerIdentity(7)).IsNull();
         await serverTask;
     }
 
