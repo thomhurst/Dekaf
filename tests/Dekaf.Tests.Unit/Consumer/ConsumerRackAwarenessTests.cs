@@ -467,7 +467,7 @@ public sealed partial class ConsumerRackAwarenessTests
             ?? throw new InvalidOperationException("PartitionsByBroker property not found");
         var expiredCache = Activator.CreateInstance(
                 cacheType,
-                [partitionsByBroker, expiresAtTimestamp, metadataManager.Metadata.LastRefreshed])
+                [partitionsByBroker, expiresAtTimestamp, metadataManager.Metadata.LastRefreshed, long.MaxValue])
             ?? throw new InvalidOperationException("PartitionBrokerCacheEntry could not be created");
 
         cacheField.SetValue(consumer, expiredCache);
