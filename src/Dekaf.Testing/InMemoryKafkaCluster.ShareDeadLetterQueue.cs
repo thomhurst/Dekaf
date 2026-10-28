@@ -43,7 +43,12 @@ public sealed partial class InMemoryKafkaCluster
             AppendRecordUnderLock(
                 deadLetterTopic,
                 state,
-                SelectPartition(state, requestedPartition: null, key, isKeyNull: !copyRecord || source.IsKeyNull),
+                SelectPartition(
+                    state,
+                    requestedPartition: null,
+                    key,
+                    isKeyNull: !copyRecord || source.IsKeyNull,
+                    partitioner: null),
                 key,
                 isKeyNull: !copyRecord || source.IsKeyNull,
                 value,

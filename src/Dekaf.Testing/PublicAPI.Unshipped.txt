@@ -140,3 +140,5 @@ Dekaf.Testing.InMemoryShareConsumerOptions.DeadLetterQueueCopyRecord.get -> bool
 Dekaf.Testing.InMemoryShareConsumerOptions.DeadLetterQueueCopyRecord.init -> void
 Dekaf.Testing.InMemoryShareConsumerOptions.DeadLetterQueueTopic.get -> string?
 Dekaf.Testing.InMemoryShareConsumerOptions.DeadLetterQueueTopic.init -> void
+Dekaf.Testing.InMemoryKafkaClusterOptions.Partitioner.get -> Dekaf.Producer.IPartitioner?
+Dekaf.Testing.InMemoryKafkaClusterOptions.Partitioner.set -> void
