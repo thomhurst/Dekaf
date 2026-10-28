@@ -151,9 +151,7 @@ public sealed partial class KafkaConsumerServiceTests
     }
 
     [Test]
-    [Arguments(false)]
-    [Arguments(true)]
-    public async Task RetryFailureCount_AtMaximum_SaturatesWhenRoutedToDeadLetter(bool retry)
+    public async Task RetryFailureCount_AtMaximum_SaturatesWhenRoutedToDeadLetter()
     {
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
         ProducerMessage<byte[]?, byte[]?>? sent = null;
@@ -161,10 +159,11 @@ public sealed partial class KafkaConsumerServiceTests
             .Returns(call => { sent = call.ArgAt<ProducerMessage<byte[]?, byte[]?>>(0); return new ValueTask<RecordMetadata>(default(RecordMetadata)); });
         await using var service = new FailingConsumerService(CreateConsumerSubstitute(), ["orders"], new DeadLetterOptions
         {
-            RetryTopics = retry ? new RetryTopicOptions { Delays = [TimeSpan.FromSeconds(1)] } : null
+            RetryTopics = new RetryTopicOptions { Delays = [TimeSpan.FromSeconds(1)] }
         });
         SetDlqProducer(service, producer);
-        var result = CreateResult("orders", headers: [new Header(RetryTopicHeaders.FailureCountKey, "2147483647"u8.ToArray())]);
+        // Only a retry-topic record carries a failure count the service trusts.
+        var result = CreateResult("orders-retry-1s", headers: [new Header(RetryTopicHeaders.FailureCountKey, "2147483647"u8.ToArray())]);
 
         await ProcessWithRetriesAsync(service, result, CancellationToken.None);
 

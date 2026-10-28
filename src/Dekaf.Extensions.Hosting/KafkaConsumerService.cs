@@ -37,6 +37,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     // The in-flight record's pending local retry backoff, ended early by a rebalance callback for
     // its partition. Guarded by _postponementsLock; set only while a backoff is awaited.
     private RetryBackoff? _retryBackoff;
+    // Maps each subscribed retry topic to its configured source topic. Only records from these
+    // topics carry retry-control headers this service trusts. Null until first built.
+    private Dictionary<string, string>? _retrySourceTopics;
     private IKafkaProducer<byte[]?, byte[]?>? _dlqProducer;
     private int _disposeStarted;
     private volatile bool _hasInDoubtFailedRecord;
@@ -554,12 +557,16 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     internal async ValueTask ProcessWithRetriesAsync(
         ConsumeResult<TKey, TValue> result, CancellationToken stoppingToken)
     {
-        if (PostponeRetryTopicMessageIfNeeded(result, stoppingToken))
+        // Topic membership, not a header, identifies a retry record. Retry headers on any other
+        // record (a replayed retry or DLQ copy, or a producer-supplied value) control nothing.
+        var isRetryTopic = TryGetRetrySourceTopic(result.Topic, out var retrySourceTopic);
+        if (isRetryTopic && PostponeRetryTopicMessageIfNeeded(result, stoppingToken))
             return;
 
         byte[]? rawKey = null;
         byte[]? rawValue = null;
-        var previousFailureCount = RetryTopicHeaders.GetFailureCount(result.Headers);
+        ConsumeResult<TKey, TValue>? routingResult = null;
+        var previousFailureCount = isRetryTopic ? RetryTopicHeaders.GetFailureCount(result.Headers) : 0;
 
         var maxAttemptsWithoutPolicy = _retryTopicOptions?.IsEnabled == true ? 1 : _deadLetterOptions?.MaxFailures ?? 1;
         var attempt = 0;
@@ -597,8 +604,16 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
                 var deadLetterFailureCount = (int)Math.Min((long)previousFailureCount + attempt, int.MaxValue);
                 var retryTopicFailureCount = GetNextRetryTopicFailureCount(previousFailureCount);
+                // Hooks and dispositions keep the original record; routing decisions and the
+                // headers of routed copies see only retry metadata this service can vouch for.
+                routingResult ??= _dlqProducer is null && _deadLetterPolicy is null
+                    ? result
+                    : CreateRoutingResult(result, retrySourceTopic);
+                var sourceTopic = retrySourceTopic ?? result.Topic;
                 var retryTopicOutcome = await TryRouteToRetryTopicAsync(
                         result,
+                        routingResult.Value,
+                        sourceTopic,
                         rawKey,
                         rawValue,
                         retryTopicFailureCount,
@@ -613,7 +628,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                 if (retryTopicOutcome.Result == RetryTopicRouteResult.OwnershipEnded)
                     return;
 
-                if (ShouldRouteToDeadLetter(result, ex, deadLetterFailureCount, retryTopicOutcome.Result))
+                if (ShouldRouteToDeadLetter(routingResult.Value, ex, deadLetterFailureCount, retryTopicOutcome.Result))
                 {
                     // The partition's next owner routes the record itself; a copy from here
                     // would be a duplicate.
@@ -622,6 +637,8 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
                     var deadLetterException = await RouteToDeadLetterAsync(
                             result,
+                            routingResult.Value,
+                            sourceTopic,
                             ex,
                             rawKey,
                             rawValue,
@@ -924,27 +941,97 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         if (_retryTopicOptions?.IsEnabled != true)
             return sourceTopics;
 
+        var explicitTopics = new HashSet<string>(sourceTopics, StringComparer.Ordinal);
         var topics = new HashSet<string>(sourceTopics, StringComparer.Ordinal);
+        var retrySourceTopics = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var sourceTopic in sourceTopics)
         {
             foreach (var retryTopic in _retryTopicOptions.GetRetryTopics(sourceTopic))
             {
                 topics.Add(retryTopic);
+                // Explicit source topics never inherit retry-control semantics from their names.
+                if (explicitTopics.Contains(retryTopic))
+                    continue;
+                if (retrySourceTopics.TryGetValue(retryTopic, out var existingSource) &&
+                    !string.Equals(existingSource, sourceTopic, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        $"Retry topic '{retryTopic}' belongs to multiple source topics.");
+                }
+
+                retrySourceTopics[retryTopic] = sourceTopic;
             }
         }
 
+        _retrySourceTopics = retrySourceTopics;
         return topics.ToArray();
+    }
+
+    /// <summary>
+    /// Resolves the configured source topic of a subscribed retry topic. Returns false for every
+    /// other topic, including all topics when retry topics are disabled.
+    /// </summary>
+    private bool TryGetRetrySourceTopic(string topic, [NotNullWhen(true)] out string? sourceTopic)
+    {
+        if (_retryTopicOptions?.IsEnabled != true)
+        {
+            sourceTopic = null;
+            return false;
+        }
+
+        // ExecuteAsync builds the map before the first record; this covers direct processing.
+        if (_retrySourceTopics is null)
+            BuildSubscriptionTopics();
+
+        return _retrySourceTopics!.TryGetValue(topic, out sourceTopic);
+    }
+
+    /// <summary>
+    /// Copies a failed record for routing. Drops the retry-control headers of a record that did
+    /// not come from a retry topic, and names a retry record's source from the topic mapping.
+    /// Application headers are preserved. Failure path only.
+    /// </summary>
+    private static ConsumeResult<TKey, TValue> CreateRoutingResult(
+        ConsumeResult<TKey, TValue> result, string? retrySourceTopic)
+    {
+        // Hoisted: each Headers access on the readonly struct constructs a new lazy wrapper.
+        var originalHeaders = result.Headers;
+        var headers = new Dekaf.Serialization.Headers(originalHeaders.Count + 1);
+        for (var index = 0; index < originalHeaders.Count; index++)
+        {
+            var header = originalHeaders[index];
+            if (header.Key == RetryTopicHeaders.SourceTopicKey || (retrySourceTopic is null && header.Key is
+                RetryTopicHeaders.SourcePartitionKey or RetryTopicHeaders.SourceOffsetKey or
+                RetryTopicHeaders.FailureCountKey or RetryTopicHeaders.DelayMsKey or RetryTopicHeaders.DueTimestampMsKey))
+            {
+                continue;
+            }
+
+            headers.Add(header);
+        }
+
+        if (retrySourceTopic is not null)
+            headers.Add(RetryTopicHeaders.SourceTopicKey, retrySourceTopic);
+
+        return new ConsumeResult<TKey, TValue>(
+            result.Topic,
+            result.Partition,
+            result.Offset,
+            result.Key,
+            result.Value,
+            headers,
+            result.TimestampMs,
+            result.TimestampType,
+            result.LeaderEpoch,
+            isKeyNull: result.IsKeyNull);
     }
 
     private bool PostponeRetryTopicMessageIfNeeded(
         ConsumeResult<TKey, TValue> result,
         CancellationToken cancellationToken)
     {
-        if (_retryTopicOptions?.IsEnabled != true ||
-            !RetryTopicHeaders.TryGetDueAt(result.Headers, out var dueAt))
-        {
+        if (!RetryTopicHeaders.TryGetDueAt(result.Headers, out var dueAt))
             return false;
-        }
 
         var delay = dueAt - DateTimeOffset.UtcNow;
         if (delay <= TimeSpan.Zero)
@@ -1245,7 +1332,8 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     }
 
     private async ValueTask<Exception?> RouteToDeadLetterAsync(
-        ConsumeResult<TKey, TValue> result, Exception exception,
+        ConsumeResult<TKey, TValue> result, ConsumeResult<TKey, TValue> routingResult,
+        string sourceTopic, Exception exception,
         byte[]? rawKey, byte[]? rawValue, int failureCount,
         CancellationToken cancellationToken)
     {
@@ -1257,11 +1345,10 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
         try
         {
-            var sourceTopic = RetryTopicHeaders.GetSourceTopic(result.Headers) ?? result.Topic;
             var dlqTopic = _deadLetterPolicy.GetDeadLetterTopic(sourceTopic);
 
             var headers = DeadLetterHeaders.Build(
-                result, exception, failureCount,
+                routingResult, exception, failureCount,
                 _deadLetterOptions.IncludeExceptionInHeaders);
 
             var message = new ProducerMessage<byte[]?, byte[]?>
@@ -1292,7 +1379,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     }
 
     private async ValueTask<RetryTopicRouteOutcome> TryRouteToRetryTopicAsync(
-        ConsumeResult<TKey, TValue> result,
+        ConsumeResult<TKey, TValue> result, ConsumeResult<TKey, TValue> routingResult, string sourceTopic,
         byte[]? rawKey, byte[]? rawValue, int failureCount,
         CancellationToken cancellationToken)
     {
@@ -1302,7 +1389,6 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
             return new RetryTopicRouteOutcome(RetryTopicRouteResult.Disabled, null);
         }
 
-        var sourceTopic = RetryTopicHeaders.GetSourceTopic(result.Headers) ?? result.Topic;
         if (!_retryTopicOptions.TryGetRetryTopic(sourceTopic, failureCount, out var retryTopic, out var delay))
             return new RetryTopicRouteOutcome(RetryTopicRouteResult.Exhausted, null);
 
@@ -1313,7 +1399,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         try
         {
             var dueAt = DateTimeOffset.UtcNow + delay;
-            var headers = RetryTopicHeaders.Build(result, failureCount, delay, dueAt);
+            var headers = RetryTopicHeaders.Build(routingResult, failureCount, delay, dueAt);
             var message = new ProducerMessage<byte[]?, byte[]?>
             {
                 Topic = retryTopic,
