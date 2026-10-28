@@ -1442,7 +1442,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         var options = new ProducerOptions
         {
             BootstrapServers = _bootstrapServers,
-            ClientId = _clientId,
+            ClientId = _clientId ?? ProducerOptions.DefaultClientId,
             Acks = _acks,
             LingerMs = _lingerMs,
             BatchSize = _batchSize,
@@ -3264,7 +3264,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         var options = new ConsumerOptions
         {
             BootstrapServers = _bootstrapServers,
-            ClientId = _clientId,
+            ClientId = _clientId ?? ConsumerOptions.DefaultClientId,
             GroupId = _groupId,
             GroupInstanceId = _groupInstanceId,
             GroupRemoteAssignor = _groupRemoteAssignor,
@@ -4174,7 +4174,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         var options = new ShareConsumerOptions
         {
             BootstrapServers = _bootstrapServers,
-            ClientId = _clientId,
+            ClientId = _clientId ?? ShareConsumerOptions.DefaultClientId,
             GroupId = _groupId,
             AutoOffsetReset = _autoOffsetReset,
             AutoOffsetResetDuration = _autoOffsetResetDuration,

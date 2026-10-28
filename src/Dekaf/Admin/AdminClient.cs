@@ -6751,9 +6751,11 @@ public sealed class AdminClientOptions
     private bool _isReconnectBackoffMsConfigured;
     private bool _isReconnectBackoffMaxMsConfigured;
 
+    internal const string DefaultClientId = "dekaf-admin";
+
     public IReadOnlyList<string> BootstrapServers { get; init; } = [];
     public IReadOnlyList<string> BootstrapControllers { get; init; } = [];
-    public string? ClientId { get; init; } = "dekaf-admin";
+    public string? ClientId { get; init; } = DefaultClientId;
     public int RequestTimeoutMs { get; init; } = 30000;
 
     /// <summary>
@@ -7622,7 +7624,7 @@ public sealed class AdminClientBuilder
         {
             BootstrapServers = _bootstrapServers,
             BootstrapControllers = _bootstrapControllers,
-            ClientId = _clientId,
+            ClientId = _clientId ?? AdminClientOptions.DefaultClientId,
             RequestTimeoutMs = _requestTimeoutMs,
             RetryBackoffMs = _retryBackoffMs,
             RetryBackoffMaxMs = _retryBackoffMaxMs,

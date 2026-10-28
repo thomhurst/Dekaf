@@ -26,10 +26,12 @@ public sealed class ShareConsumerOptions
     /// </summary>
     public required IReadOnlyList<string> BootstrapServers { get; init; }
 
+    internal const string DefaultClientId = "dekaf-share-consumer";
+
     /// <summary>
     /// Client ID.
     /// </summary>
-    public string? ClientId { get; init; } = "dekaf-share-consumer";
+    public string? ClientId { get; init; } = DefaultClientId;
 
     /// <summary>
     /// Share group ID. Required for share consumers.
