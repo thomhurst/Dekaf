@@ -119,6 +119,10 @@ await producer.CompletePreparedTransactionAsync(prepared, committed: shouldCommi
 This requires broker support for `transaction.version` 3 and `InitProducerId` v6.
 After `PrepareAsync`, only commit, abort, dispose, or `CompletePreparedTransactionAsync`
 are valid until the prepared transaction is finished.
+`CompletePreparedTransactionAsync` also completes the transaction handle that prepared it:
+its commit, abort, prepare, and offset methods throw `InvalidOperationException`, and
+disposing it leaves any later transaction untouched. If the completion fails before it reaches
+the coordinator, the transaction stays open and abortable, and the handle can still abort it.
 
 ## Exactly-Once Processing (Consume-Transform-Produce)
 

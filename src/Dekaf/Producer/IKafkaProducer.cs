@@ -238,6 +238,14 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <summary>
     /// Completes a prepared transaction using the external coordinator decision.
     /// </summary>
+    /// <remarks>
+    /// The <see cref="ITransaction{TKey, TValue}"/> handle that prepared the transaction is
+    /// completed too: its commit, abort, prepare, and offset methods throw
+    /// <see cref="InvalidOperationException"/>, and disposing it does not affect a later transaction.
+    /// If completion fails before the coordinator receives it and leaves the transaction abortable,
+    /// the handle keeps the transaction, and its <see cref="ITransaction{TKey, TValue}.AbortAsync"/>
+    /// or disposal aborts it.
+    /// </remarks>
     /// <param name="preparedState">The prepared transaction identity returned by <see cref="ITransaction{TKey, TValue}.PrepareAsync"/>.</param>
     /// <param name="committed">True to commit the prepared transaction; false to abort it.</param>
     /// <param name="cancellationToken">Cancellation token.</param>

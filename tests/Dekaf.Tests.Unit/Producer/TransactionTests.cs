@@ -2627,6 +2627,156 @@ public sealed class TransactionTests
         await Assert.That(harness.Producer._preparedTransactionState).IsEqualTo(preparedState);
     }
 
+    /// <summary>
+    /// Builds a harness whose producer is Ready, then prepares transaction A through its own handle
+    /// and completes it through the producer (issue #3830). The returned handle never committed or
+    /// aborted itself, so only its ownership marks it as completed.
+    /// </summary>
+    private static async Task<(PreparedCompletionHarness Harness, ITransaction<string, string> Completed)>
+        CompleteThroughProducerAsync()
+    {
+        var preparedState = new PreparedTransactionState(42, 5);
+        var harness = BuildPreparedCompletionHarness(
+            preparedState,
+            currentProducerId: preparedState.ProducerId,
+            currentProducerEpoch: preparedState.ProducerEpoch);
+        harness.Producer._preparedTransactionState = PreparedTransactionState.Empty;
+        harness.Producer._transactionState = TransactionState.Ready;
+
+        var completed = harness.Producer.BeginTransaction();
+        var prepared = await completed.PrepareAsync();
+        await harness.Producer.CompletePreparedTransactionAsync(prepared, committed: true);
+        await Assert.That(harness.EndTxnRequests).IsEqualTo(1);
+        return (harness, completed);
+    }
+
+    [Test]
+    public async Task CompletedThroughProducer_StaleHandle_CannotTouchTheNextTransaction()
+    {
+        var (harness, completed) = await CompleteThroughProducerAsync();
+        await using var _ = harness;
+        await using var next = harness.Producer.BeginTransaction();
+        var findCoordinatorRequests = harness.FindCoordinatorRequests;
+
+        await Assert.That(() => completed.CommitAsync().AsTask()).Throws<InvalidOperationException>();
+        await Assert.That(() => completed.AbortAsync().AsTask()).Throws<InvalidOperationException>();
+        await Assert.That(() => completed.PrepareAsync().AsTask()).Throws<InvalidOperationException>();
+        await Assert.That(() => completed.SendOffsetsToTransactionAsync(
+                [new TopicPartitionOffset("orders", 0, 10)],
+                "group-1").AsTask())
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => completed.SendOffsetsToTransactionAsync(
+                [new TopicPartitionOffset("orders", 0, 10)],
+                new Dekaf.Consumer.ConsumerGroupMetadata { GroupId = "group-1", GenerationId = 1, MemberId = "member-1" }).AsTask())
+            .Throws<InvalidOperationException>();
+        await completed.DisposeAsync();
+
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.InTransaction);
+        await Assert.That(harness.EndTxnRequests).IsEqualTo(1);
+        await Assert.That(harness.FindCoordinatorRequests).IsEqualTo(findCoordinatorRequests);
+
+        await next.CommitAsync();
+
+        await Assert.That(harness.EndTxnRequests).IsEqualTo(2);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.Ready);
+    }
+
+    [Test]
+    public async Task CompletedThroughProducer_DeferredDisposal_LeavesTheNextTransactionOpen()
+    {
+        var preparedState = new PreparedTransactionState(42, 5);
+        await using var harness = BuildPreparedCompletionHarness(
+            preparedState,
+            currentProducerId: preparedState.ProducerId,
+            currentProducerEpoch: preparedState.ProducerEpoch);
+        harness.Producer._preparedTransactionState = PreparedTransactionState.Empty;
+        harness.Producer._transactionState = TransactionState.Ready;
+        ITransaction<string, string> next;
+
+        await using (var first = harness.Producer.BeginTransaction())
+        {
+            var prepared = await first.PrepareAsync();
+            await harness.Producer.CompletePreparedTransactionAsync(prepared, committed: true);
+            next = harness.Producer.BeginTransaction();
+        }
+
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.InTransaction);
+        await Assert.That(harness.EndTxnRequests).IsEqualTo(1);
+
+        await next.CommitAsync();
+
+        await Assert.That(harness.EndTxnRequests).IsEqualTo(2);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.Ready);
+    }
+
+    [Test]
+    public async Task CompletedThroughProducer_StaleHandleBeforeNextTransaction_CannotEndOrPrepare()
+    {
+        var (harness, completed) = await CompleteThroughProducerAsync();
+        await using var _ = harness;
+
+        await Assert.That(() => completed.CommitAsync().AsTask()).Throws<InvalidOperationException>();
+        await Assert.That(() => completed.AbortAsync().AsTask()).Throws<InvalidOperationException>();
+        await Assert.That(() => completed.PrepareAsync().AsTask()).Throws<InvalidOperationException>();
+        await completed.DisposeAsync();
+
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.Ready);
+        await Assert.That(harness.EndTxnRequests).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task CompletedThroughProducer_FailedBeforeCoordinator_HandleCanStillAbort()
+    {
+        var preparedState = new PreparedTransactionState(42, 5);
+        await using var harness = BuildPreparedCompletionHarness(
+            preparedState,
+            currentProducerId: preparedState.ProducerId,
+            currentProducerEpoch: preparedState.ProducerEpoch);
+        harness.Producer._preparedTransactionState = PreparedTransactionState.Empty;
+        harness.Producer._transactionState = TransactionState.Ready;
+
+        await using var transaction = harness.Producer.BeginTransaction();
+        var prepared = await transaction.PrepareAsync();
+        await Assert.That(() => harness.Producer.CompletePreparedTransactionAsync(
+                prepared,
+                committed: true,
+                new CancellationToken(canceled: true)).AsTask())
+            .Throws<OperationCanceledException>();
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.AbortableError);
+
+        await transaction.AbortAsync();
+
+        await Assert.That(harness.EndTxnRequests).IsEqualTo(1);
+        await Assert.That(harness.CapturedRequest.Committed).IsFalse();
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.Ready);
+    }
+
+    [Test]
+    public async Task CompletedThroughProducer_FailedBeforeCoordinator_HandleDisposalAborts()
+    {
+        var preparedState = new PreparedTransactionState(42, 5);
+        await using var harness = BuildPreparedCompletionHarness(
+            preparedState,
+            currentProducerId: preparedState.ProducerId,
+            currentProducerEpoch: preparedState.ProducerEpoch);
+        harness.Producer._preparedTransactionState = PreparedTransactionState.Empty;
+        harness.Producer._transactionState = TransactionState.Ready;
+
+        await using (var transaction = harness.Producer.BeginTransaction())
+        {
+            var prepared = await transaction.PrepareAsync();
+            await Assert.That(() => harness.Producer.CompletePreparedTransactionAsync(
+                    prepared,
+                    committed: true,
+                    new CancellationToken(canceled: true)).AsTask())
+                .Throws<OperationCanceledException>();
+        }
+
+        await Assert.That(harness.EndTxnRequests).IsEqualTo(1);
+        await Assert.That(harness.CapturedRequest.Committed).IsFalse();
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.Ready);
+    }
+
     [Test]
     public async Task InitTransactionsAsync_WithKeepPreparedAndUnsupportedFeature_ThrowsBrokerVersionException()
     {
