@@ -4,6 +4,19 @@ namespace Dekaf.Tests.Unit.Security.Sasl;
 
 public sealed class SaslSessionStateTests
 {
+    [Test]
+    [Arguments(long.MaxValue / 2)]
+    [Arguments(long.MaxValue)]
+    public async Task SessionExpiryTime_BeyondDateTimeRange_SaturatesForRetryScheduling(long sessionLifetimeMs)
+    {
+        var state = new SaslSessionState(sessionLifetimeMs, new SaslReauthenticationConfig());
+
+        await Assert.That(state.SessionExpiryTime).IsEqualTo(DateTimeOffset.MaxValue);
+        var remainingMs = (long)(state.SessionExpiryTime!.Value - DateTimeOffset.UtcNow).TotalMilliseconds;
+        await Assert.That(Dekaf.Networking.KafkaConnection.ComputeReauthenticationRetryDelayMs(remainingMs, 30_000, 1))
+            .IsEqualTo(1_000L);
+    }
+
     private static SaslReauthenticationConfig DefaultConfig => new();
 
     [Test]

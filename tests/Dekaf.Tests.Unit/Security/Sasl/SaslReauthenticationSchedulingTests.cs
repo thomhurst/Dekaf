@@ -203,4 +203,36 @@ public sealed class SaslReauthenticationSchedulingTests
         await Assert.That(KafkaConnection.ComputeReauthenticationRetryDelayMs(remainingMs, 30_000, 1))
             .IsEqualTo(-1L);
     }
+
+    [Test]
+    [Arguments(8_000_000_000L)]
+    [Arguments(long.MaxValue / 2)]
+    [Arguments(long.MaxValue)]
+    public async Task SessionLifetimeBeyondTimerRange_ClampsDelayToTimerMaximum(long sessionLifetimeMs)
+    {
+        // Timer rejects due times above 4294967294 ms (about 49.7 days). A broker reporting a
+        // longer session must not fail authentication; re-authenticating early is harmless.
+        var config = new SaslReauthenticationConfig();
+        var authTime = new DateTimeOffset(2025, 6, 1, 12, 0, 0, TimeSpan.Zero);
+
+        var state = new SaslSessionState(sessionLifetimeMs, config, authTime);
+
+        await Assert.That(state.RequiresReauthentication).IsTrue();
+        await Assert.That(state.ReauthenticationDelayMs).IsEqualTo(SaslSessionState.MaxReauthenticationDelayMs);
+        await Assert.That(state.ReauthenticationDeadline)
+            .IsEqualTo(authTime.AddMilliseconds(SaslSessionState.MaxReauthenticationDelayMs));
+
+        using var timer = new Timer(static _ => { }, null, state.ReauthenticationDelayMs, Timeout.Infinite);
+    }
+
+    [Test]
+    public async Task SessionLifetimeAtTimerLimit_IsNotClamped()
+    {
+        var config = new SaslReauthenticationConfig();
+
+        // 90% of 4,772,185,880 ms = 4,294,967,292 ms, just inside the Timer limit
+        var state = new SaslSessionState(4_772_185_880L, config);
+
+        await Assert.That(state.ReauthenticationDelayMs).IsEqualTo(4_294_967_292L);
+    }
 }
