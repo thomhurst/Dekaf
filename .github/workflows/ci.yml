@@ -32,6 +32,31 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
+  # Auto-merge armed on an earlier head must not carry over to a new push: GitHub would merge
+  # as soon as the required checks pass, before anyone reviews the new head. Every push to a PR
+  # with auto-merge armed disarms it; scripts/Enable-AutoMerge.ps1 re-arms after the new head's
+  # review. `CI Passed` needs this job, so a failed disarm blocks the merge. Dependabot pushes
+  # get a read-only token and are exempt.
+  disarm-auto-merge:
+    name: Disarm auto-merge
+    if: >-
+      github.event_name == 'pull_request' && github.event.action == 'synchronize'
+      && github.event.pull_request.auto_merge != null && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Disarm auto-merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr merge "$PR" --disable-auto
+          echo "::notice::Auto-merge disarmed by a push; re-arm with scripts/Enable-AutoMerge.ps1 after this head's review."
+
   # Docs-only changes skip the expensive jobs entirely. Everything downstream
   # gates on the `code` output; `ci-passed` (the single required check) treats
   # skipped jobs as success, so branch protection keeps working.
@@ -948,6 +973,7 @@ jobs:
         run: |
           ./scripts/Test-AssertPrGreenReviewHeuristics.ps1
           ./scripts/Test-AssertPrGreenReviewThreads.ps1
+          ./scripts/Test-AssertPrGreenChecks.ps1
           ./scripts/Test-IssuePrLoop.ps1
 
       - name: Test Integration Category Runner
@@ -1039,8 +1065,12 @@ jobs:
   # upstream job succeeded or was skipped (docs-only PRs skip everything;
   # release-only jobs skip on PR runs).
   ci-passed:
-    name: CI Passed
-    needs: [changes, doc-snippets, build, gssapi-packages, unit-net8, unit-net10, aspire-hosting, leak-gates-debug, integration, eventhubs-integration, redpanda-integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality]
+    # The required check name is computed: a job skipped by `if:` never evaluates `name`, so a
+    # draft run reports this expression text instead of `CI Passed` and cannot satisfy the
+    # required check (a skipped check counts as passing). Auto-merge armed right after a PR
+    # leaves draft therefore waits for the ready run.
+    name: ${{ needs.changes.result == 'success' && 'CI Passed' || 'CI Passed (incomplete)' }}
+    needs: [disarm-auto-merge, changes, doc-snippets, build, gssapi-packages, unit-net8, unit-net10, aspire-hosting, leak-gates-debug, integration, eventhubs-integration, redpanda-integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality]
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 5

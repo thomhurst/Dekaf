@@ -1,7 +1,9 @@
 name: Repository artifact policy
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    # Runs on drafts. Leaving draft keeps the checked head, so `ready_for_review` would only
+    # re-check it and delay arming auto-merge.
+    types: [opened, synchronize, reopened]
 permissions:
   contents: read
 jobs:
