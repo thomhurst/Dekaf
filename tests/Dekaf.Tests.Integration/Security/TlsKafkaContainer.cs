@@ -132,8 +132,12 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
     /// <summary>
     /// Restarts the same broker after replacing its TLS server keystore.
     /// Broker data and the mapped endpoint are retained across the restart.
+    /// The keystore also holds <paramref name="intermediateCertificates"/>, so the broker sends
+    /// them in the handshake after its own certificate.
     /// </summary>
-    public async Task RestartWithServerCertificateAsync(X509Certificate2 serverCertificate)
+    public async Task RestartWithServerCertificateAsync(
+        X509Certificate2 serverCertificate,
+        params X509Certificate2[] intermediateCertificates)
     {
         var container = _container ?? throw new InvalidOperationException("Container not initialized");
         if (!serverCertificate.HasPrivateKey)
@@ -141,10 +145,28 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
             throw new ArgumentException("The server certificate must contain its private key.", nameof(serverCertificate));
         }
 
+        // Public-only intermediates: a second key entry in the keystore would be ambiguous to Kafka.
+        var keystore = new X509Certificate2Collection(serverCertificate);
+        foreach (var intermediate in intermediateCertificates)
+        {
+            keystore.Add(TestCertificateGenerator.LoadCertificate(intermediate.RawData));
+        }
+
+        byte[] keystoreBytes;
+        try
+        {
+            keystoreBytes = keystore.Export(X509ContentType.Pfx, TestCertificateGenerator.StorePassword)!;
+        }
+        finally
+        {
+            for (var i = 1; i < keystore.Count; i++)
+            {
+                keystore[i].Dispose();
+            }
+        }
+
         await container.StopAsync();
-        await container.CopyAsync(
-            serverCertificate.Export(X509ContentType.Pfx, TestCertificateGenerator.StorePassword),
-            ServerKeystoreContainerPath);
+        await container.CopyAsync(keystoreBytes, ServerKeystoreContainerPath);
         await container.StartAsync();
         try
         {

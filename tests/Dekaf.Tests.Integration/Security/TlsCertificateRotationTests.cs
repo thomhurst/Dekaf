@@ -115,6 +115,25 @@ public sealed class TlsCertificateRotationTests(TlsCertificateRotationKafkaConta
         await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(15));
     }
 
+    [Test]
+    public async Task IntermediateIssuedBrokerCertificate_ValidatesAgainstRootOnlyCaConfig()
+    {
+        using var baselineCertificate = kafka.CertificateGenerator.GenerateServerCertificate();
+        await kafka.RestartWithServerCertificateAsync(baselineCertificate).ConfigureAwait(false);
+        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+
+        // The broker sends its certificate and the intermediate; the client trusts only the root.
+        using var intermediate = kafka.CertificateGenerator.GenerateIntermediateCaCertificate();
+        using var intermediateIssuedCertificate = kafka.CertificateGenerator.GenerateServerCertificate(issuer: intermediate);
+        await kafka.RestartWithServerCertificateAsync(intermediateIssuedCertificate, intermediate).ConfigureAwait(false);
+
+        await using var producer = await CreateProducerBuilder(
+                "tls-intermediate-issued",
+                CreateTlsConfig(kafka.CaCertificate))
+            .BuildAsync().ConfigureAwait(false);
+        await ProduceAsync(producer, topic, "via-intermediate").ConfigureAwait(false);
+    }
+
     private ProducerBuilder<string, string> CreateProducerBuilder(string clientId, TlsConfig tlsConfig)
         => Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)

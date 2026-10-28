@@ -3365,6 +3365,9 @@ public sealed partial class KafkaConnection :
         {
             // Custom CA certificate validation
             var caCertificates = LoadCaCertificatesWithOwnership(tlsConfig!);
+            var revocationMode = tlsConfig!.CheckCertificateRevocation
+                ? X509RevocationMode.Online
+                : X509RevocationMode.NoCheck;
             return (_, certificate, chain, sslPolicyErrors) =>
             {
                 var isValid = ValidateServerCertificate(
@@ -3372,6 +3375,7 @@ public sealed partial class KafkaConnection :
                     chain,
                     ApplyServerCertificateHostNamePolicy(sslPolicyErrors, validateServerCertificateHostName),
                     caCertificates,
+                    revocationMode,
                     out var failureDetail);
                 _tlsCertificateValidationFailure = failureDetail;
                 return isValid;
@@ -3691,11 +3695,15 @@ public sealed partial class KafkaConnection :
     }
 #endif
 
-    private static bool ValidateServerCertificate(
+    // id-kp-serverAuth (RFC 5280); SslStream requires it of a server certificate.
+    private const string ServerAuthenticationOid = "1.3.6.1.5.5.7.3.1";
+
+    internal static bool ValidateServerCertificate(
         X509Certificate? certificate,
         X509Chain? chain,
         SslPolicyErrors sslPolicyErrors,
         X509Certificate2Collection trustedCaCertificates,
+        X509RevocationMode revocationMode,
         out string? failureDetail)
     {
         failureDetail = null;
@@ -3718,10 +3726,21 @@ public sealed partial class KafkaConnection :
             {
                 var cert2 = certificate as X509Certificate2 ?? (ownedCert = new X509Certificate2(certificate));
 
-                // Build a new chain with our custom trust store
+                // Build a new chain with our custom trust store. Carry over the policy SslStream
+                // applied to the handshake chain: the configured revocation mode and the
+                // server-authentication EKU requirement.
                 using var customChain = new X509Chain();
-                customChain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+                customChain.ChainPolicy.RevocationMode = revocationMode;
                 customChain.ChainPolicy.VerificationFlags = X509VerificationFlags.AllowUnknownCertificateAuthority;
+                customChain.ChainPolicy.ApplicationPolicy.Add(new Oid(ServerAuthenticationOid));
+
+                // A fresh chain cannot see the intermediates the broker sent in the handshake
+                // (on Linux and macOS they are only in the handshake chain), so pass them in.
+                customChain.ChainPolicy.ExtraStore.AddRange(chain.ChainPolicy.ExtraStore);
+                for (var i = 1; i < chain.ChainElements.Count; i++)
+                {
+                    customChain.ChainPolicy.ExtraStore.Add(chain.ChainElements[i].Certificate);
+                }
 #if NETSTANDARD2_0
                 foreach (var caCert in trustedCaCertificates)
                 {
