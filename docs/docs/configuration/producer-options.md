@@ -469,7 +469,7 @@ Enable logging:
 | `WithConnectionTimeout` | 30000ms | Socket connection setup timeout |
 | `WithConnectionTimeoutMax` | Same as initial | Maximum adaptive connection setup timeout |
 | `WithTcpKeepAlive` | enabled | TCP keepalive; 2m idle, 30s interval, 3 retries |
-| `WithAdaptiveConnections` | enabled (max 3) | Auto-scale connections under load |
+| `WithAdaptiveConnections` | enabled (max 3, or `ConnectionsPerBroker` when higher) | Auto-scale connections under load |
 | `WithoutAdaptiveConnections` | - | Disable adaptive scaling |
 | `WithBufferMemory` | auto-tuned | Max buffer for unsent messages |
 | `WithBufferMemoryAllocationStrategy` | Full | Full arena or pooled incremental chunks |

@@ -77,7 +77,7 @@ All network I/O goes through `System.IO.Pipelines`, which gives us back-pressure
 
 ### Adaptive Connection Scaling
 
-Dekaf automatically scales up TCP connections per broker when the producer detects sustained send pressure. This means the producer starts with a single connection and adds more only when needed—no manual tuning required.
+Dekaf automatically scales up TCP connections per broker when the producer detects sustained send pressure. By default the producer starts with a single connection and adds more only when needed—no manual tuning required. `ConnectionsPerBroker` sets the initial connection count, and scaling never goes below it.
 
 **How it works:**
 1. When the producer's buffer fills up (messages are being produced faster than the network can send them), `ReserveMemorySync` blocks the producer thread
