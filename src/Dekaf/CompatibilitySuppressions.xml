@@ -337,6 +337,18 @@
   </Suppression>
   <Suppression>
     <DiagnosticId>CP0008</DiagnosticId>
+    <Target>T:Dekaf.Admin.StreamsGroupTopologyDescriptionStatus</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net8.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0008</DiagnosticId>
+    <Target>T:Dekaf.Admin.StreamsGroupTopologyNodeType</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net8.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0008</DiagnosticId>
     <Target>T:Dekaf.Consumer.AutoOffsetReset</Target>
     <Left>lib/netstandard2.0/Dekaf.dll</Left>
     <Right>lib/net8.0/Dekaf.dll</Right>

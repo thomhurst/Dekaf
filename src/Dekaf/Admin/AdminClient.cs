@@ -26,6 +26,7 @@ public sealed partial class AdminClient :
     INodeFeatureAdminClient,
     ITopicIdAdminClient,
     IStreamsGroupManagementAdminClient,
+    IStreamsGroupDescriptionAdminClient,
     ITransactionRemediationAdminClient,
     IShareGroupDeletionAdminClient,
     IPartitionExpansionAdminClient,
@@ -5181,11 +5182,18 @@ public sealed partial class AdminClient :
         public Protocol.ErrorCode ErrorCode { get; set; }
     }
 
+    public ValueTask<IReadOnlyDictionary<string, StreamsGroupDescription>> DescribeStreamsGroupsAsync(
+        IEnumerable<string> groupIds,
+        CancellationToken cancellationToken = default) =>
+        DescribeStreamsGroupsAsync(groupIds, options: null, cancellationToken);
+
     public async ValueTask<IReadOnlyDictionary<string, StreamsGroupDescription>> DescribeStreamsGroupsAsync(
         IEnumerable<string> groupIds,
+        DescribeStreamsGroupsOptions? options,
         CancellationToken cancellationToken = default)
     {
         var groupIdList = groupIds.ToList();
+        var includeTopologyDescription = options?.IncludeTopologyDescription ?? false;
 
         return await WithRetryAsync<IReadOnlyDictionary<string, StreamsGroupDescription>>(async attemptToken =>
         {
@@ -5214,11 +5222,17 @@ public sealed partial class AdminClient :
                     Protocol.ApiKey.StreamsGroupDescribe,
                     StreamsGroupDescribeRequest.LowestSupportedVersion,
                     StreamsGroupDescribeRequest.HighestSupportedVersion);
+                if (includeTopologyDescription && apiVersion < 1)
+                {
+                    throw new KafkaException(Protocol.ErrorCode.UnsupportedVersion,
+                        $"Streams topology descriptions require StreamsGroupDescribe v1; broker {kvp.Key} negotiated v{apiVersion}.");
+                }
 
                 var request = new StreamsGroupDescribeRequest
                 {
                     GroupIds = kvp.Value,
-                    IncludeAuthorizedOperations = true
+                    IncludeAuthorizedOperations = true,
+                    IncludeTopologyDescription = includeTopologyDescription
                 };
 
                 return await connection.SendAsync<StreamsGroupDescribeRequest, StreamsGroupDescribeResponse>(
@@ -5265,7 +5279,46 @@ public sealed partial class AdminClient :
             AssignmentEpoch = group.AssignmentEpoch,
             Topology = MapStreamsGroupTopology(group.Topology),
             Members = group.Members.Select(MapStreamsGroupMember).ToList(),
-            AuthorizedOperations = group.AuthorizedOperations
+            AuthorizedOperations = group.AuthorizedOperations,
+            TopologyDescription = MapStreamsGroupTopologyDescription(group.TopologyDescription),
+            TopologyDescriptionStatus = (StreamsGroupTopologyDescriptionStatus)group.TopologyDescriptionStatus
+        };
+    }
+
+    private static StreamsGroupTopologyDescription? MapStreamsGroupTopologyDescription(
+        StreamsTopologyDescriptionData? description)
+    {
+        if (description is null)
+        {
+            return null;
+        }
+
+        return new StreamsGroupTopologyDescription
+        {
+            Subtopologies = description.Subtopologies.Select(static subtopology =>
+                new StreamsGroupTopologyDescriptionSubtopology
+                {
+                    SubtopologyId = subtopology.SubtopologyId,
+                    Nodes = subtopology.Nodes.Select(MapStreamsGroupTopologyNode).ToList()
+                }).ToList(),
+            GlobalStores = description.GlobalStores.Select(static store => new StreamsGroupGlobalStore
+            {
+                Source = MapStreamsGroupTopologyNode(store.Source),
+                Processor = MapStreamsGroupTopologyNode(store.Processor)
+            }).ToList()
+        };
+    }
+
+    private static StreamsGroupTopologyNode MapStreamsGroupTopologyNode(StreamsTopologyDescriptionNodeData node)
+    {
+        return new StreamsGroupTopologyNode
+        {
+            Name = node.Name,
+            NodeType = (StreamsGroupTopologyNodeType)node.NodeType,
+            SourceTopics = node.SourceTopics,
+            SinkTopic = node.SinkTopic,
+            Stores = node.Stores,
+            Successors = node.Successors
         };
     }
 
