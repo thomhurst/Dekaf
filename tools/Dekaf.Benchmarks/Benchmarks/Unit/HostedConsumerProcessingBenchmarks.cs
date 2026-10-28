@@ -1,5 +1,6 @@
 using BenchmarkDotNet.Attributes;
 using Dekaf.Consumer;
+using Dekaf.Consumer.DeadLetter;
 using Dekaf.Extensions.Hosting;
 using Dekaf.Testing;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -8,7 +9,8 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
 /// <summary>
 /// Measures the complete hosted-consumer processing chain before and after wrapper removal,
-/// including the per-record capture of the ownership epoch that failure handling checks.
+/// including the per-record capture of the ownership epoch that failure handling checks and,
+/// with retry topics enabled, the per-record retry-topic provenance lookup.
 /// </summary>
 [MemoryDiagnoser(displayGenColumns: false)]
 [ShortRunJob]
@@ -35,6 +37,9 @@ public class HostedConsumerProcessingBenchmarks
     [Params(false, true)]
     public bool HandlerSuspends { get; set; }
 
+    [Params(false, true)]
+    public bool RetryTopics { get; set; }
+
     [GlobalSetup]
     public void Setup()
     {
@@ -45,7 +50,10 @@ public class HostedConsumerProcessingBenchmarks
                 OffsetCommitMode = OffsetCommitMode.Manual,
                 EnableAutoOffsetStore = false
             });
-        _service = new ConsumerService(consumer, HandlerSuspends);
+        var deadLetterOptions = RetryTopics
+            ? new DeadLetterOptions { RetryTopics = new RetryTopicOptions { Delays = [TimeSpan.FromSeconds(5)] } }
+            : null;
+        _service = new ConsumerService(consumer, HandlerSuspends, deadLetterOptions);
     }
 
     [Benchmark(Baseline = true, OperationsPerInvoke = Operations)]
@@ -91,8 +99,9 @@ public class HostedConsumerProcessingBenchmarks
 
     private sealed class ConsumerService(
         IKafkaConsumer<string, string> consumer,
-        bool handlerSuspends)
-        : KafkaConsumerService<string, string>(consumer, NullLogger.Instance)
+        bool handlerSuspends,
+        DeadLetterOptions? deadLetterOptions)
+        : KafkaConsumerService<string, string>(consumer, NullLogger.Instance, deadLetterOptions)
     {
         protected override IEnumerable<string> Topics => ["orders"];
 
