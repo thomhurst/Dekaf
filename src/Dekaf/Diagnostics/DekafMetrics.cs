@@ -213,7 +213,7 @@ internal static class DekafMetrics
             "dekaf.consumer.lag",
             observeValues: ObserveAllConsumerLag,
             unit: "{message}",
-            description: "Difference between high watermark and consumed position per partition.");
+            description: "Difference between the visible end offset (high watermark, or last stable offset under read_committed) and consumed position per partition.");
 
     internal static readonly ObservableGauge<long> ConsumerFetchBufferUsedBytes =
         DekafDiagnostics.Meter.CreateObservableGauge(

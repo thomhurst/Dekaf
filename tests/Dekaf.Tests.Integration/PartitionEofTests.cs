@@ -1,6 +1,7 @@
 using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Producer;
+using Dekaf.Protocol.Messages;
 
 namespace Dekaf.Tests.Integration;
 
@@ -550,5 +551,88 @@ public class PartitionEofTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         // Assert - should have all messages and received EOF
         await Assert.That(messages.Count).IsEqualTo(messageCount);
         await Assert.That(eofReceived).IsTrue();
+    }
+
+    [Test]
+    public async Task Consumer_ReadCommitted_FiresEofAtLastStableOffsetWhileTransactionIsOpen()
+    {
+        // Arrange - 3 committed records, then an open transaction holds the LSO at 3 while the
+        // high watermark moves past it (#3813).
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        for (var i = 0; i < 3; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Partition = 0,
+                Key = $"key-{i}",
+                Value = $"value-{i}"
+            }, CancellationToken.None);
+        }
+
+        await using var transactionalProducer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithTransactionalId($"eof-open-txn-{Guid.NewGuid():N}")
+            .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        await transactionalProducer.InitTransactionsAsync();
+        await using var transaction = transactionalProducer.BeginTransaction();
+        for (var i = 0; i < 2; i++)
+        {
+            await transaction.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Partition = 0,
+                Key = $"open-{i}",
+                Value = $"open-{i}"
+            }, CancellationToken.None);
+        }
+
+        try
+        {
+            // Act
+            await using var consumer = await Kafka.CreateConsumer<string, string>()
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                .WithClientId("test-consumer")
+                .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+                .WithIsolationLevel(IsolationLevel.ReadCommitted)
+                .WithPartitionEof(true)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+            var tp = new TopicPartition(topic, 0);
+            consumer.Assign(tp);
+
+            var messages = new List<string>();
+            ConsumeResult<string, string>? eofEvent = null;
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+            await foreach (var result in consumer.ConsumeAsync(cts.Token))
+            {
+                if (result.IsPartitionEof)
+                {
+                    eofEvent = result;
+                    break;
+                }
+
+                messages.Add(result.Value);
+            }
+
+            // Assert - every committed record, then EOF at the LSO while the transaction is open
+            await Assert.That(messages).IsEquivalentTo(["value-0", "value-1", "value-2"]);
+            await Assert.That(eofEvent).IsNotNull();
+            await Assert.That(eofEvent!.Value.Offset).IsEqualTo(3);
+        }
+        finally
+        {
+            await transaction.AbortAsync();
+        }
     }
 }

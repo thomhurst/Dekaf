@@ -127,7 +127,7 @@ Dekaf-specific instruments live under the `dekaf.*` prefix — the `messaging.*`
 | Instrument | Description |
 |------------|-------------|
 | `dekaf.consumer.consumed.bytes` | Bytes received (key + value) |
-| `dekaf.consumer.lag` | High watermark minus consumed position, per partition (ObservableGauge) |
+| `dekaf.consumer.lag` | High watermark (last stable offset under read_committed) minus consumed position, per partition (ObservableGauge) |
 | `dekaf.consumer.rebalance.duration` | Consumer group rebalance duration (Histogram, `s`) |
 | `dekaf.consumer.fetch.duration` | Fetch request round-trip time per broker (Histogram, `s`) |
 | `dekaf.consumer.batch.parse.errors` | Record batches that failed protocol parsing |

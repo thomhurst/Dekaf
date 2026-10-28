@@ -17,11 +17,17 @@ public class ConsumerFetchWatermarkBenchmarks
     private UpdateWatermarks _updateWatermarks = null!;
     private int _fetchBufferEpoch;
 
+    // ReadCommitted measures against the last stable offset, ReadUncommitted against the high
+    // watermark; both resolve the visible end once per partition response.
+    [Params(IsolationLevel.ReadUncommitted, IsolationLevel.ReadCommitted)]
+    public IsolationLevel IsolationLevel { get; set; }
+
     [GlobalSetup]
     public void Setup()
     {
         _consumer = (KafkaConsumer<byte[], byte[]>)Kafka.CreateConsumer<byte[], byte[]>()
             .WithBootstrapServers("localhost:9092")
+            .WithIsolationLevel(IsolationLevel)
             .Build();
         _partition = new TopicPartition("lag-benchmark", 0);
         _consumer.IncrementalAssign(

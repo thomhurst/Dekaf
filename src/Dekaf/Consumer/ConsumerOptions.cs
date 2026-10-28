@@ -486,7 +486,9 @@ public sealed class ConsumerOptions
     /// <summary>
     /// Enable partition end-of-file (EOF) events.
     /// When enabled, the consumer will emit a special ConsumeResult with IsPartitionEof=true
-    /// when it reaches the end of a partition (caught up to the high watermark).
+    /// when it reaches the end of a partition: caught up to the high watermark, or to the last
+    /// stable offset under <see cref="IsolationLevel.ReadCommitted"/>, because records past it
+    /// belong to open transactions and are not visible yet.
     /// The EOF event fires once per "catch up" - it will fire again after new messages
     /// arrive and are consumed. Default is false.
     /// </summary>

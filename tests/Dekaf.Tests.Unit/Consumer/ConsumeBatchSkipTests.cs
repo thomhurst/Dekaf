@@ -444,14 +444,14 @@ public sealed class ConsumeBatchSkipTests
         var staleEpoch = GetFetchBufferEpoch(consumer);
         consumer.Seek(new TopicPartitionOffset(Topic, 0, 100));
 
-        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 50, staleEpoch);
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, visibleEndOffset: 50, staleEpoch);
         await Assert.That(GetEofEvents(consumer)).IsEmpty();
 
         // Once the consume loop applies the seek, a response fetched afterwards reports EOF.
         typeof(KafkaConsumer<string, string>)
             .GetMethod("RecoverAndClearFetchBufferForPendingCoordinatorRevocations", BindingFlags.Instance | BindingFlags.NonPublic)!
             .Invoke(consumer, null);
-        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 50, GetFetchBufferEpoch(consumer));
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, visibleEndOffset: 50, GetFetchBufferEpoch(consumer));
         await Assert.That(GetEofEvents(consumer).Single()).IsEqualTo((Partition0, 100L));
     }
 
@@ -482,7 +482,7 @@ public sealed class ConsumeBatchSkipTests
 
             // The old response's EOF lands after the release: it must be dropped, not delivered
             // ahead of offsets 10 and 11, which still have to be refetched.
-            _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, staleEpoch);
+            _ = consumer.HandleEmptyFetchResponse(Partition0, null, visibleEndOffset: 10, staleEpoch);
             await Assert.That(GetEofEvents(consumer)).IsEmpty();
         }
         finally
@@ -543,13 +543,13 @@ public sealed class ConsumeBatchSkipTests
         ApplyStagedClears(consumer);
 
         // A current empty response reports EOF for the new position.
-        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, GetFetchBufferEpoch(consumer));
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, visibleEndOffset: 10, GetFetchBufferEpoch(consumer));
         await Assert.That(GetEofEvents(consumer).Count).IsEqualTo(1);
 
         // The old response publishes: it is dropped and must not clear the current marker...
         await PublishPrefetchedAsync(consumer, CreatePendingFetch(Partition0, 3, 2), staleEpoch);
         // ...so the next current empty response does not queue a duplicate.
-        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 10, GetFetchBufferEpoch(consumer));
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, visibleEndOffset: 10, GetFetchBufferEpoch(consumer));
         await Assert.That(GetEofEvents(consumer).Count).IsEqualTo(1);
     }
 
@@ -579,7 +579,7 @@ public sealed class ConsumeBatchSkipTests
         {
             var partition = new TopicPartition(Topic, i);
             fetchPositions[partition] = 10;
-            _ = consumer.HandleEmptyFetchResponse(partition, null, highWatermark: 10, epoch);
+            _ = consumer.HandleEmptyFetchResponse(partition, null, visibleEndOffset: 10, epoch);
         }
 
         // The records publish after those EOFs. Each publication supersedes its partition's
@@ -595,7 +595,7 @@ public sealed class ConsumeBatchSkipTests
 
         // The real end after the records is reported once per partition.
         for (var i = 0; i < partitionCount; i++)
-            _ = consumer.HandleEmptyFetchResponse(new TopicPartition(Topic, i), null, highWatermark: 12, epoch);
+            _ = consumer.HandleEmptyFetchResponse(new TopicPartition(Topic, i), null, visibleEndOffset: 12, epoch);
         await Assert.That(eofEvents.Count).IsEqualTo(2 * partitionCount);
 
         using var cts = new CancellationTokenSource();
@@ -814,7 +814,7 @@ public sealed class ConsumeBatchSkipTests
         var epoch = GetFetchBufferEpoch(consumer);
 
         // The first empty response at the high watermark reports EOF under the lock.
-        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 11, epoch);
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, visibleEndOffset: 11, epoch);
         await Assert.That(GetEofEvents(consumer).Count).IsEqualTo(1);
 
         // With the invalidation lock held elsewhere, later empty responses for the idle
@@ -837,7 +837,7 @@ public sealed class ConsumeBatchSkipTests
             {
                 for (var i = 0; i < 1000; i++)
                 {
-                    _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 11, epoch);
+                    _ = consumer.HandleEmptyFetchResponse(Partition0, null, visibleEndOffset: 11, epoch);
                 }
             });
             // A blocked idle path never completes; the test timeout is the backstop.
@@ -860,9 +860,9 @@ public sealed class ConsumeBatchSkipTests
             CreatePendingFetch(Partition0, 10, 1));
         GetDictionary(consumer, "_fetchPositions")[Partition0] = 11;
 
-        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 11, GetFetchBufferEpoch(consumer));
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, visibleEndOffset: 11, GetFetchBufferEpoch(consumer));
         // The fast path skips while the marker exists...
-        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 11, GetFetchBufferEpoch(consumer));
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, visibleEndOffset: 11, GetFetchBufferEpoch(consumer));
         await Assert.That(GetEofEvents(consumer).Count).IsEqualTo(1);
 
         // ...and a seek that clears it (and drops the queued EOF) lets the next current
@@ -872,7 +872,7 @@ public sealed class ConsumeBatchSkipTests
         typeof(KafkaConsumer<string, string>)
             .GetMethod("RecoverAndClearFetchBufferForPendingCoordinatorRevocations", BindingFlags.Instance | BindingFlags.NonPublic)!
             .Invoke(consumer, null);
-        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 11, GetFetchBufferEpoch(consumer));
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, visibleEndOffset: 11, GetFetchBufferEpoch(consumer));
         await Assert.That(GetEofEvents(consumer).Single()).IsEqualTo((Partition0, 11L));
     }
 
@@ -1070,13 +1070,13 @@ public sealed class ConsumeBatchSkipTests
         fetchPositions[Partition0] = 12;
         var epoch = GetFetchBufferEpoch(consumer);
 
-        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 12, epoch);
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, visibleEndOffset: 12, epoch);
         await Assert.That(GetEofEvents(consumer).Count).IsEqualTo(1);
 
         // An overlapping same-epoch response for 10..11 is fully covered by the earlier
         // publication: it adds nothing past the reported EOF and must not re-arm it.
         await PublishPrefetchedAsync(consumer, CreatePendingFetch(Partition0, 10, 2), epoch);
-        _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 12, epoch);
+        _ = consumer.HandleEmptyFetchResponse(Partition0, null, visibleEndOffset: 12, epoch);
         await Assert.That(GetEofEvents(consumer).Single()).IsEqualTo((Partition0, 12L));
     }
 
