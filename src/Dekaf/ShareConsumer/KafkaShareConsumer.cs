@@ -353,10 +353,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         ThrowIfDisposed();
         ThrowIfNotInitialized();
         SelectConsumptionMode(batch: false);
-        await WaitForPendingReleaseAsync(cancellationToken).ConfigureAwait(false);
 
         while (!cancellationToken.IsCancellationRequested && Volatile.Read(ref _disposed) == 0 && Volatile.Read(ref _closed) == 0)
         {
+            // Checked every round: an Unsubscribe while this iterator is suspended queues the final
+            // acknowledgement and the group leave, which must finish before the next fetch.
+            if (_pendingReleaseTask is not null)
+                await WaitForPendingReleaseAsync(cancellationToken).ConfigureAwait(false);
             using var recordScope = BeginRecordBatchScope();
             if (_subscriptionSnapshot.Count == 0 || Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _disposed) != 0)
                 yield break;
