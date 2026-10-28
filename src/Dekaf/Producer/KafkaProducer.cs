@@ -4036,6 +4036,16 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     }
                 }
 
+                // A top-level error (v4+ shape) arrives with no per-partition results, so it must
+                // fail enrollment on its own rather than read as an empty, successful result list.
+                if (response.ErrorCode != ErrorCode.None)
+                {
+                    partitionError = response.ErrorCode;
+                    needsCoordinatorRediscovery |= response.ErrorCode == ErrorCode.NotCoordinator;
+                    partitionClassification = TransactionErrorClassifier.Classify(response.ErrorCode, tv2);
+                    errorContext = $"transaction {request.TransactionalId}";
+                }
+
                 if (partitionError is not { } failedPartitionError)
                 {
                     return; // Success

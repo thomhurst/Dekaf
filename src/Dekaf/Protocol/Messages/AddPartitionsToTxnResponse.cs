@@ -15,7 +15,7 @@ public sealed class AddPartitionsToTxnResponse : IKafkaResponse
 
     public static ApiKey ApiKey => ApiKey.AddPartitionsToTxn;
     public static short LowestSupportedVersion => 3;
-    public static short HighestSupportedVersion => 4;
+    public static short HighestSupportedVersion => 3;
 
     /// <summary>
     /// Throttle time in milliseconds.

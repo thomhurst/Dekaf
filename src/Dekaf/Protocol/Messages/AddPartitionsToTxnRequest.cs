@@ -5,12 +5,15 @@ namespace Dekaf.Protocol.Messages;
 /// Adds partitions to an ongoing transaction.
 /// v0-v3: Flat format with TransactionalId, ProducerId, ProducerEpoch, Topics.
 /// v4+: Wrapped in a Transactions array (supports batching, adds VerifyOnly field).
+/// Clients negotiate at most v3: brokers authorize v4+ as inter-broker verification
+/// (KIP-890), requiring CLUSTER_ACTION, so a client principal gets CLUSTER_AUTHORIZATION_FAILED.
+/// The v4 writer is retained for wire-format tests only.
 /// </summary>
 public sealed class AddPartitionsToTxnRequest : IKafkaRequest<AddPartitionsToTxnResponse>
 {
     public static ApiKey ApiKey => ApiKey.AddPartitionsToTxn;
     public static short LowestSupportedVersion => 3;
-    public static short HighestSupportedVersion => 4;
+    public static short HighestSupportedVersion => 3;
 
     /// <summary>
     /// The transactional ID.

@@ -571,7 +571,7 @@ public sealed class TransactionProtocolTests
     {
         await Assert.That(AddPartitionsToTxnRequest.ApiKey).IsEqualTo(ApiKey.AddPartitionsToTxn);
         await Assert.That(AddPartitionsToTxnRequest.LowestSupportedVersion).IsEqualTo((short)3);
-        await Assert.That(AddPartitionsToTxnRequest.HighestSupportedVersion).IsEqualTo((short)4);
+        await Assert.That(AddPartitionsToTxnRequest.HighestSupportedVersion).IsEqualTo((short)3);
     }
 
     [Test]
