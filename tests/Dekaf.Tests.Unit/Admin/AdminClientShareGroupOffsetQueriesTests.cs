@@ -216,19 +216,26 @@ public sealed class AdminClientShareGroupOffsetQueriesTests
         var (admin, connection) = CreateAdmin();
         await using var owned = admin;
         using var cancellation = new CancellationTokenSource();
-        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
         connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(Arg.Any<FindCoordinatorRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(call => new ValueTask<FindCoordinatorResponse>(Pause(call.ArgAt<CancellationToken>(2))));
         async Task<FindCoordinatorResponse> Pause(CancellationToken token)
         {
-            entered.TrySetResult();
-            await Task.Delay(Timeout.Infinite, token);
+            var wait = Task.Delay(Timeout.Infinite, token);
+            entered.TrySetResult(token);
+            await wait;
             return new FindCoordinatorResponse { Coordinators = [] };
         }
-        var pending = admin.ListShareGroupOffsetsAsync(Specs("wait"), new() { TimeoutMs = deadline ? 100 : 30000 }, cancellation.Token).AsTask();
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var pending = admin.ListShareGroupOffsetsAsync(Specs("wait"), new() { TimeoutMs = 30000 }, cancellation.Token).AsTask();
+        if (await Task.WhenAny(entered.Task, pending) == pending)
+            await pending;
+        await Assert.That(entered.Task.IsCompleted).IsTrue();
+        // Both endings fire only once discovery is suspended on the pending FindCoordinator.
         if (deadline)
+        {
+            AdminDeadline.Expire(await entered.Task);
             await Assert.That(async () => await pending).Throws<KafkaTimeoutException>();
+        }
         else
         {
             cancellation.Cancel();
