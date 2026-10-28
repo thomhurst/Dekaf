@@ -195,11 +195,14 @@ var manuallyTunedProducer = await Kafka.CreateProducer<string, string>()
 
 ```csharp
 using Dekaf;
+using Dekaf.Consumer;
 
 var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .ForHighThroughput()
+    // Batch(n) proves records before they are processed; commit only after each batch.
+    .WithOffsetCommitMode(OffsetCommitMode.Manual)
     .SubscribeTo("events")
     .BuildAsync();
 

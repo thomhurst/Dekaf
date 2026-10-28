@@ -174,9 +174,13 @@ await foreach (var msg in consumer.ConsumeAsync(ct))
 
 ### Commit in Batches
 
-Better performance while maintaining safety:
+Better performance while maintaining safety. `.Batch(n)` reads `n` records ahead of your code,
+which [proves them before they are processed](delivery-semantics.md#how-the-default-works), so
+use manual commit mode and commit only after the whole batch succeeds:
 
 ```csharp
+// Built with .WithOffsetCommitMode(OffsetCommitMode.Manual): nothing is committed
+// automatically, so a failed batch is redelivered.
 await foreach (var batch in consumer.ConsumeAsync(ct).Batch(100))
 {
     foreach (var msg in batch)

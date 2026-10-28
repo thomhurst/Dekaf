@@ -20,7 +20,11 @@ public enum OffsetStoreTiming
     /// by requesting the next record or batch, completing a fetch, or committing explicitly.
     /// A record whose processing throws out of the consume loop is never staged and is
     /// redelivered after a restart or rebalance. This is the default and gives at-least-once
-    /// delivery for sequential consume loops.
+    /// delivery for sequential consume loops. An operator that reads ahead of the loop body,
+    /// such as <see cref="ConsumerExtensions.Batch{TKey, TValue}"/>, requests records before
+    /// they are processed and so proves them early; use
+    /// <see cref="IKafkaConsumer{TKey, TValue}.ConsumeBatchAsync(CancellationToken)"/> for
+    /// at-least-once batch processing.
     /// </summary>
     AfterProcessing,
 
