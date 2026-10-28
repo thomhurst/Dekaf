@@ -37,6 +37,8 @@ public class SerializerBenchmarks
     private JsonSerializer<string> _jsonSerializer = null!;
     private byte[] _jsonBytes = null!;
     private SerializationContext _context;
+    private JsonSerializer<JsonPayload> _jsonSerializer = null!;
+    private JsonPayload _jsonPayload = null!;
 
     // Persistent buffers for ReusableBufferWriter, mirroring the producer's
     // thread-local KeySerializationBuffer/ValueSerializationBuffer.
@@ -59,6 +61,9 @@ public class SerializerBenchmarks
             Topic = "test-topic",
             Component = SerializationComponent.Value
         };
+
+        _jsonSerializer = new JsonSerializer<JsonPayload>();
+        _jsonPayload = new JsonPayload { Id = 42, Name = _mediumString };
 
         // Pre-create string bytes for deserialization
         _stringBytes = System.Text.Encoding.UTF8.GetBytes(_mediumString);
@@ -116,6 +121,17 @@ public class SerializerBenchmarks
     {
         _buffer.ResetWrittenCount();
         Serializers.Int32.Serialize(12345678, ref _buffer, _context);
+    }
+
+    // ===== JSON Serialization =====
+
+    // Steady state of the thread-static scratch buffer in JsonSerializer<T>.
+    [BenchmarkCategory("Scalar")]
+    [Benchmark(Description = "Serialize JSON (small object)")]
+    public void SerializeJson_Small()
+    {
+        _buffer.ResetWrittenCount();
+        _jsonSerializer.Serialize(_jsonPayload, ref _buffer, _context);
     }
 
     // ===== Batch Serialization (100 messages) =====
@@ -177,5 +193,11 @@ public class SerializerBenchmarks
         Serializers.String.Serialize(_mediumString, ref writer, _context);
         writer.ToPooledMemory().Return();
         writer.UpdateBufferRef(ref _reusableValueBuffer);
+    }
+
+    public sealed class JsonPayload
+    {
+        public int Id { get; init; }
+        public string Name { get; init; } = string.Empty;
     }
 }

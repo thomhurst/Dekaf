@@ -11,6 +11,10 @@ namespace Dekaf.Serialization.Json;
 /// <typeparam name="T">Type to serialize.</typeparam>
 public sealed class JsonSerializer<T> : ISerde<T>
 {
+    // Keep the scratch buffer warm for typical payloads, but drop it after an oversized value so a
+    // one-off large message does not pin its peak size on every thread for the life of the process.
+    private const int MaxRetainedBufferBytes = 1024 * 1024;
+
     [ThreadStatic]
     private static ArrayBufferWriter<byte>? t_sharedBuffer;
 
@@ -85,6 +89,7 @@ public sealed class JsonSerializer<T> : ISerde<T>
         catch
         {
             t_jsonWriter = null;
+            ReleaseOversizedBuffer(sharedBuffer);
             throw;
         }
 
@@ -92,6 +97,22 @@ public sealed class JsonSerializer<T> : ISerde<T>
         var span = destination.GetSpan(written.Length);
         written.CopyTo(span);
         destination.Advance(written.Length);
+        ReleaseOversizedBuffer(sharedBuffer);
+    }
+
+    /// <summary>
+    /// Capacity of the scratch buffer retained on the current thread, or 0 when none is cached.
+    /// </summary>
+    internal static int RetainedBufferCapacity => t_sharedBuffer?.Capacity ?? 0;
+
+    private static void ReleaseOversizedBuffer(ArrayBufferWriter<byte> sharedBuffer)
+    {
+        if (sharedBuffer.Capacity <= MaxRetainedBufferBytes)
+            return;
+
+        // The cached Utf8JsonWriter still references the buffer, so drop both.
+        t_sharedBuffer = null;
+        t_jsonWriter = null;
     }
 
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = JsonSerializerAotMessages.ReflectionBranchJustification)]
