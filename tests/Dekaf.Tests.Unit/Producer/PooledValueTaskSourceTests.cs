@@ -574,6 +574,103 @@ public class PooledValueTaskSourceTests
     }
 
     [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task DeliveryHandler_Throws_InvokedOnceAndSourceReused(bool succeeds)
+    {
+        await using var pool = new ValueTaskSourcePool<int>(maxPoolSize: 1);
+        using var cts = new CancellationTokenSource();
+        var source = pool.Rent();
+        source.RegisterCancellation(cts.Token);
+        var operationException = new InvalidOperationException("Operation failed");
+        var callbackException = new InvalidOperationException("Callback failed");
+        var secondCallbackException = new InvalidOperationException("Callback invoked twice");
+        var calls = 0;
+        var receivedValue = -1;
+        Exception? receivedException = null;
+        source.SetDeliveryHandler((value, error) =>
+        {
+            calls++;
+            receivedValue = value;
+            receivedException = error;
+            throw calls == 1 ? callbackException : secondCallbackException;
+        });
+
+        if (succeeds)
+            source.SetResult(42);
+        else
+            source.SetException(operationException);
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await source.Task.ConfigureAwait(false));
+
+        await Assert.That(thrown).IsSameReferenceAs(callbackException);
+        await Assert.That(calls).IsEqualTo(1);
+        await Assert.That(receivedValue).IsEqualTo(succeeds ? 42 : 0);
+        await Assert.That(receivedException).IsSameReferenceAs(succeeds ? null : operationException);
+
+        var reused = pool.Rent();
+        await Assert.That(reused).IsSameReferenceAs(source);
+        cts.Cancel();
+        await Assert.That(reused.Task.IsCompleted).IsFalse();
+        reused.SetResult(43);
+        await Assert.That(await reused.Task.ConfigureAwait(false)).IsEqualTo(43);
+        await Assert.That(calls).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(true, true)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    [Arguments(false, false)]
+    public async Task ObserveForFireAndForget_ThrowingHandler_InvokedOnceAndSourceReused(
+        bool succeeds, bool completeBeforeObservation)
+    {
+        await using var pool = new ValueTaskSourcePool<int>(maxPoolSize: 1);
+        using var cts = new CancellationTokenSource();
+        var source = pool.Rent();
+        source.RegisterCancellation(cts.Token);
+        var operationException = new InvalidOperationException("Operation failed");
+        var handlerRan = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        var receivedValue = -1;
+        Exception? receivedException = null;
+        source.SetDeliveryHandler((value, error) =>
+        {
+            calls++;
+            receivedValue = value;
+            receivedException = error;
+            handlerRan.TrySetResult();
+            throw new InvalidOperationException("Callback failed");
+        });
+
+        if (!completeBeforeObservation)
+            source.ObserveForFireAndForget();
+
+        if (succeeds)
+            source.SetResult(42);
+        else
+            source.SetException(operationException);
+
+        if (completeBeforeObservation)
+            source.ObserveForFireAndForget();
+
+        await handlerRan.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+        // Pool publication happens after the callback and cleanup, so reuse also synchronizes
+        // with the complete callback sequence on the asynchronous observation path.
+        var reused = await RentUntilReusedAsync(pool, source).ConfigureAwait(false);
+        await Assert.That(reused).IsSameReferenceAs(source);
+        await Assert.That(calls).IsEqualTo(1);
+        await Assert.That(receivedValue).IsEqualTo(succeeds ? 42 : 0);
+        await Assert.That(receivedException).IsSameReferenceAs(succeeds ? null : operationException);
+        cts.Cancel();
+        await Assert.That(reused.Task.IsCompleted).IsFalse();
+        reused.SetResult(43);
+        await Assert.That(await reused.Task.ConfigureAwait(false)).IsEqualTo(43);
+        await Assert.That(calls).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task DeliveryHandler_WorksWithNonRecordMetadataType()
     {
         // Test that generic delivery handler works with any type (not just RecordMetadata)
