@@ -64,11 +64,12 @@ internal sealed class LatencyTracker
 
     // Called once after ingress stops. Do not retain one Task per sampled message over
     // a long run; only the outstanding count and one phase-level completion are needed.
+    // The caller owns the deadline: ProducerWorkload bounds this wait with its drain token.
     internal Task WaitForDeliverySamplesAsync()
     {
         Volatile.Write(ref _waitingForDeliveries, 1);
         if (Volatile.Read(ref _pendingDeliveries) == 0) _deliveriesDrained.TrySetResult();
-        return _deliveriesDrained.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        return _deliveriesDrained.Task;
     }
 
     /// <param name="maxValueMs">Upper bound of the histogram in milliseconds. Values above this are counted as overflow.</param>
