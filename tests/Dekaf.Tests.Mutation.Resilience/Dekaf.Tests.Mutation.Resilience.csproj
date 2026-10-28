@@ -13,8 +13,11 @@
     <!-- MTP cannot yet select covering tests per mutant, so every surviving mutant runs this whole
          suite: link only the suites that exercise the retry and failure-classification code. -->
     <Compile Include="..\Dekaf.Tests.Unit\AssemblyInfo.cs" Link="AssemblyInfo.cs" />
-    <Compile Include="..\Dekaf.Tests.Unit\TestWait.cs" Link="TestWait.cs" />
+    <!-- Module initializers configure the whole Dekaf.Tests.Unit host (thread pool, test-only switches);
+         link all of them so the linked suites run as they do in the unit project. -->
     <Compile Include="..\Dekaf.Tests.Unit\ThreadPoolConfiguration.cs" Link="ThreadPoolConfiguration.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\AccumulatorTestHooks.cs" Link="Producer\AccumulatorTestHooks.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\TestWait.cs" Link="TestWait.cs" />
     <Compile Include="..\Dekaf.Tests.Unit\Retry\ExponentialBackoffBoundaryTests.cs" Link="Retry\ExponentialBackoffBoundaryTests.cs" />
     <Compile Include="..\Dekaf.Tests.Unit\Retry\ExponentialRetryBackoffTests.cs" Link="Retry\ExponentialRetryBackoffTests.cs" />
     <Compile Include="..\Dekaf.Tests.Unit\Retry\RetryHelperTests.cs" Link="Retry\RetryHelperTests.cs" />
