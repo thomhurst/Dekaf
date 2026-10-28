@@ -107,7 +107,7 @@ var fixedConnectionProducer = Kafka.CreateProducer<string, string>()
     .Build();
 ```
 
-**Note:** Adaptive scaling applies to idempotent and acknowledged non-idempotent producers. Idempotent producers keep each partition on one connection, so sequence order is preserved as connections are added. Transactional producers and `Acks.None` producers use a fixed connection count. Connections scale down again after sustained low buffer and in-flight utilization.
+**Note:** Adaptive scaling applies to idempotent and acknowledged non-idempotent producers. Idempotent producers keep each partition on one connection, so sequence order is preserved as connections are added. Transactional producers and `Acks.None` producers use a fixed connection count. Connections scale down again after sustained low buffer and in-flight utilization. A producer created through `Kafka.Connect(...)` stops using the extra connections but leaves them open in the shared pool.
 
 ### FIFO Buffer Backpressure
 

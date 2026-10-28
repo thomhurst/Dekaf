@@ -368,7 +368,7 @@ The producer scales up only under sustained pressure, and only after a cooldown 
 - **Blocked admissions**: produce calls keep waiting on the per-broker unacked-byte admission budget
 - **Buffer pressure**: enough new buffer-full events while the buffer is mostly full
 
-Connections also scale down. When buffer and in-flight utilization stay low for a sustained period, the producer drains and removes connections it added. The thresholds are internal tuning values in `BrokerSender` and can change between releases.
+Connections also scale down. When buffer and in-flight utilization stay low for a sustained period, the producer drains and removes connections it added. Producers created through `Kafka.Connect(...)` share the client's connection pool, so they stop routing to those connections but leave them open for other clients. The thresholds are internal tuning values in `BrokerSender` and can change between releases.
 
 ### WithoutAdaptiveConnections
 
