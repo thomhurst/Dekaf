@@ -13,9 +13,12 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// <summary>
 /// Broker-free benchmark for the awaited <see cref="KafkaProducer{TKey,TValue}.ProduceAsync(ProducerMessage{TKey,TValue},CancellationToken)"/>
 /// synchronous fast path: admission, metadata cache, serialization, partitioning and the span
-/// append into the accumulator with a completion source. A background drainer completes and
-/// recycles published batches (as a sender would on success), so each produce's pooled completion
-/// resolves and is returned; nothing is set up per iteration. <see cref="Transactional"/> adds the
+/// append into the accumulator with a completion source. After each round of produces the
+/// benchmark thread seals the expired batches and completes and recycles them (as a sender would
+/// on success), so each produce's pooled completion resolves and is returned; nothing is set up
+/// per iteration. Completion runs on the benchmark thread: a separate drainer thread made the
+/// timed region measure the cross-thread handoff and thread scheduling, which drifted beyond the
+/// gate tolerance between runs of identical code (#3864). <see cref="Transactional"/> adds the
 /// transactional admission check (a producer with a TransactionalId in an open transaction).
 /// Uses only APIs that exist on main so the gate compares both revisions.
 /// </summary>
@@ -31,8 +34,6 @@ public class ProducerProduceAsyncHotPathBenchmarks
     private readonly ValueTask<RecordMetadata>[] _pending = new ValueTask<RecordMetadata>[ProducesPerInvoke];
     private KafkaProducer<string, string> _producer = null!;
     private RecordAccumulator _accumulator = null!;
-    private CancellationTokenSource _drainerCts = null!;
-    private Thread _drainerThread = null!;
     private ProducerMessage<string, string>[] _messages = null!;
 
     [Params(1, 12)]
@@ -82,15 +83,6 @@ public class ProducerProduceAsyncHotPathBenchmarks
             };
         }
 
-        _drainerCts = new CancellationTokenSource();
-        _drainerThread = new Thread(() => DrainLoop(_drainerCts.Token))
-        {
-            IsBackground = true,
-            Name = "producer-produce-hot-path-drainer",
-            Priority = ThreadPriority.Highest,
-        };
-        _drainerThread.Start();
-
         for (var i = 0; i < 20; i++)
             ProduceBatch();
     }
@@ -98,9 +90,6 @@ public class ProducerProduceAsyncHotPathBenchmarks
     [GlobalCleanup]
     public async Task Cleanup()
     {
-        _drainerCts.Cancel();
-        _drainerThread.Join();
-        _drainerCts.Dispose();
         await _producer.DisposeAsync().ConfigureAwait(false);
     }
 
@@ -110,44 +99,36 @@ public class ProducerProduceAsyncHotPathBenchmarks
         for (var i = 0; i < ProducesPerInvoke; i++)
             _pending[i] = _producer.ProduceAsync(_messages[i]);
 
-        // The drainer completes each batch; no continuation is registered, so completing the
-        // pooled sources schedules nothing. GetResult returns each source to its pool.
-        var spinner = new SpinWait();
+        // Seal and complete the batches on this thread; no continuation is registered, so
+        // completing the pooled sources schedules nothing. GetResult returns each source to its
+        // pool. The loop normally finishes in one pass: LingerMs = 0 seals every open batch.
         for (var i = 0; i < ProducesPerInvoke; i++)
         {
             var pending = _pending[i];
             while (!pending.IsCompleted)
-                spinner.SpinOnce();
+                CompletePublishedBatches();
 
             pending.GetAwaiter().GetResult();
             _pending[i] = default;
         }
     }
 
-    private void DrainLoop(CancellationToken cancellationToken)
+    private void CompletePublishedBatches()
     {
-        var spinner = new SpinWait();
+        // The linger loop is stopped with the senders; seal the expired (LingerMs = 0) batches
+        // here so awaited produces complete.
+        var expire = _accumulator.ExpireLingerAsync(CancellationToken.None);
+        if (!expire.IsCompletedSuccessfully)
+            expire.AsTask().GetAwaiter().GetResult();
+
         var timestamp = DateTimeOffset.UnixEpoch;
-        while (!cancellationToken.IsCancellationRequested)
+        while (_accumulator.TryDrainPublishedBatch(out var batch))
         {
-            if (_accumulator.TryDrainPublishedBatch(out var batch))
-            {
-                _accumulator.MarkBatchDeliveryComplete(batch);
-                batch.CompleteSend(0, timestamp);
-                _accumulator.OnBatchExitsPipeline(batch);
-                _accumulator.ReleaseMemory(batch.DataSize);
-                _accumulator.ReturnReadyBatch(batch);
-                spinner.Reset();
-            }
-            else
-            {
-                // The linger loop is stopped with the senders; seal the expired (LingerMs = 0)
-                // batches here so awaited produces complete.
-                var expire = _accumulator.ExpireLingerAsync(cancellationToken);
-                if (!expire.IsCompletedSuccessfully)
-                    expire.AsTask().GetAwaiter().GetResult();
-                spinner.SpinOnce();
-            }
+            _accumulator.MarkBatchDeliveryComplete(batch);
+            batch.CompleteSend(0, timestamp);
+            _accumulator.OnBatchExitsPipeline(batch);
+            _accumulator.ReleaseMemory(batch.DataSize);
+            _accumulator.ReturnReadyBatch(batch);
         }
     }
 
