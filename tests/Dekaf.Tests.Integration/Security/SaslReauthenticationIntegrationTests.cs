@@ -179,11 +179,14 @@ public sealed class SaslReauthenticationIntegrationTests(ReauthKafkaContainer ka
                 : ValueTask.FromException<SaslCredentials>(new InvalidOperationException("Secret store unavailable")),
             automatic: true, requestTimeout: TimeSpan.FromMilliseconds(500));
         await connection.ConnectAsync(cancellationToken);
+        var sessionExpiry = connection.SaslSession!.SessionExpiryTime!.Value;
 
         // No requests are sent, so the broker never closes the expired session itself:
         // only the client retiring the connection can disconnect it.
         await TestWait.WaitForConditionAsync(() => !connection.IsConnected, TimeSpan.FromSeconds(10),
-            description: "connection retired after re-authentication retries ran out");
+            pollIntervalMs: 20, description: "connection retired after re-authentication retries ran out");
+        // Retirement must beat the session expiry, not merely happen eventually.
+        await Assert.That(DateTimeOffset.UtcNow).IsLessThan(sessionExpiry);
         await Assert.That(Volatile.Read(ref calls)).IsGreaterThanOrEqualTo(3);
     }
 
