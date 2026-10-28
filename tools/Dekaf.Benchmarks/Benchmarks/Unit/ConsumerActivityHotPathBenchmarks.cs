@@ -51,7 +51,8 @@ public class ConsumerActivityHotPathBenchmarks
             },
             Serializers.String,
             Serializers.String);
-        _pending = PendingFetchData.Create("orders", 0, Array.Empty<RecordBatch>());
+        // A non-zero partition, so the span tags a partition id other than the first one.
+        _pending = PendingFetchData.Create("orders", 3, Array.Empty<RecordBatch>());
 
         var method = typeof(KafkaConsumer<string, string>).GetMethod(
             "StartConsumeActivity",
