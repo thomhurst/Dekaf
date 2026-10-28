@@ -297,6 +297,53 @@ public class HealthCheckTests
     }
 
     [Test]
+    [Arguments(-2L)]
+    [Arguments(-1L)]
+    public async Task ConsumerHealthCheck_SeekSentinelPosition_SkipsPartition(long sentinel)
+    {
+        // SeekToBeginning/SeekToEnd leave the ListOffsets sentinel in the position until the
+        // next fetch resolves it; High - sentinel would report a false lag of High + 1 or 2.
+        var consumer = CreateConsumerSubstitute(out var partitions, out var positions, out var offsets);
+        var tp0 = new TopicPartition("test-topic", 0);
+        var tp1 = new TopicPartition("test-topic", 1);
+        partitions.Assignment.Returns(new HashSet<TopicPartition> { tp0, tp1 });
+        positions.GetPosition(tp0).Returns(sentinel);
+        offsets.QueryWatermarkOffsetsAsync(tp0, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 500_000));
+        positions.GetPosition(tp1).Returns(95L);
+        offsets.QueryWatermarkOffsetsAsync(tp1, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 100));
+
+        var healthCheck = new DekafConsumerHealthCheck<string, string>(
+            consumer, new DekafConsumerHealthCheckOptions());
+
+        var result = await healthCheck.CheckHealthAsync(CreateContext());
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Healthy);
+        await Assert.That(result.Data["MaxLag"]).IsEqualTo(5L);
+        await Assert.That(result.Data["MeasuredPartitionCount"]).IsEqualTo(1);
+        await Assert.That(result.Data.ContainsKey("test-topic[0]")).IsFalse();
+        await offsets.DidNotReceive().QueryWatermarkOffsetsAsync(tp0, Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ConsumerHealthCheck_AllSentinelPositions_ReturnsDegraded()
+    {
+        var consumer = CreateConsumerSubstitute(out var partitions, out var positions, out _);
+        var tp0 = new TopicPartition("test-topic", 0);
+        var tp1 = new TopicPartition("test-topic", 1);
+        partitions.Assignment.Returns(new HashSet<TopicPartition> { tp0, tp1 });
+        positions.GetPosition(tp0).Returns(-2L);
+        positions.GetPosition(tp1).Returns(-1L);
+
+        var healthCheck = new DekafConsumerHealthCheck<string, string>(
+            consumer, new DekafConsumerHealthCheckOptions());
+
+        var result = await healthCheck.CheckHealthAsync(CreateContext());
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Degraded);
+        await Assert.That(result.Data["MeasuredPartitionCount"]).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task ConsumerHealthCheck_AllNullPositions_ReturnsDegraded()
     {
         var consumer = CreateConsumerSubstitute(out var partitions, out var positions, out _);
