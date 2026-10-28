@@ -799,6 +799,8 @@ Dekaf.Admin.StreamsGroupDescription.TopologyDescription.get -> Dekaf.Admin.Strea
 Dekaf.Admin.StreamsGroupDescription.TopologyDescription.init -> void
 Dekaf.Admin.StreamsGroupDescription.TopologyDescriptionStatus.get -> Dekaf.Admin.StreamsGroupTopologyDescriptionStatus
 Dekaf.Admin.StreamsGroupDescription.TopologyDescriptionStatus.init -> void
+Dekaf.Admin.StreamsGroupDescription.AssignorName.get -> string?
+Dekaf.Admin.StreamsGroupDescription.AssignorName.init -> void
 Dekaf.Admin.StreamsGroupGlobalStore
 Dekaf.Admin.StreamsGroupGlobalStore.Processor.get -> Dekaf.Admin.StreamsGroupTopologyNode!
 Dekaf.Admin.StreamsGroupGlobalStore.Processor.init -> void

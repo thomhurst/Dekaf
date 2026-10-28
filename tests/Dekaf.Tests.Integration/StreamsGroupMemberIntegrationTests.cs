@@ -16,6 +16,9 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
     // Kafka 4.4 completes the KIP-1071 lifecycle used by these gated tests.
     private const int CompleteStreamsGroupSupport = 440;
 
+    // StreamsGroupDescribe v1, which reports the group's task assignor (KIP-1357), ships in Kafka 4.4.
+    private const int AssignorNameSupport = 440;
+
     // Kafka 4.4.0 still answers "Topology updates are not supported yet."
     private const int TopologyUpdateSupport = 450;
 
@@ -51,6 +54,9 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
         await Assert.That(brokerMember.MemberId).IsEqualTo(member.Snapshot.MemberId);
         await Assert.That(brokerMember.Assignment.ActiveTasks
             .SelectMany(static taskSet => taskSet.Partitions)).IsEquivalentTo([0, 1, 2]);
+        // Older coordinators negotiate StreamsGroupDescribe v0, which carries no assignor name.
+        await Assert.That(described[groupId].AssignorName)
+            .IsEqualTo(KafkaContainer.Version >= AssignorNameSupport ? "sticky" : null);
 
         var firstMemberId = member.Snapshot.MemberId;
         await member.CloseAsync(new StreamsGroupCloseOptions
@@ -70,6 +76,51 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
         await replacement.JoinAsync(CreateInitialState(topic, "process-b"));
         await Assert.That(replacement.Snapshot.MemberId).IsNotEqualTo(firstMemberId);
         await replacement.CloseAsync(new StreamsGroupCloseOptions
+        {
+            GroupMembershipOperation = StreamsGroupMembershipOperation.LeaveGroup
+        });
+    }
+
+    [Test]
+    [SupportsKafka(AssignorNameSupport)]
+    public async Task Kafka44SelectsAndDescribesStreamsAssignor()
+    {
+        const string assignorConfig = "streams.assignor.name";
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1).ConfigureAwait(false);
+        var groupId = $"streams-group-{Guid.NewGuid():N}";
+        await using var client = Kafka.Connect(KafkaContainer.BootstrapServers, builder =>
+            builder.WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()));
+        await using var member = client.CreateStreamsGroupMember(new StreamsGroupMemberOptions
+        {
+            GroupId = groupId
+        });
+        await member.InitializeAsync();
+        await member.JoinAsync(CreateInitialState(topic, "process-assignor"));
+        await using var admin = client.CreateAdminClient().Build();
+        var group = new Dekaf.Admin.ConfigResource { Type = Dekaf.Admin.ConfigResourceType.Group, Name = groupId };
+
+        // The test broker registers only the built-in assignor, which is also the default.
+        var unselected = await admin.DescribeStreamsGroupsAsync([groupId]);
+        await Assert.That(unselected[groupId].AssignorName).IsEqualTo("sticky");
+
+        await admin.IncrementalAlterConfigsAsync(new Dictionary<Dekaf.Admin.ConfigResource, IReadOnlyList<Dekaf.Admin.ConfigAlter>>
+        {
+            [group] = [Dekaf.Admin.ConfigAlter.Set(assignorConfig, "sticky")]
+        });
+        var selected = await admin.DescribeStreamsGroupsAsync([groupId]);
+        await Assert.That(selected[groupId].AssignorName).IsEqualTo("sticky");
+
+        var rejected = await Assert.That(async () => await admin.IncrementalAlterConfigsAsync(
+                new Dictionary<Dekaf.Admin.ConfigResource, IReadOnlyList<Dekaf.Admin.ConfigAlter>>
+                {
+                    [group] = [Dekaf.Admin.ConfigAlter.Set(assignorConfig, "unregistered-assignor")]
+                }))
+            .Throws<KafkaException>();
+        await Assert.That(rejected!.ErrorCode).IsEqualTo(ErrorCode.InvalidConfig);
+        var afterRejection = await admin.DescribeStreamsGroupsAsync([groupId]);
+        await Assert.That(afterRejection[groupId].AssignorName).IsEqualTo("sticky");
+
+        await member.CloseAsync(new StreamsGroupCloseOptions
         {
             GroupMembershipOperation = StreamsGroupMembershipOperation.LeaveGroup
         });

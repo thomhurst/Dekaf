@@ -5281,7 +5281,8 @@ public sealed partial class AdminClient :
             Members = group.Members.Select(MapStreamsGroupMember).ToList(),
             AuthorizedOperations = group.AuthorizedOperations,
             TopologyDescription = MapStreamsGroupTopologyDescription(group.TopologyDescription),
-            TopologyDescriptionStatus = (StreamsGroupTopologyDescriptionStatus)group.TopologyDescriptionStatus
+            TopologyDescriptionStatus = (StreamsGroupTopologyDescriptionStatus)group.TopologyDescriptionStatus,
+            AssignorName = group.AssignorName
         };
     }
 
