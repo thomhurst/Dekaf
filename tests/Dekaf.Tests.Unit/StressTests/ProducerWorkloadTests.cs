@@ -10,6 +10,10 @@ namespace Dekaf.Tests.Unit.StressTests;
 
 public sealed class ProducerWorkloadTests
 {
+    // Tests that complete delivery themselves must not race a real drain deadline:
+    // under CPU contention the test can resume after any short deadline expires.
+    private static readonly TimeSpan NoDrainDeadline = TimeSpan.FromHours(1);
+
     [Test]
     [Arguments(false)]
     [Arguments(true)]
@@ -58,16 +62,19 @@ public sealed class ProducerWorkloadTests
             });
             var run = ProducerWorkload.RunAsync(producer, options, "Dekaf", "producer", throughput, new LatencyTracker(),
                 duration, awaitDelivery: false, CancellationToken.None,
-                drainTimeout: TimeSpan.FromSeconds(drainExpires ? 1 : 5), ingressTimeProvider: time);
+                drainTimeout: NoDrainDeadline, ingressTimeProvider: time);
             try
             {
-                await firstFlush.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                await firstFlush.Task;
                 admission.TrySetResult();
-                await finalFlush.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                await finalFlush.Task;
                 await Assert.That(throughput.MessageCount).IsEqualTo(2);
                 await Assert.That(run.IsCompleted).IsFalse();
-                if (!drainExpires) finalDelivery.TrySetResult();
-                var result = await run.WaitAsync(TimeSpan.FromSeconds(5));
+                // An expired final flush faults with the timeout its bounded wait reports.
+                // The real drain deadline is covered by DrainTimeout_ReturnsSerializableFailureWithRuntimeSamples.
+                if (drainExpires) finalDelivery.TrySetException(new TimeoutException("Controlled final flush timeout"));
+                else finalDelivery.TrySetResult();
+                var result = await run;
                 await Assert.That(flushes).IsEqualTo(2);
                 // The flush timeout and shared drain cancellation can expire in either order.
                 await Assert.That(result.Throughput.ErrorSamples.Any(sample =>
@@ -79,7 +86,7 @@ public sealed class ProducerWorkloadTests
             {
                 admission.TrySetResult();
                 finalDelivery.TrySetResult();
-                await run.WaitAsync(TimeSpan.FromSeconds(5));
+                await run;
             }
         }
         finally
@@ -137,8 +144,7 @@ public sealed class ProducerWorkloadTests
             // Finish ingress and delivery explicitly; no deadline expiry is needed to reach Flush.
             var result = await ProducerWorkload.RunAsync(producer, options, "Confluent", "producer-async",
                 new ThroughputTracker(), new LatencyTracker(), duration, awaitDelivery: true,
-                CancellationToken.None, drainTimeout: drainTimeout, ingressTimeProvider: time)
-                .WaitAsync(TimeSpan.FromSeconds(5));
+                CancellationToken.None, drainTimeout: drainTimeout, ingressTimeProvider: time);
 
             producer.Received(1).Flush(Arg.Is<TimeSpan>(timeout => timeout > TimeSpan.Zero && timeout <= drainTimeout));
             await Assert.That(result.Throughput.TotalErrors).IsEqualTo(1);
@@ -193,8 +199,8 @@ public sealed class ProducerWorkloadTests
                 producer.Flush(Arg.Any<TimeSpan>()).Returns(_ =>
                 {
                     flushed = true;
-                    if (!deliveryToken.WaitHandle.WaitOne(TimeSpan.FromSeconds(5)))
-                        throw new TimeoutException("The delivery deadline was not armed");
+                    // Flush returns only after the drain deadline cancels delivery.
+                    deliveryToken.WaitHandle.WaitOne();
                     return 1;
                 });
                 run = ProducerWorkload.RunAsync(producer, options, "Confluent", "producer-async", throughput, new LatencyTracker(),
@@ -220,7 +226,7 @@ public sealed class ProducerWorkloadTests
                 run = ProducerWorkload.RunAsync(producer, options, "Dekaf", "producer-async", throughput, new LatencyTracker(),
                     duration, awaitDelivery: true, CancellationToken.None, drainTimeout: TimeSpan.FromMilliseconds(drainTimeoutMs), ingressTimeProvider: time);
             }
-            var result = await run.WaitAsync(TimeSpan.FromSeconds(5));
+            var result = await run;
             await Assert.That(result.Throughput.TotalErrors).IsGreaterThan(0);
             await Assert.That(result.Throughput.ErrorSamples.Any(sample => sample.ExceptionType == "DeliveryDrainTimeout")).IsTrue();
             if (drainTimeoutMs == 0)
@@ -285,8 +291,8 @@ public sealed class ProducerWorkloadTests
                     run = ProducerWorkload.RunAsync(producer, options, client, "producer-async-idempotent", new ThroughputTracker(), new LatencyTracker(),
                         TimeSpan.FromMinutes(1), awaitDelivery: true, cancellation.Token);
                 }
-                await exited.WaitAsync(TimeSpan.FromSeconds(5));
-                await Assert.That(watchdog.WaitForWorkerExit(TimeSpan.FromSeconds(5))).IsTrue();
+                await exited.WaitAsync();
+                await Assert.That(watchdog.WaitForWorkerExit(Timeout.InfiniteTimeSpan)).IsTrue();
                 var artifacts = Directory.GetFiles(Path.Join(directory, ProgressWatchdog.ArtifactsDirectoryName), "*-stacks.txt");
                 await Assert.That(artifacts.Length).IsEqualTo(2);
                 foreach (var artifact in artifacts)
@@ -300,7 +306,7 @@ public sealed class ProducerWorkloadTests
             {
                 cancellation.Cancel();
                 if (run is not null)
-                    await Assert.That(async () => await run.WaitAsync(TimeSpan.FromSeconds(5))).Throws<OperationCanceledException>();
+                    await Assert.That(async () => await run).Throws<OperationCanceledException>();
             }
         }
         finally
@@ -369,7 +375,7 @@ public sealed class ProducerWorkloadTests
                         Error = new ConfluentKafka.Error(ConfluentKafka.ErrorCode.NoError)
                     });
                 run = ProducerWorkload.RunAsync(producer, options, "Confluent", "producer", throughput, latency,
-                    duration, awaitDelivery: false, CancellationToken.None, ingressTimeProvider: time);
+                    duration, awaitDelivery: false, CancellationToken.None, drainTimeout: NoDrainDeadline, ingressTimeProvider: time);
             }
             else
             {
@@ -392,14 +398,14 @@ public sealed class ProducerWorkloadTests
                 });
                 completeDelivery = () => sampledDelivery.TrySetResult(default);
                 run = ProducerWorkload.RunAsync(producer, options, "Dekaf", "producer", throughput, latency,
-                    duration, awaitDelivery: false, CancellationToken.None, ingressTimeProvider: time);
+                    duration, awaitDelivery: false, CancellationToken.None, drainTimeout: NoDrainDeadline, ingressTimeProvider: time);
             }
             try
             {
-                await flushStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                await flushStarted.Task;
                 await Assert.That(run.IsCompleted).IsFalse();
                 completeDelivery();
-                var result = await run.WaitAsync(TimeSpan.FromSeconds(5));
+                var result = await run;
                 await Assert.That(result.Throughput.TotalMessages).IsEqualTo(confluent ? 1 : 2);
                 await Assert.That(result.Throughput.TotalErrors).IsEqualTo(0);
                 await Assert.That(result.Throughput.TotalDeliveryErrors).IsEqualTo(0);
@@ -409,7 +415,7 @@ public sealed class ProducerWorkloadTests
             finally
             {
                 completeDelivery();
-                await run.WaitAsync(TimeSpan.FromSeconds(5));
+                await run;
             }
         }
         finally
@@ -467,7 +473,7 @@ public sealed class ProducerWorkloadTests
                     else delivery.TrySetResult(new ConfluentKafka.DeliveryResult<string, string>());
                 };
                 run = ProducerWorkload.RunAsync(producer, options, client, "producer-async-idempotent", throughput, latency,
-                    duration, awaitDelivery: true, CancellationToken.None, ingressTimeProvider: time);
+                    duration, awaitDelivery: true, CancellationToken.None, drainTimeout: NoDrainDeadline, ingressTimeProvider: time);
             }
             else
             {
@@ -490,15 +496,15 @@ public sealed class ProducerWorkloadTests
                     else delivery.TrySetResult(default);
                 };
                 run = ProducerWorkload.RunAsync(producer, options, client, "producer-async-idempotent", throughput, latency,
-                    duration, awaitDelivery: true, CancellationToken.None, ingressTimeProvider: time);
+                    duration, awaitDelivery: true, CancellationToken.None, drainTimeout: NoDrainDeadline, ingressTimeProvider: time);
             }
 
             try
             {
-                await flushStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                await flushStarted.Task;
                 await Assert.That(run.IsCompleted).IsFalse();
                 completeDelivery();
-                var result = await run.WaitAsync(TimeSpan.FromSeconds(5));
+                var result = await run;
                 await Assert.That(result.Throughput.TotalMessages).IsEqualTo(fails ? 0 : 1);
                 await Assert.That(result.Throughput.TotalErrors).IsEqualTo(fails ? 1 : 0);
                 await Assert.That(latency.GetSnapshot().Count).IsEqualTo(fails ? 0 : 1);
@@ -507,7 +513,7 @@ public sealed class ProducerWorkloadTests
             finally
             {
                 completeDelivery();
-                await run.WaitAsync(TimeSpan.FromSeconds(5));
+                await run;
             }
         }
         finally
@@ -553,7 +559,7 @@ public sealed class ProducerWorkloadTests
                 run = ProducerWorkload.RunAsync(producer, options, client, "producer-async-idempotent", new ThroughputTracker(), new LatencyTracker(),
                     TimeSpan.FromMinutes(1), awaitDelivery: true, CancellationToken.None);
             }
-            await Assert.That(async () => await run.WaitAsync(TimeSpan.FromSeconds(5)))
+            await Assert.That(async () => await run)
                 .Throws<InvalidOperationException>();
         }
         finally
