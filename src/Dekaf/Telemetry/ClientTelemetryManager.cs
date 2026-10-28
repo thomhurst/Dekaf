@@ -145,7 +145,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
             return;
         }
 
-        if (timeout <= TimeSpan.Zero)
+        if (timeout <= TimeSpan.Zero && timeout != Timeout.InfiniteTimeSpan)
         {
             timeout = DefaultStopTimeout;
         }

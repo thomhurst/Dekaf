@@ -261,24 +261,27 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
     }
 
     [Test]
-    public async Task DisposeFlushesInFlight_NoMessageLoss()
+    [Arguments(30_000)]
+    [Arguments(0)]
+    public async Task DisposeFlushesInFlight_NoMessageLoss(int closeTimeoutMs)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
         // Use a producer that will be disposed with in-flight messages
         await using (var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithLinger(TimeSpan.FromMilliseconds(50))
+            .WithLinger(TimeSpan.FromMinutes(1))
+            .WithCloseTimeout(TimeSpan.FromMilliseconds(closeTimeoutMs))
             .BuildAsync())
         {
             for (var i = 0; i < 30; i++)
             {
-                await producer.ProduceAsync(new ProducerMessage<string, string>
+                await producer.FireAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Key = $"key-{i}",
                     Value = $"value-{i}"
-                }, CancellationToken.None);
+                });
             }
             // DisposeAsync should flush remaining messages
         }

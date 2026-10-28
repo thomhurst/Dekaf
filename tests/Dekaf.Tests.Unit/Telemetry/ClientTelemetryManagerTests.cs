@@ -329,7 +329,9 @@ public sealed partial class ClientTelemetryManagerTests
     }
 
     [Test]
-    public async Task DisposeAsync_DuringStop_WaitsForStopCompletion()
+    [Arguments(2_000)]
+    [Arguments(Timeout.Infinite)]
+    public async Task DisposeAsync_DuringStop_WaitsForStopCompletion(int timeoutMs)
     {
         await using var context = new TelemetryTestContext();
         context.Connection.Enqueue(Subscription(
@@ -339,7 +341,7 @@ public sealed partial class ClientTelemetryManagerTests
         context.Connection.BlockNextRequest<PushTelemetryRequest>();
         await context.Manager.StartAsync();
 
-        var stopTask = context.Manager.StopAsync(TimeSpan.FromSeconds(2)).AsTask();
+        var stopTask = context.Manager.StopAsync(TimeSpan.FromMilliseconds(timeoutMs)).AsTask();
         await context.Connection.WaitForBlockedRequestAsync(TimeSpan.FromSeconds(2));
 
         var disposeTask = context.Manager.DisposeAsync().AsTask();
