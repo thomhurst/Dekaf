@@ -47,6 +47,9 @@ The producer check reports a failure if its flush throws or exceeds the timeout.
 Every Dekaf check reports failures with the registration's `failureStatus`, which defaults to **Unhealthy**. Pass `failureStatus: HealthStatus.Degraded` to let a broker outage, a failed flush, or a consumer liveness or lag failure degrade readiness instead of failing it:
 
 ```csharp
+using Dekaf.Extensions.HealthChecks;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
+
 builder.Services.AddHealthChecks()
     .AddDekafBrokerHealthCheck(failureStatus: HealthStatus.Degraded, tags: ["ready"]);
 ```
