@@ -28,7 +28,9 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// workers (as a backpressured ProduceAsync does), then a flush that waits for the workers to
 /// append them. Each handoff counts itself in and out of its worker's sequence so the flush
 /// covers it, and carries the queue purge epoch that the worker compares before appending
-/// (#3723). Expected: 0 B per handoff; the flush allocations are per flush.
+/// (#3723). Each handoff waits in the pending-append queue for a drain pass, so it also
+/// measures the drain guard's release fence (#3858). Expected: 0 B per handoff; the flush
+/// allocations are per flush.
 /// </para>
 /// <para>
 /// <see cref="MixedAppendWorkerHandoff"/> pairs each handoff with a span append for the same
