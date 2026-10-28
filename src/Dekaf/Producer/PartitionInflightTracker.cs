@@ -705,6 +705,11 @@ internal sealed class PartitionInflightTracker : IDisposable
     /// whose base sequence comes before <paramref name="baseSequence"/>: a batch the broker
     /// rejected without appending it, now resent with its sequence unchanged. Walks the
     /// partition's list under its lock: <c>OutOfOrderSequenceNumber</c> handling only.
+    /// Entries carry no producer ID or epoch, unlike the carry-over check in
+    /// <c>BrokerSender.HasRejectedPredecessor</c>. None is needed: a re-stamp registers the new
+    /// entry and completes the old one, and a batch whose re-stamp claim is refused keeps its
+    /// old entry only while the restart fence stops every later batch of the partition from
+    /// claiming a sequence, so no batch under the new stamp is in flight to be judged against it.
     /// </summary>
     public bool HasResentBefore(TopicPartition topicPartition, int baseSequence)
     {
