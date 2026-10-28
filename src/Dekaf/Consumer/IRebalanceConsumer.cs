@@ -53,7 +53,10 @@ public interface IRebalanceConsumer
         TopicPartition partition,
         CancellationToken cancellationToken = default);
 
-    /// <summary>Gets the current position for a partition.</summary>
+    /// <summary>
+    /// Gets the current position for a partition, or <see langword="null"/> when it has none yet,
+    /// including after a seek to the beginning or end that the consumer has not resolved to an offset.
+    /// </summary>
     long? GetPosition(TopicPartition partition);
 
     /// <summary>Seeks to a specific offset.</summary>

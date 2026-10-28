@@ -932,6 +932,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         if (faultPlan.Count == 0)
         {
             offsetList ??= offsets.ToArray();
+            TopicPartitionOffsetValidator.Validate(offsetList, nameof(offsets));
             _cluster.CommitOffsets(groupId, offsetList);
             return;
         }
@@ -942,6 +943,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             indexedPlan.HasPotentialMatch(KafkaFaultOperation.Commit, groupId))
         {
             offsetList = offsets.ToArray();
+            TopicPartitionOffsetValidator.Validate(offsetList, nameof(offsets));
             if (indexedPlan.TryApplyLeadingUnconditionalCommitFault(
                     groupId,
                     out var unconditionalApplication,
@@ -954,6 +956,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         }
 
         offsetList ??= offsets.ToArray();
+        TopicPartitionOffsetValidator.Validate(offsetList, nameof(offsets));
         if (!faultApplied &&
             offsetList.Count == 0 &&
             faultPlan is KafkaFaultPlan emptyInputPlan &&
@@ -1281,8 +1284,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         ThrowIfDisposed();
 
+        // Matches KafkaConsumer: a negative position is a seek sentinel, not a consumable offset.
         lock (_gate)
-            return _positions.TryGetValue(partition, out var position) ? position : null;
+            return _positions.TryGetValue(partition, out var position) && position >= 0 ? position : null;
     }
 
     public void Seek(TopicPartitionOffset offset)

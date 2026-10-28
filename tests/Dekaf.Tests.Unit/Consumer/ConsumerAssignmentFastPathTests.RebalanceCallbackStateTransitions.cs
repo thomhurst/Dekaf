@@ -1207,7 +1207,7 @@ public sealed partial class ConsumerAssignmentFastPathTests
 
         await Assert.That(abandoned).IsTrue();
         await Assert.That(consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
-        await Assert.That(consumer.GetPosition(Partition1)).IsEqualTo(seekToBeginning ? TopicPartitionTimestamp.Earliest : 42L);
+        await Assert.That(consumer.GetRawPosition(Partition1)).IsEqualTo(seekToBeginning ? TopicPartitionTimestamp.Earliest : 42L);
     }
 
     /// <summary>

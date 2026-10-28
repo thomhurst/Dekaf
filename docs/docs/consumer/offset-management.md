@@ -232,6 +232,11 @@ var committedOffsets = await consumer.GetCommittedOffsetsAsync(
 long? position = consumer.Positions.GetPosition(new TopicPartition("my-topic", 0));
 ```
 
+`GetPosition` returns `null` until the partition has a real offset. That includes the time between
+`SeekToBeginning` or `SeekToEnd` and the fetch that resolves the seek, so a position you read is
+always safe to pass to `CommitAsync`. `CommitAsync` with explicit offsets rejects a negative offset,
+a negative partition, or an empty topic with an `ArgumentException` before it sends anything.
+
 ## Checking Current Lag
 
 For an assigned partition with an initialized position, use the cached query when a recent fetch
