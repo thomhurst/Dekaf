@@ -7051,14 +7051,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private bool IsAutoCommitRunning() => Volatile.Read(ref _autoCommitTask) is { IsCompleted: false };
 
+    // The polling paths: a due deferred-position retry needs a sync pass too.
     private bool IsCoordinatorAssignmentSyncCurrent(
+        ConsumerCoordinator coordinator,
+        out int assignmentVersion)
+        => IsCoordinatorAssignmentSynchronized(coordinator, out assignmentVersion)
+           && !IsDeferredPositionRetryDue();
+
+    // Whether the coordinator's assignment is synchronized, regardless of a due retry. Callback
+    // seeks use this: a retry pass initializes only the deferred partitions, so a seek it would
+    // leave staged for an initialized partition is never applied.
+    private bool IsCoordinatorAssignmentSynchronized(
         ConsumerCoordinator coordinator,
         out int assignmentVersion)
     {
         assignmentVersion = coordinator.AssignmentVersion;
         return Volatile.Read(ref _lastCoordinatorAssignmentVersion) == assignmentVersion
-               && coordinator.IsAssignmentSyncCurrent(assignmentVersion)
-               && !IsDeferredPositionRetryDue();
+               && coordinator.IsAssignmentSyncCurrent(assignmentVersion);
     }
 
     // One volatile read per poll while nothing is deferred; the clock is read only while a
@@ -9403,7 +9412,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // A callback that polls synchronizes its own assignment (the poll does not wait for the
         // callback it runs in); the position is then the new ownership's.
         if (!_acknowledgedCoordinatorAssignment.Contains(partition)
-            || !IsCoordinatorAssignmentSyncCurrent(coordinator, out _))
+            || !IsCoordinatorAssignmentSynchronized(coordinator, out _))
         {
             return null;
         }
@@ -9459,7 +9468,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             if (_coordinator is { } coordinator
                 && _acknowledgedCoordinatorAssignment.Contains(partition)
-                && IsCoordinatorAssignmentSyncCurrent(coordinator, out _))
+                && IsCoordinatorAssignmentSynchronized(coordinator, out _))
             {
                 ApplyPendingRebalanceSeek(partition);
             }

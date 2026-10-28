@@ -80,6 +80,45 @@ public sealed partial class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task StageRebalanceSeek_InitializedPartitionWhileDeferredRetryIsDue_AppliesSeekAtOnce()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0, 1));
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromResult(CreateOffsetFetchResponseWithUnstablePartition1()));
+
+        await using var consumer = CreateGroupConsumer(
+            connectionPool,
+            metadataManager,
+            retryBackoffMs: 600_000,
+            retryBackoffMaxMs: 600_000);
+        consumer.Subscribe("test-topic");
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await consumer.EnsureAssignmentAsync(timeout.Token);
+
+        // Partition 1 is still deferred and its retry is due; partition 0 is initialized. A retry
+        // pass initializes only partition 1, so a seek left staged for partition 0 would never apply.
+        var stablePartition = new TopicPartition("test-topic", 0);
+        DeferredPositionRetryDueField.SetValue(consumer, 1L);
+        consumer.StageRebalanceSeek(new TopicPartitionOffset("test-topic", 0, 99));
+
+        await Assert.That(GetFetchPositions(consumer)[stablePartition]).IsEqualTo(99L);
+        await Assert.That(consumer.PendingRebalanceSeekCountForTest).IsEqualTo(0);
+
+        await consumer.EnsureAssignmentAsync(timeout.Token);
+        await Assert.That(GetFetchPositions(consumer)[stablePartition]).IsEqualTo(99L);
+    }
+
+    [Test]
     public async Task EnsureAssignmentAsync_RetriableLookupOutlastsRequestTimeout_DefersPositionsWithoutThrowing()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
