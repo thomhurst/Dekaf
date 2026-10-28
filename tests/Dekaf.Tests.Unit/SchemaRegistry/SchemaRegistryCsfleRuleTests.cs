@@ -2070,6 +2070,96 @@ public sealed partial class SchemaRegistryCsfleRuleTests
     }
 
     [Test]
+    public async Task TransformSerializedPayload_ConcurrentFirstDekRegistration_UsesRegisteredDek()
+    {
+        var client = CreateDekClient();
+        var writer = CreateHandler(client);
+        var context = CreateHandlerContext(CreateRule());
+        client.BeforeRegisterDek = () => client.AddDek(new Dek
+        {
+            KekName = "payments-kek",
+            Subject = "orders-value",
+            Version = 1,
+            Algorithm = DekAlgorithm.Aes256Gcm,
+            KeyMaterial = Convert.ToBase64String(Enumerable.Repeat((byte)7, 32).ToArray()),
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        });
+        var payload = "raced payload"u8.ToArray();
+
+        var encrypted = writer.TransformSerializedPayload(payload, context);
+        var decrypted = CreateHandler(client).TransformDeserializedPayload(encrypted, context);
+
+        await Assert.That(decrypted.ToArray()).IsEquivalentTo(payload);
+        await Assert.That(client.RegisterDekCallCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task TransformSerializedPayload_ConcurrentDekRotation_UsesRegisteredVersion()
+    {
+        var client = CreateDekClient();
+        client.AddDek(new Dek
+        {
+            KekName = "payments-kek",
+            Subject = "orders-value",
+            Version = 1,
+            Algorithm = DekAlgorithm.Aes256Gcm,
+            KeyMaterial = Convert.ToBase64String(Enumerable.Repeat((byte)1, 32).ToArray()),
+            Timestamp = DateTimeOffset.UtcNow.AddDays(-2).ToUnixTimeMilliseconds()
+        });
+        client.BeforeRegisterDek = () => client.AddDek(new Dek
+        {
+            KekName = "payments-kek",
+            Subject = "orders-value",
+            Version = 2,
+            Algorithm = DekAlgorithm.Aes256Gcm,
+            KeyMaterial = Convert.ToBase64String(Enumerable.Repeat((byte)2, 32).ToArray()),
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        });
+        var writer = CreateHandler(client);
+        var context = CreateHandlerContext(
+            CreateRule(parameters: new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["encrypt.kek.name"] = "payments-kek",
+                ["encrypt.dek.expiry.days"] = "1"
+            }));
+        var payload = "rotated payload"u8.ToArray();
+
+        var encrypted = writer.TransformSerializedPayload(payload, context);
+        var decrypted = CreateHandler(client).TransformDeserializedPayload(encrypted, context);
+
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(encrypted.Span[1..5])).IsEqualTo(2);
+        await Assert.That(decrypted.ToArray()).IsEquivalentTo(payload);
+        await Assert.That(client.RegisterDekCallCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task TransformSerializedPayload_ConcurrentKekRegistration_UsesRegisteredKek()
+    {
+        var client = new FakeDekRegistryClient();
+        client.BeforeRegisterKek = () => client.AddKek(new Kek
+        {
+            Name = "payments-kek",
+            KmsType = LocalKmsProvider.DefaultType,
+            KmsKeyId = "local://payments"
+        });
+        var handler = CreateHandler(client);
+        var context = CreateHandlerContext(
+            CreateRule(parameters: new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["encrypt.kek.name"] = "payments-kek",
+                ["encrypt.kms.type"] = LocalKmsProvider.DefaultType,
+                ["encrypt.kms.key.id"] = "local://payments"
+            }));
+        var payload = "payload"u8.ToArray();
+
+        var encrypted = handler.TransformSerializedPayload(payload, context);
+        var decrypted = handler.TransformDeserializedPayload(encrypted, context);
+
+        await Assert.That(decrypted.ToArray()).IsEquivalentTo(payload);
+        await Assert.That(client.RegisterDekCallCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task SchemaRegistrySerializerDeserializer_AppliesCsfleRuleHooks()
     {
         var client = CreateDekClient();
@@ -2624,6 +2714,8 @@ public sealed partial class SchemaRegistryCsfleRuleTests
 
         public Action? BeforeRegisterDek { get; set; }
 
+        public Action? BeforeRegisterKek { get; set; }
+
         public int GetKekCallCount
         {
             get
@@ -2708,8 +2800,12 @@ public sealed partial class SchemaRegistryCsfleRuleTests
             bool testSharing = false,
             CancellationToken cancellationToken = default)
         {
+            BeforeRegisterKek?.Invoke();
             lock (_gate)
             {
+                if (_keks.ContainsKey(request.Name))
+                    throw new SchemaRegistryException(40971, $"KEK '{request.Name}' already exists");
+
                 var kek = new Kek
                 {
                     Name = request.Name,
@@ -2796,12 +2892,20 @@ public sealed partial class SchemaRegistryCsfleRuleTests
             lock (_gate)
             {
                 _registerDekCallCount++;
+                var algorithm = request.Algorithm ?? DekAlgorithm.Aes256Gcm;
+                if (request.Version is { } version
+                        ? _deksByVersion.ContainsKey((kekName, request.Subject, version, algorithm))
+                        : _latestDeks.ContainsKey((kekName, request.Subject, algorithm)))
+                {
+                    throw new SchemaRegistryException(40972, $"DEK for subject '{request.Subject}' already exists");
+                }
+
                 var dek = new Dek
                 {
                     KekName = kekName,
                     Subject = request.Subject,
                     Version = request.Version ?? _nextDekVersion++,
-                    Algorithm = request.Algorithm ?? DekAlgorithm.Aes256Gcm,
+                    Algorithm = algorithm,
                     EncryptedKeyMaterial = request.EncryptedKeyMaterial,
                     Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
                 };
