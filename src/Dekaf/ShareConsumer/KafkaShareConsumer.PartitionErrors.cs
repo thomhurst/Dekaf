@@ -70,8 +70,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         if (!_assignmentSnapshot.Contains(topicPartition))
             return;
 
-        // A share session keeps a partition after the client stops fetching it from that broker.
-        // Once metadata routes the partition elsewhere, a later error from the old broker is stale.
+        // A share session keeps a partition until the next request to that broker forgets it, and a
+        // request already in flight can still report it. Once metadata routes the partition
+        // elsewhere, a later error from the old broker is stale.
         var leader = _metadataManager.Metadata.GetPartitionLeader(topicPartition.Topic, topicPartition.Partition);
         if (leader is not null && leader.NodeId != brokerId)
             return;

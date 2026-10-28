@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Dekaf.Protocol.Messages;
 
 namespace Dekaf.ShareConsumer;
 
@@ -37,6 +38,7 @@ internal sealed class ShareSessionManager
         var slot = _sessionEpochs.GetOrAdd(brokerId, static _ => new EpochSlot());
         var epoch = Volatile.Read(ref slot.Epoch);
         Volatile.Write(ref slot.Epoch, epoch == int.MaxValue ? 1 : epoch + 1);
+        Volatile.Write(ref slot.Opened, true);
     }
 
     /// <summary>
@@ -53,7 +55,45 @@ internal sealed class ShareSessionManager
     /// <summary>
     /// Whether a session was ever opened on this broker. With epoch 0, that session has been reset.
     /// </summary>
-    internal bool HadSession(int brokerId) => _sessionEpochs.ContainsKey(brokerId);
+    internal bool HadSession(int brokerId)
+        => _sessionEpochs.TryGetValue(brokerId, out var slot) && Volatile.Read(ref slot.Opened);
+
+    /// <summary>
+    /// Gets the partitions of a broker's share session, each keyed to the topic ID it was added
+    /// with, or null before any are recorded for that broker. Only that broker's requests read or
+    /// change them, and callers keep at most one request in flight per broker.
+    /// </summary>
+    internal Dictionary<TopicPartition, Guid>? GetSessionPartitions(int brokerId)
+        => _sessionEpochs.TryGetValue(brokerId, out var slot) ? slot.Partitions : null;
+
+    /// <summary>
+    /// Records the partitions a successful ShareFetch left in the broker's session. A request that
+    /// opens a session holds exactly the partitions it sent; an incremental request removes the
+    /// partitions it forgot, then adds the partitions it sent.
+    /// </summary>
+    internal void UpdateSessionPartitions(
+        int brokerId,
+        bool newSession,
+        Dictionary<string, (Guid TopicId, List<ShareFetchRequestPartition> Partitions)> sentTopics,
+        List<TopicPartition>? forgottenPartitions)
+    {
+        var partitions = _sessionEpochs.GetOrAdd(brokerId, static _ => new EpochSlot()).Partitions;
+        if (newSession)
+        {
+            partitions.Clear();
+        }
+        else if (forgottenPartitions is not null)
+        {
+            foreach (var partition in forgottenPartitions)
+                partitions.Remove(partition);
+        }
+
+        foreach (var (topic, (topicId, sentPartitions)) in sentTopics)
+        {
+            foreach (var partition in sentPartitions)
+                partitions[new TopicPartition(topic, partition.PartitionIndex)] = topicId;
+        }
+    }
 
     /// <summary>
     /// Returns the close epoch (-1) for session teardown.
@@ -71,5 +111,8 @@ internal sealed class ShareSessionManager
     private sealed class EpochSlot
     {
         public int Epoch;
+        // Set by the first epoch advance. A slot can exist earlier, when partitions are recorded.
+        public bool Opened;
+        public readonly Dictionary<TopicPartition, Guid> Partitions = [];
     }
 }

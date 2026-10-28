@@ -1,3 +1,4 @@
+using Dekaf.Protocol.Messages;
 using Dekaf.ShareConsumer;
 
 namespace Dekaf.Tests.Unit.ShareConsumer;
@@ -184,4 +185,58 @@ public class ShareSessionManagerTests
         for (var broker = 0; broker < brokers; broker++)
             await Assert.That(manager.GetSessionEpoch(broker)).IsEqualTo(expected);
     }
+
+    [Test]
+    public async Task UpdateSessionPartitions_NewSessionHoldsOnlySentPartitions()
+    {
+        var manager = new ShareSessionManager();
+        var oldTopicId = Guid.NewGuid();
+        var newTopicId = Guid.NewGuid();
+        manager.UpdateSessionPartitions(1, newSession: true, SentTopics(("old", oldTopicId, [0, 1])), null);
+
+        manager.UpdateSessionPartitions(1, newSession: true, SentTopics(("new", newTopicId, [2])), null);
+
+        await Assert.That(manager.GetSessionPartitions(1)!)
+            .IsEquivalentTo(new Dictionary<TopicPartition, Guid> { [new("new", 2)] = newTopicId });
+    }
+
+    [Test]
+    public async Task UpdateSessionPartitions_IncrementalRemovesForgottenThenAddsSent()
+    {
+        var manager = new ShareSessionManager();
+        var oldTopicId = Guid.NewGuid();
+        var recreatedTopicId = Guid.NewGuid();
+        manager.UpdateSessionPartitions(1, newSession: true, SentTopics(("topic", oldTopicId, [0, 1])), null);
+
+        // The topic was recreated: partition 0 is forgotten under its old ID and sent under the new one.
+        manager.UpdateSessionPartitions(
+            1,
+            newSession: false,
+            SentTopics(("topic", recreatedTopicId, [0])),
+            [new TopicPartition("topic", 0), new TopicPartition("topic", 1)]);
+
+        await Assert.That(manager.GetSessionPartitions(1)!)
+            .IsEquivalentTo(new Dictionary<TopicPartition, Guid> { [new("topic", 0)] = recreatedTopicId });
+    }
+
+    [Test]
+    public async Task UpdateSessionPartitions_DoesNotMarkSessionOpened()
+    {
+        var manager = new ShareSessionManager();
+
+        manager.UpdateSessionPartitions(1, newSession: true, SentTopics(("topic", Guid.NewGuid(), [0])), null);
+
+        await Assert.That(manager.HadSession(1)).IsFalse();
+        manager.IncrementEpoch(1);
+        manager.ResetSession(1);
+        await Assert.That(manager.HadSession(1)).IsTrue();
+    }
+
+    private static Dictionary<string, (Guid TopicId, List<ShareFetchRequestPartition> Partitions)> SentTopics(
+        params (string Topic, Guid TopicId, int[] Partitions)[] topics)
+        => topics.ToDictionary(
+            static topic => topic.Topic,
+            static topic => (topic.TopicId, topic.Partitions
+                .Select(static partition => new ShareFetchRequestPartition { PartitionIndex = partition })
+                .ToList()));
 }

@@ -1416,7 +1416,7 @@ public sealed partial class ShareConsumerRenewalTests
     }
 
     private static ShareFetchResponse CreateFetchResponse(int partition, long offset, int recordCount = 1,
-        int recordsPerBatch = int.MaxValue, bool withHeaders = false)
+        int recordsPerBatch = int.MaxValue, bool withHeaders = false, Guid? topicId = null)
     {
         var buffer = new ArrayBufferWriter<byte>();
         for (var firstIndex = 0; firstIndex < recordCount;)
@@ -1444,7 +1444,7 @@ public sealed partial class ShareConsumerRenewalTests
             [
                 new ShareFetchResponseTopic
                 {
-                    TopicId = TopicId,
+                    TopicId = topicId ?? TopicId,
                     Partitions =
                     [
                         new ShareFetchResponsePartition
