@@ -8,6 +8,7 @@ using System.Net.Sockets;
 using System.Reflection;
 using System.Threading.Tasks.Sources;
 using Dekaf.Compression;
+using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -1099,6 +1100,70 @@ public sealed partial class KafkaConnectionTests
     }
 
     [Test]
+    [Timeout(20_000)]
+    public async Task SendAsync_FetchWaitingForBufferMemory_SurvivesRequestTimeoutAndCompletes(
+        CancellationToken cancellationToken)
+    {
+        // Issue #3816: a fetch response the broker already sent waits for fetch-buffer
+        // memory while the application drains records. Neither the connection receive
+        // timeout nor the request timeout may treat that local backpressure as silence.
+        var requestTimeout = TimeSpan.FromMilliseconds(200);
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
+            await using var connection = new KafkaConnection(
+                IPAddress.Loopback.ToString(),
+                port,
+                clientId: null,
+                new ConnectionOptions { RequestTimeout = requestTimeout },
+                logger: null,
+                ResponseBufferPool.Default,
+                responseMemoryAdmissionsEnabled: true);
+
+            await connection.ConnectAsync(cancellationToken);
+            using var serverClient = await acceptTask.ConfigureAwait(false);
+            var serverStream = serverClient.GetStream();
+
+            using var memoryPool = new FetchBufferMemoryPool(64);
+            var buffered = await memoryPool.ReserveAsync(64, cancellationToken);
+            var request = new FetchRequest { ResponseMemoryPool = memoryPool };
+            var sendTask = connection.SendAsync<FetchRequest, FetchResponse>(
+                request,
+                apiVersion: 16,
+                cancellationToken).AsTask();
+
+            var requestFrame = await ReadRequestFrameAsync(serverStream, cancellationToken);
+            await Assert.That(BinaryPrimitives.ReadInt16BigEndian(requestFrame)).IsEqualTo((short)ApiKey.Fetch);
+            var correlationId = BinaryPrimitives.ReadInt32BigEndian(requestFrame.AsSpan(4));
+            await serverStream.WriteAsync(BuildEmptyFetchV16ResponseFrame(correlationId), cancellationToken);
+
+            while (GetPrivateField<int>(connection, "_responseAdmissionWaiting") == 0)
+                await Task.Delay(10, cancellationToken);
+
+            // Let both timers fire several times over while the frame waits for admission.
+            await Task.Delay(requestTimeout * 5, cancellationToken);
+            await Assert.That(sendTask.IsCompleted).IsFalse();
+            await Assert.That(connection.IsConnected).IsTrue();
+            await Assert.That(GetPrivateField<int>(connection, "_receiveTimeoutExpired")).IsEqualTo(0);
+
+            buffered.Dispose();
+
+            var response = await sendTask.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.None);
+            await Assert.That(connection.IsConnected).IsTrue();
+            await Assert.That(GetPrivateField<int>(connection, "_responseAdmissionWaiting")).IsEqualTo(0);
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Test]
     [Timeout(10_000)]
     public async Task SendAsync_CallerCanceledRequest_DoesNotFailIdleConnectionAfterRequestTimeout(CancellationToken cancellationToken)
     {
@@ -1609,6 +1674,24 @@ public sealed partial class KafkaConnectionTests
             validateServerCertificateHostName: false);
 
         await Assert.That(result).IsEqualTo(SslPolicyErrors.None);
+    }
+
+    private static byte[] BuildEmptyFetchV16ResponseFrame(int correlationId)
+    {
+        var bodyBuffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(bodyBuffer);
+        writer.WriteEmptyTaggedFields(); // response header v1
+        writer.WriteInt32(0); // throttle_time_ms
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteInt32(0); // session_id
+        writer.WriteUnsignedVarInt(1); // responses: empty compact array
+        writer.WriteEmptyTaggedFields();
+
+        var frame = new byte[8 + bodyBuffer.WrittenCount];
+        BinaryPrimitives.WriteInt32BigEndian(frame, frame.Length - 4);
+        BinaryPrimitives.WriteInt32BigEndian(frame.AsSpan(4), correlationId);
+        bodyBuffer.WrittenSpan.CopyTo(frame.AsSpan(8));
+        return frame;
     }
 
     private static byte[] BuildApiVersionsV3ResponseFrame(int correlationId)

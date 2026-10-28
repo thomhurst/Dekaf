@@ -174,6 +174,11 @@ public sealed partial class KafkaConnection :
     private Timer? _receiveTimeoutTimer;
     private long _receiveTimeoutDeadlineTimestamp;
     private int _receiveTimeoutExpired;
+    // 1 while the receive loop waits for response-memory admission. The broker has answered,
+    // so OnReceiveTimeout treats the wait as progress instead of silence (issue #3816).
+    private int _responseAdmissionWaiting;
+    // Receive-loop only: the request whose frame GetResponseFrameAdmission last bounded.
+    private PendingRequestEntry _admissionRequest;
     // 1 while a receive-timeout callback is scheduled or executing. Invariant: a pending
     // request implies armed — established by StampReceiveTimeoutDeadline's CAS and the
     // dormant handoff in OnReceiveTimeout. Not reset on teardown; _disposed guards every
@@ -530,7 +535,8 @@ public sealed partial class KafkaConnection :
             readBufferSize,
             _responseBufferPool,
             _pipeMemoryPool,
-            OnReceiveLoopBytesRead);
+            OnReceiveLoopBytesRead,
+            _responseMemoryAdmissionsEnabled ? OnResponseAdmissionWait : null);
 
         _receiveCts = new CancellationTokenSource();
         _receiveTask = ReceiveLoopAsync(_receiveCts.Token);
@@ -1506,7 +1512,7 @@ public sealed partial class KafkaConnection :
                         _timeoutCts);
                 }
 
-                pending.RegisterCancellation(_timeoutCts.Token);
+                pending.RegisterCancellation(_timeoutCts.Token, cancellationToken);
             }
 
             _pendingTask = pending.AsValueTask();
@@ -1849,7 +1855,7 @@ public sealed partial class KafkaConnection :
                 using var reg = cancellationToken.CanBeCanceled
                     ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
                     : default;
-                pending.RegisterCancellation(timeoutCts.Token);
+                pending.RegisterCancellation(timeoutCts.Token, cancellationToken);
 
                 try
                 {
@@ -2826,9 +2832,36 @@ public sealed partial class KafkaConnection :
         if (!pending.Request.TryGetResponseMemoryPool(pending.Version, out var memoryPool))
             return ResponseFrameAdmission.Discarded;
 
-        return memoryPool is null
-            ? ResponseFrameAdmission.Unrestricted
-            : new ResponseFrameAdmission(memoryPool, Discard: false);
+        if (memoryPool is null)
+            return ResponseFrameAdmission.Unrestricted;
+
+        _admissionRequest = pending;
+        return new ResponseFrameAdmission(memoryPool, Discard: false);
+    }
+
+    /// <summary>
+    /// Invoked by <see cref="ResponseFrameReader"/> around a response-memory admission wait
+    /// that did not complete synchronously. The wait is local backpressure while the
+    /// application drains buffered records, not broker silence: it must neither expire the
+    /// connection receive timeout nor fail the admitted request with its request timeout.
+    /// </summary>
+    private void OnResponseAdmissionWait(bool waiting)
+    {
+        var request = _admissionRequest;
+        if (waiting)
+        {
+            request.Request?.TryBeginAdmissionWait(request.Version);
+            Volatile.Write(ref _responseAdmissionWaiting, 1);
+            return;
+        }
+
+        // Restamp before clearing the flag: a timer that observes the cleared flag also
+        // observes a deadline that starts from admission, not from the last byte read.
+        if (Volatile.Read(ref _receiveTimeoutDeadlineTimestamp) != 0)
+            Volatile.Write(ref _receiveTimeoutDeadlineTimestamp, GetReceiveTimeoutDeadlineTimestamp());
+        Volatile.Write(ref _responseAdmissionWaiting, 0);
+        request.Request?.EndAdmissionWait(request.Version);
+        _admissionRequest = default;
     }
 
     private void DispatchDiscardedResponse(int correlationId)
@@ -3190,6 +3223,21 @@ public sealed partial class KafkaConnection :
                     RearmReceiveTimeoutForRemainder(remainingTimestamp);
                     return;
                 }
+
+                if (Volatile.Read(ref _responseAdmissionWaiting) != 0)
+                {
+                    // The receive loop holds a broker response while it waits for
+                    // fetch-buffer memory. Check again after a full timeout; the end of the
+                    // wait restamps the deadline (OnResponseAdmissionWait).
+                    ArmReceiveTimeoutTimer(_options.RequestTimeout);
+                    return;
+                }
+
+                // The wait can end between the deadline read and the flag read. Its restamp
+                // is published before the flag clears, so a changed deadline means fresh
+                // progress: evaluate it again instead of expiring on the stale value.
+                if (Volatile.Read(ref _receiveTimeoutDeadlineTimestamp) != deadlineTimestamp)
+                    continue;
 
                 Volatile.Write(ref _receiveTimeoutExpired, 1);
 
@@ -5563,10 +5611,19 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     private const int StateCompleting = 1;
     private const int StateCompleted = 2;
 
+    private const int AdmissionIdle = 0;
+    private const int AdmissionWaiting = 1;
+    private const int AdmissionTimeoutDeferred = 2;
+
     private ManualResetValueTaskSourceCore<PooledResponseBuffer> _core = new() { RunContinuationsAsynchronously = true };
     private short _responseHeaderVersion;
     private CancellationTokenRegistration _cancellationRegistration;
     private CancellationToken _cancellationToken;
+    // The caller's token behind a connection-owned timeout source. A cancellation that this
+    // token did not request is the timeout, which a response-memory admission wait defers.
+    private CancellationToken _callerCancellationToken;
+    private CancellationTokenRegistration _deferredCallerRegistration;
+    private int _admissionState; // High 16 bits = core version; low 16 bits = Admission*
     private bool _checkCrcs;
     private IResponseMemoryPool? _responseMemoryPool;
     private IResponseMemoryReservation? _responseMemoryReservation;
@@ -5585,10 +5642,12 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     {
         _responseHeaderVersion = responseHeaderVersion;
         _cancellationToken = cancellationToken;
+        _callerCancellationToken = cancellationToken;
         _checkCrcs = checkCrcs;
         _responseMemoryPool = responseMemoryPool;
         _core.RunContinuationsAsynchronously = runContinuationsAsynchronously;
         _state = CreateState(_core.Version, StatePending);
+        _admissionState = CreateState(_core.Version, AdmissionIdle);
 
         // Register for cancellation if the token can be cancelled
         if (registerCancellation && cancellationToken.CanBeCanceled)
@@ -5604,8 +5663,19 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     /// Replaces any existing registration.
     /// </summary>
     public void RegisterCancellation(CancellationToken cancellationToken)
+        => RegisterCancellation(cancellationToken, cancellationToken);
+
+    /// <summary>
+    /// Registers a connection-owned timeout token that <paramref name="callerCancellationToken"/>
+    /// also cancels. While the response waits for response-memory admission, a timeout is
+    /// deferred (see <see cref="TryBeginAdmissionWait"/>); caller cancellation is not.
+    /// </summary>
+    public void RegisterCancellation(
+        CancellationToken cancellationToken,
+        CancellationToken callerCancellationToken)
     {
         _cancellationToken = cancellationToken;
+        _callerCancellationToken = callerCancellationToken;
         var newRegistration = cancellationToken.CanBeCanceled
             ? cancellationToken.Register(
                 static state => ((PooledPendingRequest)state!).OnCancelled(),
@@ -5623,14 +5693,70 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     /// </summary>
     public void DisposeRegistration()
     {
+        // Disposing the timeout registration first waits for a running OnCancelled, so a
+        // deferred caller registration it creates is visible to the dispose below.
         _cancellationRegistration.Dispose();
         _cancellationRegistration = default;
+        _deferredCallerRegistration.Dispose();
+        _deferredCallerRegistration = default;
     }
 
     private void OnCancelled()
     {
+        if (TryDeferTimeoutForAdmission())
+            return;
+
         TrySetCanceled(_cancellationToken);
     }
+
+    /// <summary>
+    /// Marks the captured request version's response frame as waiting for response-memory
+    /// admission. The broker has answered; the wait is local backpressure, so the request
+    /// timeout must not fail it. Called only by the receive loop.
+    /// </summary>
+    internal bool TryBeginAdmissionWait(short expectedVersion)
+        => Interlocked.CompareExchange(
+            ref _admissionState,
+            CreateState(expectedVersion, AdmissionWaiting),
+            CreateState(expectedVersion, AdmissionIdle)) == CreateState(expectedVersion, AdmissionIdle);
+
+    /// <summary>
+    /// Ends an admission wait. A timeout deferred during the wait stays consumed: the frame
+    /// is admitted and its body is bounded by the connection receive timeout from here on.
+    /// </summary>
+    internal void EndAdmissionWait(short expectedVersion)
+        => Interlocked.CompareExchange(
+            ref _admissionState,
+            CreateState(expectedVersion, AdmissionIdle),
+            CreateState(expectedVersion, AdmissionWaiting));
+
+    private bool TryDeferTimeoutForAdmission()
+    {
+        var version = _core.Version;
+        var callerToken = _callerCancellationToken;
+        if (callerToken.IsCancellationRequested
+            || Interlocked.CompareExchange(
+                ref _admissionState,
+                CreateState(version, AdmissionTimeoutDeferred),
+                CreateState(version, AdmissionWaiting)) != CreateState(version, AdmissionWaiting))
+        {
+            return false;
+        }
+
+        // The timeout source is now cancelled, so caller cancellation can no longer reach
+        // this request through it. Rare path: one registration per deferred timeout.
+        if (callerToken.CanBeCanceled)
+        {
+            _deferredCallerRegistration = callerToken.Register(
+                static state => ((PooledPendingRequest)state!).OnCallerCancelledDuringAdmission(),
+                this);
+        }
+
+        return true;
+    }
+
+    private void OnCallerCancelledDuringAdmission()
+        => TrySetCanceled(_callerCancellationToken);
 
     /// <summary>
     /// Gets a <see cref="ValueTask{T}"/> bound to this source.
@@ -5882,7 +6008,10 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         // Dispose cancellation registration
         _cancellationRegistration.Dispose();
         _cancellationRegistration = default;
+        _deferredCallerRegistration.Dispose();
+        _deferredCallerRegistration = default;
         _cancellationToken = default;
+        _callerCancellationToken = default;
         _checkCrcs = false;
         _responseMemoryPool = null;
         Interlocked.Exchange(ref _responseMemoryReservation, null)?.Dispose();

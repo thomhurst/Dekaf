@@ -68,6 +68,122 @@ public class PooledPendingRequestTests
     }
 
     [Test]
+    public async Task Timeout_DuringAdmissionWait_IsDeferredAndResponseCompletes()
+    {
+        var pool = new PendingRequestPool();
+        var request = pool.Rent();
+        request.Initialize(responseHeaderVersion: 0, CancellationToken.None, registerCancellation: false);
+        using var timeout = new CancellationTokenSource();
+        request.RegisterCancellation(timeout.Token, CancellationToken.None);
+        var version = request.Version;
+        var response = request.AsValueTask();
+
+        await Assert.That(request.TryBeginAdmissionWait(version)).IsTrue();
+        await timeout.CancelAsync();
+        await Assert.That(response.IsCompleted).IsFalse();
+
+        request.EndAdmissionWait(version);
+        var buffer = new PooledResponseBuffer([0, 0, 0, 1, 10], length: 5, isPooled: false);
+        await Assert.That(request.TryComplete(version, buffer)).IsTrue();
+        var result = await response;
+        await Assert.That(result.Length).IsEqualTo(1);
+        result.Dispose();
+
+        request.DisposeRegistration();
+        pool.Return(request);
+    }
+
+    [Test]
+    public async Task CallerCancellation_AfterDeferredTimeout_CancelsAdmissionWait()
+    {
+        var pool = new PendingRequestPool();
+        var request = pool.Rent();
+        using var caller = new CancellationTokenSource();
+        request.Initialize(responseHeaderVersion: 0, caller.Token, registerCancellation: false);
+        using var timeout = new CancellationTokenSource();
+        using var link = caller.Token.Register(static state => ((CancellationTokenSource)state!).Cancel(), timeout);
+        request.RegisterCancellation(timeout.Token, caller.Token);
+        var response = request.AsValueTask();
+
+        await Assert.That(request.TryBeginAdmissionWait(request.Version)).IsTrue();
+        await timeout.CancelAsync();
+        await Assert.That(response.IsCompleted).IsFalse();
+
+        await caller.CancelAsync();
+
+        var thrown = await Assert.ThrowsAsync<OperationCanceledException>(async () => await response);
+        await Assert.That(thrown!.CancellationToken).IsEqualTo(caller.Token);
+        request.DisposeRegistration();
+        pool.Return(request);
+    }
+
+    [Test]
+    public async Task CallerCancellation_DuringAdmissionWait_IsNotDeferred()
+    {
+        var pool = new PendingRequestPool();
+        var request = pool.Rent();
+        using var caller = new CancellationTokenSource();
+        request.Initialize(responseHeaderVersion: 0, caller.Token, registerCancellation: false);
+        using var timeout = new CancellationTokenSource();
+        using var link = caller.Token.Register(static state => ((CancellationTokenSource)state!).Cancel(), timeout);
+        request.RegisterCancellation(timeout.Token, caller.Token);
+        var response = request.AsValueTask();
+
+        await Assert.That(request.TryBeginAdmissionWait(request.Version)).IsTrue();
+        await caller.CancelAsync();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await response);
+        request.DisposeRegistration();
+        pool.Return(request);
+    }
+
+    [Test]
+    public async Task Timeout_AfterAdmissionWaitEnds_CancelsRequest()
+    {
+        var pool = new PendingRequestPool();
+        var request = pool.Rent();
+        request.Initialize(responseHeaderVersion: 0, CancellationToken.None, registerCancellation: false);
+        using var timeout = new CancellationTokenSource();
+        request.RegisterCancellation(timeout.Token, CancellationToken.None);
+        var version = request.Version;
+        var response = request.AsValueTask();
+
+        await Assert.That(request.TryBeginAdmissionWait(version)).IsTrue();
+        request.EndAdmissionWait(version);
+        await timeout.CancelAsync();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await response);
+        request.DisposeRegistration();
+        pool.Return(request);
+    }
+
+    [Test]
+    public async Task TryBeginAdmissionWait_RejectsReusedRequestVersion()
+    {
+        var pool = new PendingRequestPool(maxPoolSize: 1);
+        var request = pool.Rent();
+        request.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+        var staleVersion = request.Version;
+        request.TrySetCanceled();
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await request.AsValueTask());
+        pool.Return(request);
+
+        var reused = pool.Rent();
+        await Assert.That(reused).IsSameReferenceAs(request);
+        using var timeout = new CancellationTokenSource();
+        reused.Initialize(responseHeaderVersion: 0, CancellationToken.None, registerCancellation: false);
+        reused.RegisterCancellation(timeout.Token, CancellationToken.None);
+        var response = reused.AsValueTask();
+
+        await Assert.That(reused.TryBeginAdmissionWait(staleVersion)).IsFalse();
+        await timeout.CancelAsync();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await response);
+        reused.DisposeRegistration();
+        pool.Return(reused);
+    }
+
+    [Test]
     public async Task PoolReturn_ResetsCheckCrcs()
     {
         var pool = new PendingRequestPool(maxPoolSize: 1);

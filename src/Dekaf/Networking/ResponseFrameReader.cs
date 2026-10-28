@@ -36,6 +36,7 @@ internal sealed class ResponseFrameReader : IDisposable
     private readonly Stream? _stream;
     private readonly ResponseBufferPool _responseBufferPool;
     private readonly Action<int>? _onBytesReceived;
+    private readonly Action<bool>? _onAdmissionWait;
     private readonly CancellationTokenSource _abortCts = new();
 
     private IMemoryOwner<byte>? _bufferOwner;
@@ -59,13 +60,17 @@ internal sealed class ResponseFrameReader : IDisposable
     /// May be null in tests that read from a stream only.</param>
     /// <param name="stream">When non-null, reads go through this stream (TLS decryption
     /// requires the Stream abstraction). When null, reads go directly to the socket.</param>
+    /// <param name="onAdmissionWait">Invoked with <see langword="true"/> before and
+    /// <see langword="false"/> after a response-memory admission that waits. No source reads
+    /// happen during the wait.</param>
     public ResponseFrameReader(
         Socket? socket,
         Stream? stream,
         int receiveBufferSize,
         ResponseBufferPool responseBufferPool,
         MemoryPool<byte> memoryPool,
-        Action<int>? onBytesReceived = null)
+        Action<int>? onBytesReceived = null,
+        Action<bool>? onAdmissionWait = null)
     {
         if (socket is null && stream is null)
             throw new ArgumentException("Either a socket or a stream is required.");
@@ -74,6 +79,7 @@ internal sealed class ResponseFrameReader : IDisposable
         _stream = stream;
         _responseBufferPool = responseBufferPool;
         _onBytesReceived = onBytesReceived;
+        _onAdmissionWait = onAdmissionWait;
         _bufferOwner = memoryPool.Rent(receiveBufferSize);
         _buffer = _bufferOwner.Memory;
     }
@@ -220,9 +226,23 @@ internal sealed class ResponseFrameReader : IDisposable
 
             if (admission.MemoryPool is not null)
             {
-                _frameReservation = await admission.MemoryPool
-                    .ReserveAsync(frameSize, _abortCts.Token)
-                    .ConfigureAwait(false);
+                var reserveTask = admission.MemoryPool.ReserveAsync(frameSize, _abortCts.Token);
+                if (reserveTask.IsCompleted)
+                {
+                    _frameReservation = reserveTask.GetAwaiter().GetResult();
+                }
+                else
+                {
+                    _onAdmissionWait?.Invoke(true);
+                    try
+                    {
+                        _frameReservation = await reserveTask.ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        _onAdmissionWait?.Invoke(false);
+                    }
+                }
             }
 
             if (frameSize >= ResponseBufferPool.NativeMemoryThresholdBytes)

@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using BenchmarkDotNet.Attributes;
+using Dekaf.Consumer;
 using Dekaf.Networking;
 
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
@@ -27,6 +28,10 @@ public class ResponseFrameReaderBenchmarks
     private ChunkedReadStream _largeFramesStream = null!;
     private ResponseFrameReader _largeFramesReader = null!;
     private int _largeFrameCount;
+    private ChunkedReadStream _admittedFramesStream = null!;
+    private ResponseFrameReader _admittedFramesReader = null!;
+    private FetchBufferMemoryPool _fetchBufferMemory = null!;
+    private Func<int, ResponseFrameAdmission> _fetchAdmission = null!;
 
     [GlobalSetup]
     public void Setup()
@@ -42,6 +47,14 @@ public class ResponseFrameReaderBenchmarks
         (var largeBlob, _largeFrameCount) = BuildFrames(frameCount: 64, payloadSize: 1_048_576);
         _largeFramesStream = new ChunkedReadStream(largeBlob, ReceiveChunkSize);
         _largeFramesReader = CreateReader(_largeFramesStream);
+
+        // Consumer fetch traffic under KIP-81 admission: each frame reserves fetch-buffer
+        // memory synchronously, so the measured path never waits.
+        _admittedFramesStream = new ChunkedReadStream(largeBlob, ReceiveChunkSize);
+        _admittedFramesReader = CreateReader(_admittedFramesStream);
+        _fetchBufferMemory = new FetchBufferMemoryPool(100L * 1024 * 1024);
+        var admission = new ResponseFrameAdmission(_fetchBufferMemory, Discard: false);
+        _fetchAdmission = _ => admission;
     }
 
     [GlobalCleanup]
@@ -49,6 +62,8 @@ public class ResponseFrameReaderBenchmarks
     {
         _smallFramesReader.Dispose();
         _largeFramesReader.Dispose();
+        _admittedFramesReader.Dispose();
+        _fetchBufferMemory.Dispose();
         _memoryPool.Dispose();
     }
 
@@ -59,6 +74,26 @@ public class ResponseFrameReaderBenchmarks
     [Benchmark]
     public async Task<long> LargeFrames_1MB()
         => await ReadAllFramesAsync(_largeFramesStream, _largeFramesReader, _largeFrameCount);
+
+    [Benchmark]
+    public async Task<long> AdmittedFetchFrames_1MB()
+    {
+        _admittedFramesStream.Reset();
+
+        long totalBytes = 0;
+        for (var i = 0; i < _largeFrameCount; i++)
+        {
+            var frame = await _admittedFramesReader.ReadBoundedFrameAsync(_fetchAdmission);
+            if (frame.IsEndOfStream)
+                throw new InvalidOperationException("Unexpected EOF");
+
+            totalBytes += frame.Buffer.Length;
+            frame.Buffer.Dispose();
+            frame.Reservation?.Dispose();
+        }
+
+        return totalBytes;
+    }
 
     private ResponseFrameReader CreateReader(ChunkedReadStream stream)
         => new(
