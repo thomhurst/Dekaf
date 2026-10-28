@@ -67,7 +67,10 @@ public class PartitionedDispatchBenchmarks
         Array.Clear(_seen);
         Array.Fill(_lastByKey, -1);
         _handled = 0;
-        _release = SuspendFirstHandler ? new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously) : null;
+        // Synchronous continuations resume the suspended dispatch inline inside TrySetResult on
+        // the benchmark thread. An asynchronous resume races a thread-pool worker against the
+        // wait below and makes the suspend cases bimodal on hosted runners (#3688).
+        _release = SuspendFirstHandler ? new TaskCompletionSource() : null;
         var lane = PartitionedBenchmarkInput.CreateLane(RecordCount);
         PartitionedBenchmarkInput.EnqueueRecords(lane, _records);
 
@@ -77,6 +80,8 @@ public class PartitionedDispatchBenchmarks
         var processing = _processor(new PartitionProcessorContext<int, int>(lane), CancellationToken.None);
         var suspended = !processing.IsCompleted && _handled != 0;
         _release?.TrySetResult();
+        if (SuspendFirstHandler && !processing.IsCompleted)
+            throw new InvalidOperationException("The suspended dispatch did not resume inline.");
         await processing.AsTask().WaitAsync(TimeSpan.FromSeconds(30));
         if (SuspendFirstHandler && !suspended)
             throw new InvalidOperationException("The first handler did not suspend dispatch.");
