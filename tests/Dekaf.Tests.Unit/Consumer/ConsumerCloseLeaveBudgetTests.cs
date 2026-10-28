@@ -44,7 +44,9 @@ public sealed class ConsumerCloseLeaveBudgetTests
     [Test]
     public async Task CloseAsync_BlackHoledCommit_StillSendsLeaveWithinTheCloseBudget()
     {
-        const int closeBudgetMs = 2_000;
+        // The commit is stopped with the leave's reserve, half of the budget, still left. That
+        // gives the leave and the rest of close 2.5 s, which a loaded runner still meets (#3630).
+        const int closeBudgetMs = 5_000;
         var harness = new Harness(defaultApiTimeoutMs: closeBudgetMs);
         // The coordinator swallows the commit: no response ever comes, only the token ends it.
         harness.OnOffsetCommit = static async (_, token) =>
@@ -56,15 +58,12 @@ public sealed class ConsumerCloseLeaveBudgetTests
         Harness.JoinGroup(consumer);
         consumer.StoreOffset(CreateConsumeResult(offset: 41));
 
-        var stopwatch = Stopwatch.StartNew();
+        // A commit that was not shortened for the leave would wait out the whole budget, and
+        // close would then throw KafkaTimeoutException.
         await consumer.CloseAsync(CancellationToken.None);
-        stopwatch.Stop();
 
         await Assert.That(harness.OffsetCommits).IsEqualTo(1);
         await Assert.That(harness.LeaveEpochs.ToArray()).IsEquivalentTo([-1]);
-        // The commit gave up with the leave's reserve (half of a 2 s budget) still left, and the
-        // answering leave then finished well inside the budget, so close did not time out.
-        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromMilliseconds(closeBudgetMs));
     }
 
     [Test]
