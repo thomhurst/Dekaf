@@ -116,6 +116,60 @@ public partial class AwsKmsProviderTests
 
         await Assert.That(transport.Configurations.Count).IsEqualTo(18);
         await Assert.That(transport.Requests.Last().Host).IsEqualTo("kms.us-test-17.amazonaws.com");
+        foreach (var (regionalConfig, handler) in transport.Configurations)
+        {
+            var expected = regionalConfig.RegionEndpoint.SystemName == "us-test-17" ? 1 : 0;
+            await Assert.That(handler.DisposeCount).IsEqualTo(expected);
+        }
+
+        provider.Dispose();
+
+        foreach (var handler in transport.Configurations.Values)
+            await Assert.That(handler.DisposeCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task OwnedClient_DisposesActiveOverflowClientExactlyOnce()
+    {
+        var transport = new KmsHttpClientFactory();
+        using var provider = new AwsKmsProvider(CreateRoutingConfig(transport));
+        for (var index = 1; index <= 16; index++)
+        {
+            await provider.WrapKeyAsync(new byte[] { 1 },
+                CreateKeyReference($"arn:aws:kms:us-test-{index}:123456789012:key/1234"));
+        }
+
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completion = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        transport.RespondAsync = _ =>
+        {
+            started.TrySetResult();
+            return completion.Task;
+        };
+        var operation = provider.WrapKeyAsync(new byte[] { 1 },
+            CreateKeyReference("arn:aws:kms:us-test-17:123456789012:key/1234")).AsTask();
+
+        try
+        {
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.That(transport.Configurations.Count).IsEqualTo(17);
+            provider.Dispose();
+
+            // The transport ignores cancellation so the overflow lease is still active here.
+            await Assert.That(operation.IsCompleted).IsFalse();
+            foreach (var handler in transport.Configurations.Values)
+                await Assert.That(handler.DisposeCount).IsEqualTo(1);
+        }
+        finally
+        {
+            completion.TrySetCanceled();
+            await Assert.That(async () => await operation.WaitAsync(TimeSpan.FromSeconds(5)))
+                .Throws<OperationCanceledException>();
+        }
+
+        provider.Dispose();
+        foreach (var handler in transport.Configurations.Values)
+            await Assert.That(handler.DisposeCount).IsEqualTo(1);
     }
 
     [Test]
@@ -166,27 +220,41 @@ public partial class AwsKmsProviderTests
     {
         RegionEndpoint = RegionEndpoint.USEast1,
         DefaultAWSCredentials = new BasicAWSCredentials("test-access-key", "test-secret-key"),
-        HttpClientFactory = transport
+        HttpClientFactory = transport,
+        HttpClientCacheSize = 1
     };
 
     private sealed class KmsHttpClientFactory : HttpClientFactory
     {
-        public Func<CancellationToken, Task<HttpResponseMessage>>? RespondAsync { get; init; }
+        public Func<CancellationToken, Task<HttpResponseMessage>>? RespondAsync { get; set; }
 
-        public ConcurrentDictionary<AmazonKeyManagementServiceConfig, byte> Configurations { get; } = new();
+        public ConcurrentDictionary<AmazonKeyManagementServiceConfig, KmsHttpHandler> Configurations { get; } = new();
         public ConcurrentQueue<(string Host, string Authorization, string Body)> Requests { get; } = new();
 
         public override HttpClient CreateHttpClient(IClientConfig clientConfig)
         {
-            Configurations.TryAdd((AmazonKeyManagementServiceConfig)clientConfig, 0);
-            return new HttpClient(new KmsHttpHandler(this));
+            var handler = new KmsHttpHandler(this);
+            Configurations.TryAdd((AmazonKeyManagementServiceConfig)clientConfig, handler);
+            return new HttpClient(handler);
         }
 
-        public override bool UseSDKHttpClientCaching(IClientConfig clientConfig) => false;
-        public override bool DisposeHttpClientsAfterUse(IClientConfig clientConfig) => true;
+        // A null GetConfigUniqueString keeps the SDK cache local to each service client.
+        // Disposing that client then disposes its transport, rather than each request doing so.
+        public override bool UseSDKHttpClientCaching(IClientConfig clientConfig) => true;
+        public override bool DisposeHttpClientsAfterUse(IClientConfig clientConfig) => false;
 
-        private sealed class KmsHttpHandler(KmsHttpClientFactory owner) : HttpMessageHandler
+        public sealed class KmsHttpHandler(KmsHttpClientFactory owner) : HttpMessageHandler
         {
+            private int _disposeCount;
+            public int DisposeCount => Volatile.Read(ref _disposeCount);
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                    Interlocked.Increment(ref _disposeCount);
+                base.Dispose(disposing);
+            }
+
             protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             {
                 var body = await request.Content!.ReadAsStringAsync(cancellationToken);
