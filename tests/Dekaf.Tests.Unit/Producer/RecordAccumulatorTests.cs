@@ -1827,6 +1827,86 @@ public class RecordAccumulatorTests
         secondBatch.CompleteSend(baseOffset: 1, DateTimeOffset.FromUnixTimeMilliseconds(timestamp + 1));
     }
 
+    /// <summary>
+    /// Issue #3807: a pooled append that rotates the open batch and then fills the new batch
+    /// exactly seals both in one call. The rotated batch's seal refund must still be released,
+    /// or BufferMemory keeps its overestimate after both batches are delivered.
+    /// </summary>
+    [Test]
+    public async Task AppendAsync_Pooled_RotationIntoImmediatelySealedBatch_ReleasesRotatedBatchRefund()
+    {
+        const int fillingValueLength = 64;
+        var fillingRecordSize = EncodedRecordSize(
+            timestampDelta: 0,
+            offsetDelta: 0,
+            valueLength: fillingValueLength);
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = RecordBatch.TotalBatchHeaderSize + fillingRecordSize,
+            LingerMs = 10_000
+        };
+
+        await using var accumulator = new RecordAccumulator(options);
+        var topicPartition = new TopicPartition("test-topic", 0);
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        var appended = await accumulator.AppendAsync(
+            topicPartition.Topic,
+            topicPartition.Partition,
+            timestamp,
+            PooledMemory.Null,
+            CopyToPooled(new byte[] { 1 }),
+            headers: null,
+            headerCount: 0,
+            completionSource: null,
+            callback: null,
+            CancellationToken.None,
+            partitionCount: 1);
+
+        await Assert.That(appended).IsTrue();
+
+        // The filling record does not fit beside the first one, so it rotates the open batch,
+        // lands alone in the new batch, and fills that batch exactly, which seals it at once.
+        appended = await accumulator.AppendAsync(
+            topicPartition.Topic,
+            topicPartition.Partition,
+            timestamp,
+            PooledMemory.Null,
+            CopyToPooled(new byte[fillingValueLength]),
+            headers: null,
+            headerCount: 0,
+            completionSource: null,
+            callback: null,
+            CancellationToken.None,
+            partitionCount: 1);
+
+        await Assert.That(appended).IsTrue();
+        await Assert.That(accumulator.TryDrainBatch(out var firstBatch)).IsTrue();
+        await Assert.That(accumulator.TryDrainBatch(out var secondBatch)).IsTrue();
+        await Assert.That(firstBatch!.RecordBatch.Records.Count).IsEqualTo(1);
+        await Assert.That(secondBatch!.RecordBatch.Records.Count).IsEqualTo(1);
+        await Assert.That(secondBatch.RecordBatch.GetEncodedSize()).IsEqualTo(options.BatchSize);
+        await Assert.That(accumulator.BufferedBytes).IsEqualTo(firstBatch.DataSize + secondBatch.DataSize);
+
+        foreach (var batch in new[] { firstBatch, secondBatch })
+        {
+            batch.CompleteSend(baseOffset: 0, DateTimeOffset.FromUnixTimeMilliseconds(timestamp));
+            accumulator.ReleaseBatchMemory(batch);
+        }
+
+        await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+
+        static PooledMemory CopyToPooled(byte[] source)
+        {
+            var buffer = ProducerDataPool.BytePool.Rent(source.Length);
+            source.CopyTo(buffer, 0);
+            return new PooledMemory(buffer, source.Length);
+        }
+    }
+
     [Test]
     public async Task AppendFromSpansAsync_RequestExactlyAtMaxRequestSize_SealsAndAppends()
     {

@@ -2,6 +2,7 @@ using System.Reflection;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Engines;
 using Dekaf.Producer;
+using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
@@ -21,6 +22,12 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// published batches, so pooled arenas, ready batches and value buffers are reused; nothing is set
 /// up per iteration.
 /// </para>
+/// <para>
+/// <see cref="AppendRotationIntoFullBatch"/> covers the pooled core's rotation exit (#3807): a
+/// small record opens a lingering batch, and the next record does not fit beside it, so it rotates
+/// that batch and fills the new one exactly, which seals it in the same call. Both batches publish
+/// from one append, and the rotated batch's seal refund goes back to buffer memory on that exit.
+/// </para>
 /// </summary>
 [MemoryDiagnoser]
 [SimpleJob(RunStrategy.Throughput, launchCount: 1, warmupCount: 3, iterationCount: 5)]
@@ -29,6 +36,7 @@ public class PooledAppendCommitBenchmarks
     private const string Topic = "pooled-append-commit";
     private const int AppendsPerInvoke = 100;
     private const int ValueSize = 256;
+    private const int SmallValueSize = 1;
 
     private delegate ValueTask<bool> GenerationAppend(
         RecordAccumulator accumulator,
@@ -46,8 +54,10 @@ public class PooledAppendCommitBenchmarks
         int transactionalGeneration);
 
     private RecordAccumulator _accumulator = null!;
+    private RecordAccumulator _rotationAccumulator = null!;
     private GenerationAppend _appendWithGeneration = null!;
     private int _generation;
+    private int _rotationGeneration;
     private CancellationTokenSource _drainerCts = null!;
     private Thread _drainerThread = null!;
 
@@ -65,12 +75,20 @@ public class PooledAppendCommitBenchmarks
             LingerMs = 0,
         });
 
+        // Every batch holds exactly one ValueSize record, and LingerMs keeps a small record's
+        // batch open until the next record rotates it. Unbounded buffer memory keeps a revision
+        // that leaks the rotation refund from back-pressuring the run to a stop.
+        _rotationAccumulator = new RecordAccumulator(new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            BatchSize = RecordBatch.TotalBatchHeaderSize + EncodedRecordSize(ValueSize),
+            BufferMemory = ulong.MaxValue,
+            LingerMs = 10_000,
+        });
+
         _appendWithGeneration = BindGenerationAppend();
-        _generation = typeof(RecordAccumulator)
-            .GetProperty("TransactionalAppendGeneration", BindingFlags.Instance | BindingFlags.NonPublic)
-            ?.GetValue(_accumulator) is int generation
-                ? generation
-                : 0;
+        _generation = ReadGeneration(_accumulator);
+        _rotationGeneration = ReadGeneration(_rotationAccumulator);
 
         _drainerCts = new CancellationTokenSource();
         _drainerThread = new Thread(() => DrainLoop(_drainerCts.Token))
@@ -83,7 +101,10 @@ public class PooledAppendCommitBenchmarks
 
         // Warm the pools (arenas, partition and ready batches, value buffers) before measuring.
         for (var i = 0; i < 50; i++)
+        {
             AppendBatch();
+            AppendRotationIntoFullBatch();
+        }
     }
 
     [GlobalCleanup]
@@ -93,6 +114,7 @@ public class PooledAppendCommitBenchmarks
         _drainerThread.Join();
         _drainerCts.Dispose();
         await _accumulator.DisposeAsync().ConfigureAwait(false);
+        await _rotationAccumulator.DisposeAsync().ConfigureAwait(false);
     }
 
     [Benchmark(OperationsPerInvoke = AppendsPerInvoke)]
@@ -100,23 +122,60 @@ public class PooledAppendCommitBenchmarks
     {
         var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         for (var i = 0; i < AppendsPerInvoke; i++)
+            Append(_accumulator, _generation, timestamp, ValueSize);
+    }
+
+    [Benchmark(OperationsPerInvoke = AppendsPerInvoke)]
+    public void AppendRotationIntoFullBatch()
+    {
+        // One timestamp per invoke keeps every record's encoded size constant, so each filling
+        // record fills its batch exactly.
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        for (var i = 0; i < AppendsPerInvoke; i += 2)
         {
-            var value = RentValue();
-            var append = Transactional
-                ? _appendWithGeneration(
-                    _accumulator, Topic, 0, timestamp, PooledMemory.Null, value, null, 0, null, null,
-                    CancellationToken.None, 0, _generation)
-                : _accumulator.AppendAsync(
-                    Topic, 0, timestamp, PooledMemory.Null, value, null, 0, null, null,
-                    CancellationToken.None);
-            AwaitSync(append);
+            Append(_rotationAccumulator, _rotationGeneration, timestamp, SmallValueSize);
+            Append(_rotationAccumulator, _rotationGeneration, timestamp, ValueSize);
         }
     }
 
-    private static PooledMemory RentValue()
+    private void Append(RecordAccumulator accumulator, int generation, long timestamp, int valueSize)
     {
-        var buffer = ProducerDataPool.BytePool.Rent(ValueSize);
-        return new PooledMemory(buffer, ValueSize);
+        var value = RentValue(valueSize);
+        var append = Transactional
+            ? _appendWithGeneration(
+                accumulator, Topic, 0, timestamp, PooledMemory.Null, value, null, 0, null, null,
+                CancellationToken.None, 0, generation)
+            : accumulator.AppendAsync(
+                Topic, 0, timestamp, PooledMemory.Null, value, null, 0, null, null,
+                CancellationToken.None);
+        AwaitSync(append);
+    }
+
+    private static PooledMemory RentValue(int valueSize)
+    {
+        var buffer = ProducerDataPool.BytePool.Rent(valueSize);
+        return new PooledMemory(buffer, valueSize);
+    }
+
+    private static int ReadGeneration(RecordAccumulator accumulator) =>
+        typeof(RecordAccumulator)
+            .GetProperty("TransactionalAppendGeneration", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?.GetValue(accumulator) is int generation
+                ? generation
+                : 0;
+
+    private static int EncodedRecordSize(int valueLength)
+    {
+        var bodySize = Record.ComputeBodySize(
+            timestampDelta: 0,
+            offsetDelta: 0,
+            isKeyNull: true,
+            keyLength: 0,
+            isValueNull: false,
+            valueLength,
+            headers: null,
+            headerCount: 0);
+        return Record.VarIntSize(bodySize) + bodySize;
     }
 
     private static GenerationAppend BindGenerationAppend()
@@ -164,17 +223,22 @@ public class PooledAppendCommitBenchmarks
         var spinner = new SpinWait();
         while (!cancellationToken.IsCancellationRequested)
         {
-            if (_accumulator.TryDrainPublishedBatch(out var batch))
-            {
-                _accumulator.OnBatchExitsPipeline(batch);
-                _accumulator.ReleaseMemory(batch.DataSize);
-                _accumulator.ReturnReadyBatch(batch);
+            // Non-short-circuit OR: drain one batch from each accumulator per pass.
+            if (TryRecycle(_accumulator) | TryRecycle(_rotationAccumulator))
                 spinner.Reset();
-            }
             else
-            {
                 spinner.SpinOnce();
-            }
         }
+    }
+
+    private static bool TryRecycle(RecordAccumulator accumulator)
+    {
+        if (!accumulator.TryDrainPublishedBatch(out var batch))
+            return false;
+
+        accumulator.OnBatchExitsPipeline(batch);
+        accumulator.ReleaseMemory(batch.DataSize);
+        accumulator.ReturnReadyBatch(batch);
+        return true;
     }
 }
