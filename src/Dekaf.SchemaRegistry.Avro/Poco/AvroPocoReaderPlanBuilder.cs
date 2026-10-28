@@ -227,11 +227,46 @@ internal static class AvroPocoReaderPlanBuilder
     {
         for (var index = 0; index < readers.Length; index++)
         {
+            if (IsExactMatch(writer, readers[index]))
+                return index;
+        }
+
+        for (var index = 0; index < readers.Length; index++)
+        {
             if (IsCompatible(writer, readers[index]))
                 return index;
         }
 
         return -1;
+    }
+
+    private static bool IsExactMatch(AvroSchema writer, AvroPocoType reader)
+    {
+        if (writer is LogicalSchema logical)
+        {
+            var logicalKind = GetLogicalKind(logical.LogicalTypeName);
+            return logicalKind is null
+                ? IsExactMatch(logical.BaseSchema, reader)
+                : reader.Kind == logicalKind && IsCompatible(writer, reader);
+        }
+
+        var kind = writer.Tag switch
+        {
+            AvroSchema.Type.Null => AvroPocoTypeKind.Null,
+            AvroSchema.Type.Boolean => AvroPocoTypeKind.Boolean,
+            AvroSchema.Type.Int => AvroPocoTypeKind.Int,
+            AvroSchema.Type.Long => AvroPocoTypeKind.Long,
+            AvroSchema.Type.Float => AvroPocoTypeKind.Float,
+            AvroSchema.Type.Double => AvroPocoTypeKind.Double,
+            AvroSchema.Type.Bytes => AvroPocoTypeKind.Bytes,
+            AvroSchema.Type.String => AvroPocoTypeKind.String,
+            AvroSchema.Type.Record => AvroPocoTypeKind.Record,
+            AvroSchema.Type.Enumeration => AvroPocoTypeKind.Enum,
+            AvroSchema.Type.Array => AvroPocoTypeKind.Array,
+            AvroSchema.Type.Map => AvroPocoTypeKind.Map,
+            _ => (AvroPocoTypeKind?)null
+        };
+        return reader.Kind == kind && IsCompatible(writer, reader);
     }
 
     private static bool IsCompatible(AvroSchema writer, AvroPocoType reader)

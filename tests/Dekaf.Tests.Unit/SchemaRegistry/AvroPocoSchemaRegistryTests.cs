@@ -525,6 +525,104 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task GeneratedCodec_PreservesStringAndBytesUnionBranchesOnRoundTrip(bool useBytes)
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = PocoStringBytesUnion.CreateAvroSerializer(registry);
+        await using var deserializer = PocoStringBytesUnion.CreateAvroDeserializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-string-bytes-union",
+            Component = SerializationComponent.Value
+        };
+        object value = useBytes ? new byte[] { 0xFF, 0x00, 0x80 } : "hello";
+        var expected = new PocoStringBytesUnion { BytesFirst = value, StringFirst = value };
+        var destination = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(expected, ref destination, context);
+        var actual = deserializer.Deserialize(destination.WrittenMemory, context);
+
+        await AssertStringBytesUnionValue(actual.BytesFirst, value);
+        await AssertStringBytesUnionValue(actual.StringFirst, value);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task GeneratedCodec_PrefersExactUnionBranchForNonUnionWriter(bool useBytes)
+    {
+        var writerType = useBytes ? "bytes" : "string";
+        var writerSchema = (RecordSchema)Schema.Parse(
+            $$"""
+            {"type":"record","name":"PocoStringBytesUnion","namespace":"Dekaf.Tests","fields":[{"name":"BytesFirst","type":"{{writerType}}"},{"name":"StringFirst","type":"{{writerType}}"}]}
+            """);
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(registry);
+        await using var deserializer = PocoStringBytesUnion.CreateAvroDeserializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-plain-string-bytes-union",
+            Component = SerializationComponent.Value
+        };
+        object value = useBytes ? new byte[] { 0xFF, 0x00, 0x80 } : "hello";
+        var expected = new GenericRecord(writerSchema);
+        expected.Add("BytesFirst", value);
+        expected.Add("StringFirst", value);
+        var destination = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(expected, ref destination, context);
+        var actual = deserializer.Deserialize(destination.WrittenMemory, context);
+
+        await AssertStringBytesUnionValue(actual.BytesFirst, value);
+        await AssertStringBytesUnionValue(actual.StringFirst, value);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ReaderPlan_PrefersExactNumericAndLogicalUnionBranches(bool writerUnion)
+    {
+        var intType = writerUnion ? "[\"int\"]" : "\"int\"";
+        const string uuidType = "{\"type\":\"string\",\"logicalType\":\"uuid\"}";
+        var logicalType = writerUnion ? $"[{uuidType}]" : uuidType;
+        var writerSchemaJson =
+            $$"""
+            {"type":"record","name":"PocoUnionResolution","namespace":"Dekaf.Tests","fields":[{"name":"Exact","type":{{intType}}},{"name":"Promoted","type":{{intType}}},{"name":"Logical","type":{{logicalType}}}]}
+            """;
+
+        var plan = AvroPocoReaderPlanBuilder.Build<object, PocoUnionResolutionCodec>(writerSchemaJson);
+        var exact = plan.GetOperation(0).WriterType;
+        var promoted = plan.GetOperation(1).WriterType;
+        var logical = plan.GetOperation(2).WriterType;
+        if (writerUnion)
+        {
+            exact = exact.Branches.Span[0];
+            promoted = promoted.Branches.Span[0];
+            logical = logical.Branches.Span[0];
+        }
+
+        await Assert.That(exact.ReaderUnionBranchIndex).IsEqualTo(2);
+        await Assert.That(promoted.ReaderUnionBranchIndex).IsEqualTo(0);
+        await Assert.That(logical.ReaderUnionBranchIndex).IsEqualTo(1);
+    }
+
+    private static async Task AssertStringBytesUnionValue(object actual, object expected)
+    {
+        if (expected is byte[] bytes)
+        {
+            await Assert.That(actual).IsTypeOf<byte[]>();
+            await Assert.That((byte[])actual).IsEquivalentTo(bytes);
+        }
+        else
+        {
+            await Assert.That(actual).IsTypeOf<string>();
+            await Assert.That((string)actual).IsEqualTo((string)expected);
+        }
+    }
+
+    [Test]
     public async Task GeneratedSchema_IsDeterministicAndValidAvro()
     {
         const string expectedSchemaJson =
@@ -3959,6 +4057,42 @@ internal sealed partial class PocoEnvelope
 {
     [AvroField(UnionTypes = [typeof(PocoAddress), typeof(PocoContact)])]
     public required object Party { get; init; }
+}
+
+[AvroRecord(Name = "PocoStringBytesUnion", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoStringBytesUnion
+{
+    [AvroField(UnionTypes = [typeof(byte[]), typeof(string)])]
+    public required object BytesFirst { get; init; }
+
+    [AvroField(UnionTypes = [typeof(string), typeof(byte[])])]
+    public required object StringFirst { get; init; }
+}
+
+internal readonly struct PocoUnionResolutionCodec : IAvroPocoCodec<object>
+{
+    public static string SchemaJson => throw new NotSupportedException();
+    public static ReadOnlySpan<byte> SchemaUtf8 => throw new NotSupportedException();
+    public static long ParsingFingerprint64 => 0;
+    public static string FullName => "Dekaf.Tests.PocoUnionResolution";
+    public static ReadOnlyMemory<AvroPocoField> Fields { get; } = new AvroPocoField[]
+    {
+        new("Exact", default, null, new AvroPocoType(AvroPocoTypeKind.Union, branches: new AvroPocoType[]
+        {
+            new(AvroPocoTypeKind.Double), new(AvroPocoTypeKind.Long), new(AvroPocoTypeKind.Int)
+        })),
+        new("Promoted", default, null, new AvroPocoType(AvroPocoTypeKind.Union, branches: new AvroPocoType[]
+        {
+            new(AvroPocoTypeKind.Double), new(AvroPocoTypeKind.Long)
+        })),
+        new("Logical", default, null, new AvroPocoType(AvroPocoTypeKind.Union, branches: new AvroPocoType[]
+        {
+            new(AvroPocoTypeKind.Bytes), new(AvroPocoTypeKind.Uuid)
+        }))
+    };
+
+    public static void Write(ref AvroValueWriter writer, object value) => throw new NotSupportedException();
+    public static object Read(ref AvroValueReader reader, AvroPocoReaderPlan plan) => throw new NotSupportedException();
 }
 
 [AvroRecord(Name = "PocoContact", Namespace = "Dekaf.Tests")]
