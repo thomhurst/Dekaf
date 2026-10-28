@@ -2,12 +2,13 @@ namespace Dekaf.Protocol.Messages;
 
 /// <summary>
 /// StreamsGroupHeartbeat request (API key 88), introduced by KIP-1071.
+/// Version 1 has the v0 layout and negotiates response v1 (Kafka 4.4).
 /// </summary>
 internal sealed class StreamsGroupHeartbeatRequest : IKafkaRequest<StreamsGroupHeartbeatResponse>
 {
     public static ApiKey ApiKey => ApiKey.StreamsGroupHeartbeat;
     public static short LowestSupportedVersion => 0;
-    public static short HighestSupportedVersion => 0;
+    public static short HighestSupportedVersion => 1;
 
     public required string GroupId { get; init; }
     public required string MemberId { get; init; }

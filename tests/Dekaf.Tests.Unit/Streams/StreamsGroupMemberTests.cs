@@ -51,6 +51,55 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
+    public async Task JoinAsync_Kafka44Broker_NegotiatesV1AndExposesInt64LagAndMissingClientTags()
+    {
+        const long lag = int.MaxValue + 10L;
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.None,
+            MemberId = "member-1",
+            MemberEpoch = 1,
+            HeartbeatIntervalMs = 60_000,
+            AcceptableRecoveryLag = lag,
+            Status = [new StreamsGroupHeartbeatStatus { StatusCode = 6, StatusDetail = "zone missing" }]
+        });
+        await using var fixture = CreateFixture(connection);
+
+        var result = await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await Assert.That(connection.HeartbeatApiVersions).IsEquivalentTo([(short)1]);
+        await Assert.That(result.AcceptableRecoveryLagOffsets).IsEqualTo(lag);
+        await Assert.That(fixture.Member.Snapshot.AcceptableRecoveryLagOffsets).IsEqualTo(lag);
+#pragma warning disable CS0618 // The obsolete int32 view saturates instead of overflowing.
+        await Assert.That(result.AcceptableRecoveryLag).IsEqualTo(int.MaxValue);
+#pragma warning restore CS0618
+        await Assert.That(result.Status![0].Code).IsEqualTo(StreamsGroupStatusCode.MissingClientTags);
+        await Assert.That(fixture.Member.Snapshot.Status[0].Code)
+            .IsEqualTo(StreamsGroupStatusCode.MissingClientTags);
+    }
+
+    [Test]
+    public async Task JoinAsync_V0OnlyBroker_FallsBackToHeartbeatV0()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.None,
+            MemberId = "member-1",
+            MemberEpoch = 1,
+            HeartbeatIntervalMs = 60_000,
+            AcceptableRecoveryLag = 10_000
+        });
+        await using var fixture = CreateFixture(connection, brokerHeartbeatMaxVersion: 0);
+
+        var result = await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await Assert.That(connection.HeartbeatApiVersions).IsEquivalentTo([(short)0]);
+        await Assert.That(result.AcceptableRecoveryLagOffsets).IsEqualTo(10_000L);
+    }
+
+    [Test]
     public async Task UpdateAsync_SendsAssignmentAcknowledgementAndOnlyChangedMetadata()
     {
         var connection = new ScriptedConnection();
@@ -1755,7 +1804,10 @@ public sealed class StreamsGroupMemberTests
         await Assert.That(connection.HeartbeatRequests[2].MemberEpoch).IsEqualTo(-1);
     }
 
-    private static Fixture CreateFixture(ScriptedConnection connection, string? instanceId = null)
+    private static Fixture CreateFixture(
+        ScriptedConnection connection,
+        string? instanceId = null,
+        short? brokerHeartbeatMaxVersion = null)
     {
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
@@ -1768,7 +1820,7 @@ public sealed class StreamsGroupMemberTests
         metadataManager.SetApiVersion(
             ApiKey.StreamsGroupHeartbeat,
             StreamsGroupHeartbeatRequest.LowestSupportedVersion,
-            StreamsGroupHeartbeatRequest.HighestSupportedVersion);
+            brokerHeartbeatMaxVersion ?? StreamsGroupHeartbeatRequest.HighestSupportedVersion);
         metadataManager.Metadata.Update(new MetadataResponse
         {
             Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
@@ -1910,6 +1962,7 @@ public sealed class StreamsGroupMemberTests
         public bool IsConnected => true;
         public int FindCoordinatorRequestCount { get; private set; }
         public List<StreamsGroupHeartbeatRequest> HeartbeatRequests { get; } = [];
+        public List<short> HeartbeatApiVersions { get; } = [];
         public TaskCompletionSource FirstHeartbeatStarted { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource SecondHeartbeatStarted { get; } = new(
@@ -1977,6 +2030,7 @@ public sealed class StreamsGroupMemberTests
             if (request is StreamsGroupHeartbeatRequest heartbeat)
             {
                 HeartbeatRequests.Add(heartbeat);
+                HeartbeatApiVersions.Add(apiVersion);
                 if (HeartbeatRequests.Count == 1)
                     FirstHeartbeatStarted.TrySetResult();
                 if (HeartbeatRequests.Count == 2)

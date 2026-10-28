@@ -59,5 +59,6 @@ Decoded:
   ],
   "TaskOffsetIntervalMs": 10000,
   "ThrottleTimeMs": 17,
+  "TopologyDescriptionRequired": false,
   "WarmupTasks": null
 }

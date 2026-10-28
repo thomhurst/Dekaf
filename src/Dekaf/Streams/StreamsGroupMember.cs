@@ -662,7 +662,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                 PartitionsByUserEndpoint = current.PartitionsByUserEndpoint,
                 Status = current.Status,
                 HeartbeatInterval = current.HeartbeatInterval,
-                AcceptableRecoveryLag = current.AcceptableRecoveryLag,
+                AcceptableRecoveryLagOffsets = current.AcceptableRecoveryLagOffsets,
                 TaskOffsetInterval = current.TaskOffsetInterval
             };
         }
@@ -865,7 +865,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             PartitionsByUserEndpoint = markUnjoined ? [] : current.PartitionsByUserEndpoint,
             Status = current.Status,
             HeartbeatInterval = current.HeartbeatInterval,
-            AcceptableRecoveryLag = current.AcceptableRecoveryLag,
+            AcceptableRecoveryLagOffsets = current.AcceptableRecoveryLagOffsets,
             TaskOffsetInterval = current.TaskOffsetInterval
         };
     }
@@ -1075,7 +1075,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             || response.PartitionsByUserEndpoint is not null
             || current.EndpointInformationEpoch != response.EndpointInformationEpoch
             || current.HeartbeatInterval != heartbeatInterval
-            || current.AcceptableRecoveryLag != response.AcceptableRecoveryLag
+            || current.AcceptableRecoveryLagOffsets != response.AcceptableRecoveryLag
             || current.TaskOffsetInterval != taskOffsetInterval;
         if (snapshotChanged)
         {
@@ -1089,7 +1089,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                 PartitionsByUserEndpoint = endpoints,
                 Status = status,
                 HeartbeatInterval = heartbeatInterval,
-                AcceptableRecoveryLag = response.AcceptableRecoveryLag,
+                AcceptableRecoveryLagOffsets = response.AcceptableRecoveryLag,
                 TaskOffsetInterval = taskOffsetInterval
             };
         }
@@ -1103,7 +1103,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             MemberId = _memberId,
             MemberEpoch = response.MemberEpoch,
             HeartbeatInterval = heartbeatInterval,
-            AcceptableRecoveryLag = response.AcceptableRecoveryLag,
+            AcceptableRecoveryLagOffsets = response.AcceptableRecoveryLag,
             TaskOffsetInterval = taskOffsetInterval,
             Status = response.Status is null ? null : status,
             ActiveTasks = response.ActiveTasks is null ? null : active,

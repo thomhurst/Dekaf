@@ -186,7 +186,7 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember
                 PartitionsByUserEndpoint = _snapshot.PartitionsByUserEndpoint,
                 Status = _snapshot.Status,
                 HeartbeatInterval = _snapshot.HeartbeatInterval,
-                AcceptableRecoveryLag = _snapshot.AcceptableRecoveryLag,
+                AcceptableRecoveryLagOffsets = _snapshot.AcceptableRecoveryLagOffsets,
                 TaskOffsetInterval = _snapshot.TaskOffsetInterval
             });
         }
@@ -242,7 +242,7 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember
             MemberId = _snapshot.MemberId!,
             MemberEpoch = _snapshot.MemberEpoch,
             HeartbeatInterval = _snapshot.HeartbeatInterval,
-            AcceptableRecoveryLag = _snapshot.AcceptableRecoveryLag,
+            AcceptableRecoveryLagOffsets = _snapshot.AcceptableRecoveryLagOffsets,
             TaskOffsetInterval = _snapshot.TaskOffsetInterval,
             Status = null,
             ActiveTasks = activeTasks,

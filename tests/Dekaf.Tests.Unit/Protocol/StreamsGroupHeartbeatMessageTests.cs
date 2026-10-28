@@ -7,11 +7,25 @@ namespace Dekaf.Tests.Unit.Protocol;
 public sealed class StreamsGroupHeartbeatMessageTests
 {
     [Test]
-    public async Task Request_Metadata_UsesStreamsGroupHeartbeatV0()
+    public async Task Metadata_SupportsStreamsGroupHeartbeatV0ThroughV1()
     {
         await Assert.That(StreamsGroupHeartbeatRequest.ApiKey).IsEqualTo(ApiKey.StreamsGroupHeartbeat);
         await Assert.That(StreamsGroupHeartbeatRequest.LowestSupportedVersion).IsEqualTo((short)0);
-        await Assert.That(StreamsGroupHeartbeatRequest.HighestSupportedVersion).IsEqualTo((short)0);
+        await Assert.That(StreamsGroupHeartbeatRequest.HighestSupportedVersion).IsEqualTo((short)1);
+        await Assert.That(StreamsGroupHeartbeatResponse.LowestSupportedVersion).IsEqualTo((short)0);
+        await Assert.That(StreamsGroupHeartbeatResponse.HighestSupportedVersion).IsEqualTo((short)1);
+    }
+
+    [Test]
+    public async Task Request_Write_V1_MatchesV0Layout()
+    {
+        var request = CreateFullRequest();
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        request.Write(ref writer, version: 1);
+
+        await Assert.That(Convert.ToHexString(buffer.WrittenSpan)).IsEqualTo(FullRequestFixture);
     }
 
     [Test]
@@ -91,7 +105,7 @@ public sealed class StreamsGroupHeartbeatMessageTests
         await Assert.That(response.ErrorMessage).IsEqualTo("retry later");
         await Assert.That(response.MemberId).IsEqualTo("member-a");
         await Assert.That(response.MemberEpoch).IsEqualTo(4);
-        await Assert.That(response.AcceptableRecoveryLag).IsEqualTo(10);
+        await Assert.That(response.AcceptableRecoveryLag).IsEqualTo(10L);
         await Assert.That(response.Status![0].StatusDetail).IsEqualTo("input missing");
         await Assert.That(response.ActiveTasks![0].Partitions).IsEquivalentTo([0, 1]);
         await Assert.That(response.StandbyTasks![0].Partitions).IsEquivalentTo([2]);
@@ -121,6 +135,71 @@ public sealed class StreamsGroupHeartbeatMessageTests
         await Assert.That(response.EndpointInformationEpoch).IsEqualTo(2);
         await Assert.That(response.PartitionsByUserEndpoint).IsNull();
         await Assert.That(remaining).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Response_Read_V1_Int64LagAndTopologyDescriptionRequired_MatchesKafkaV1Fixture()
+    {
+        // AcceptableRecoveryLag moves after TaskOffsetIntervalMs as int64; TopologyDescriptionRequired
+        // follows WarmupTasks.
+        var fixture = Convert.FromHexString(
+            "00000000000000026D00000001000003E8000013880000000080000009000000000100000002" + "0000");
+        var reader = new KafkaProtocolReader(fixture);
+
+        var response = (StreamsGroupHeartbeatResponse)StreamsGroupHeartbeatResponse.Read(ref reader, version: 1);
+        var remaining = reader.Remaining;
+
+        await Assert.That(response.MemberId).IsEqualTo("m");
+        await Assert.That(response.HeartbeatIntervalMs).IsEqualTo(1_000);
+        await Assert.That(response.TaskOffsetIntervalMs).IsEqualTo(5_000);
+        await Assert.That(response.AcceptableRecoveryLag).IsEqualTo(int.MaxValue + 10L);
+        await Assert.That(response.TopologyDescriptionRequired).IsTrue();
+        await Assert.That(response.Status).IsNull();
+        await Assert.That(response.EndpointInformationEpoch).IsEqualTo(2);
+        await Assert.That(remaining).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Response_WriteAndRead_V1_RoundTripsMissingClientTagsStatus()
+    {
+        var original = new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.None,
+            MemberId = "member-a",
+            MemberEpoch = 2,
+            AcceptableRecoveryLag = long.MaxValue,
+            TaskOffsetIntervalMs = 15_000,
+            Status = [new StreamsGroupHeartbeatStatus { StatusCode = 6, StatusDetail = "zone" }],
+            TopologyDescriptionRequired = true,
+            EndpointInformationEpoch = 3
+        };
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        original.Write(ref writer, version: 1);
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (StreamsGroupHeartbeatResponse)StreamsGroupHeartbeatResponse.Read(ref reader, version: 1);
+        var remaining = reader.Remaining;
+
+        await Assert.That(response.AcceptableRecoveryLag).IsEqualTo(long.MaxValue);
+        await Assert.That(response.TaskOffsetIntervalMs).IsEqualTo(15_000);
+        await Assert.That(response.Status![0].StatusCode).IsEqualTo((sbyte)6);
+        await Assert.That(response.TopologyDescriptionRequired).IsTrue();
+        await Assert.That(response.EndpointInformationEpoch).IsEqualTo(3);
+        await Assert.That(remaining).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Response_Read_V0_LeavesTopologyDescriptionRequiredFalse()
+    {
+        var fixture = Convert.FromHexString(
+            "00000000000000026D00000001000003E8FFFFFFFF0000138800000000000000020000");
+        var reader = new KafkaProtocolReader(fixture);
+
+        var response = (StreamsGroupHeartbeatResponse)StreamsGroupHeartbeatResponse.Read(ref reader, version: 0);
+
+        await Assert.That(response.AcceptableRecoveryLag).IsEqualTo(-1L);
+        await Assert.That(response.TopologyDescriptionRequired).IsFalse();
     }
 
     [Test]
