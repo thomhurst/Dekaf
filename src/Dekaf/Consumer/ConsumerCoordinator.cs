@@ -234,8 +234,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // concurrent callers without allocating a scope object on each poll cycle.
     private int _foregroundPollActivityCount;
     private volatile SubscriptionState _subscriptionState = SubscriptionState.Empty;
-    // The SubscriptionState.Version a heartbeat request last sent; a request sends the subscription
-    // when the current snapshot's version differs (it changed since).
+    // The SubscriptionState.Version the broker last acknowledged: a heartbeat that carried it got a
+    // successful response. A request sends the subscription when the current snapshot's version
+    // differs (it changed since), so a change whose heartbeat fails is sent again.
     private int _lastSentSubscriptionVersion;
 
     /// <summary>
@@ -1265,13 +1266,27 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     /// <summary>
     /// What a heartbeat request carries: the generation stamp, whether the subscription changed
-    /// since it was last sent (consuming that change), and the subscription itself.
+    /// since the broker last acknowledged it, the subscription itself, and the versions that
+    /// <see cref="MarkSubscriptionSent"/> needs once the request succeeds. Reading does not consume
+    /// the change: a request that fails leaves it pending for the next one.
     /// </summary>
-    private (int Generation, bool Changed, string? Regex, StringSet? Topics) ReadSubscriptionForRequest()
+    private (int Generation, bool Changed, string? Regex, StringSet? Topics, int Version, int LastSent)
+        ReadSubscriptionForRequest()
     {
+        var lastSent = Volatile.Read(ref _lastSentSubscriptionVersion);
         var state = _subscriptionState;
-        var lastSent = Interlocked.Exchange(ref _lastSentSubscriptionVersion, state.Version);
-        return (state.Generation, lastSent != state.Version, state.Regex, state.Topics);
+        return (state.Generation, lastSent != state.Version, state.Regex, state.Topics, state.Version, lastSent);
+    }
+
+    /// <summary>
+    /// Records that a request carrying subscription <paramref name="version"/> got a successful
+    /// response. Only advances from the value read when the request was built, so a newer change
+    /// already acknowledged is never moved back; a lost race only resends the subscription.
+    /// </summary>
+    private void MarkSubscriptionSent(int version, int lastSent)
+    {
+        if (version != lastSent)
+            Interlocked.CompareExchange(ref _lastSentSubscriptionVersion, version, lastSent);
     }
 
     // Runs inside UpdateSubscription once the new topics are visible to heartbeat requests.
@@ -1279,7 +1294,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     internal (int Generation, bool Changed, StringSet? Topics) ReadSubscriptionForRequestForTest()
     {
-        var (generation, changed, _, topics) = ReadSubscriptionForRequest();
+        var (generation, changed, _, topics, _, _) = ReadSubscriptionForRequest();
         return (generation, changed, topics);
     }
 
@@ -2818,6 +2833,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? ownedTopicPartitions;
         string? subscribedTopicRegex;
         int requestSubscriptionGeneration;
+        int sentSubscriptionVersion;
+        int lastSentSubscriptionVersion;
         using (var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
                    coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
                    .ConfigureAwait(false))
@@ -2893,16 +2910,19 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             ownedTopicPartitions =
                 isInitial ? [] : GetOwnedTopicPartitionsForHeartbeat(assignmentVersion);
 
-            // Atomically snapshot and clear the subscription-changed flag to prevent a race where
-            // a concurrent EnsureActiveGroupConsumerProtocolAsync sets new topics + flag=true,
-            // but this heartbeat clears the flag after sending the old topics.
+            // Snapshot the subscription once, so the topics, regex, stamp and version this request
+            // carries all describe the same subscription even if it changes concurrently. The
+            // change is marked sent only after a successful response (below): a request that times
+            // out or gets an error leaves it pending, and the next heartbeat sends it again instead
+            // of null ("unchanged"), which would leave the broker on the old subscription.
             // Always send topics on initial/re-join — KIP-848 requires SubscribedTopicNames to be
-            // non-null when joining. The flag must still be cleared to avoid a stale re-send later.
-            // Read before the subscription (UpdateSubscription writes it after), so the stamp never
-            // claims a newer subscription than the request carries.
-            var (stamp, subscriptionChanged, currentSubscribedTopicRegex, currentSubscribedTopics) =
+            // non-null when joining.
+            var (stamp, subscriptionChanged, currentSubscribedTopicRegex, currentSubscribedTopics,
+                    subscriptionVersion, lastSentVersion) =
                 ReadSubscriptionForRequest();
             requestSubscriptionGeneration = stamp;
+            sentSubscriptionVersion = subscriptionVersion;
+            lastSentSubscriptionVersion = lastSentVersion;
             var subscriptionShouldBeSent = isInitial || subscriptionChanged;
             var subscribedTopics = subscriptionShouldBeSent ? currentSubscribedTopics?.ToList() : null;
             subscribedTopicRegex = subscriptionShouldBeSent && version >= 1
@@ -2926,6 +2946,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             response = await connection.SendWithClientTelemetryAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
                 request, version, TelemetryMetricCollector, cancellationToken).ConfigureAwait(false);
         }
+
+        // The broker accepted the subscription this request carried, even when the response is
+        // discarded below because the local membership moved on.
+        if (response.ErrorCode == ErrorCode.None)
+            MarkSubscriptionSent(sentSubscriptionVersion, lastSentSubscriptionVersion);
 
         // The broker sends an assignment only when it changes. One that names a topic this
         // client's metadata does not know yet (created after the last refresh) is published

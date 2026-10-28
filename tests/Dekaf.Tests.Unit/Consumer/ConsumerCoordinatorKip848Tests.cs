@@ -2300,6 +2300,80 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(requests[0].SubscribedTopicRegex).IsNull();
     }
 
+    /// <summary>
+    /// A subscription change whose first steady heartbeat fails (an error response or a transport
+    /// failure the heartbeat loop rides out) is sent again on the next heartbeat instead of being
+    /// reported as unchanged, and is no longer sent once the broker acknowledged it.
+    /// </summary>
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ConsumerProtocol_WhenStableAndTopicsChange_FailedHeartbeatResendsUpdatedTopics(
+        bool transportFailure)
+    {
+        SetupFindCoordinator();
+
+        var requests = new List<ConsumerGroupHeartbeatRequest>();
+        var failNext = false;
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var request = ci.Arg<ConsumerGroupHeartbeatRequest>()!;
+                requests.Add(request);
+                var fail = failNext;
+                failNext = false;
+                if (fail && transportFailure)
+                    throw new TimeoutException("Heartbeat request timed out");
+
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = fail ? ErrorCode.NotCoordinator : ErrorCode.None,
+                    ErrorMessage = fail ? "Coordinator moved" : null,
+                    MemberId = request.MemberId.Length == 0 ? "member-1" : request.MemberId,
+                    MemberEpoch = request.MemberEpoch == 0 ? 1 : request.MemberEpoch,
+                    HeartbeatIntervalMs = 60000
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        requests.Clear();
+
+        await coordinator.EnsureActiveGroupAsync(
+            new HashSet<string> { "test-topic", "orders" },
+            CancellationToken.None);
+
+        failNext = true;
+        Exception? caught = null;
+        try
+        {
+            await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+        }
+        catch (Exception ex)
+        {
+            caught = ex;
+        }
+
+        await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+        await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(requests).Count().IsEqualTo(3);
+        await Assert.That(requests[0].SubscribedTopicNames).IsNotNull();
+        await Assert.That(requests[0].SubscribedTopicNames!).Contains("orders");
+        await Assert.That(requests[1].SubscribedTopicNames).IsNotNull();
+        await Assert.That(requests[1].SubscribedTopicNames!).Contains("test-topic");
+        await Assert.That(requests[1].SubscribedTopicNames!).Contains("orders");
+        await Assert.That(requests[2].SubscribedTopicNames).IsNull();
+        await Assert.That(requests[2].SubscribedTopicRegex).IsNull();
+    }
+
     [Test]
     public async Task ConsumerProtocol_SteadyHeartbeat_SendsOwnedPartitionsOnlyWhenAssignmentChanged()
     {
