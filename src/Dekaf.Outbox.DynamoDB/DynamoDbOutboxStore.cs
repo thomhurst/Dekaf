@@ -42,8 +42,9 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
     private const int MaxReleaseAttempts = 3;
 
     /// <summary>
-    /// Gaps probed per fetch. Many writers in flight leave many gaps in one batch; the bound
-    /// keeps the probes a fraction of the fetch they guard.
+    /// Gaps probed per read. Many writers in flight leave many gaps in one batch; the bound
+    /// keeps the probes a fraction of the fetch they guard. The rows behind the first gap
+    /// left unprobed wait for the next fetch; they are never returned unchecked.
     /// </summary>
     private const int MaxGapProbes = 8;
 
@@ -334,9 +335,20 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
         ArgumentOutOfRangeException.ThrowIfLessThan(maxCount, 1);
 
         var messages = await QueryBatchAsync(bucket, maxCount, cancellationToken).ConfigureAwait(false);
-        // Once: the read that follows a committed write sees all of it.
-        if (await HasLateArrivalAsync(bucket, messages, cancellationToken).ConfigureAwait(false))
+        var (inOrder, lateArrival) = await CountInOrderAsync(bucket, messages, cancellationToken).ConfigureAwait(false);
+        if (lateArrival)
+        {
+            // Read once more: the read that follows a committed write sees all of it. Another
+            // transaction can commit into a gap during that read too, so it is checked the
+            // same way, and a second late arrival cuts the batch short instead of a third read.
             messages = await QueryBatchAsync(bucket, maxCount, cancellationToken).ConfigureAwait(false);
+            (inOrder, _) = await CountInOrderAsync(bucket, messages, cancellationToken).ConfigureAwait(false);
+        }
+
+        // Only the rows in front of the first gap that is unprobed or holds a late arrival.
+        // The next fetch probes that gap again, from the baseline the marked prefix leaves.
+        if (inOrder < messages.Count)
+            messages.RemoveRange(inOrder, messages.Count - inOrder);
 
         return messages;
     }
@@ -379,8 +391,8 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
     }
 
     /// <summary>
-    /// Finds a message that committed into a gap of <paramref name="messages"/> while the
-    /// query was running.
+    /// Counts the leading <paramref name="messages"/> that no message committed in front of
+    /// while the query was running, and reports whether a probe found such a message.
     /// </summary>
     /// <remarks>
     /// A query is only read-committed against <c>TransactWriteItems</c>: it can pass the
@@ -390,8 +402,11 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
     /// one cheap range probe, and only a probe that finds a message costs a second fetch.
     /// A writer that has reserved but not committed is outside this: its message does not
     /// exist yet, and writers that do not serialize their commits have no order to keep.
+    /// The count stops at a gap the probe budget does not reach: an unprobed gap proves
+    /// nothing about the rows behind it.
     /// </remarks>
-    private async Task<bool> HasLateArrivalAsync(int bucket, List<OutboxMessage> messages, CancellationToken cancellationToken)
+    private async Task<(int InOrder, bool LateArrival)> CountInOrderAsync(
+        int bucket, List<OutboxMessage> messages, CancellationToken cancellationToken)
     {
         // The baseline is the last message this store deleted, not the last it returned: a
         // batch that was returned but not marked is read again, and a transaction can commit
@@ -402,20 +417,23 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
         // is merely a wider gap.
         var expected = bucket < _lastSequence.Length && _lastSequence[bucket] > 0 ? _lastSequence[bucket] + 1 : 1;
         var probes = 0;
-        foreach (var message in messages)
+        for (var index = 0; index < messages.Count; index++)
         {
+            var message = messages[index];
             if (message.Id > expected)
             {
+                // The first gap is always within budget, so a batch keeps at least one row
+                // unless a probe finds a late arrival in front of all of them.
                 if (++probes > MaxGapProbes)
-                    return false;
+                    return (index, false);
                 if (await ExistsBetweenAsync(bucket, expected, message.Id - 1, cancellationToken).ConfigureAwait(false))
-                    return true;
+                    return (index, true);
             }
 
             expected = Math.Max(expected, message.Id + 1);
         }
 
-        return false;
+        return (messages.Count, false);
     }
 
     private async Task<bool> ExistsBetweenAsync(int bucket, long first, long last, CancellationToken cancellationToken)
