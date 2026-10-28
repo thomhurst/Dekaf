@@ -137,7 +137,7 @@ using Dekaf.Compression.Lz4;
 
 CompressionCodecRegistry.Default.AddLz4();
 
-// Maximize throughput (batching, compression, relaxed durability)
+// Maximize throughput (batching, compression)
 var highThroughputProducer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForHighThroughput()
