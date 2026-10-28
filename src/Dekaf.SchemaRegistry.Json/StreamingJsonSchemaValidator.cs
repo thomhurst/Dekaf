@@ -2671,8 +2671,9 @@ internal sealed class SchemaCompiler : IDisposable
             value.Contains("draft-06", StringComparison.OrdinalIgnoreCase) ||
             value.Contains("draft-07", StringComparison.OrdinalIgnoreCase))
             return SchemaDialect.Draft7;
-        if (value.Contains("2019-09", StringComparison.OrdinalIgnoreCase) ||
-            value.Contains("2020-12", StringComparison.OrdinalIgnoreCase))
+        if (value.Contains("2019-09", StringComparison.OrdinalIgnoreCase))
+            return SchemaDialect.Draft201909;
+        if (value.Contains("2020-12", StringComparison.OrdinalIgnoreCase))
             return SchemaDialect.Draft202012;
 
         throw new NotSupportedException($"JSON Schema dialect '{value}' is not supported.");
@@ -2716,6 +2717,7 @@ internal sealed class SchemaCompiler : IDisposable
 internal enum SchemaDialect : byte
 {
     Draft7,
+    Draft201909,
     Draft202012
 }
 
