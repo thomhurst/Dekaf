@@ -5,7 +5,7 @@ using Dekaf.Producer;
 namespace Dekaf.Tests.Integration;
 
 /// <summary>
-/// Integration tests for cooperative sticky rebalancing and incremental assign/unassign.
+/// Integration tests for KIP-848 incremental group rebalancing and manual incremental assign/unassign.
 /// </summary>
 [Category("ConsumerGroup")]
 public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
@@ -148,7 +148,7 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
         }
 
         // First consumer joins
-        // CooperativeSticky is the default partition assignment strategy
+        // The KIP-848 group coordinator assigns partitions incrementally on the server
         await using var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)

@@ -1379,6 +1379,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             ThrowIfAutoCommitAdvancementPendingUnderLock();
+            // Manual assignment replaces any subscription, as KafkaConsumer.IncrementalAssign does.
+            _subscriptionPattern = null;
+            _subscription.Clear();
             var changed = false;
             foreach (var offset in partitions)
             {
@@ -1408,6 +1411,13 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             ThrowIfAutoCommitAdvancementPendingUnderLock();
+            if (_subscriptionPattern is not null || _subscription.Count != 0)
+            {
+                throw new InvalidOperationException(
+                    $"{nameof(IncrementalUnassign)} applies only to manually assigned partitions and cannot be used " +
+                    "while the consumer is subscribed. Call Unsubscribe to leave the group.");
+            }
+
             var changed = false;
             foreach (var partition in partitions)
             {

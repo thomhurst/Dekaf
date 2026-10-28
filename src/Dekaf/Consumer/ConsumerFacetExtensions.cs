@@ -28,7 +28,8 @@ public static class ConsumerFacetExtensions
     }
 
     /// <summary>
-    /// Incrementally adds partitions to the current assignment.
+    /// Manually adds partitions to the current assignment. Replaces any subscription and leaves the
+    /// group; see <see cref="IConsumerPartitions.IncrementalAssign"/>.
     /// </summary>
     public static void IncrementalAssign<TKey, TValue>(
         this IKafkaConsumer<TKey, TValue> consumer,
@@ -39,7 +40,8 @@ public static class ConsumerFacetExtensions
     }
 
     /// <summary>
-    /// Incrementally removes partitions from the current assignment.
+    /// Manually removes partitions from the current assignment. Throws while the consumer is
+    /// subscribed; see <see cref="IConsumerPartitions.IncrementalUnassign"/>.
     /// </summary>
     public static void IncrementalUnassign<TKey, TValue>(
         this IKafkaConsumer<TKey, TValue> consumer,
