@@ -419,8 +419,10 @@ public sealed class DynamoDbOutboxStoreTests
                 1 => new QueryResponse { Items = [Message(11)] },
                 2 => new QueryResponse { Count = 1 },
                 3 => new QueryResponse { Items = [Message(10), Message(11)] },
+                // The second read is checked too, and nothing committed in front of 10.
+                4 => new QueryResponse { Count = 0 },
                 // Once the first batch is marked, the bucket has a baseline again.
-                4 => new QueryResponse { Items = [Message(12)] },
+                5 => new QueryResponse { Items = [Message(12)] },
                 _ => throw new InvalidOperationException("A contiguous batch needs no probe.")
             };
         });
@@ -436,8 +438,9 @@ public sealed class DynamoDbOutboxStoreTests
         await Assert.That(string.Join(',', first.Select(message => message.Id))).IsEqualTo("10,11");
         await Assert.That(queries[1].ExpressionAttributeValues[":first"].S).IsEqualTo("0000000000000000001");
         await Assert.That(queries[1].ExpressionAttributeValues[":last"].S).IsEqualTo("0000000000000000010");
+        await Assert.That(queries[3].ExpressionAttributeValues[":last"].S).IsEqualTo("0000000000000000009");
         await Assert.That(string.Join(',', second.Select(message => message.Id))).IsEqualTo("12");
-        await Assert.That(queries.Count).IsEqualTo(4);
+        await Assert.That(queries.Count).IsEqualTo(5);
     }
 
     [Test]
@@ -518,8 +521,66 @@ public sealed class DynamoDbOutboxStoreTests
 
         var batch = await store.GetNextBatchAsync(4, 100);
 
-        await Assert.That(batch.Count).IsEqualTo(40);
+        // The rows behind the ninth gap wait for the next fetch, which probes from there.
+        await Assert.That(batch.Count).IsEqualTo(9);
+        await Assert.That(batch[^1].Id).IsEqualTo(17);
         await Assert.That(probes).IsEqualTo(8);
+    }
+
+    [Test]
+    public async Task Fetch_StopsAtTheNinthGap_BecauseAnUnprobedGapCanHoldALateArrival()
+    {
+        var client = Substitute.For<IAmazonDynamoDB>();
+        var queries = new List<QueryRequest>();
+        client.QueryAsync(Arg.Any<QueryRequest>(), Arg.Any<CancellationToken>()).Returns(call =>
+        {
+            queries.Add(call.Arg<QueryRequest>());
+            return queries.Count switch
+            {
+                // Abandoned reservations left 1, 3, ..., 15 empty. A transaction wrote 17 and
+                // 18; the query passed position 17 before the commit and still returned 18.
+                1 => new QueryResponse { Items = [.. Enumerable.Range(1, 9).Select(index => Message(index * 2))] },
+                <= 9 => new QueryResponse { Count = 0 },
+                _ => throw new InvalidOperationException("The ninth gap is past the probe budget.")
+            };
+        });
+        var store = new DynamoDbOutboxStore(client, Options, new FixedClock());
+
+        var batch = await store.GetNextBatchAsync(4, 100);
+
+        // 18 is not published ahead of 17: it waits behind the gap no probe has checked.
+        await Assert.That(string.Join(',', batch.Select(message => message.Id))).IsEqualTo("2,4,6,8,10,12,14,16");
+        await Assert.That(queries.Count).IsEqualTo(9);
+    }
+
+    [Test]
+    public async Task Fetch_ChecksTheSecondRead_BecauseAnotherTransactionCanCommitIntoItsGaps()
+    {
+        var client = Substitute.For<IAmazonDynamoDB>();
+        var queries = new List<QueryRequest>();
+        client.QueryAsync(Arg.Any<QueryRequest>(), Arg.Any<CancellationToken>()).Returns(call =>
+        {
+            queries.Add(call.Arg<QueryRequest>());
+            return queries.Count switch
+            {
+                // A transaction wrote 2 and 3; the first read returned only 3.
+                1 => new QueryResponse { Items = [Message(1), Message(3)] },
+                2 => new QueryResponse { Count = 1 },
+                // Another transaction wrote 4 and 5 during the second read, which returned 5
+                // but not 4.
+                3 => new QueryResponse { Items = [Message(1), Message(2), Message(3), Message(5)] },
+                4 => new QueryResponse { Count = 1 },
+                _ => throw new InvalidOperationException("A second late arrival needs no third read.")
+            };
+        });
+        var store = new DynamoDbOutboxStore(client, Options, new FixedClock());
+
+        var batch = await store.GetNextBatchAsync(4, 100);
+
+        await Assert.That(string.Join(',', batch.Select(message => message.Id))).IsEqualTo("1,2,3");
+        await Assert.That(queries.Count).IsEqualTo(4);
+        await Assert.That(queries[3].ExpressionAttributeValues[":first"].S).IsEqualTo("0000000000000000004");
+        await Assert.That(queries[3].ExpressionAttributeValues[":last"].S).IsEqualTo("0000000000000000004");
     }
 
     [Test]
