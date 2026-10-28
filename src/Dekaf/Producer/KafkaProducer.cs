@@ -1528,7 +1528,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             // Success: record metrics and set activity tags. Span status stays unset —
             // OTel says instrumentation should not set Ok on successful spans.
             // No body-size tag: RecordMetadata carries no per-record sizes.
-            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationPartitionId, metadata.Partition);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationPartitionId, Diagnostics.DekafDiagnostics.PartitionIdTagValue(metadata.Partition));
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingKafkaOffset, metadata.Offset);
 
             EmitProduceSuccessMetrics(topic, startTimestamp);

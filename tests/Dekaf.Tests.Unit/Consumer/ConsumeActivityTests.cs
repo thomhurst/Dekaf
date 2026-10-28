@@ -59,7 +59,7 @@ public sealed class ConsumeActivityTests
         using var listener = CreateListener();
 
         await using var consumer = CreateConsumer();
-        using var pending = PendingFetchData.Create("orders", partitionIndex: 0, batches: Array.Empty<RecordBatch>());
+        using var pending = PendingFetchData.Create("orders", partitionIndex: 3, batches: Array.Empty<RecordBatch>());
 
         using var activity = InvokeStartConsumeActivity(
             consumer, pending, offset: 9, isTombstone: false, isProcessSpan: false);
@@ -73,6 +73,8 @@ public sealed class ConsumeActivityTests
         await Assert.That(activity.GetTagItem("messaging.operation.type")).IsEqualTo("receive");
         await Assert.That(activity.GetTagItem("messaging.message.body.size")).IsNull();
         await Assert.That(activity.GetTagItem("messaging.kafka.offset")).IsEqualTo(9L);
+        // The messaging semconv types messaging.destination.partition.id as a string.
+        await Assert.That(activity.GetTagItem("messaging.destination.partition.id")).IsEqualTo("3");
     }
 
     private static ActivityListener CreateListener()

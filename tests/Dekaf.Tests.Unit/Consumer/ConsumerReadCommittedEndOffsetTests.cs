@@ -71,8 +71,16 @@ public sealed class ConsumerReadCommittedEndOffsetTests
         positions[Partition0] = Position;
 
         var measurement = consumer.ObserveConsumerLag().Single();
+        object? partitionId = null;
+        foreach (var tag in measurement.Tags)
+        {
+            if (tag.Key == "messaging.destination.partition.id")
+                partitionId = tag.Value;
+        }
 
         await Assert.That(measurement.Value).IsEqualTo(expectedLag);
+        // The messaging semconv types messaging.destination.partition.id as a string.
+        await Assert.That(partitionId).IsEqualTo("0");
     }
 
     private static async Task AssertEof(KafkaConsumer<string, string> consumer, bool expectEof)

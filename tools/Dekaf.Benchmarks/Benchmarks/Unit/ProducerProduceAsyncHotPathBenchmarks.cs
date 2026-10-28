@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Engines;
@@ -20,6 +21,8 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// timed region measure the cross-thread handoff and thread scheduling, which drifted beyond the
 /// gate tolerance between runs of identical code (#3864). <see cref="Transactional"/> adds the
 /// transactional admission check (a producer with a TransactionalId in an open transaction).
+/// <see cref="Tracing"/> samples every send span, so each produce also runs the traced completion
+/// path that tags the span with the delivered partition and offset.
 /// Uses only APIs that exist on main so the gate compares both revisions.
 /// </summary>
 [MemoryDiagnoser]
@@ -35,12 +38,16 @@ public class ProducerProduceAsyncHotPathBenchmarks
     private KafkaProducer<string, string> _producer = null!;
     private RecordAccumulator _accumulator = null!;
     private ProducerMessage<string, string>[] _messages = null!;
+    private ActivityListener? _activityListener;
 
     [Params(1, 12)]
     public int PartitionCount { get; set; }
 
     [Params(false, true)]
     public bool Transactional { get; set; }
+
+    [Params(false, true)]
+    public bool Tracing { get; set; }
 
     [GlobalSetup]
     public async Task Setup()
@@ -63,6 +70,16 @@ public class ProducerProduceAsyncHotPathBenchmarks
             },
             Serializers.String,
             Serializers.String);
+
+        if (Tracing)
+        {
+            _activityListener = new ActivityListener
+            {
+                ShouldListenTo = static source => source.Name == Diagnostics.DekafDiagnostics.ActivitySourceName,
+                Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData
+            };
+            ActivitySource.AddActivityListener(_activityListener);
+        }
 
         await _producer.StopSenderLoopsForTestingAsync().ConfigureAwait(false);
         SeedMetadata(_producer, PartitionCount);
@@ -91,6 +108,7 @@ public class ProducerProduceAsyncHotPathBenchmarks
     public async Task Cleanup()
     {
         await _producer.DisposeAsync().ConfigureAwait(false);
+        _activityListener?.Dispose();
     }
 
     [Benchmark(OperationsPerInvoke = ProducesPerInvoke)]
