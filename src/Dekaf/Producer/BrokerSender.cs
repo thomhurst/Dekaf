@@ -178,6 +178,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly Action? _onPipelinedResponseAcquired;
     private readonly Action? _onWaveCoalesceStarted;
     private readonly Action? _onIdleWaitStarted;
+    // Test hook: the idle branch is about to await the pending fire-and-forget write.
+    private readonly Action? _onIdlePendingSendAwaitStarted;
     private readonly Action<TopicPartition>? _onSequenceRestartHeld;
     // Test hook: a re-stamped batch registered its new entry and has not yet completed its old one.
     private readonly Action<TopicPartition>? _onRestampRegistered;
@@ -1067,7 +1069,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Action? onIdleWaitStarted = null,
         Action<TopicPartition>? onSequenceRestartHeld = null,
         Channel<SendLoopEvent>? eventChannel = null,
-        Action<TopicPartition>? onRestampRegistered = null)
+        Action<TopicPartition>? onRestampRegistered = null,
+        Action? onIdlePendingSendAwaitStarted = null)
     {
         _unackedBudget = unackedBudget;
         _brokerId = brokerId;
@@ -1094,6 +1097,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _onPipelinedResponseAcquired = onPipelinedResponseAcquired;
         _onWaveCoalesceStarted = onWaveCoalesceStarted;
         _onIdleWaitStarted = onIdleWaitStarted;
+        _onIdlePendingSendAwaitStarted = onIdlePendingSendAwaitStarted;
         _onSequenceRestartHeld = onSequenceRestartHeld;
         _onRestampRegistered = onRestampRegistered;
         _disposalDrainTimeout = disposalDrainTimeout ?? DisposalDrainTimeout;
@@ -2266,6 +2270,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 {
                     if (hasPendingSingleConnectionFireAndForgetSend && !eventReader.TryPeek(out _))
                     {
+                        _onIdlePendingSendAwaitStarted?.Invoke();
                         await AwaitPendingSingleConnectionFireAndForgetSendAsync().ConfigureAwait(false);
 
                         // A failed write queues its batches for retry without posting an event and
