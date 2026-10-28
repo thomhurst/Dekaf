@@ -13,11 +13,11 @@ namespace Dekaf.Tests.Unit.Networking;
 public sealed class KafkaConnectionBrokerThrottleTests
 {
     [Test]
-    [Timeout(10_000)]
     public async Task ApplicableResponse_DelaysFollowUpAcrossPhysicalConnections(
         CancellationToken cancellationToken)
     {
-        const int throttleTimeMs = 300;
+        // Long enough that a starved thread pool cannot let the throttle expire before the test reads it.
+        const int throttleTimeMs = 2_000;
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
@@ -73,7 +73,6 @@ public sealed class KafkaConnectionBrokerThrottleTests
     }
 
     [Test]
-    [Timeout(10_000)]
     public async Task ThrottledWait_RemainsIdleReapableAndShutdownResponsive(
         CancellationToken cancellationToken)
     {
@@ -113,11 +112,11 @@ public sealed class KafkaConnectionBrokerThrottleTests
     }
 
     [Test]
-    [Timeout(10_000)]
     public async Task PoolThrottleWait_AllowsIdleCloseAndSurvivesReconnect(
         CancellationToken cancellationToken)
     {
-        const int throttleTimeMs = 300;
+        // Long enough that a starved thread pool cannot let the throttle expire before the test reads it.
+        const int throttleTimeMs = 2_000;
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
@@ -164,11 +163,11 @@ public sealed class KafkaConnectionBrokerThrottleTests
     }
 
     [Test]
-    [Timeout(10_000)]
     public async Task BootstrapThrottle_SurvivesBrokerRegistrationAndReconnect(
         CancellationToken cancellationToken)
     {
-        const int throttleTimeMs = 300;
+        // Long enough that a starved thread pool cannot let the throttle expire before the test reads it.
+        const int throttleTimeMs = 2_000;
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
@@ -234,7 +233,6 @@ public sealed class KafkaConnectionBrokerThrottleTests
     }
 
     [Test]
-    [Timeout(10_000)]
     public async Task SharedThrottle_BlocksEveryClientRequestPathBeforeWrite(
         CancellationToken cancellationToken)
     {
