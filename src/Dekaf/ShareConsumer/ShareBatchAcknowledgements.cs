@@ -18,6 +18,7 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
     private readonly Action<TopicPartition, long>? _onRenewal;
     private readonly Action? _onReplay;
     private int _pendingStorageCount;
+    private int _gapPartitionCount;
     private bool _disposed;
 
     internal ShareBatchAcknowledgements(Action<TopicPartition, long>? onRenewal = null, Action? onReplay = null)
@@ -30,7 +31,7 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
     internal void RecordReplay() => _onReplay?.Invoke();
     internal int RetainedBatchCount => _storages.Count;
 
-    internal bool HasPending => _pendingStorageCount != 0;
+    internal bool HasPending => _pendingStorageCount != 0 || _gapPartitionCount != 0;
 
     internal void AddPendingStorage() => _pendingStorageCount++;
     internal void RemovePendingStorage() => _pendingStorageCount--;
@@ -55,6 +56,21 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
             AddPendingStorage();
         _storages.Add(storage);
         partition.Add(storage);
+    }
+
+    /// <summary>
+    /// Queues acquired offsets without a data record (control records or compacted offsets)
+    /// as <see cref="AcknowledgeType.Gap"/> for the next acknowledgement boundary.
+    /// </summary>
+    internal void AddGap(TopicPartition topicPartition, long firstOffset, long lastOffset)
+    {
+        ThrowIfDisposed();
+        if (!_partitions.TryGetValue(topicPartition, out var partition))
+        {
+            partition = PartitionIndex.Rent(this);
+            _partitions.Add(topicPartition, partition);
+        }
+        partition.AddGap(firstOffset, lastOffset);
     }
 
     internal Dictionary<TopicPartition, List<AcknowledgementBatchData>> Flush(bool releaseImplicit = false)
@@ -229,12 +245,74 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
         private int _pendingCount;
         private long _firstPending = long.MaxValue;
         private long _lastPending = long.MinValue;
+        // Gaps have no batch entry. They are sent once and re-queued only when that send fails.
+        private List<AcknowledgementBatchData>? _gaps;
 
         internal static PartitionIndex Rent(ShareBatchAcknowledgements<TKey, TValue> owner)
         {
             var index = s_pool.Rent();
             index.Owner = owner;
             return index;
+        }
+
+        internal void AddGap(long firstOffset, long lastOffset)
+        {
+            var gaps = _gaps ??= [];
+            if (gaps.Count == 0)
+            {
+                Owner._gapPartitionCount++;
+            }
+            else if (firstOffset <= gaps[^1].LastOffset + 1)
+            {
+                MergeGap(gaps, firstOffset, lastOffset);
+                return;
+            }
+            gaps.Add(new AcknowledgementBatchData(firstOffset, lastOffset, AcknowledgementBatchData.GapTypes));
+        }
+
+        // The parser queues gaps in offset order, but a failed send re-queues its gaps behind
+        // newer ones, and an expired acquisition can bring the same offsets back. The broker
+        // rejects overlapping batches, so keep the ranges sorted and disjoint.
+        private static void MergeGap(List<AcknowledgementBatchData> gaps, long firstOffset, long lastOffset)
+        {
+            var start = gaps.Count;
+            while (start > 0 && gaps[start - 1].LastOffset + 1 >= firstOffset)
+                start--;
+            var end = start;
+            while (end < gaps.Count && gaps[end].FirstOffset <= lastOffset + 1)
+            {
+                firstOffset = Math.Min(firstOffset, gaps[end].FirstOffset);
+                lastOffset = Math.Max(lastOffset, gaps[end].LastOffset);
+                end++;
+            }
+            if (end == start + 1)
+            {
+                gaps[start] = new AcknowledgementBatchData(firstOffset, lastOffset, AcknowledgementBatchData.GapTypes);
+                return;
+            }
+            gaps.RemoveRange(start, end - start);
+            gaps.Insert(start, new AcknowledgementBatchData(firstOffset, lastOffset, AcknowledgementBatchData.GapTypes));
+        }
+
+        private List<AcknowledgementBatchData>? TakeGaps(List<AcknowledgementBatchData>? batches)
+        {
+            if (_gaps is not { Count: > 0 } gaps)
+                return batches;
+            Owner._gapPartitionCount--;
+            if (batches is null)
+            {
+                // The request owns the list from here; a failed send re-queues its gaps.
+                _gaps = null;
+                batches = gaps;
+            }
+            else
+            {
+                batches.AddRange(gaps);
+                gaps.Clear();
+            }
+            if (batches.Count > 1)
+                batches.Sort(static (left, right) => left.FirstOffset.CompareTo(right.FirstOffset));
+            return batches;
         }
 
         internal void AddPending(long offset)
@@ -340,7 +418,7 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
         internal List<AcknowledgementBatchData>? Flush(bool releaseImplicit)
         {
             if (_pendingCount == 0)
-                return null;
+                return TakeGaps(null);
             List<AcknowledgementBatchData>? batches = null;
             var index = LowerBound(_firstPending);
             var lastOffset = _lastPending;
@@ -351,21 +429,18 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
                 if (index == _count || _records[index].Offset > lastOffset)
                     break;
                 var first = index;
-                var lastPending = index;
+                // A zero type is GAP on the wire, which archives the record. End the run at
+                // the first entry without a pending disposition instead of spanning it.
                 while (index + 1 < _count && _records[index].Offset != long.MaxValue
                     && _records[index + 1].Offset <= lastOffset
-                    && _records[index + 1].Offset == _records[index].Offset + 1)
-                {
+                    && _records[index + 1].Offset == _records[index].Offset + 1
+                    && Pending(index + 1) != 0)
                     index++;
-                    if (Pending(index) != 0)
-                        lastPending = index;
-                }
+                var lastPending = index;
                 var types = new byte[lastPending - first + 1];
                 for (var item = first; item <= lastPending; item++)
                 {
                     var type = Pending(item);
-                    if (type == 0)
-                        continue;
                     if (type == ShareBatchStorage<TKey, TValue>.ImplicitDelivery)
                         type = (byte)(releaseImplicit ? AcknowledgeType.Release : AcknowledgeType.Accept);
                     types[item - first] = type;
@@ -376,11 +451,17 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
                     _records[first].Offset, _records[lastPending].Offset, types));
                 index++;
             }
-            return batches;
+            return TakeGaps(batches);
         }
 
         internal void Complete(AcknowledgementBatchData batch, bool successful)
         {
+            if (batch.IsGapOnly)
+            {
+                if (!successful)
+                    AddGap(batch.FirstOffset, batch.LastOffset);
+                return;
+            }
             var index = LowerBound(batch.FirstOffset);
             while (index < _count && _records[index].Offset <= batch.LastOffset)
             {
@@ -518,6 +599,9 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
             _pendingCount = 0;
             _firstPending = long.MaxValue;
             _lastPending = long.MinValue;
+            if (_gaps is { Count: > 0 })
+                Owner._gapPartitionCount--;
+            _gaps = null;
             Owner = null!;
             s_pool.Return(this);
         }

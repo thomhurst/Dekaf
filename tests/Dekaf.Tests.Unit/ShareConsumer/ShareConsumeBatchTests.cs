@@ -148,8 +148,14 @@ public sealed class ShareConsumeBatchTests
         }
         var wire = tracker.Flush();
         var submitted = wire[new TopicPartition("batch", 0)];
-        await Assert.That(submitted).HasSingleItem();
-        await Assert.That(submitted[0].AcknowledgeTypes).IsEquivalentTo(new byte[] { 1, 0, 1 });
+        // Type 0 is GAP on the wire, which archives the record. Offset 101 must be absent.
+        await Assert.That(submitted.Count).IsEqualTo(2);
+        await Assert.That(submitted[0].FirstOffset).IsEqualTo(100);
+        await Assert.That(submitted[0].LastOffset).IsEqualTo(100);
+        await Assert.That(submitted[0].AcknowledgeTypes).IsEquivalentTo(new byte[] { 1 });
+        await Assert.That(submitted[1].FirstOffset).IsEqualTo(102);
+        await Assert.That(submitted[1].LastOffset).IsEqualTo(102);
+        await Assert.That(submitted[1].AcknowledgeTypes).IsEquivalentTo(new byte[] { 1 });
         tracker.ApplySuccessfulAcknowledgements(wire);
         batch.Dispose();
         tracker.Prune();
@@ -410,6 +416,30 @@ public sealed class ShareConsumeBatchTests
         await Assert.That(tracker.HasPending).IsFalse();
         await Assert.That(tracker.RetainedBatchCount).IsEqualTo(0);
         await Assert.That(() => batch.Acknowledge(record)).Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task Tracker_RequeuedGapsMergeWithOverlappingAndEarlierGaps()
+    {
+        using var tracker = new ShareBatchAcknowledgements<int, int>();
+        var partition = new TopicPartition("batch", 0);
+        tracker.AddGap(partition, 3, 3);
+        tracker.AddGap(partition, 10, 11);
+        var failed = tracker.Flush();
+        // The acquisitions expired, so the broker acquires the same offsets again and the
+        // parser queues them before the failed send's gaps come back.
+        tracker.AddGap(partition, 3, 4);
+        tracker.AddGap(partition, 8, 10);
+        tracker.RequeueAcknowledgements(failed);
+        tracker.AddGap(partition, 1, 1);
+
+        var wire = tracker.Flush()[partition];
+
+        // The broker rejects overlapping acknowledgement batches.
+        await Assert.That(wire.Select(static batch => (batch.FirstOffset, batch.LastOffset)))
+            .IsEquivalentTo(new (long, long)[] { (1, 1), (3, 4), (8, 11) });
+        foreach (var batch in wire)
+            await Assert.That(batch.IsGapOnly).IsTrue();
     }
 
     [Test]
@@ -716,8 +746,14 @@ public sealed class ShareConsumeBatchTests
         foreach (var record in replacement)
             replacement.Acknowledge(record, AcknowledgeType.Release);
         var wire = tracker.Flush();
-        await Assert.That(wire[original.TopicPartition][0].AcknowledgeTypes)
-            .IsEquivalentTo(new byte[] { 2, 0, 2, 0, 2, 0, 2 });
+        // The renewed odd offsets stay out of the payload; type 0 would archive them as gaps.
+        var released = wire[original.TopicPartition];
+        await Assert.That(released.Select(static batch => batch.FirstOffset)).IsEquivalentTo(new long[] { 100, 102, 104, 106 });
+        foreach (var batch in released)
+        {
+            await Assert.That(batch.LastOffset).IsEqualTo(batch.FirstOffset);
+            await Assert.That(batch.AcknowledgeTypes).IsEquivalentTo(new byte[] { 2 });
+        }
         tracker.ApplySuccessfulAcknowledgements(wire);
         replacement.Dispose();
 

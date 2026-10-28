@@ -63,9 +63,20 @@ internal sealed class AcknowledgementTracker
 
     // Subscription changes can relinquish whole acquired ranges without allocating one
     // explicit acknowledgement per undisclosed record. Explicit caller outcomes take priority.
+    // Gaps keep their outcome: releasing one would only make the broker acquire it again.
     internal void ReleaseUndeliveredRecords(TopicPartition tp, long firstOffset, long lastOffset)
     {
-        GetOrAddPartition(tp).TrackRange(firstOffset, lastOffset, AcknowledgeType.Release);
+        GetOrAddPartition(tp).TrackRangeAroundGaps(firstOffset, lastOffset, AcknowledgeType.Release);
+    }
+
+    /// <summary>
+    /// Tracks acquired offsets that carry no data record (control records or compacted
+    /// offsets). They are acknowledged as <see cref="AcknowledgeType.Gap"/> at the next
+    /// acknowledgement boundary in every acknowledgement mode.
+    /// </summary>
+    internal void TrackGapRecords(TopicPartition tp, long firstOffset, long lastOffset)
+    {
+        GetOrAddPartition(tp).TrackRange(firstOffset, lastOffset, AcknowledgeType.Gap);
     }
 
     /// <summary>
@@ -236,6 +247,14 @@ internal sealed class AcknowledgementTracker
 
             foreach (var batch in batches)
             {
+                // A gap batch can cover a large compacted hole. Gap tracking merges with any
+                // gap queued since the flush, so it needs no per-offset walk.
+                if (batch.IsGapOnly)
+                {
+                    partitionAcks.TrackRange(batch.FirstOffset, batch.LastOffset, AcknowledgeType.Gap);
+                    continue;
+                }
+
                 long? runStart = null;
                 long runEnd = 0;
                 var runType = AcknowledgeType.Accept;
@@ -306,12 +325,18 @@ internal sealed class AcknowledgementTracker
     private sealed class PartitionAcknowledgements
     {
         private readonly List<AckRange> _ranges = [];
+        // Gaps are kept apart from delivery ranges. The parser queues them ahead of the
+        // records it later delivers, so mixing them would turn every delivered record's
+        // append into an ordered insert. Allocated on the first gap: most partitions
+        // never see a control record or a compacted offset.
+        private List<AckRange>? _gaps;
         private Dictionary<long, AcknowledgeType>? _explicitAcks;
         internal PartitionAcknowledgements? Next;
 
         internal void Reset()
         {
             _ranges.Clear();
+            _gaps?.Clear();
             // Explicit dictionaries can be large and need not follow a pooled state to
             // another partition. Retain only the range scratch storage between flushes.
             _explicitAcks = null;
@@ -323,6 +348,11 @@ internal sealed class AcknowledgementTracker
                 return;
 
             var incoming = new AckRange(firstOffset, lastOffset, type);
+            if (type == AcknowledgeType.Gap)
+            {
+                TrackGap(incoming);
+                return;
+            }
 
             if (_ranges.Count == 0)
             {
@@ -344,6 +374,86 @@ internal sealed class AcknowledgementTracker
             }
 
             InsertRange(incoming);
+        }
+
+        internal void TrackRangeAroundGaps(long firstOffset, long lastOffset, AcknowledgeType type)
+        {
+            // Release paths are cold. Gap ranges are ordered and disjoint.
+            if (_gaps is null)
+            {
+                TrackRange(firstOffset, lastOffset, type);
+                return;
+            }
+
+            var next = firstOffset;
+            foreach (var gap in _gaps)
+            {
+                if (gap.LastOffset < next)
+                    continue;
+                if (gap.FirstOffset > lastOffset)
+                    break;
+                if (gap.FirstOffset > next)
+                    TrackRange(next, gap.FirstOffset - 1, type);
+                if (gap.LastOffset >= lastOffset)
+                    return;
+                next = gap.LastOffset + 1;
+            }
+
+            TrackRange(next, lastOffset, type);
+        }
+
+        private void TrackGap(AckRange incoming)
+        {
+            // Deliveries lie below the parser's gaps. Only a release recorded before the
+            // gap can cover it; the gap outcome wins there.
+            if (_ranges.Count != 0 && _ranges[^1].LastOffset >= incoming.FirstOffset)
+                RemoveFromRanges(incoming);
+
+            var gaps = _gaps ??= [];
+            // The parser walks offsets upwards, so gaps normally append.
+            if (gaps.Count == 0 || incoming.FirstOffset > gaps[^1].LastOffset)
+            {
+                if (gaps.Count != 0 && gaps[^1].LastOffset + 1 == incoming.FirstOffset)
+                    gaps[^1] = Merge(gaps[^1], incoming);
+                else
+                    gaps.Add(incoming);
+                return;
+            }
+
+            // Re-queued gaps after a failed commit can arrive out of order; merge every
+            // range they touch.
+            var index = 0;
+            while (index < gaps.Count && EndsBeforeWithGap(gaps[index].LastOffset, incoming.FirstOffset))
+                index++;
+            while (index < gaps.Count && TouchesOrOverlaps(gaps[index], incoming))
+            {
+                incoming = Merge(gaps[index], incoming);
+                gaps.RemoveAt(index);
+            }
+
+            gaps.Insert(index, incoming);
+        }
+
+        private void RemoveFromRanges(AckRange removed)
+        {
+            var index = 0;
+            while (index < _ranges.Count)
+            {
+                var current = _ranges[index];
+                if (!Overlaps(current, removed))
+                {
+                    if (current.FirstOffset > removed.LastOffset)
+                        return;
+                    index++;
+                    continue;
+                }
+
+                _ranges.RemoveAt(index);
+                if (current.FirstOffset < removed.FirstOffset)
+                    _ranges.Insert(index++, current with { LastOffset = removed.FirstOffset - 1 });
+                if (current.LastOffset > removed.LastOffset)
+                    _ranges.Insert(index++, current with { FirstOffset = removed.LastOffset + 1 });
+            }
         }
 
         private void InsertRange(AckRange incoming)
@@ -425,7 +535,27 @@ internal sealed class AcknowledgementTracker
             if (_explicitAcks is not null && _explicitAcks.ContainsKey(offset))
                 return true;
 
-            return ContainsOffsetInRanges(offset);
+            return IndexOf(_ranges, offset) >= 0 || (_gaps is not null && IndexOf(_gaps, offset) >= 0);
+        }
+
+        // Delivery and gap ranges are each ordered and disjoint, so a lookup is a binary search.
+        private static int IndexOf(List<AckRange> ranges, long offset)
+        {
+            var low = 0;
+            var high = ranges.Count - 1;
+            while (low <= high)
+            {
+                var mid = low + ((high - low) >> 1);
+                var range = ranges[mid];
+                if (offset < range.FirstOffset)
+                    high = mid - 1;
+                else if (offset > range.LastOffset)
+                    low = mid + 1;
+                else
+                    return mid;
+            }
+
+            return -1;
         }
 
         internal void SetExplicit(long offset, AcknowledgeType type)
@@ -436,13 +566,37 @@ internal sealed class AcknowledgementTracker
 
         internal List<AcknowledgementBatchData> BuildBatches(AcknowledgeType implicitDisposition, List<AcknowledgementBatchData>? scratch = null)
         {
-            var batches = scratch ?? new List<AcknowledgementBatchData>(_ranges.Count);
+            var batches = scratch ?? new List<AcknowledgementBatchData>(_ranges.Count + (_gaps?.Count ?? 0));
+
+            // Explicit outcomes are sorted once. Each range then reads only the outcomes
+            // inside it, so a flush is O((N + R + G) log N) rather than O(N x (R + G)) when
+            // transaction markers split the delivered offsets into many ranges.
+            KeyValuePair<long, AcknowledgeType>[]? explicitAcks = null;
+            bool[]? applied = null;
+            if (_explicitAcks is not null)
+            {
+                explicitAcks = new KeyValuePair<long, AcknowledgeType>[_explicitAcks.Count];
+                ((ICollection<KeyValuePair<long, AcknowledgeType>>)_explicitAcks).CopyTo(explicitAcks, 0);
+                System.Array.Sort(explicitAcks, static (left, right) => left.Key.CompareTo(right.Key));
+                applied = new bool[explicitAcks.Length];
+            }
 
             foreach (var range in _ranges)
-                batches.Add(BuildRangeBatch(range, implicitDisposition));
+                batches.Add(BuildRangeBatch(range, implicitDisposition, explicitAcks, applied));
+            // A gap range can span a large compacted hole, so it stays single-type unless an
+            // explicit outcome falls inside it.
+            if (_gaps is not null)
+            {
+                foreach (var gap in _gaps)
+                {
+                    batches.Add(explicitAcks is null || !HasExplicitAckIn(explicitAcks, gap)
+                        ? new(gap.FirstOffset, gap.LastOffset, AcknowledgementBatchData.GapTypes)
+                        : BuildRangeBatch(gap, implicitDisposition, explicitAcks, applied));
+                }
+            }
 
-            if (_explicitAcks is not null)
-                AddStandaloneExplicitBatches(batches);
+            if (explicitAcks is not null)
+                AddStandaloneExplicitBatches(batches, explicitAcks, applied!);
 
             if (batches.Count <= 1)
                 return batches;
@@ -451,64 +605,59 @@ internal sealed class AcknowledgementTracker
             return MergeConsecutiveBatches(batches);
         }
 
-        private AcknowledgementBatchData BuildRangeBatch(AckRange range, AcknowledgeType implicitDisposition)
+        private static AcknowledgementBatchData BuildRangeBatch(
+            AckRange range,
+            AcknowledgeType implicitDisposition,
+            KeyValuePair<long, AcknowledgeType>[]? explicitAcks,
+            bool[]? applied)
         {
             var length = checked((int)(range.LastOffset - range.FirstOffset + 1));
             // Kafka accepts one disposition for a whole range. Undisclosed acquisitions
             // need no per-offset storage; explicit outcomes still use the mixed path.
-            if (range.AcknowledgeType == AcknowledgeType.Release && _explicitAcks is null)
+            if (range.AcknowledgeType == AcknowledgeType.Release && explicitAcks is null)
                 return new(range.FirstOffset, range.LastOffset, AcknowledgementBatchData.ReleaseTypes);
             var acknowledgeTypes = new byte[length];
             Array.Fill(acknowledgeTypes, (byte)(range.AcknowledgeType == ImplicitDelivery
                 ? implicitDisposition
                 : range.AcknowledgeType));
 
-            if (_explicitAcks is not null)
+            if (explicitAcks is not null)
             {
-                foreach (var (offset, type) in _explicitAcks)
+                for (var index = LowerBound(explicitAcks, range.FirstOffset);
+                     index < explicitAcks.Length && explicitAcks[index].Key <= range.LastOffset;
+                     index++)
                 {
-                    if (offset >= range.FirstOffset && offset <= range.LastOffset)
-                        acknowledgeTypes[offset - range.FirstOffset] = (byte)type;
+                    acknowledgeTypes[explicitAcks[index].Key - range.FirstOffset] = (byte)explicitAcks[index].Value;
+                    applied![index] = true;
                 }
             }
 
             return new AcknowledgementBatchData(range.FirstOffset, range.LastOffset, acknowledgeTypes);
         }
 
-        private void AddStandaloneExplicitBatches(List<AcknowledgementBatchData> batches)
+        // Outcomes outside every range are sent as their own batches, in offset order.
+        private static void AddStandaloneExplicitBatches(
+            List<AcknowledgementBatchData> batches,
+            KeyValuePair<long, AcknowledgeType>[] explicitAcks,
+            bool[] applied)
         {
-            if (_explicitAcks is null)
-                return;
-
-            List<KeyValuePair<long, AcknowledgeType>>? standaloneAcks = null;
-            foreach (var kvp in _explicitAcks)
+            List<byte>? runTypes = null;
+            var runStart = 0L;
+            var previousOffset = 0L;
+            for (var index = 0; index < explicitAcks.Length; index++)
             {
-                if (ContainsOffsetInRanges(kvp.Key))
+                if (applied[index])
                     continue;
 
-                standaloneAcks ??= [];
-                standaloneAcks.Add(kvp);
-            }
-
-            if (standaloneAcks is null)
-                return;
-
-            standaloneAcks.Sort(static (left, right) => left.Key.CompareTo(right.Key));
-
-            var runStart = standaloneAcks[0].Key;
-            var previousOffset = runStart;
-            List<byte> runTypes = [(byte)standaloneAcks[0].Value];
-
-            for (var i = 1; i < standaloneAcks.Count; i++)
-            {
-                var (offset, type) = standaloneAcks[i];
-                if (offset == previousOffset + 1)
+                var (offset, type) = explicitAcks[index];
+                if (runTypes is not null && offset == previousOffset + 1)
                 {
                     runTypes.Add((byte)type);
                 }
                 else
                 {
-                    batches.Add(new AcknowledgementBatchData(runStart, previousOffset, runTypes.ToArray()));
+                    if (runTypes is not null)
+                        batches.Add(new AcknowledgementBatchData(runStart, previousOffset, runTypes.ToArray()));
                     runStart = offset;
                     runTypes = [(byte)type];
                 }
@@ -516,42 +665,93 @@ internal sealed class AcknowledgementTracker
                 previousOffset = offset;
             }
 
-            batches.Add(new AcknowledgementBatchData(runStart, previousOffset, runTypes.ToArray()));
+            if (runTypes is not null)
+                batches.Add(new AcknowledgementBatchData(runStart, previousOffset, runTypes.ToArray()));
         }
 
-        private bool ContainsOffsetInRanges(long offset)
+        private static bool HasExplicitAckIn(KeyValuePair<long, AcknowledgeType>[] explicitAcks, AckRange range)
         {
-            foreach (var range in _ranges)
+            var index = LowerBound(explicitAcks, range.FirstOffset);
+            return index < explicitAcks.Length && explicitAcks[index].Key <= range.LastOffset;
+        }
+
+        // First index whose offset is at least the given offset.
+        private static int LowerBound(KeyValuePair<long, AcknowledgeType>[] explicitAcks, long offset)
+        {
+            var low = 0;
+            var high = explicitAcks.Length;
+            while (low < high)
             {
-                if (offset >= range.FirstOffset && offset <= range.LastOffset)
-                    return true;
+                var mid = low + ((high - low) >> 1);
+                if (explicitAcks[mid].Key < offset)
+                    low = mid + 1;
+                else
+                    high = mid;
             }
 
-            return false;
+            return low;
         }
 
+        // Joins touching batches into one wire batch. A multi-offset gap batch absorbs
+        // touching gaps and is never expanded into per-offset storage, so a large hole
+        // costs one byte. Other runs are copied once.
         private static List<AcknowledgementBatchData> MergeConsecutiveBatches(List<AcknowledgementBatchData> batches)
         {
             var writeIndex = 0;
-            var current = batches[0];
-
-            for (var i = 1; i < batches.Count; i++)
+            var index = 0;
+            while (index < batches.Count)
             {
-                var next = batches[i];
-                if (current.LastOffset + 1 != next.FirstOffset)
+                var first = batches[index];
+                var end = index + 1;
+                if (first.IsGapRange)
                 {
-                    batches[writeIndex++] = current;
-                    current = next;
+                    var lastOffset = first.LastOffset;
+                    while (end < batches.Count
+                           && batches[end].FirstOffset == lastOffset + 1
+                           && batches[end].IsGapOnly)
+                    {
+                        lastOffset = batches[end].LastOffset;
+                        end++;
+                    }
+
+                    batches[writeIndex++] = end == index + 1
+                        ? first
+                        : new AcknowledgementBatchData(first.FirstOffset, lastOffset, first.AcknowledgeTypes);
+                    index = end;
                     continue;
                 }
 
-                var combinedTypes = new byte[checked(current.OffsetCount + next.OffsetCount)];
-                current.CopyTypesTo(combinedTypes.AsSpan(0, current.OffsetCount));
-                next.CopyTypesTo(combinedTypes.AsSpan(current.OffsetCount));
-                current = new AcknowledgementBatchData(current.FirstOffset, next.LastOffset, combinedTypes);
+                var offsetCount = first.OffsetCount;
+                while (end < batches.Count
+                       && batches[end].FirstOffset == batches[end - 1].LastOffset + 1
+                       && !batches[end].IsGapRange)
+                {
+                    offsetCount = checked(offsetCount + batches[end].OffsetCount);
+                    end++;
+                }
+
+                if (end == index + 1)
+                {
+                    batches[writeIndex++] = first;
+                }
+                else
+                {
+                    var combinedTypes = new byte[offsetCount];
+                    var position = 0;
+                    for (var i = index; i < end; i++)
+                    {
+                        var count = batches[i].OffsetCount;
+                        batches[i].CopyTypesTo(combinedTypes.AsSpan(position, count));
+                        position += count;
+                    }
+
+                    batches[writeIndex++] = new AcknowledgementBatchData(
+                        first.FirstOffset, batches[end - 1].LastOffset, combinedTypes);
+                }
+
+                index = end;
             }
 
-            batches[writeIndex++] = current;
             batches.RemoveRange(writeIndex, batches.Count - writeIndex);
             return batches;
         }
@@ -566,9 +766,15 @@ internal sealed class AcknowledgementTracker
 internal readonly record struct AcknowledgementBatchData(long FirstOffset, long LastOffset, byte[] AcknowledgeTypes)
 {
     internal static readonly byte[] ReleaseTypes = [(byte)AcknowledgeType.Release];
+    internal static readonly byte[] GapTypes = [(byte)AcknowledgeType.Gap];
     private static readonly IReadOnlyList<byte> ReadOnlyReleaseTypes = System.Array.AsReadOnly(ReleaseTypes);
+    private static readonly IReadOnlyList<byte> ReadOnlyGapTypes = System.Array.AsReadOnly(GapTypes);
     internal IReadOnlyList<byte> PublicAcknowledgeTypes => ReferenceEquals(AcknowledgeTypes, ReleaseTypes)
-        ? ReadOnlyReleaseTypes : AcknowledgeTypes;
+        ? ReadOnlyReleaseTypes
+        : ReferenceEquals(AcknowledgeTypes, GapTypes) ? ReadOnlyGapTypes : AcknowledgeTypes;
+    internal bool IsGapOnly => AcknowledgeTypes.Length == 1 && AcknowledgeTypes[0] == (byte)AcknowledgeType.Gap;
+    // One shared gap byte covering more than one offset; a compacted hole can be large.
+    internal bool IsGapRange => IsGapOnly && LastOffset > FirstOffset;
     internal int OffsetCount => AcknowledgeTypes.Length == 1
         ? checked((int)(LastOffset - FirstOffset + 1)) : AcknowledgeTypes.Length;
     internal byte GetAcknowledgeType(int index) => AcknowledgeTypes.Length == 1 ? AcknowledgeTypes[0] : AcknowledgeTypes[index];

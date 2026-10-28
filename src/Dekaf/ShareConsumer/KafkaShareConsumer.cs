@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using Dekaf.Compression;
 using Dekaf.Diagnostics;
@@ -1065,15 +1066,26 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     private void ReleasePendingAcks()
     {
         var pending = FlushAcknowledgements();
-        // Override all ack types to Release so the broker redelivers to other members
+        // Override ack types to Release so the broker redelivers to other members.
+        // Gaps have no data record to redeliver and stay gaps.
         var released = new Dictionary<TopicPartition, List<AcknowledgementBatchData>>();
         foreach (var (tp, batches) in pending)
         {
             var releasedBatches = new List<AcknowledgementBatchData>(batches.Count);
             foreach (var batch in batches)
             {
+                if (batch.IsGapOnly)
+                {
+                    releasedBatches.Add(batch);
+                    continue;
+                }
                 var types = new byte[batch.AcknowledgeTypes.Length];
-                Array.Fill(types, (byte)AcknowledgeType.Release);
+                for (var i = 0; i < types.Length; i++)
+                {
+                    types[i] = batch.AcknowledgeTypes[i] == (byte)AcknowledgeType.Gap
+                        ? (byte)AcknowledgeType.Gap
+                        : (byte)AcknowledgeType.Release;
+                }
                 releasedBatches.Add(new AcknowledgementBatchData(batch.FirstOffset, batch.LastOffset, types));
             }
             released[tp] = releasedBatches;
@@ -1774,10 +1786,16 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 }
                 catch (InsufficientDataException)
                 {
+                    TrackTruncatedTailGaps(topicInfo, partition, ref parserState);
                     parserState.NextBatchByteOffset = partition.RecordBytes.Length;
                     break;
                 }
                 parserState.NextBatchByteOffset += checked((int)reader.Consumed);
+                if (IsControlBatch(parserState.CurrentBatch))
+                {
+                    parserState.DisposeCurrentBatch();
+                    continue;
+                }
                 parserState.CurrentBatch.ConfigureHeaderRouting(_recordHeaderRoutingPlan);
             }
 
@@ -1787,6 +1805,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             {
                 var record = records[parserState.RecordIndex];
                 var offset = batch.BaseOffset + record.OffsetDelta;
+                AdvanceGapCursor(topicInfo, partition, offset, ref parserState);
                 var deliveryCount = FindDeliveryCount(
                     partition.AcquiredRecords, offset, ref parserState.AcquiredRecordIndex);
                 if (deliveryCount < 0)
@@ -1869,6 +1888,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             if (parserState.RecordIndex >= records.Count)
                 parserState.DisposeCurrentBatch();
         }
+        TrackTrailingGaps(topicInfo, partition, ref parserState);
         if (typeof(TRecordTelemetry) == typeof(RecordTelemetryEnabled))
             ShareMetrics!.Parsed(telemetryFetch!, parsedBytes, results.Count - initialCount);
     }
@@ -1944,11 +1964,17 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     }
                     catch (InsufficientDataException)
                     {
+                        TrackTruncatedTailGaps(topicInfo, partition, ref parserState);
                         parserState.NextBatchByteOffset = partition.RecordBytes.Length;
                         break; // Partial batch
                     }
 
                     parserState.NextBatchByteOffset += checked((int)reader.Consumed);
+                    if (IsControlBatch(parserState.CurrentBatch))
+                    {
+                        parserState.DisposeCurrentBatch();
+                        continue;
+                    }
                     parserState.CurrentBatch.ConfigureHeaderRouting(_recordHeaderRoutingPlan);
                 }
 
@@ -1958,6 +1984,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 {
                     var record = records[parserState.RecordIndex];
                     var offset = batch.BaseOffset + record.OffsetDelta;
+                    AdvanceGapCursor(topicInfo, partition, offset, ref parserState);
 
                     var deliveryCount = FindDeliveryCount(
                         partition.AcquiredRecords,
@@ -2099,6 +2126,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     parserState.DisposeCurrentBatch();
             }
 
+            TrackTrailingGaps(topicInfo, partition, ref parserState);
             return null;
         }
         finally
@@ -2222,6 +2250,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         internal int NextBatchByteOffset;
         internal int RecordIndex;
         internal int AcquiredRecordIndex;
+        // Lowest offset the parser has not walked. Acquired offsets that it passes
+        // without a data record are gaps.
+        internal long NextGapOffset;
+        internal int GapRangeIndex;
 
         internal void DisposeCurrentBatch()
         {
@@ -2432,6 +2464,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
         foreach (var batch in batches)
         {
+            // A gap range can cover a large compacted hole and holds no delivered record.
+            if (batch.IsGapOnly)
+                continue;
+
             for (var i = 0; i < batch.OffsetCount; i++)
             {
                 if (batch.GetAcknowledgeType(i) != (byte)AcknowledgeType.Gap)
@@ -2730,6 +2766,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         {
             foreach (var batch in batches)
             {
+                // Gap offsets never had a delivered record, so they hold no renewal state.
+                // Skipping the range keeps a large compacted hole from costing one lookup per offset.
+                if (batch.IsGapOnly)
+                    continue;
+
                 for (var i = 0; i < batch.OffsetCount; i++)
                 {
                     var key = new RenewedRecordKey(
@@ -3054,6 +3095,120 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         }
 
         return -1;
+    }
+
+    // Control batches (transaction markers) are never delivered. Their acquired offsets
+    // become gaps when the parser walks past them.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool IsControlBatch(RecordBatch batch)
+        => (batch.Attributes & RecordBatchAttributes.IsControlBatch) != 0;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void AdvanceGapCursor(
+        TopicInfo topicInfo,
+        ShareFetchResponsePartition partition,
+        long offset,
+        ref DeserializerPreparationParserState parserState)
+    {
+        var next = parserState.NextGapOffset;
+        if (offset < next)
+            return;
+        if (offset != next)
+        {
+            TrackAcquiredGaps(new TopicPartition(topicInfo.Name, partition.PartitionIndex),
+                partition.AcquiredRecords, ref parserState.GapRangeIndex, next, offset - 1);
+        }
+        parserState.NextGapOffset = offset + 1;
+    }
+
+    // Once every batch is walked, the remaining acquired offsets have no data record.
+    private void TrackTrailingGaps(
+        TopicInfo topicInfo,
+        ShareFetchResponsePartition partition,
+        ref DeserializerPreparationParserState parserState)
+    {
+        if (parserState.CurrentBatch is not null
+            || parserState.NextBatchByteOffset < partition.RecordBytes.Length
+            || partition.AcquiredRecords.Count == 0)
+            return;
+        var lastAcquired = partition.AcquiredRecords[partition.AcquiredRecords.Count - 1].LastOffset;
+        if (parserState.NextGapOffset > lastAcquired)
+            return;
+        TrackAcquiredGaps(new TopicPartition(topicInfo.Name, partition.PartitionIndex),
+            partition.AcquiredRecords, ref parserState.GapRangeIndex, parserState.NextGapOffset, lastAcquired);
+        parserState.NextGapOffset = lastAcquired + 1;
+    }
+
+    // The broker cut the last batch at the response byte limit. That batch holds data
+    // records, so only the acquired offsets below it are gaps.
+    private void TrackTruncatedTailGaps(
+        TopicInfo topicInfo,
+        ShareFetchResponsePartition partition,
+        ref DeserializerPreparationParserState parserState)
+    {
+        if (partition.AcquiredRecords.Count != 0)
+        {
+            var lastGap = LastTrailingGapOffset(partition.RecordBytes, parserState.NextBatchByteOffset,
+                partition.AcquiredRecords[partition.AcquiredRecords.Count - 1].LastOffset);
+            if (parserState.NextGapOffset <= lastGap)
+            {
+                TrackAcquiredGaps(new TopicPartition(topicInfo.Name, partition.PartitionIndex),
+                    partition.AcquiredRecords, ref parserState.GapRangeIndex, parserState.NextGapOffset, lastGap);
+            }
+        }
+        // Nothing past the cut is a gap; TrackTrailingGaps must not cover it.
+        parserState.NextGapOffset = long.MaxValue;
+    }
+
+    /// <summary>
+    /// Returns the last offset that trailing gap tracking may cover once a partition's
+    /// complete batches are walked. When the broker cut the last batch at the response
+    /// byte limit, that batch's base offset (its first field) bounds the gaps; when fewer
+    /// than eight bytes of it survive, no trailing offset is a gap.
+    /// </summary>
+    private static long LastTrailingGapOffset(ReadOnlyMemory<byte> recordBytes, int byteOffset, long lastAcquired)
+    {
+        if (byteOffset >= recordBytes.Length)
+            return lastAcquired;
+        return recordBytes.Length - byteOffset >= sizeof(long)
+            ? Math.Min(lastAcquired, BinaryPrimitives.ReadInt64BigEndian(recordBytes.Span[byteOffset..]) - 1)
+            : long.MinValue;
+    }
+
+    /// <summary>
+    /// Acknowledges acquired offsets in [<paramref name="firstOffset"/>, <paramref name="lastOffset"/>]
+    /// as gaps. The broker acquires whole log slices, including control batches and compacted
+    /// offsets, and leaves them acquired until the client acknowledges them (KIP-932).
+    /// </summary>
+    /// <remarks>
+    /// Callers walk offsets upwards, so <paramref name="rangeIndex"/> only moves forward and
+    /// every acquired range is visited a bounded number of times per partition.
+    /// </remarks>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void TrackAcquiredGaps(
+        TopicPartition partition,
+        IReadOnlyList<ShareFetchAcquiredRecords> acquiredRecords,
+        ref int rangeIndex,
+        long firstOffset,
+        long lastOffset)
+    {
+        while (rangeIndex < acquiredRecords.Count && acquiredRecords[rangeIndex].LastOffset < firstOffset)
+            rangeIndex++;
+
+        for (var index = rangeIndex; index < acquiredRecords.Count; index++)
+        {
+            var range = acquiredRecords[index];
+            if (range.FirstOffset > lastOffset)
+                break;
+            var first = Math.Max(range.FirstOffset, firstOffset);
+            var last = Math.Min(range.LastOffset, lastOffset);
+            if (first > last)
+                continue;
+            if (_batchAcknowledgements is { } batchAcknowledgements)
+                batchAcknowledgements.AddGap(partition, first, last);
+            else
+                _ackTracker.TrackGapRecords(partition, first, last);
+        }
     }
 
     private readonly record struct RenewedRecordKey(string Topic, int Partition, long Offset);

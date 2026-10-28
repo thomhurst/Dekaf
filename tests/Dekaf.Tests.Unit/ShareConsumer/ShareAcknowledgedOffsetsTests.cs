@@ -73,6 +73,31 @@ public sealed class ShareAcknowledgedOffsetsTests
     }
 
     [Test]
+    public async Task OffsetView_GapRangeWiderThanInt32_IsSkipped()
+    {
+        // A compacted hole can span more offsets than an int holds.
+        List<AcknowledgementBatchData> batches =
+        [
+            new(10, 11, [1, 1]),
+            new(12, 3_000_000_011, AcknowledgementBatchData.GapTypes),
+            new(3_000_000_012, 3_000_000_012, [1])
+        ];
+        var offsets = new ShareAcknowledgedOffsets(batches);
+        long[] expected = [10, 11, 3_000_000_012];
+        await Assert.That(offsets.Length).IsEqualTo(expected.Length);
+        var copy = new long[offsets.Length];
+        offsets.CopyTo(copy);
+        await Assert.That(copy).IsEquivalentTo(expected);
+        var index = 0;
+        foreach (var offset in offsets)
+        {
+            await Assert.That(offset).IsEqualTo(expected[index]);
+            await Assert.That(offsets[index]).IsEqualTo(expected[index++]);
+        }
+        await Assert.That(index).IsEqualTo(expected.Length);
+    }
+
+    [Test]
     public async Task OffsetView_CompactRangesPreserveIndexEnumerationAndCopies()
     {
         List<AcknowledgementBatchData> batches = [new(10, 12, [2]), new(20, 22, [0]), new(30, 32, [1, 0, 3])];

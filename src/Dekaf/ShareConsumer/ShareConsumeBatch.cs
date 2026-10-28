@@ -249,6 +249,8 @@ internal sealed class ShareBatchStorage<TKey, TValue>
     internal long BaseOffset => _source.BaseOffset;
     internal long BaseTimestamp => _source.BaseTimestamp;
     internal int Count { get; set; }
+    // The source batch declared more records than its bytes held.
+    internal bool TruncatedRecords { get; set; }
     internal int PendingCount { get; private set; }
     internal int OpenLeases { get; private set; } = 1;
     internal int TrackedCount { get; set; }

@@ -24,6 +24,175 @@ public class AcknowledgementTrackerTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ReleaseUndeliveredRecords_KeepsGapsAndCloseFlushDoesNotReleaseThem(bool releaseFirst)
+    {
+        var tracker = new AcknowledgementTracker();
+        var partition = new TopicPartition("topic", 0);
+        if (releaseFirst)
+            tracker.ReleaseUndeliveredRecords(partition, 10, 19);
+        tracker.TrackGapRecords(partition, 12, 13);
+        tracker.TrackGapRecords(partition, 16, 16);
+        tracker.TrackDeliveredRecords(partition, 20, 20);
+        if (!releaseFirst)
+            tracker.ReleaseUndeliveredRecords(partition, 10, 19);
+
+        var batches = tracker.Flush(releaseImplicit: true)[partition];
+
+        var types = new Dictionary<long, byte>();
+        foreach (var batch in batches)
+            for (var offset = batch.FirstOffset; offset <= batch.LastOffset; offset++)
+                types.Add(offset, batch.GetAcknowledgeType(checked((int)(offset - batch.FirstOffset))));
+        var gap = (byte)AcknowledgeType.Gap;
+        var release = (byte)AcknowledgeType.Release;
+        await Assert.That(types).IsEquivalentTo(new Dictionary<long, byte>
+        {
+            [10] = release, [11] = release, [12] = gap, [13] = gap, [14] = release, [15] = release,
+            [16] = gap, [17] = release, [18] = release, [19] = release, [20] = release
+        });
+    }
+
+    [Test]
+    public async Task TrackGapRecords_FlushesSingleTypeGapBatch()
+    {
+        var tracker = new AcknowledgementTracker();
+        var partition = new TopicPartition("topic", 0);
+        tracker.TrackGapRecords(partition, 100, 1_000_099);
+
+        var batch = tracker.Flush()[partition].Single();
+
+        await Assert.That(batch.FirstOffset).IsEqualTo(100);
+        await Assert.That(batch.LastOffset).IsEqualTo(1_000_099);
+        await Assert.That(batch.AcknowledgeTypes.Length).IsEqualTo(1);
+        await Assert.That(batch.IsGapOnly).IsTrue();
+        await Assert.That(batch.PublicAcknowledgeTypes).IsNotSameReferenceAs(batch.AcknowledgeTypes);
+    }
+
+    [Test]
+    public async Task TrackGapRecords_AdjacentDeliveries_KeepGapBatchSingleType()
+    {
+        var tracker = new AcknowledgementTracker();
+        var partition = new TopicPartition("topic", 0);
+        // The parser queues gaps before the records around them are delivered.
+        tracker.TrackGapRecords(partition, 1, 1_000_000);
+        tracker.TrackDeliveredRecords(partition, 0, 0);
+        tracker.TrackDeliveredRecords(partition, 1_000_001, 1_000_001);
+
+        var batches = tracker.Flush()[partition];
+
+        await Assert.That(batches.Count).IsEqualTo(3);
+        await Assert.That(batches[0].FirstOffset).IsEqualTo(0);
+        await Assert.That(batches[0].LastOffset).IsEqualTo(0);
+        await Assert.That(batches[0].GetAcknowledgeType(0)).IsEqualTo((byte)AcknowledgeType.Accept);
+        await Assert.That(batches[1].FirstOffset).IsEqualTo(1);
+        await Assert.That(batches[1].LastOffset).IsEqualTo(1_000_000);
+        await Assert.That(batches[1].IsGapOnly).IsTrue();
+        await Assert.That(batches[2].FirstOffset).IsEqualTo(1_000_001);
+        await Assert.That(batches[2].LastOffset).IsEqualTo(1_000_001);
+        await Assert.That(batches[2].GetAcknowledgeType(0)).IsEqualTo((byte)AcknowledgeType.Accept);
+    }
+
+    [Test]
+    public async Task RequeueAcks_GapBatch_MergesWithLaterGapsWithoutExpanding()
+    {
+        var tracker = new AcknowledgementTracker();
+        var partition = new TopicPartition("topic", 0);
+        tracker.TrackGapRecords(partition, 1, 1_000_000);
+        var failed = tracker.Flush();
+        tracker.TrackGapRecords(partition, 999_999, 1_000_005);
+
+        tracker.RequeueAcks(failed);
+        var batch = tracker.Flush()[partition].Single();
+
+        await Assert.That(batch.FirstOffset).IsEqualTo(1);
+        await Assert.That(batch.LastOffset).IsEqualTo(1_000_005);
+        await Assert.That(batch.IsGapOnly).IsTrue();
+    }
+
+    [Test]
+    public async Task TrackGapRecords_InterleavedWithLaterDeliveries_FlushesOrderedDispositions()
+    {
+        var tracker = new AcknowledgementTracker();
+        var partition = new TopicPartition("topic", 0);
+        // A transactional poll: every 4-record batch is followed by a COMMIT marker. The
+        // markers are queued while parsing, before any record is delivered.
+        const int Batches = 64;
+        for (var batch = 0; batch < Batches; batch++)
+            tracker.TrackGapRecords(partition, batch * 5 + 4, batch * 5 + 4);
+        for (var batch = 0; batch < Batches; batch++)
+            for (var record = 0; record < 4; record++)
+                tracker.TrackDeliveredRecords(partition, batch * 5 + record, batch * 5 + record);
+
+        var batches = tracker.Flush()[partition];
+
+        var next = 0L;
+        foreach (var batch in batches)
+        {
+            await Assert.That(batch.FirstOffset).IsEqualTo(next);
+            for (var offset = batch.FirstOffset; offset <= batch.LastOffset; offset++)
+            {
+                var expected = offset % 5 == 4 ? AcknowledgeType.Gap : AcknowledgeType.Accept;
+                await Assert.That(batch.GetAcknowledgeType(checked((int)(offset - batch.FirstOffset))))
+                    .IsEqualTo((byte)expected);
+            }
+            next = batch.LastOffset + 1;
+        }
+        await Assert.That(next).IsEqualTo(Batches * 5L);
+    }
+
+    [Test]
+    public async Task ExplicitAcknowledgements_AroundManyGaps_FlushOrderedDispositions()
+    {
+        var tracker = new AcknowledgementTracker();
+        var partition = new TopicPartition("topic", 0);
+        // Markers split the delivered offsets into one range per producer batch. Explicit
+        // outcomes land inside those ranges, inside a gap, and outside every range.
+        const int Batches = 64;
+        for (var batch = 0; batch < Batches; batch++)
+            tracker.TrackGapRecords(partition, batch * 5 + 4, batch * 5 + 4);
+        tracker.TrackGapRecords(partition, 1_000, 1_000_000);
+        for (var batch = 0; batch < Batches; batch++)
+            for (var record = 0; record < 4; record++)
+                tracker.TrackDeliveredRecords(partition, batch * 5 + record, batch * 5 + record);
+        for (var offset = 0L; offset < Batches * 5; offset++)
+        {
+            if (offset % 5 != 4)
+                tracker.Acknowledge(partition, offset, offset % 3 == 0 ? AcknowledgeType.Reject : AcknowledgeType.Accept);
+        }
+        tracker.Acknowledge(partition, 500_000, AcknowledgeType.Release, requireTracked: false);
+        tracker.Acknowledge(partition, 2_000_000, AcknowledgeType.Release, requireTracked: false);
+        tracker.Acknowledge(partition, 2_000_001, AcknowledgeType.Reject, requireTracked: false);
+
+        var batches = tracker.Flush()[partition];
+
+        var types = new Dictionary<long, byte>();
+        var previousLast = long.MinValue;
+        foreach (var batch in batches)
+        {
+            await Assert.That(batch.FirstOffset).IsGreaterThan(previousLast);
+            previousLast = batch.LastOffset;
+            if (batch.FirstOffset >= 1_000 && batch.LastOffset < 2_000_000)
+                continue;
+            for (var offset = batch.FirstOffset; offset <= batch.LastOffset; offset++)
+                types.Add(offset, batch.GetAcknowledgeType(checked((int)(offset - batch.FirstOffset))));
+        }
+        for (var offset = 0L; offset < Batches * 5; offset++)
+        {
+            var expected = offset % 5 == 4 ? AcknowledgeType.Gap
+                : offset % 3 == 0 ? AcknowledgeType.Reject : AcknowledgeType.Accept;
+            await Assert.That(types[offset]).IsEqualTo((byte)expected);
+        }
+        await Assert.That(types[2_000_000]).IsEqualTo((byte)AcknowledgeType.Release);
+        await Assert.That(types[2_000_001]).IsEqualTo((byte)AcknowledgeType.Reject);
+
+        var hole = batches.Single(static batch => batch.FirstOffset == 1_000);
+        await Assert.That(hole.LastOffset).IsEqualTo(1_000_000);
+        await Assert.That(hole.GetAcknowledgeType(499_000)).IsEqualTo((byte)AcknowledgeType.Release);
+        await Assert.That(hole.GetAcknowledgeType(0)).IsEqualTo((byte)AcknowledgeType.Gap);
+    }
+
+    [Test]
     public async Task FlushForPoll_DoesNotReuseAnOutstandingSnapshot()
     {
         var tracker = new AcknowledgementTracker();
