@@ -53,6 +53,47 @@ public sealed class AvroPocoGeneratorDiagnosticsTests
     }
 
     [Test]
+    [Arguments("public Child Item { get; set; } = new();", "[AvroRecord(Namespace = \"\")] public partial class Child { public int Id { get; set; } }", "Child")]
+    [Arguments("public Child Item { get; set; } = new();", "[AvroRecord] public partial class Child { public int Id { get; set; } }", "Child")]
+    [Arguments("public Models.Child Item { get; set; } = new();", "namespace Models { [AvroRecord(Namespace = \"\")] public partial class Child { public int Id { get; set; } } }", "Child")]
+    [Arguments("public Status Item { get; set; }", "public enum Status { Ready }", "Status")]
+    [Arguments("public Status? Item { get; set; }", "public enum Status { Ready }", "Status")]
+    [Arguments("public Child[] Item { get; set; } = [];", "[AvroRecord] public partial class Child { public int Id { get; set; } }", "Child")]
+    [Arguments("public System.Collections.Generic.List<Child> Item { get; set; } = [];", "[AvroRecord] public partial class Child { public int Id { get; set; } }", "Child")]
+    [Arguments("public System.Collections.Generic.Dictionary<string, Status> Item { get; set; } = [];", "public enum Status { Ready }", "Status")]
+    [Arguments("[AvroField(UnionTypes = new[] { typeof(Child), typeof(string) })] public object? Item { get; set; }", "[AvroRecord] public partial class Child { public int Id { get; set; } }", "Child")]
+    public async Task Generator_RejectsNullNamespaceInsideNamespacedRecord(
+        string member,
+        string declaration,
+        string fullName)
+    {
+        var runResult = RunGeneratorResult(
+            "[AvroRecord(Namespace = \"com.acme\")] public partial class Root { " + member + " } " + declaration);
+        var diagnostic = runResult.Diagnostics.Single(item => item.Id == "DKAVRO016");
+
+        await Assert.That(diagnostic.Severity).IsEqualTo(DiagnosticSeverity.Error);
+        await Assert.That(diagnostic.GetMessage()).IsEqualTo(
+            $"Member 'Item' uses Avro type '{fullName}' with an empty namespace inside namespace 'com.acme'; " +
+            "assign a non-empty namespace to the nested type or an empty namespace to the enclosing record");
+        await Assert.That(diagnostic.Location.SourceTree!.GetText().ToString(diagnostic.Location.SourceSpan))
+            .IsEqualTo("Item");
+        await Assert.That(runResult.Results.Single().GeneratedSources.Any(static source =>
+            source.HintName.StartsWith("global__Root_", StringComparison.Ordinal))).IsFalse();
+    }
+
+    [Test]
+    public async Task Generator_RejectsNullNamespaceReferenceAfterNamespaceChanges()
+    {
+        var runResult = RunGeneratorResult(
+            "[AvroRecord] public partial class Root { public Child First { get; set; } = new(); public Container Next { get; set; } = new(); } " +
+            "[AvroRecord] public partial class Child { public int Id { get; set; } } " +
+            "[AvroRecord(Namespace = \"com.acme\")] public partial class Container { public Child Item { get; set; } = new(); }");
+
+        await Assert.That(runResult.Diagnostics.Any(static diagnostic => diagnostic.Id == "DKAVRO016")).IsTrue();
+        await Assert.That(runResult.Results.Single().GeneratedSources.Length).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Generator_SupportedPublicContract_ReportsNoDekafDiagnostics()
     {
         var diagnostics = RunGenerator(

@@ -221,6 +221,12 @@ union branch; nullable fields therefore use `DefaultJson = "null"`. Current gene
 support null, primitive, string, bytes, and enum values. Invalid shapes, cycles, duplicate
 names/orders, ambiguous unions, and incompatible defaults fail compilation with `DKAVRO` diagnostics.
 
+Records and enums with an empty Avro namespace can nest only inside records whose Avro namespace
+is also empty. Apache Avro's C# parser inherits a non-empty enclosing namespace even when the
+nested schema explicitly sets `"namespace": ""`. The generator reports `DKAVRO016` for that shape;
+assign a non-empty namespace to the nested record (or a C# namespace to an enum), or set the
+enclosing record's `Namespace = ""`.
+
 Call `WarmupAsync` before measuring or entering a latency-sensitive path. After warmup,
 serialization is `0 B` per message for supported shapes. Deserialization allocates only the
 returned class/record and declared arrays, lists, dictionaries, strings, or byte arrays; cached
