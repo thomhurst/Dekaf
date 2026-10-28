@@ -8,8 +8,8 @@ internal static class ContainerImageTags
     /// <remarks>apache/kafka</remarks>
     public const string KafkaImage = "apache/kafka";
 
-    /// <remarks>4.3.1</remarks>
-    public const string KafkaTag = "4.3.1";
+    /// <remarks>4.4.0</remarks>
+    public const string KafkaTag = "4.4.0";
 
     /// <remarks>confluentinc/cp-schema-registry</remarks>
     public const string SchemaRegistryImage = "confluentinc/cp-schema-registry";
