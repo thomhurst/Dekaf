@@ -1901,6 +1901,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // Access to _cachedPartitionsByBroker must be synchronized via _partitionCacheLock
     private PartitionBrokerCacheEntry? _cachedPartitionsByBroker;
     private readonly object _partitionCacheLock = new();
+    // Partitions whose last fetch returned a retriable partition error without a dedicated
+    // recovery path, mapped to the Stopwatch timestamp until which they are left out of fetch
+    // requests. Guarded by _partitionCacheLock; written on the error path and read only when
+    // the broker grouping is rebuilt, so the cached fetch path never touches it.
+    private readonly Dictionary<TopicPartition, long> _partitionFetchBackoffs = [];
     private int _assignmentVersion;
 
     // Fetch request cache - reduces allocations when partition assignment is stable.
@@ -2010,12 +2015,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private static readonly long s_preferredReadReplicaMaxAgeTimestampDelta =
         (long)(TimeSpan.FromMinutes(5).TotalSeconds * Stopwatch.Frequency);
-    private const long NoPreferredReplicaExpiry = long.MaxValue;
+    private const long NoExpiry = long.MaxValue;
     private const int MaxRetainedUnassignedWatermarkSnapshots = 256;
 
+    // ExpiresAtTimestamp is the earliest preferred read replica expiry or fetch backoff
+    // expiry in the grouping, so the cached grouping expires by itself when either ends.
     private readonly record struct PartitionBrokerCacheEntry(
         Dictionary<int, List<TopicPartition>> PartitionsByBroker,
-        long PreferredReplicaExpiresAtTimestamp,
+        long ExpiresAtTimestamp,
         DateTimeOffset MetadataLastRefreshed);
 
     private readonly record struct PartitionFetchBrokerResolution(
@@ -5712,7 +5719,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             }
                             else
                             {
+                                ThrowIfFatalFetchPartitionError(tp, partitionResponse.ErrorCode);
                                 LogPrefetchError(topic, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
+                                BackOffPartitionFetch(tp, brokerId);
                             }
                             continue;
                         }
@@ -12646,7 +12655,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (changed)
                 _cachedPartitionsByBroker = new PartitionBrokerCacheEntry(
                     updated,
-                    cached.PreferredReplicaExpiresAtTimestamp,
+                    cached.ExpiresAtTimestamp,
                     cached.MetadataLastRefreshed);
         }
     }
@@ -12660,7 +12669,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 return;
 
             var cached = cachedEntry.Value;
-            if (!_preferredReadReplicas.IsEmpty)
+            if (!_preferredReadReplicas.IsEmpty || _partitionFetchBackoffs.Count > 0)
             {
                 _cachedPartitionsByBroker = null;
                 return;
@@ -12699,7 +12708,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (updated is not null)
                 _cachedPartitionsByBroker = new PartitionBrokerCacheEntry(
                     updated,
-                    cached.PreferredReplicaExpiresAtTimestamp,
+                    cached.ExpiresAtTimestamp,
                     cached.MetadataLastRefreshed);
         }
     }
@@ -12713,6 +12722,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         TopicPartition[] assignmentArray;
         int assignmentCount;
         var now = Stopwatch.GetTimestamp();
+        var fetchBackoffExpiresAtTimestamp = NoExpiry;
 
         lock (_partitionCacheLock)
         {
@@ -12732,11 +12742,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             assignmentArray = ArrayPool<TopicPartition>.Shared.Rent(maxPartitions);
             assignmentCount = 0;
             var activeSnapshot = Volatile.Read(ref _activeSnapshot);
+            var hasFetchBackoffs = PruneExpiredFetchBackoffs(now);
 
             foreach (var partition in snapshot)
             {
                 if (!_paused.ContainsKey(partition)
-                    && (activeSnapshot is null || !activeSnapshot.IsPartitionComplete(partition)))
+                    && (activeSnapshot is null || !activeSnapshot.IsPartitionComplete(partition))
+                    && (!hasFetchBackoffs || !IsFetchBackingOff(partition, ref fetchBackoffExpiresAtTimestamp)))
                 {
                     assignmentArray[assignmentCount++] = partition;
                 }
@@ -12744,7 +12756,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         var result = new Dictionary<int, List<TopicPartition>>();
-        var preferredReplicaExpiresAtTimestamp = NoPreferredReplicaExpiry;
+        var preferredReplicaExpiresAtTimestamp = NoExpiry;
         Task<PartitionFetchBrokerResolution>[]? brokerTasks = null;
         var brokerTaskCount = 0;
         try
@@ -12805,7 +12817,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 _cachedPartitionsByBroker = new PartitionBrokerCacheEntry(
                     result,
-                    preferredReplicaExpiresAtTimestamp,
+                    Math.Min(preferredReplicaExpiresAtTimestamp, fetchBackoffExpiresAtTimestamp),
                     _metadataManager.Metadata.LastRefreshed);
             }
 
@@ -13146,10 +13158,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private bool IsPartitionBrokerCacheValid(PartitionBrokerCacheEntry cached, long now)
     {
-        if (cached.PreferredReplicaExpiresAtTimestamp == NoPreferredReplicaExpiry)
+        if (cached.ExpiresAtTimestamp == NoExpiry)
             return true;
 
-        return cached.PreferredReplicaExpiresAtTimestamp > now
+        return cached.ExpiresAtTimestamp > now
             && cached.MetadataLastRefreshed == _metadataManager.Metadata.LastRefreshed;
     }
 
@@ -13179,7 +13191,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         out BrokerNode? broker,
         out long preferredReplicaExpiresAtTimestamp)
     {
-        preferredReplicaExpiresAtTimestamp = NoPreferredReplicaExpiry;
+        preferredReplicaExpiresAtTimestamp = NoExpiry;
         var leader = _metadataManager.TryGetCachedPartitionLeader(partition.Topic, partition.Partition);
         if (leader is null)
         {
@@ -13198,7 +13210,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var leader = await _metadataManager.GetPartitionLeaderAsync(
             partition.Topic, partition.Partition, cancellationToken).ConfigureAwait(false);
         if (leader is null)
-            return new PartitionFetchBrokerResolution(partition, null, NoPreferredReplicaExpiry);
+            return new PartitionFetchBrokerResolution(partition, null, NoExpiry);
 
         var broker = GetPreferredReadReplicaBrokerOrLeader(
             partition,
@@ -13214,7 +13226,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         long now,
         out long preferredReplicaExpiresAtTimestamp)
     {
-        preferredReplicaExpiresAtTimestamp = NoPreferredReplicaExpiry;
+        preferredReplicaExpiresAtTimestamp = NoExpiry;
 
         if (string.IsNullOrEmpty(_options.ClientRack)
             || !_preferredReadReplicas.TryGetValue(partition, out var preferred))
@@ -13419,7 +13431,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         }
                         else
                         {
+                            ThrowIfFatalFetchPartitionError(tp, partitionResponse.ErrorCode);
                             LogFetchError(topic, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
+                            BackOffPartitionFetch(tp, brokerId);
                         }
                         continue;
                     }
@@ -14396,6 +14410,98 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private static bool IsTopicIdentityRefreshError(ErrorCode errorCode) =>
         errorCode is ErrorCode.UnknownTopicId or ErrorCode.UnknownTopicOrPartition;
+
+    /// <summary>
+    /// Fetch partition errors that refetching cannot fix, such as <see cref="ErrorCode.TopicAuthorizationFailed"/>.
+    /// They end the consume stream, as the Java consumer throws them from <c>poll()</c>.
+    /// The list is explicit: every other code without a dedicated recovery path, including codes a
+    /// newer broker adds, backs off and refreshes metadata instead of ending the stream.
+    /// </summary>
+    internal static bool IsFatalFetchPartitionError(ErrorCode errorCode) =>
+        errorCode is ErrorCode.TopicAuthorizationFailed
+            or ErrorCode.ClusterAuthorizationFailed
+            or ErrorCode.UnsupportedCompressionType
+            or ErrorCode.UnsupportedVersion;
+
+    private static void ThrowIfFatalFetchPartitionError(TopicPartition partition, ErrorCode errorCode)
+    {
+        if (IsFatalFetchPartitionError(errorCode))
+        {
+            throw KafkaException.FromErrorCode(
+                errorCode,
+                $"Fetch failed for {partition.Topic}-{partition.Partition}: {errorCode}");
+        }
+    }
+
+    /// <summary>
+    /// Handles a retriable fetch partition error that has no dedicated recovery path, such as
+    /// <see cref="ErrorCode.KafkaStorageError"/>, <see cref="ErrorCode.ReplicaNotAvailable"/> or
+    /// <see cref="ErrorCode.OffsetNotAvailable"/>. The broker answers these at once, skipping the
+    /// long poll, so the partition stays out of fetch requests for <c>RetryBackoffMs</c> while
+    /// its topic metadata refreshes. Other partitions on the same broker keep fetching.
+    /// An error from a preferred read replica needs no backoff: <see cref="UpdatePreferredReadReplica"/>
+    /// already cleared the replica, so the next fetch goes to the leader.
+    /// </summary>
+    private void BackOffPartitionFetch(TopicPartition partition, int brokerId)
+    {
+        var leader = _metadataManager.TryGetCachedPartitionLeader(partition.Topic, partition.Partition);
+        if (leader is not null && leader.NodeId != brokerId)
+            return;
+
+        var expiresAtTimestamp = Stopwatch.GetTimestamp()
+            + _options.RetryBackoffMs * Stopwatch.Frequency / 1000;
+
+        // Bump the version under the lock with the backoff write: a grouping rebuild captures
+        // the version under this lock, so it sees either both changes or neither and cannot
+        // cache a grouping that still contains the backing-off partition.
+        lock (_partitionCacheLock)
+        {
+            Interlocked.Increment(ref _assignmentVersion);
+            _partitionFetchBackoffs[partition] = expiresAtTimestamp;
+            _cachedPartitionsByBroker = null;
+        }
+
+        ScheduleLeaderRefresh(partition.Topic);
+    }
+
+    /// <summary>
+    /// Removes expired fetch backoffs. Returns whether any backoff is still active.
+    /// Caller holds <see cref="_partitionCacheLock"/>.
+    /// </summary>
+    private bool PruneExpiredFetchBackoffs(long now)
+    {
+        if (_partitionFetchBackoffs.Count == 0)
+            return false;
+
+        List<TopicPartition>? expired = null;
+        foreach (var entry in _partitionFetchBackoffs)
+        {
+            if (entry.Value <= now)
+                (expired ??= []).Add(entry.Key);
+        }
+
+        if (expired is not null)
+        {
+            foreach (var partition in expired)
+                _partitionFetchBackoffs.Remove(partition);
+        }
+
+        return _partitionFetchBackoffs.Count > 0;
+    }
+
+    /// <summary>
+    /// Caller holds <see cref="_partitionCacheLock"/> and has pruned expired entries.
+    /// </summary>
+    private bool IsFetchBackingOff(TopicPartition partition, ref long earliestExpiresAtTimestamp)
+    {
+        if (!_partitionFetchBackoffs.TryGetValue(partition, out var expiresAtTimestamp))
+            return false;
+
+        if (expiresAtTimestamp < earliestExpiresAtTimestamp)
+            earliestExpiresAtTimestamp = expiresAtTimestamp;
+
+        return true;
+    }
 
     private void QueueTopicIdentityRefresh(
         ref Dictionary<string, Guid>? topicIdentityRefreshes,

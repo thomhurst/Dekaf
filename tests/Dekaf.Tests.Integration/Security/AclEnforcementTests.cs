@@ -235,6 +235,46 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
             .Because("consumer should throw AuthorizationException when READ permission on topic is missing");
     }
 
+    [Test]
+    public async Task AssignedConsumer_WithDescribeButNotReadOnTopic_ThrowsAuthorizationExceptionFromFetch()
+    {
+        // Arrange: DESCRIBE lets metadata succeed, so the first failure is the Fetch partition
+        // error TOPIC_AUTHORIZATION_FAILED, which must end the consume stream (#3718).
+        var topic = await kafka.CreateTestTopicAsync();
+
+        await using var admin = kafka.CreateAdminClient();
+        await admin.CreateAclsAsync([
+            AclBinding.Allow(
+                ResourcePattern.Topic(topic),
+                AclKafkaContainer.TestPrincipal,
+                AclOperation.Describe)
+        ]);
+
+        await WaitForAclPropagationAsync(
+            admin,
+            AclBindingFilter.ForResource(ResourceType.Topic, topic),
+            expectedCount: 1);
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithSaslPlain(AclKafkaContainer.TestUsername, AclKafkaContainer.TestPassword)
+            .WithClientId("acl-test-assigned-consumer-fetch-denied")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+        consumer.IncrementalAssign([new TopicPartitionOffset(topic, 0, 0)]);
+
+        // Act & Assert: before the fix the stream returned nothing until cancellation.
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var exception = await Assert.That(async () =>
+        {
+            await foreach (var _ in consumer.ConsumeAsync(cts.Token))
+            {
+            }
+        }).Throws<AuthorizationException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(Dekaf.Protocol.ErrorCode.TopicAuthorizationFailed);
+    }
+
     #endregion
 
     #region Consumer ACL Enforcement - Group
