@@ -86,6 +86,7 @@ public class AsyncAutoResetSignalTests
     {
         Task<bool>? timedWait = null;
         var observedWaiter = 0;
+        using var signalObservedWaiter = new ManualResetEventSlim();
         using var signal = new AsyncAutoResetSignal(
             inlineTimeoutContinuations: false,
             inlineContinuations: false,
@@ -94,12 +95,17 @@ public class AsyncAutoResetSignalTests
                 // Hold Signal between observing the waiter and taking it until the timer
                 // has completed that waiter.
                 if (Interlocked.Exchange(ref observedWaiter, 1) == 0)
+                {
+                    signalObservedWaiter.Set();
                     timedWait!.Wait(TimeSpan.FromSeconds(10));
+                }
             },
-            beforeTimeoutCompletionForTesting: null,
+            // Hold the timer callback until Signal has observed the waiter, so the timeout
+            // cannot complete the wait before Signal reaches its hook.
+            beforeTimeoutCompletionForTesting: () => signalObservedWaiter.Wait(TimeSpan.FromSeconds(10)),
             afterTimeoutCallbackForTesting: null);
 
-        timedWait = signal.WaitAsync(500).AsTask();
+        timedWait = signal.WaitAsync(1).AsTask();
         signal.Signal();
 
         await Assert.That(observedWaiter).IsEqualTo(1);
