@@ -172,6 +172,89 @@ public sealed class SchemaRegistryCompatibilityConfigurationTests
         _ = await Assert.ThrowsAsync<TaskCanceledException>(() => client.GetCompatibilityAsync());
     }
 
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task IsCompatibleAsync_ReturnsRegistryVerdict(bool compatible)
+    {
+        using var handler = new CapturingHandler()
+            .Enqueue(HttpStatusCode.OK, compatible ? "{\"is_compatible\":true}" : "{\"is_compatible\":false}");
+        using var client = CreateClient(handler);
+
+        var result = await client.IsCompatibleAsync("orders-value", CompatibilitySchema);
+
+        await Assert.That(result).IsEqualTo(compatible);
+    }
+
+    [Test]
+    [Arguments("latest")]
+    [Arguments("1")]
+    public async Task IsCompatibleAsync_VerifiedMissingSubject_IsCompatible(string version)
+    {
+        using var handler = new CapturingHandler()
+            .Enqueue(HttpStatusCode.NotFound, """{"error_code":40401,"message":"Subject not found."}""");
+        using var client = CreateClient(handler);
+
+        var result = await client.IsCompatibleAsync("new-value", CompatibilitySchema, version);
+
+        await Assert.That(result).IsTrue();
+    }
+
+    [Test]
+    [Arguments("latest")]
+    [Arguments("999")]
+    public async Task IsCompatibleAsync_MissingVersion_PreservesRegistryError(string version)
+    {
+        using var handler = new CapturingHandler()
+            .Enqueue(HttpStatusCode.NotFound, """{"error_code":40402,"message":"Version not found."}""");
+        using var client = CreateClient(handler);
+
+        var exception = await Assert.ThrowsAsync<SchemaRegistryException>(
+            () => client.IsCompatibleAsync("orders-value", CompatibilitySchema, version, normalize: true));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(40402);
+        await Assert.That(exception.Message).IsEqualTo("Version not found.");
+    }
+
+    [Test]
+    [Arguments("<html>Not Found</html>", 404)]
+    [Arguments("null", 404)]
+    [Arguments("{\"error_code\":40499,\"message\":\"Unknown registry error\"}", 40499)]
+    public async Task IsCompatibleAsync_UnrecognizedNotFound_Throws(string body, int expectedCode)
+    {
+        using var handler = new CapturingHandler().Enqueue(HttpStatusCode.NotFound, body);
+        using var client = CreateClient(handler);
+
+        var exception = await Assert.ThrowsAsync<SchemaRegistryException>(
+            () => client.IsCompatibleAsync("orders-value", CompatibilitySchema));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(expectedCode);
+    }
+
+    [Test]
+    [Arguments("null")]
+    [Arguments("{}")]
+    [Arguments("{\"is_compatible\":null}")]
+    [Arguments("{\"is_compatible\":\"true\"}")]
+    [Arguments("{\"is_compatible\":")]
+    [Arguments("")]
+    public async Task IsCompatibleAsync_InvalidSuccessBody_Throws(string body)
+    {
+        using var handler = new CapturingHandler().Enqueue(HttpStatusCode.OK, body);
+        using var client = CreateClient(handler);
+
+        var exception = await Assert.ThrowsAsync<SchemaRegistryException>(
+            () => client.IsCompatibleAsync("orders-value", CompatibilitySchema));
+
+        await Assert.That(exception!.Message).Contains("compatibility response");
+    }
+
+    private static Schema CompatibilitySchema => new()
+    {
+        SchemaType = SchemaType.Avro,
+        SchemaString = "\"string\""
+    };
+
     private static SchemaRegistryClient CreateClient(HttpMessageHandler handler) =>
         new(new SchemaRegistryConfig { Url = "http://schema-registry.local" }, handler);
 

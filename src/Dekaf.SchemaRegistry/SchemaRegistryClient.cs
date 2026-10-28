@@ -949,15 +949,32 @@ public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClien
             SchemaRegistryJsonContext.Default.RegisterSchemaRequest,
             cancellationToken).ConfigureAwait(false);
 
-        if (response.StatusCode == HttpStatusCode.NotFound)
-            return true; // No existing schema, so compatible
+        try
+        {
+            await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+        }
+        catch (SchemaRegistryException exception) when (
+            response.StatusCode == HttpStatusCode.NotFound && exception.ErrorCode == 40401)
+        {
+            // Preserve the new-subject convenience only for a verified missing subject.
+            return true;
+        }
 
-        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+        CompatibilityResponse? result;
+        try
+        {
+            result = await response.Content.ReadFromJsonAsync<CompatibilityResponse>(
+                SchemaRegistryJsonContext.Default.CompatibilityResponse, cancellationToken).ConfigureAwait(false);
+        }
+        catch (JsonException exception)
+        {
+            throw new SchemaRegistryException(0, "Schema Registry returned an invalid compatibility response.", exception);
+        }
 
-        var result = await response.Content.ReadFromJsonAsync<CompatibilityResponse>(
-            SchemaRegistryJsonContext.Default.CompatibilityResponse, cancellationToken).ConfigureAwait(false);
+        if (result is null)
+            throw new SchemaRegistryException(0, "Schema Registry returned a null compatibility response.");
 
-        return result?.IsCompatible ?? true;
+        return result.IsCompatible;
     }
 
     public async Task<SchemaCompatibilityLevel> GetCompatibilityAsync(

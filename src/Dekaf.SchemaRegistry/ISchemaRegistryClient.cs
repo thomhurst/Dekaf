@@ -178,7 +178,10 @@ public interface ISchemaRegistryClient : IDisposable
     /// <param name="schema">The schema to check.</param>
     /// <param name="version">The version to check against (default: latest).</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>True if compatible.</returns>
+    /// <returns>True if compatible, or if the registry reports a missing subject (error 40401).</returns>
+    /// <exception cref="SchemaRegistryException">
+    /// The requested version is missing, the registry returns another error, or the compatibility response is invalid.
+    /// </exception>
     Task<bool> IsCompatibleAsync(
         string subject,
         Schema schema,
@@ -193,7 +196,10 @@ public interface ISchemaRegistryClient : IDisposable
     /// <param name="version">The version to check against.</param>
     /// <param name="normalize">Whether to request Schema Registry normalization.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>True if compatible.</returns>
+    /// <returns>True if compatible, or if the registry reports a missing subject (error 40401).</returns>
+    /// <exception cref="SchemaRegistryException">
+    /// The requested version is missing, the registry returns another error, or the compatibility response is invalid.
+    /// </exception>
     Task<bool> IsCompatibleAsync(
         string subject,
         Schema schema,
