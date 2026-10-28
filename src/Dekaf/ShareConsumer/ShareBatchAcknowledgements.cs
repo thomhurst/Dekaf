@@ -262,12 +262,36 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
             {
                 Owner._gapPartitionCount++;
             }
-            else if (gaps[^1].LastOffset + 1 == firstOffset)
+            else if (firstOffset <= gaps[^1].LastOffset + 1)
             {
-                gaps[^1] = gaps[^1] with { LastOffset = lastOffset };
+                MergeGap(gaps, firstOffset, lastOffset);
                 return;
             }
             gaps.Add(new AcknowledgementBatchData(firstOffset, lastOffset, AcknowledgementBatchData.GapTypes));
+        }
+
+        // The parser queues gaps in offset order, but a failed send re-queues its gaps behind
+        // newer ones, and an expired acquisition can bring the same offsets back. The broker
+        // rejects overlapping batches, so keep the ranges sorted and disjoint.
+        private static void MergeGap(List<AcknowledgementBatchData> gaps, long firstOffset, long lastOffset)
+        {
+            var start = gaps.Count;
+            while (start > 0 && gaps[start - 1].LastOffset + 1 >= firstOffset)
+                start--;
+            var end = start;
+            while (end < gaps.Count && gaps[end].FirstOffset <= lastOffset + 1)
+            {
+                firstOffset = Math.Min(firstOffset, gaps[end].FirstOffset);
+                lastOffset = Math.Max(lastOffset, gaps[end].LastOffset);
+                end++;
+            }
+            if (end == start + 1)
+            {
+                gaps[start] = new AcknowledgementBatchData(firstOffset, lastOffset, AcknowledgementBatchData.GapTypes);
+                return;
+            }
+            gaps.RemoveRange(start, end - start);
+            gaps.Insert(start, new AcknowledgementBatchData(firstOffset, lastOffset, AcknowledgementBatchData.GapTypes));
         }
 
         private List<AcknowledgementBatchData>? TakeGaps(List<AcknowledgementBatchData>? batches)

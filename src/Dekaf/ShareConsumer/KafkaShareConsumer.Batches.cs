@@ -233,10 +233,17 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                                 acquiredIndex, cancellationToken).ConfigureAwait(false);
                             try
                             {
+                                if (batch.Count != 0)
+                                {
+                                    nextGapOffset = TrackBatchGaps(topicPartition, partition.AcquiredRecords,
+                                        ref gapRangeIndex, batch.Storage, nextGapOffset);
+                                }
+                                // Offsets past a record cut short may hold data records, so no
+                                // later acquired offset of this partition is a gap.
+                                if (batch.Storage.TruncatedRecords)
+                                    nextGapOffset = long.MaxValue;
                                 if (batch.Count == 0)
                                     continue;
-                                nextGapOffset = TrackBatchGaps(topicPartition, partition.AcquiredRecords,
-                                    ref gapRangeIndex, batch.Storage, nextGapOffset);
                                 acknowledgements.Register(batch);
                                 _activeShareBatch = batch;
                                 yield return batch;
@@ -398,6 +405,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                 if (telemetryFetch is not null)
                     state.CompletedBytes += state.CurrentRecordBytes;
             }
+            storage.TruncatedRecords = state.ParsedCount < source.UnparsedLazyRecordCount;
             var batch = new ShareConsumeBatch<TKey, TValue>(storage);
             if (telemetryFetch is not null)
                 ShareMetrics!.Parsed(telemetryFetch, state.CompletedBytes, storage.Count);

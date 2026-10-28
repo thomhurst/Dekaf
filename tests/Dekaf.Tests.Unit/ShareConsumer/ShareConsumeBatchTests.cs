@@ -419,6 +419,30 @@ public sealed class ShareConsumeBatchTests
     }
 
     [Test]
+    public async Task Tracker_RequeuedGapsMergeWithOverlappingAndEarlierGaps()
+    {
+        using var tracker = new ShareBatchAcknowledgements<int, int>();
+        var partition = new TopicPartition("batch", 0);
+        tracker.AddGap(partition, 3, 3);
+        tracker.AddGap(partition, 10, 11);
+        var failed = tracker.Flush();
+        // The acquisitions expired, so the broker acquires the same offsets again and the
+        // parser queues them before the failed send's gaps come back.
+        tracker.AddGap(partition, 3, 4);
+        tracker.AddGap(partition, 8, 10);
+        tracker.RequeueAcknowledgements(failed);
+        tracker.AddGap(partition, 1, 1);
+
+        var wire = tracker.Flush()[partition];
+
+        // The broker rejects overlapping acknowledgement batches.
+        await Assert.That(wire.Select(static batch => (batch.FirstOffset, batch.LastOffset)))
+            .IsEquivalentTo(new (long, long)[] { (1, 1), (3, 4), (8, 11) });
+        foreach (var batch in wire)
+            await Assert.That(batch.IsGapOnly).IsTrue();
+    }
+
+    [Test]
     [Arguments(false, false, AcknowledgeType.Accept)]
     [Arguments(false, true, AcknowledgeType.Accept)]
     [Arguments(true, false, AcknowledgeType.Accept)]

@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Reflection;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
@@ -14,23 +15,33 @@ public sealed partial class ShareConsumerRenewalTests
     // marker, and offsets 5-6 have no record bytes in the response.
     private static readonly long[] GapResponseDataOffsets = [0, 2, 4];
     private static readonly (long First, long Last)[] GapResponseGaps = [(1, 1), (3, 3), (5, 6)];
-    // With a truncated tail, offsets 5-6 are a data batch the broker cut at the response
-    // byte limit. They hold records, so they must not be acknowledged as gaps.
+    // With a truncated tail, offsets 5-6 hold records the response did not carry whole,
+    // so they must not be acknowledged as gaps.
     private static readonly (long First, long Last)[] TruncatedResponseGaps = [(1, 1), (3, 3)];
 
+    public enum GapResponseTail
+    {
+        // Offsets 5-6 have no record bytes.
+        None,
+        // The broker cut the batch holding offsets 5-6 at the response byte limit.
+        TruncatedBatch,
+        // The batch at offset 4 is complete, but its second record (offset 5) is cut short.
+        TruncatedRecord
+    }
+
     [Test]
-    [Arguments(false, ShareAcknowledgementMode.Implicit, false)]
-    [Arguments(true, ShareAcknowledgementMode.Implicit, false)]
-    [Arguments(false, ShareAcknowledgementMode.Explicit, false)]
-    [Arguments(true, ShareAcknowledgementMode.Explicit, false)]
-    [Arguments(false, ShareAcknowledgementMode.Implicit, true)]
-    [Arguments(true, ShareAcknowledgementMode.Implicit, true)]
+    [Arguments(false, ShareAcknowledgementMode.Implicit, GapResponseTail.None)]
+    [Arguments(true, ShareAcknowledgementMode.Implicit, GapResponseTail.None)]
+    [Arguments(false, ShareAcknowledgementMode.Explicit, GapResponseTail.None)]
+    [Arguments(true, ShareAcknowledgementMode.Explicit, GapResponseTail.None)]
+    [Arguments(false, ShareAcknowledgementMode.Implicit, GapResponseTail.TruncatedBatch)]
+    [Arguments(true, ShareAcknowledgementMode.Implicit, GapResponseTail.TruncatedBatch)]
     public async Task Poll_ControlRecordsAndAcquiredGaps_AreNotDeliveredAndAcknowledgedAsGaps(
-        bool prepared, ShareAcknowledgementMode mode, bool truncatedTail)
+        bool prepared, ShareAcknowledgementMode mode, GapResponseTail tail)
     {
         var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
         {
-            ShareFetchResponses = new([CreateGapFetchResponse(truncatedTail)])
+            ShareFetchResponses = new([CreateGapFetchResponse(tail)])
         };
         IDeserializer<string> deserializer = prepared
             ? new PreparedWindowCountingDeserializer(int.MaxValue)
@@ -51,19 +62,20 @@ public sealed partial class ShareConsumerRenewalTests
         await Assert.That(delivered).IsEquivalentTo(GapResponseDataOffsets);
         var types = ExpandFlushedTypes(FlushPendingAcknowledgements(fixture.Consumer)[new("topic", 0)]);
         await AssertGapTypes(types, mode == ShareAcknowledgementMode.Implicit ? AcknowledgeType.Accept : null,
-            truncatedTail ? TruncatedResponseGaps : GapResponseGaps);
+            tail == GapResponseTail.None ? GapResponseGaps : TruncatedResponseGaps);
     }
 
     [Test]
-    [Arguments(ShareAcknowledgementMode.Implicit, false)]
-    [Arguments(ShareAcknowledgementMode.Explicit, false)]
-    [Arguments(ShareAcknowledgementMode.Implicit, true)]
+    [Arguments(ShareAcknowledgementMode.Implicit, GapResponseTail.None)]
+    [Arguments(ShareAcknowledgementMode.Explicit, GapResponseTail.None)]
+    [Arguments(ShareAcknowledgementMode.Implicit, GapResponseTail.TruncatedBatch)]
+    [Arguments(ShareAcknowledgementMode.Implicit, GapResponseTail.TruncatedRecord)]
     public async Task PollBatches_ControlRecordsAndAcquiredGaps_AreNotDeliveredAndAcknowledgedAsGaps(
-        ShareAcknowledgementMode mode, bool truncatedTail)
+        ShareAcknowledgementMode mode, GapResponseTail tail)
     {
         var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
         {
-            ShareFetchResponses = new([CreateGapFetchResponse(truncatedTail), CreateFetchResponse(0, 100)])
+            ShareFetchResponses = new([CreateGapFetchResponse(tail), CreateFetchResponse(0, 100)])
         };
         await using var fixture = CreateFixture(connection, mode, valueDeserializer: Serializers.String);
         PrepareForPoll(fixture.Consumer);
@@ -95,7 +107,7 @@ public sealed partial class ShareConsumerRenewalTests
         var types = ExpandFlushedTypes(sent.Select(static batch =>
             new AcknowledgementBatchData(batch.FirstOffset, batch.LastOffset, batch.AcknowledgeTypes.ToArray())).ToList());
         await AssertGapTypes(types, mode == ShareAcknowledgementMode.Implicit ? AcknowledgeType.Accept : null,
-            truncatedTail ? TruncatedResponseGaps : GapResponseGaps);
+            tail == GapResponseTail.None ? GapResponseGaps : TruncatedResponseGaps);
     }
 
     [Test]
@@ -192,7 +204,7 @@ public sealed partial class ShareConsumerRenewalTests
             .GetMethod("FlushAcknowledgements", BindingFlags.Instance | BindingFlags.NonPublic)!
             .Invoke(consumer, [false])!;
 
-    private static ShareFetchResponse CreateGapFetchResponse(bool truncatedTail = false)
+    private static ShareFetchResponse CreateGapFetchResponse(GapResponseTail tail = GapResponseTail.None)
     {
         var buffer = new ArrayBufferWriter<byte>();
         using (var compacted = new RecordBatch
@@ -224,20 +236,38 @@ public sealed partial class ShareConsumerRenewalTests
         {
             marker.Write(buffer);
         }
+        var dataStart = buffer.WrittenCount;
         using (var data = new RecordBatch
         {
             BaseOffset = 4,
-            LastOffsetDelta = 0,
-            Records = [new Record { OffsetDelta = 0, IsKeyNull = true, Value = "new-value"u8.ToArray() }]
+            LastOffsetDelta = tail == GapResponseTail.TruncatedRecord ? 1 : 0,
+            Records = tail == GapResponseTail.TruncatedRecord
+                ?
+                [
+                    new Record { OffsetDelta = 0, IsKeyNull = true, Value = "new-value"u8.ToArray() },
+                    new Record { OffsetDelta = 1, IsKeyNull = true, Value = "new-value"u8.ToArray() }
+                ]
+                : [new Record { OffsetDelta = 0, IsKeyNull = true, Value = "new-value"u8.ToArray() }]
         })
         {
             data.Write(buffer);
         }
         var recordBytes = buffer.WrittenMemory;
-        if (truncatedTail)
+        if (tail == GapResponseTail.TruncatedRecord)
+        {
+            // Cut the last record's value short and shrink the batch length to match, so the
+            // envelope is complete but the declared second record is not.
+            const int cut = 3;
+            var bytes = buffer.WrittenSpan[..^cut].ToArray();
+            var lengthField = bytes.AsSpan(dataStart + sizeof(long), sizeof(int));
+            BinaryPrimitives.WriteInt32BigEndian(lengthField,
+                BinaryPrimitives.ReadInt32BigEndian(lengthField) - cut);
+            recordBytes = bytes;
+        }
+        else if (tail == GapResponseTail.TruncatedBatch)
         {
             var tailStart = buffer.WrittenCount;
-            using (var tail = new RecordBatch
+            using (var cutBatch = new RecordBatch
             {
                 BaseOffset = 5,
                 LastOffsetDelta = 1,
@@ -248,7 +278,7 @@ public sealed partial class ShareConsumerRenewalTests
                 ]
             })
             {
-                tail.Write(buffer);
+                cutBatch.Write(buffer);
             }
             // Keep the base offset and length but cut the body, as the broker does at
             // the response byte limit.
