@@ -9,8 +9,8 @@ namespace Dekaf.Tests.Unit.Compression;
 
 /// <summary>
 /// Tests for Brotli compression codec.
-/// Note: Brotli is NOT a standard Kafka compression type. Both producer and consumer
-/// must have the Dekaf.Compression.Brotli codec installed.
+/// Note: Brotli is NOT a standard Kafka compression type, so the producer builder rejects it;
+/// the codec is used directly for client-side storage.
 /// </summary>
 public class BrotliCompressionCodecTests
 {
@@ -38,6 +38,18 @@ public class BrotliCompressionCodecTests
             .ThrowsExactly<InvalidOperationException>();
 
         await Assert.That(exception).IsSameReferenceAs(expected);
+    }
+
+    [Test]
+    public async Task UseBrotliCompression_Build_ThrowsNotSupportedException()
+    {
+        var builder = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .UseBrotliCompression();
+
+        await Assert.That(() => builder.Build())
+            .Throws<NotSupportedException>()
+            .And.HasMessageContaining("BrotliCompressionCodec");
     }
 
     #region Basic Functionality Tests

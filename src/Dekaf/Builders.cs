@@ -1357,8 +1357,8 @@ public sealed class ProducerBuilder<TKey, TValue>
             throw new NotSupportedException(
                 "Brotli compression (CompressionType.Brotli = 5) is not part of the Apache Kafka protocol specification. " +
                 "Standard Kafka brokers will reject produce requests using this compression type. " +
-                "Brotli is only supported for client-side use cases such as local storage or inter-service communication " +
-                "where both producer and consumer use Dekaf with the Dekaf.Compression.Brotli package installed. " +
+                "Installing Dekaf.Compression.Brotli on both clients does not change this; use BrotliCompressionCodec " +
+                "directly for client-side use cases such as local or custom storage. " +
                 "For standard Kafka broker communication, use Gzip, Snappy, Lz4, or Zstd instead.");
 
         if (_transactionalId is not null && !_enableIdempotence)

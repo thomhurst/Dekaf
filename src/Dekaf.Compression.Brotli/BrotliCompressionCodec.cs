@@ -9,29 +9,31 @@ namespace Dekaf.Compression.Brotli;
 /// Brotli compression codec using the built-in <see cref="BrotliStream"/> from <c>System.IO.Compression</c>.
 /// <para>
 /// <strong>Important:</strong> Brotli is NOT a standard Kafka compression type.
-/// Standard Kafka clients (Java, librdkafka, Confluent.Kafka) do not support Brotli.
-/// Both the producer and consumer must have the <c>Dekaf.Compression.Brotli</c> package installed
-/// for messages to be compressed and decompressed correctly.
+/// Standard Kafka brokers reject produce requests that use it, so the producer builder rejects
+/// <see cref="CompressionType.Brotli"/> with a <see cref="NotSupportedException"/> from <c>Build()</c>.
+/// Installing <c>Dekaf.Compression.Brotli</c> on both the producer and the consumer does not enable
+/// Brotli on standard Kafka brokers. Standard Kafka clients (Java, librdkafka, Confluent.Kafka) do not support Brotli either.
+/// </para>
+/// <para>
+/// Use the codec directly for client-side scenarios such as local or custom storage, where Dekaf
+/// performs both compression and decompression. For Kafka topics, use Gzip, Snappy, Lz4, or Zstd.
 /// </para>
 /// <para>
 /// Brotli provides excellent compression ratios, especially for text-heavy payloads,
-/// but has higher CPU cost than LZ4 or Snappy. Consider using Zstd for a better
-/// balance of compression ratio and speed in most Kafka workloads.
+/// but has higher CPU cost than LZ4 or Snappy.
 /// </para>
 /// </summary>
 /// <example>
 /// <code>
-/// // Register the Brotli codec with default settings
-/// CompressionCodecRegistry.Default.AddBrotli();
+/// var codec = new BrotliCompressionCodec(CompressionLevel.SmallestSize);
 ///
-/// // Register with a specific compression level
-/// CompressionCodecRegistry.Default.AddBrotli(CompressionLevel.SmallestSize);
+/// // Compress a payload for local or custom storage
+/// var compressed = new ArrayBufferWriter&lt;byte&gt;();
+/// codec.Compress(new ReadOnlySequence&lt;byte&gt;(payload), compressed);
 ///
-/// // Use with a producer builder
-/// var producer = Kafka.CreateProducer&lt;string, string&gt;()
-///     .WithBootstrapServers("localhost:9092")
-///     .UseBrotliCompression()
-///     .Build();
+/// // Decompress it later with the same codec
+/// var decompressed = new ArrayBufferWriter&lt;byte&gt;();
+/// codec.Decompress(new ReadOnlySequence&lt;byte&gt;(compressed.WrittenMemory), decompressed);
 /// </code>
 /// </example>
 public sealed class BrotliCompressionCodec : ICompressionCodec
@@ -92,8 +94,11 @@ public static class BrotliProducerBuilderExtensions
     /// <summary>
     /// Configures the producer to use Brotli compression.
     /// <para>
-    /// <strong>Important:</strong> Brotli is NOT a standard Kafka compression type.
-    /// Both the producer and consumer must have the <c>Dekaf.Compression.Brotli</c> package installed.
+    /// <strong>Important:</strong> Brotli is NOT a standard Kafka compression type, and standard Kafka brokers
+    /// reject produce requests that use it. <c>Build()</c> therefore throws a <see cref="NotSupportedException"/>
+    /// for a producer configured with this method, even when both clients have the
+    /// <c>Dekaf.Compression.Brotli</c> package installed. Use <see cref="BrotliCompressionCodec"/> directly for
+    /// local or custom storage, and Gzip, Snappy, Lz4, or Zstd for Kafka topics.
     /// </para>
     /// </summary>
     public static ProducerBuilder<TKey, TValue> UseBrotliCompression<TKey, TValue>(this ProducerBuilder<TKey, TValue> builder)
@@ -111,8 +116,9 @@ public static class BrotliCompressionExtensions
     /// Registers the Brotli compression codec with the specified .NET compression level.
     /// <para>
     /// <strong>Important:</strong> Brotli is NOT a standard Kafka compression type.
-    /// Both the producer and consumer must have the <c>Dekaf.Compression.Brotli</c> package installed.
-    /// Standard Kafka clients (Java, librdkafka, Confluent.Kafka) cannot decompress Brotli-compressed messages.
+    /// Registering the codec does not enable Brotli on standard Kafka brokers: the producer builder still rejects
+    /// <see cref="CompressionType.Brotli"/>. Standard Kafka clients (Java, librdkafka, Confluent.Kafka)
+    /// cannot decompress Brotli-compressed messages.
     /// </para>
     /// </summary>
     /// <param name="registry">The compression codec registry.</param>

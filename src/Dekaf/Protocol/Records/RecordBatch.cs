@@ -2075,7 +2075,8 @@ public enum CompressionType
     /// Apache Kafka protocol specification. Value 5 is not assigned by the Kafka protocol;
     /// Kafka brokers will not understand this codec natively and will reject produce requests
     /// that use it unless a custom broker plugin is installed.
-    /// Both producer and consumer must have the <c>Dekaf.Compression.Brotli</c> codec installed.
+    /// The Dekaf producer builder rejects this type, even when both clients have the
+    /// <c>Dekaf.Compression.Brotli</c> codec installed; use the codec directly for client-side storage.
     /// Standard Kafka clients (Java, librdkafka, Confluent.Kafka) cannot produce or consume
     /// messages compressed with this type.
     /// </summary>
