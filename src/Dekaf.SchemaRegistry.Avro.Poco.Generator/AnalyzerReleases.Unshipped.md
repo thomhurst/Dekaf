@@ -19,3 +19,4 @@ DKAVRO012 | Dekaf.Avro | Error | Distinct POCO records map to the same Avro full
 DKAVRO013 | Dekaf.Avro | Error | Inherited POCO record members are unsupported
 DKAVRO014 | Dekaf.Avro | Error | Duplicate CLR enum values are unsupported
 DKAVRO015 | Dekaf.Avro | Error | Empty CLR enums are unsupported
+DKAVRO016 | Dekaf.Avro | Error | Empty-namespace named types cannot nest inside namespaced records

@@ -143,6 +143,15 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         DiagnosticSeverity.Error,
         isEnabledByDefault: true);
 
+    private static readonly DiagnosticDescriptor NestedEmptyNamespace = new(
+        "DKAVRO016",
+        "Nested Avro type has an empty namespace",
+        "Member '{0}' uses Avro type '{1}' with an empty namespace inside namespace '{2}'; " +
+        "assign a non-empty namespace to the nested type or an empty namespace to the enclosing record",
+        "Dekaf.Avro",
+        DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         var records = context.SyntaxProvider.ForAttributeWithMetadataName(
@@ -341,7 +350,7 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 var precision = GetNamedInt(attribute, "Precision");
                 var scale = GetNamedInt(attribute, "Scale");
                 var logicalType = GetNamedString(attribute, "LogicalType");
-                var type = BuildType(memberType, unionTypes, logicalType, precision, scale, member);
+                var type = BuildType(memberType, unionTypes, logicalType, precision, scale, member, avroNamespace);
                 if (type is null)
                     continue;
 
@@ -522,7 +531,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             string? logicalType,
             int precision,
             int scale,
-            ISymbol member)
+            ISymbol member,
+            string enclosingNamespace)
         {
             if (!unionTypes.IsDefaultOrEmpty)
             {
@@ -573,7 +583,7 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                             $"union branch does not implement '{symbol.ToDisplayString()}'");
                         return null;
                     }
-                    var branch = BuildType(unionType, default, null, 0, 0, member);
+                    var branch = BuildType(unionType, default, null, 0, 0, member, enclosingNamespace);
                     if (branch is null)
                         return null;
                     branches.Add(branch.WithoutNullable());
@@ -607,7 +617,7 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             if (symbol is INamedTypeSymbol named &&
                 named.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T)
             {
-                var inner = BuildType(named.TypeArguments[0], default, logicalType, precision, scale, member);
+                var inner = BuildType(named.TypeArguments[0], default, logicalType, precision, scale, member, enclosingNamespace);
                 return inner is null ? null : TypeModel.Nullable(symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat), inner);
             }
 
@@ -631,7 +641,7 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     model = TypeModel.Primitive(TypeKindModel.Bytes, display);
                 else
                 {
-                    var item = BuildType(array.ElementType, default, null, 0, 0, member);
+                    var item = BuildType(array.ElementType, default, null, 0, 0, member, enclosingNamespace);
                     if (item is not null)
                         model = TypeModel.Collection(TypeKindModel.Array, display, item);
                 }
@@ -642,14 +652,14 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 var genericName = generic.OriginalDefinition.ToDisplayString();
                 if (genericName == "System.Collections.Generic.List<T>")
                 {
-                    var item = BuildType(generic.TypeArguments[0], default, null, 0, 0, member);
+                    var item = BuildType(generic.TypeArguments[0], default, null, 0, 0, member, enclosingNamespace);
                     if (item is not null)
                         model = TypeModel.Collection(TypeKindModel.List, display, item);
                 }
                 else if (genericName == "System.Collections.Generic.Dictionary<TKey, TValue>" &&
                          generic.TypeArguments[0].SpecialType == SpecialType.System_String)
                 {
-                    var item = BuildType(generic.TypeArguments[1], default, null, 0, 0, member);
+                    var item = BuildType(generic.TypeArguments[1], default, null, 0, 0, member, enclosingNamespace);
                     if (item is not null)
                         model = TypeModel.Collection(TypeKindModel.Map, display, item);
                 }
@@ -745,6 +755,17 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     symbol.SpecialType == SpecialType.System_Decimal
                         ? "decimal fields require Precision between 1 and 29 and Scale between 0 and min(Precision, 28)"
                         : "use a supported primitive, enum, array, List<T>, Dictionary<string,T>, union, or [AvroRecord] type");
+                return null;
+            }
+
+            // Apache.Avro inherits the enclosing namespace even for an explicit empty namespace.
+            // Check every use, including references to records already built in another namespace.
+            if (enclosingNamespace.Length != 0 &&
+                model.Kind is TypeKindModel.Record or TypeKindModel.Enum &&
+                model.FullName!.IndexOf('.') < 0)
+            {
+                Error(NestedEmptyNamespace, member.Locations.FirstOrDefault(), member.Name,
+                    model.FullName, enclosingNamespace);
                 return null;
             }
 
