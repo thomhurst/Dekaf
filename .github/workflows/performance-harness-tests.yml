@@ -1,6 +1,8 @@
 name: Performance tooling tests
 on:
   pull_request:
+    # Drafts skip the job; `ready_for_review` runs it and `converted_to_draft` cancels a run in flight.
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
     paths:
       - '.github/scripts/**'
       - '.github/benchmarks/README.md'
@@ -15,11 +17,15 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: performance-harness-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 defaults:
   run:
     shell: bash
 jobs:
   test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:

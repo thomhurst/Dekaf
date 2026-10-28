@@ -9,8 +9,12 @@ on:
   # This trigger runs in the context of the base repository, so the checked-out
   # PR head is UNTRUSTED CODE. Keep permissions minimal, never check the head
   # out at the workspace root, and never grant Claude an unrestricted tool.
+  #
+  # Drafts are reviewed too: agent PRs stay in draft until the reviewers approve their head, so
+  # build/test CI runs once on an approved head. Leaving draft keeps the same head, so
+  # `ready_for_review` does not trigger a second review.
   pull_request_target:
-    types: [opened, synchronize, ready_for_review, reopened]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -29,8 +33,7 @@ jobs:
       (
         github.actor != 'claude[bot]' &&
         github.event.pull_request.user.login != 'dependabot[bot]' &&
-        !startsWith(github.event.pull_request.head.ref, 'renovate/') &&
-        github.event.pull_request.draft == false
+        !startsWith(github.event.pull_request.head.ref, 'renovate/')
       )
 
     runs-on: ubuntu-latest
@@ -121,7 +124,7 @@ jobs:
               * Design/architecture, maintainability, better abstractions and anti-patterns
             - Verify every finding against the actual code before reporting it. Do not invent issues to fill space — if the code is sound, a brief acknowledgement is a valid review; say so rather than manufacturing suggestions.
             - When you do find an issue, suggest a concrete better approach and explain WHY it is better, not just WHAT to change.
-            - Review this exact head even for a trivial change or when an earlier review comment exists. Every run requires its own posted verdict; neither condition permits skipping the review or its posting step.
+            - Review this exact head even for a trivial change, a draft pull request, or when an earlier review comment exists. Every run requires its own posted verdict; none of these permits skipping the review or its posting step.
             - ALWAYS post a review, even if no issues are found. If the code is good, acknowledge it.
             - Compare the current state of the PR against any previous PR comments to make sure they have been addressed.
             - You MUST post your review before finishing, by running:

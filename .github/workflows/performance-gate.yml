@@ -6,12 +6,13 @@ run-name: 'Performance gate ${{ github.event.pull_request.number && format(''PR 
 # add or change fixtures without landing them on main first. Thresholds, the repeat rule and
 # the class selection live in .github/scripts/performance_gate.py.
 #
-# A pull request is measured once when it opens (or leaves draft). Later pushes are measured only
-# while the PR carries the `performance` label; adding the label measures the current head.
+# A pull request is measured once when it opens ready for review or leaves draft; drafts are never
+# measured. Later pushes are measured only while the PR carries the `performance` label; adding the
+# label measures the current head. Converting back to draft cancels an in-flight measurement.
 # Unrelated label and push events get their own concurrency group so they never cancel a run.
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, labeled]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled]
     paths:
       - 'src/**'
       - 'tools/Dekaf.Benchmarks/**'
@@ -42,7 +43,8 @@ concurrency:
     performance-gate-${{ github.event.pull_request.number || github.run_id }}${{ !(github.event_name == 'workflow_dispatch'
     || github.event.pull_request.draft == false && (contains(fromJSON('["opened","reopened","ready_for_review"]'), github.event.action)
     || github.event.action == 'labeled' && github.event.label.name == 'performance'
-    || github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'performance')))
+    || github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'performance'))
+    || github.event.action == 'converted_to_draft')
     && format('-ignored-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 env:
@@ -58,7 +60,7 @@ env:
 jobs:
   plan:
     name: Select benchmark classes
-    # Keep in sync with the concurrency group above.
+    # Keep in sync with the concurrency group above, which also claims `converted_to_draft` only to cancel.
     if: >-
       github.event_name == 'workflow_dispatch'
       || github.event.pull_request.draft == false && (contains(fromJSON('["opened","reopened","ready_for_review"]'), github.event.action)

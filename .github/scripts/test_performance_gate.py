@@ -419,7 +419,8 @@ class WorkflowTests(unittest.TestCase):
     def test_gate_workflow_runs_one_same_vm_job_per_class_and_repeats_regressions(self):
         workflow = WORKFLOW.read_text(encoding='utf-8')
         measure = workflow.split('\n  measure:\n', 1)[1].split('\n  gate:\n', 1)[0]
-        self.assertIn("types: [opened, synchronize, reopened, ready_for_review, labeled]", workflow)
+        self.assertIn("types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled]", workflow)
+        self.assertIn("|| github.event.action == 'converted_to_draft')", workflow)
         self.assertIn("github.event.action == 'labeled' && github.event.label.name == 'performance'", workflow)
         self.assertIn("github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'performance')", workflow)
         self.assertIn("format('-ignored-{0}', github.run_id)", workflow)

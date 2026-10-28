@@ -3,6 +3,9 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    # Drafts skip every job (see `changes`); `ready_for_review` starts CI on the reviewed head and
+    # `converted_to_draft` cancels an in-flight run through the concurrency group below.
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   workflow_dispatch:
     inputs:
       publish_nuget:
@@ -34,6 +37,8 @@ jobs:
   # skipped jobs as success, so branch protection keeps working.
   changes:
     name: Detect Changes
+    # Skip draft PRs before renting any runner; every other job depends on this one.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -938,11 +943,12 @@ jobs:
           PYTHONPATH: .github/scripts
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
 
-      - name: Test PR Merge Gate
+      - name: Test PR Merge Gate and Loop Survey
         shell: pwsh
         run: |
           ./scripts/Test-AssertPrGreenReviewHeuristics.ps1
           ./scripts/Test-AssertPrGreenReviewThreads.ps1
+          ./scripts/Test-IssuePrLoop.ps1
 
       - name: Test Integration Category Runner
         run: bash scripts/tests/run-integration-categories-tests.sh
@@ -1035,7 +1041,7 @@ jobs:
   ci-passed:
     name: CI Passed
     needs: [changes, doc-snippets, build, gssapi-packages, unit-net8, unit-net10, aspire-hosting, leak-gates-debug, integration, eventhubs-integration, redpanda-integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality]
-    if: always()
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
