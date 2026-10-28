@@ -214,13 +214,20 @@ jobs:
         run: |
           # shellcheck disable=SC2086
           phase() {
-            local name=$1 role=$2
+            local name=$1 role=$2 code=0
             shift 2
             (
               cd "$RUNNER_TEMP/gate-$role/tools/Dekaf.Benchmarks"
               dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- \
                 --filter "$@" $BDN_SETTINGS --artifacts "$GATE/$name" > "$GATE/$name.log" 2>&1
-            )
+            ) || code=$?
+            # A baseline case can fail where the PR fixes it (a hang or an exception). The screen reports
+            # such cases as not compared and still rejects a baseline phase that exported nothing.
+            if [[ $code -ne 0 && $role == A ]]; then
+              echo "::warning::Baseline phase $name exited with $code; cases it failed to measure are reported, not compared."
+              return 0
+            fi
+            return $code
           }
           gate=".github/scripts/performance_gate.py"
           FIXTURE_DIFF=()
