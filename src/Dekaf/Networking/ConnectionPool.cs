@@ -2509,13 +2509,14 @@ public sealed partial class ConnectionPool :
     }
 
     /// <summary>
-    /// True when <paramref name="connection"/> was opened for another broker ID (a bootstrap
-    /// connection, in practice) while the handshake for <paramref name="brokerId"/> would carry
-    /// the KIP-1242 identity. Without a known identity, reuse is unchanged.
+    /// True when <paramref name="connection"/> is a bootstrap connection while the handshake for
+    /// <paramref name="brokerId"/> would carry the KIP-1242 identity. Without a known identity,
+    /// reuse is unchanged. Broker connections stay shared when several broker IDs advertise one
+    /// endpoint (a proxy or load balancer); retiring them would churn sockets on every lookup.
     /// </summary>
     private bool SkipsExpectedBrokerIdentity(IKafkaConnection connection, int brokerId) =>
         brokerId >= 0
-        && connection.BrokerId != brokerId
+        && connection.BrokerId < 0
         && _metadataClusterIdentity.GetExpectedBrokerIdentity(brokerId) is not null;
 
     private bool HasBrokerEndpointChanged(int brokerId, string host, int port, out BrokerInfo current)

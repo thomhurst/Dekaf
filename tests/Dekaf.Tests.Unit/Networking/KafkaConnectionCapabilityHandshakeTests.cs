@@ -918,6 +918,43 @@ public class KafkaConnectionCapabilityHandshakeTests
         await Assert.That(requests.All(static r => r.Connection == 0)).IsTrue();
     }
 
+    [Test]
+    [Timeout(30_000)]
+    public async Task ConnectionPool_Kip1242_BrokersSharingEndpointReuseOneBrokerConnection(
+        CancellationToken cancellationToken)
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        using var serverCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var requests = new ConcurrentQueue<ApiVersionsRequestRecord>();
+        var serverTask = ServeApiVersionsConnectionsAsync(listener, connectionCount: 2, requests, serverCts.Token);
+
+        await using var pool = new ConnectionPool(connectionOptions: new ConnectionOptions
+        {
+            ReconnectBackoff = TimeSpan.Zero,
+            ReconnectBackoffMax = TimeSpan.Zero
+        });
+        var identityPool = (IMetadataClusterIdentityPool)pool;
+        identityPool.ConfigureMetadataClusterCheck(enabled: true);
+        identityPool.UpdateMetadataClusterId("cluster-a");
+        // A proxy or load balancer advertises one endpoint for several broker IDs.
+        pool.RegisterBroker(1, "127.0.0.1", port);
+        pool.RegisterBroker(2, "127.0.0.1", port);
+
+        var broker1 = await pool.GetConnectionAsync(1, cancellationToken);
+
+        // Alternating lookups share the broker connection instead of retiring and reopening it.
+        await Assert.That(await pool.GetConnectionAsync(2, cancellationToken)).IsSameReferenceAs(broker1);
+        await Assert.That(await pool.GetConnectionAsync(1, cancellationToken)).IsSameReferenceAs(broker1);
+        await Assert.That(await pool.GetConnectionAsync(2, cancellationToken)).IsSameReferenceAs(broker1);
+        await Assert.That(broker1.IsConnected).IsTrue();
+
+        await serverCts.CancelAsync();
+        await serverTask;
+        await Assert.That(requests.All(static r => r.Connection == 0)).IsTrue();
+    }
+
     private readonly record struct ApiVersionsRequestRecord(int Connection, short Version, string? ClusterId, int NodeId);
 
     /// <summary>
