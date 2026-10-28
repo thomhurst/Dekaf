@@ -37,6 +37,10 @@ public sealed class RetryHelperTests
             ["broker:9092"], TimeSpan.FromSeconds(1), new DnsResolutionException("broker", 9092)), false, false);
         yield return ("cancellation", static () => new OperationCanceledException(), false, false);
         yield return ("task cancellation", static () => new TaskCanceledException(), false, false);
+        yield return ("cancellation with transport cause", static () => new OperationCanceledException("cancelled", new IOException("transport")), false, false);
+        yield return ("task cancellation with transport cause", static () => new TaskCanceledException("cancelled", new SocketException((int)SocketError.ConnectionReset)), false, false);
+        yield return ("wrapped cancellation with transport cause", static () => new InvalidOperationException("wrapper", new OperationCanceledException("cancelled", new TimeoutException("transport"))), false, false);
+        yield return ("aggregate cancellation with transport cause", static () => new AggregateException(new OperationCanceledException("cancelled", new IOException("transport"))), false, false);
         yield return ("disposed", static () => new ObjectDisposedException("connection"), false, false);
         yield return ("invalid state", static () => new InvalidOperationException("invalid state"), false, false);
         yield return ("wrapped transport", static () => new InvalidOperationException("wrapper", new IOException("transport")), false, true);
@@ -142,6 +146,39 @@ public sealed class RetryHelperTests
                 new SocketException((int)SocketError.HostNotFound)));
 
         await Assert.That(RetryHelper.IsRetriableRequestFailure(exception)).IsFalse();
+    }
+
+    [Test]
+    public async Task CountMode_OperationCancellationWithTransportCause_IsNotRetried()
+    {
+        // The operation's own token was cancelled while the retry loop's token stays live; the
+        // transport cause it carries must not turn the cancellation into a retry.
+        await using var metadataManager = CreateUnavailableMetadataManager();
+        var attempts = 0;
+        var retries = 0;
+
+        var exception = await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await RetryHelper.WithRetryAsync(
+                () =>
+                {
+                    Interlocked.Increment(ref attempts);
+                    return ValueTask.FromException<int>(
+                        new OperationCanceledException("cancelled", new IOException("transport")));
+                },
+                metadataManager,
+                CancellationToken.None,
+                retryBackoffMs: 0,
+                retryBackoffMaxMs: 0,
+                onRetry: _ =>
+                {
+                    Interlocked.Increment(ref retries);
+                    return ValueTask.CompletedTask;
+                },
+                maxRetries: 3));
+
+        await Assert.That(exception!.InnerException).IsTypeOf<IOException>();
+        await Assert.That(attempts).IsEqualTo(1);
+        await Assert.That(retries).IsEqualTo(0);
     }
 
     [Test]

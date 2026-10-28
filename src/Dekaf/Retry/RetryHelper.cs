@@ -376,6 +376,11 @@ internal static class RetryHelper
 
     internal static bool IsRetriableRequestFailure(Exception exception)
     {
+        // Cancellation is never a transport failure, even when it wraps one; deadline mode's
+        // TransportFailureClassifier applies the same rule.
+        if (exception is OperationCanceledException)
+            return false;
+
         // Request retries respect the outer Kafka error, including terminal operation
         // deadlines. Broker failover can retry a KafkaTimeoutException within its own budget.
         if (exception is KafkaException kafkaException)
