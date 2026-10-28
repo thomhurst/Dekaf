@@ -24,6 +24,52 @@ public class AcknowledgementTrackerTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ReleaseUndeliveredRecords_KeepsGapsAndCloseFlushDoesNotReleaseThem(bool releaseFirst)
+    {
+        var tracker = new AcknowledgementTracker();
+        var partition = new TopicPartition("topic", 0);
+        if (releaseFirst)
+            tracker.ReleaseUndeliveredRecords(partition, 10, 19);
+        tracker.TrackGapRecords(partition, 12, 13);
+        tracker.TrackGapRecords(partition, 16, 16);
+        tracker.TrackDeliveredRecords(partition, 20, 20);
+        if (!releaseFirst)
+            tracker.ReleaseUndeliveredRecords(partition, 10, 19);
+
+        var batches = tracker.Flush(releaseImplicit: true)[partition];
+
+        var types = new Dictionary<long, byte>();
+        foreach (var batch in batches)
+            for (var offset = batch.FirstOffset; offset <= batch.LastOffset; offset++)
+                types.Add(offset, batch.GetAcknowledgeType(checked((int)(offset - batch.FirstOffset))));
+        var gap = (byte)AcknowledgeType.Gap;
+        var release = (byte)AcknowledgeType.Release;
+        await Assert.That(types).IsEquivalentTo(new Dictionary<long, byte>
+        {
+            [10] = release, [11] = release, [12] = gap, [13] = gap, [14] = release, [15] = release,
+            [16] = gap, [17] = release, [18] = release, [19] = release, [20] = release
+        });
+    }
+
+    [Test]
+    public async Task TrackGapRecords_FlushesSingleTypeGapBatch()
+    {
+        var tracker = new AcknowledgementTracker();
+        var partition = new TopicPartition("topic", 0);
+        tracker.TrackGapRecords(partition, 100, 1_000_099);
+
+        var batch = tracker.Flush()[partition].Single();
+
+        await Assert.That(batch.FirstOffset).IsEqualTo(100);
+        await Assert.That(batch.LastOffset).IsEqualTo(1_000_099);
+        await Assert.That(batch.AcknowledgeTypes.Length).IsEqualTo(1);
+        await Assert.That(batch.IsGapOnly).IsTrue();
+        await Assert.That(batch.PublicAcknowledgeTypes).IsNotSameReferenceAs(batch.AcknowledgeTypes);
+    }
+
+    [Test]
     public async Task FlushForPoll_DoesNotReuseAnOutstandingSnapshot()
     {
         var tracker = new AcknowledgementTracker();

@@ -63,9 +63,20 @@ internal sealed class AcknowledgementTracker
 
     // Subscription changes can relinquish whole acquired ranges without allocating one
     // explicit acknowledgement per undisclosed record. Explicit caller outcomes take priority.
+    // Gaps keep their outcome: releasing one would only make the broker acquire it again.
     internal void ReleaseUndeliveredRecords(TopicPartition tp, long firstOffset, long lastOffset)
     {
-        GetOrAddPartition(tp).TrackRange(firstOffset, lastOffset, AcknowledgeType.Release);
+        GetOrAddPartition(tp).TrackRangeAroundGaps(firstOffset, lastOffset, AcknowledgeType.Release);
+    }
+
+    /// <summary>
+    /// Tracks acquired offsets that carry no data record (control records or compacted
+    /// offsets). They are acknowledged as <see cref="AcknowledgeType.Gap"/> at the next
+    /// acknowledgement boundary in every acknowledgement mode.
+    /// </summary>
+    internal void TrackGapRecords(TopicPartition tp, long firstOffset, long lastOffset)
+    {
+        GetOrAddPartition(tp).TrackRange(firstOffset, lastOffset, AcknowledgeType.Gap);
     }
 
     /// <summary>
@@ -346,6 +357,37 @@ internal sealed class AcknowledgementTracker
             InsertRange(incoming);
         }
 
+        internal void TrackRangeAroundGaps(long firstOffset, long lastOffset, AcknowledgeType type)
+        {
+            // Release paths are cold. Rescan after each insertion because it can shift ranges.
+            var next = firstOffset;
+            while (next <= lastOffset)
+            {
+                AckRange? gap = null;
+                foreach (var range in _ranges)
+                {
+                    if (range.AcknowledgeType == AcknowledgeType.Gap
+                        && range.LastOffset >= next && range.FirstOffset <= lastOffset)
+                    {
+                        gap = range;
+                        break;
+                    }
+                }
+
+                if (gap is not { } found)
+                {
+                    TrackRange(next, lastOffset, type);
+                    return;
+                }
+
+                if (found.FirstOffset > next)
+                    TrackRange(next, found.FirstOffset - 1, type);
+                if (found.LastOffset >= lastOffset)
+                    return;
+                next = found.LastOffset + 1;
+            }
+        }
+
         private void InsertRange(AckRange incoming)
         {
             var index = 0;
@@ -458,6 +500,8 @@ internal sealed class AcknowledgementTracker
             // need no per-offset storage; explicit outcomes still use the mixed path.
             if (range.AcknowledgeType == AcknowledgeType.Release && _explicitAcks is null)
                 return new(range.FirstOffset, range.LastOffset, AcknowledgementBatchData.ReleaseTypes);
+            if (range.AcknowledgeType == AcknowledgeType.Gap && _explicitAcks is null)
+                return new(range.FirstOffset, range.LastOffset, AcknowledgementBatchData.GapTypes);
             var acknowledgeTypes = new byte[length];
             Array.Fill(acknowledgeTypes, (byte)(range.AcknowledgeType == ImplicitDelivery
                 ? implicitDisposition
@@ -566,9 +610,13 @@ internal sealed class AcknowledgementTracker
 internal readonly record struct AcknowledgementBatchData(long FirstOffset, long LastOffset, byte[] AcknowledgeTypes)
 {
     internal static readonly byte[] ReleaseTypes = [(byte)AcknowledgeType.Release];
+    internal static readonly byte[] GapTypes = [(byte)AcknowledgeType.Gap];
     private static readonly IReadOnlyList<byte> ReadOnlyReleaseTypes = System.Array.AsReadOnly(ReleaseTypes);
+    private static readonly IReadOnlyList<byte> ReadOnlyGapTypes = System.Array.AsReadOnly(GapTypes);
     internal IReadOnlyList<byte> PublicAcknowledgeTypes => ReferenceEquals(AcknowledgeTypes, ReleaseTypes)
-        ? ReadOnlyReleaseTypes : AcknowledgeTypes;
+        ? ReadOnlyReleaseTypes
+        : ReferenceEquals(AcknowledgeTypes, GapTypes) ? ReadOnlyGapTypes : AcknowledgeTypes;
+    internal bool IsGapOnly => AcknowledgeTypes.Length == 1 && AcknowledgeTypes[0] == (byte)AcknowledgeType.Gap;
     internal int OffsetCount => AcknowledgeTypes.Length == 1
         ? checked((int)(LastOffset - FirstOffset + 1)) : AcknowledgeTypes.Length;
     internal byte GetAcknowledgeType(int index) => AcknowledgeTypes.Length == 1 ? AcknowledgeTypes[0] : AcknowledgeTypes[index];

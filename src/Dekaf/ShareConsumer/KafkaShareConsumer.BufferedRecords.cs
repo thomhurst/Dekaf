@@ -177,6 +177,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                     return true;
                 continue;
             }
+            else if (partition.AcquiredRecords.Count != 0)
+            {
+                // Acquired offsets without record bytes have no data record to deliver.
+                var rangeIndex = 0;
+                TrackAcquiredGaps(new TopicPartition(topicInfo.Name, partition.PartitionIndex),
+                    partition.AcquiredRecords, ref rangeIndex, partition.AcquiredRecords[0].FirstOffset,
+                    partition.AcquiredRecords[partition.AcquiredRecords.Count - 1].LastOffset);
+            }
 
             AdvancePendingPartition();
         }
@@ -316,7 +324,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
             ? parserState.NextBatchByteOffset - RecordBatch.BatchBodyOffset - batch.BatchLength
             : parserState.NextBatchByteOffset,
         RecordIndex = parserState.RecordIndex,
-        AcquiredRecordIndex = parserState.AcquiredRecordIndex
+        AcquiredRecordIndex = parserState.AcquiredRecordIndex,
+        NextGapOffset = parserState.NextGapOffset,
+        GapRangeIndex = parserState.GapRangeIndex
     };
 
     private void CompleteBufferedParsing(ref DeserializerPreparationParserState parserState,

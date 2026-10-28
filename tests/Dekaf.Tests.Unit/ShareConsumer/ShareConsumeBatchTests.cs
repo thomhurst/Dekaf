@@ -148,8 +148,14 @@ public sealed class ShareConsumeBatchTests
         }
         var wire = tracker.Flush();
         var submitted = wire[new TopicPartition("batch", 0)];
-        await Assert.That(submitted).HasSingleItem();
-        await Assert.That(submitted[0].AcknowledgeTypes).IsEquivalentTo(new byte[] { 1, 0, 1 });
+        // Type 0 is GAP on the wire, which archives the record. Offset 101 must be absent.
+        await Assert.That(submitted.Count).IsEqualTo(2);
+        await Assert.That(submitted[0].FirstOffset).IsEqualTo(100);
+        await Assert.That(submitted[0].LastOffset).IsEqualTo(100);
+        await Assert.That(submitted[0].AcknowledgeTypes).IsEquivalentTo(new byte[] { 1 });
+        await Assert.That(submitted[1].FirstOffset).IsEqualTo(102);
+        await Assert.That(submitted[1].LastOffset).IsEqualTo(102);
+        await Assert.That(submitted[1].AcknowledgeTypes).IsEquivalentTo(new byte[] { 1 });
         tracker.ApplySuccessfulAcknowledgements(wire);
         batch.Dispose();
         tracker.Prune();
@@ -716,8 +722,14 @@ public sealed class ShareConsumeBatchTests
         foreach (var record in replacement)
             replacement.Acknowledge(record, AcknowledgeType.Release);
         var wire = tracker.Flush();
-        await Assert.That(wire[original.TopicPartition][0].AcknowledgeTypes)
-            .IsEquivalentTo(new byte[] { 2, 0, 2, 0, 2, 0, 2 });
+        // The renewed odd offsets stay out of the payload; type 0 would archive them as gaps.
+        var released = wire[original.TopicPartition];
+        await Assert.That(released.Select(static batch => batch.FirstOffset)).IsEquivalentTo(new long[] { 100, 102, 104, 106 });
+        foreach (var batch in released)
+        {
+            await Assert.That(batch.LastOffset).IsEqualTo(batch.FirstOffset);
+            await Assert.That(batch.AcknowledgeTypes).IsEquivalentTo(new byte[] { 2 });
+        }
         tracker.ApplySuccessfulAcknowledgements(wire);
         replacement.Dispose();
 

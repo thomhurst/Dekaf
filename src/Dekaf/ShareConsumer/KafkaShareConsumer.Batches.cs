@@ -202,14 +202,24 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                         if (detached is not null
                             && !assignment.Contains(new TopicPartition(topicInfo.Name, partition.PartitionIndex)))
                             continue;
+                        var topicPartition = new TopicPartition(topicInfo.Name, partition.PartitionIndex);
                         var byteOffset = 0;
                         var acquiredIndex = 0;
                         var previousBatchOffset = long.MinValue;
+                        // Acquired offsets below this cursor without a delivered record are gaps.
+                        var nextGapOffset = 0L;
+                        var gapRangeIndex = 0;
                         // Batch-optimized acquisition and independent broker responses may
                         // exceed the request budget. Drain every acquired batch while its
                         // response frame is owned, before starting another fetch.
                         while (TryReadBatch(partition.RecordBytes, ref byteOffset, out var source))
                         {
+                            // Control batches (transaction markers) are never delivered.
+                            if ((source!.Attributes & RecordBatchAttributes.IsControlBatch) != 0)
+                            {
+                                source.DisposeAndReturnUnownedConsumerBatch();
+                                continue;
+                            }
                             // Ordered batches share a cursor instead of revisiting every
                             // preceding acquisition range. Restart for an out-of-order batch.
                             if (source!.BaseOffset < previousBatchOffset)
@@ -219,13 +229,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                                 && partition.AcquiredRecords[acquiredIndex].LastOffset < source.BaseOffset)
                                 acquiredIndex++;
                             var batch = await ParseRecordBatchAsync(
-                                new TopicPartition(topicInfo.Name, partition.PartitionIndex),
-                                source!, partition.AcquiredRecords, source!.UnparsedLazyRecordCount,
+                                topicPartition, source!, partition.AcquiredRecords, source!.UnparsedLazyRecordCount,
                                 acquiredIndex, cancellationToken).ConfigureAwait(false);
                             try
                             {
                                 if (batch.Count == 0)
                                     continue;
+                                nextGapOffset = TrackBatchGaps(topicPartition, partition.AcquiredRecords,
+                                    ref gapRangeIndex, batch.Storage, nextGapOffset);
                                 acknowledgements.Register(batch);
                                 _activeShareBatch = batch;
                                 yield return batch;
@@ -239,10 +250,43 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                                 yield break;
                             cancellationToken.ThrowIfCancellationRequested();
                         }
+                        // Every batch is walked; the remaining acquired offsets have no data record.
+                        var lastAcquired = partition.AcquiredRecords[partition.AcquiredRecords.Count - 1].LastOffset;
+                        if (nextGapOffset <= lastAcquired)
+                            TrackAcquiredGaps(topicPartition, partition.AcquiredRecords, ref gapRangeIndex, nextGapOffset, lastAcquired);
                     }
                 }
             }
         }
+    }
+
+    // Storage entries are the delivered records of one source batch, in offset order.
+    // A contiguous batch needs no per-entry scan.
+    private long TrackBatchGaps(TopicPartition partition, IReadOnlyList<ShareFetchAcquiredRecords> acquiredRecords,
+        ref int rangeIndex, ShareBatchStorage<TKey, TValue> storage, long nextGapOffset)
+    {
+        var count = storage.Count;
+        var baseOffset = storage.BaseOffset;
+        var first = baseOffset + storage.Entries[0].Raw.OffsetDelta;
+        var last = baseOffset + storage.Entries[count - 1].Raw.OffsetDelta;
+        if (last < nextGapOffset)
+            return nextGapOffset;
+        if (first >= nextGapOffset && last - first + 1 == count)
+        {
+            if (first != nextGapOffset)
+                TrackAcquiredGaps(partition, acquiredRecords, ref rangeIndex, nextGapOffset, first - 1);
+            return last + 1;
+        }
+        for (var index = 0; index < count; index++)
+        {
+            var offset = baseOffset + storage.Entries[index].Raw.OffsetDelta;
+            if (offset < nextGapOffset)
+                continue;
+            if (offset != nextGapOffset)
+                TrackAcquiredGaps(partition, acquiredRecords, ref rangeIndex, nextGapOffset, offset - 1);
+            nextGapOffset = offset + 1;
+        }
+        return nextGapOffset;
     }
 
     private bool TryReadBatch(ReadOnlyMemory<byte> bytes, ref int byteOffset, out RecordBatch? batch)
