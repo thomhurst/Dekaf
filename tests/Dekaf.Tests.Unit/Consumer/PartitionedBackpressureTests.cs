@@ -118,11 +118,14 @@ public sealed class PartitionedBackpressureTests
         try
         {
             await consumer.ThirdRecordRead.Task.WaitAsync(timeout.Token);
+            // The revoke callback returns only after the drain, which waits for releaseFirst.
+            var revoked = Task.CompletedTask;
             if (shutdown)
                 await stop.CancelAsync();
             else
-                consumer.RevokeFromCoordinator(partition);
+                revoked = consumer.RevokeFromCoordinatorAsync(partition);
             releaseFirst.TrySetResult();
+            await revoked.WaitAsync(timeout.Token);
 
             if (shutdown)
             {
@@ -184,7 +187,7 @@ public sealed class PartitionedBackpressureTests
             if (lost)
                 consumer.LoseFromCoordinator(partition);
             else
-                consumer.RevokeFromCoordinator(partition);
+                await consumer.RevokeFromCoordinatorAsync(partition).WaitAsync(timeout.Token);
 
             await consumer.BatchAdvanced.Task.WaitAsync(timeout.Token);
             await Assert.That(delivered).IsEquivalentTo(new long[] { 0 });
@@ -353,10 +356,14 @@ public sealed class PartitionedBackpressureTests
         try
         {
             await consumer.ThirdRecordRead.Task.WaitAsync(timeout.Token);
-            consumer.RevokeFromCoordinator(partition);
-            consumer.AssignFromCoordinator(partition);
-            await Assert.That(replacementStarted.Task.IsCompleted).IsFalse();
+            // The coordinator delivers the reassignment only after the revoke callback returns,
+            // which is after the old lane has drained.
+            var revoked = consumer.RevokeFromCoordinatorAsync(partition);
+            await Assert.That(revoked.IsCompleted).IsFalse();
             releaseFirst.TrySetResult();
+            await revoked.WaitAsync(timeout.Token);
+            await Assert.That(oldStopped.Task.IsCompleted).IsTrue();
+            consumer.AssignFromCoordinator(partition);
             await replacementStarted.Task.WaitAsync(timeout.Token);
             await consumer.BatchAdvanced.Task.WaitAsync(timeout.Token);
             await Assert.That(replacementRecords).IsEmpty();

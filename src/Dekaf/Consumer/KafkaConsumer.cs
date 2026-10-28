@@ -2690,6 +2690,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return _coordinator?.RegisterRuntimeRebalanceListener(listener) ?? NoopDisposable.Instance;
     }
 
+    bool IConsumerRebalanceEventSource.IsLeavingGroup => _coordinator?.IsLeaveInProgress ?? false;
+
     ILoggerFactory? IConsumerLoggerFactorySource.LoggerFactory => _loggerFactory;
 
     OffsetCommitMode IConsumerCommitConfiguration.OffsetCommitMode => _options.OffsetCommitMode;

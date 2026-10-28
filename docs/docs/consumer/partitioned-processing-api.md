@@ -344,6 +344,19 @@ When partitions are revoked during cooperative rebalance, Dekaf:
 4. Commits only offsets that were marked processed when the commit policy allows it.
 5. Disposes partition state and completes the partition message stream.
 
+The revocation callback returns only after these steps finish, so the member
+releases the partitions to the group only once their lanes have stopped and the
+commit has been attempted. Another member therefore never processes a revoked
+partition while this member still drains it. Under `PartitionStopPolicy.Drain`
+the release waits for queued records, up to `StopTimeout`. The revoked lanes stop
+in parallel, and their offsets are then committed in one request, also bounded by
+`StopTimeout`. The wait is therefore at most about two `StopTimeout`s however
+many partitions are revoked. A commit that does not finish in time is abandoned,
+and the next owner processes those records again. The member sends no heartbeat
+while it waits, so keep twice `StopTimeout` well below the group's session
+timeout. A revocation caused by leaving the group
+(unsubscribe or close) does not wait, because the leave itself ends ownership.
+
 When partitions are lost involuntarily, such as after a heartbeat timeout, Dekaf
 cancels those partition lanes and completes their streams. It does not commit
 offsets for lost partitions because ownership is no longer guaranteed.

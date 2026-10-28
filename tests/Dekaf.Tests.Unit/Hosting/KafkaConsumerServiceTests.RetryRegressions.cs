@@ -213,6 +213,7 @@ public sealed partial class KafkaConsumerServiceTests
         }
         internal Func<IRebalanceListener, IDisposable> Register { get; set; } = null!;
         public IDisposable RegisterRuntimeRebalanceListener(IRebalanceListener listener) => Register(listener);
+        public bool IsLeavingGroup => false;
         public OffsetCommitMode OffsetCommitMode { get; set; } = OffsetCommitMode.Manual;
         public bool EnableAutoOffsetStore { get; set; }
         public bool HasConsumerGroup { get; set; }

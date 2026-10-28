@@ -409,7 +409,7 @@ public sealed class PartitionedRecordLifetimeTests
             if (lost)
                 consumer.LoseFromCoordinator(partition);
             else
-                consumer.RevokeFromCoordinator(partition);
+                await consumer.RevokeFromCoordinatorAsync(partition).WaitAsync(timeout.Token);
             await memory.Disposed.Task.WaitAsync(timeout.Token);
             await Assert.That(memory.DisposeCount).IsEqualTo(1);
         }
