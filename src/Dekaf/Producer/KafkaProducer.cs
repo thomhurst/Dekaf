@@ -888,8 +888,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// transaction. <see cref="BeginTransaction"/> issues a new one, and
     /// <see cref="CompletePreparedTransactionAsync"/> retires it, so a handle whose transaction
     /// ended through the producer can no longer commit, abort, prepare, or enroll offsets in a
-    /// later transaction. Unlike <see cref="TransactionHandleGeneration"/>, it does not change when
-    /// the handle itself commits or aborts, so the handle can retry a failed abort.
+    /// later transaction. A completion that leaves the transaction abortable gives the token back,
+    /// so the handle can still abort it. Unlike <see cref="TransactionHandleGeneration"/>, it does
+    /// not change when the handle itself commits or aborts, so the handle can retry a failed abort.
     /// </summary>
     internal int TransactionOwnerToken => _transactionOwnerToken;
 
@@ -3181,7 +3182,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             };
         }
 
-        EnterTransactionState(
+        var retiredOwnerToken = EnterTransactionState(
             committed ? TransactionState.CommittingTransaction : TransactionState.AbortingTransaction,
             "Cannot complete prepared transaction",
             refuseAbortable: false,
@@ -3215,7 +3216,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
         finally
         {
-            FinalizeCompletedTransactionState();
+            // A completion that failed without reaching the coordinator leaves the transaction
+            // open and abortable; only the handle can abort it, so it gets its ownership back.
+            FinalizeCompletedTransactionState(restoreOwnerToken: retiredOwnerToken);
         }
     }
 
@@ -3285,7 +3288,15 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
     }
 
-    internal void FinalizeCompletedTransactionState(bool preserveAbortableError = true)
+    /// <summary>
+    /// Ends the transaction's bookkeeping and returns the producer to
+    /// <see cref="TransactionState.Ready"/>, unless it is fatal or, with
+    /// <paramref name="preserveAbortableError"/>, abortable. A preserved abortable error with
+    /// <paramref name="restoreOwnerToken"/> hands the transaction back to the handle that owned it.
+    /// </summary>
+    internal void FinalizeCompletedTransactionState(
+        bool preserveAbortableError = true,
+        int? restoreOwnerToken = null)
     {
         NotifyPartitionEnrollmentResetWaiters(ResetPartitionEnrollmentState());
 
@@ -3302,6 +3313,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             {
                 Volatile.Write(ref _transactionBatchFailure, null);
                 _transactionState = TransactionState.Ready;
+            }
+            else if (restoreOwnerToken is { } ownerToken && state == TransactionState.AbortableError)
+            {
+                // No transaction can begin while the state is abortable, so the token is unchanged.
+                _transactionOwnerToken = ownerToken;
             }
         }
     }
@@ -4333,6 +4349,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 $"EndTxn ({(committed ? "commit" : "abort")})",
                 retryBudget,
                 attempt);
+        }
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            // Cancelled before any EndTxn was written, like a cancellation inside the loop: the
+            // transaction stays open on the broker, so the caller must abort it, not reuse it.
+            PreserveEndTransactionTimeoutState(requestInFlight: false);
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         using var timeoutCts = CreateTransactionRetryCancellationSource(retryBudget, cancellationToken);
@@ -5897,9 +5921,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// either seen here or lands after the write; it is never overwritten. Once per transaction
     /// operation. With <paramref name="ownerToken"/>, also refuses a handle that no longer owns the
     /// transaction (<see cref="TransactionOwnerToken"/>); <paramref name="retireOwner"/> revokes the
-    /// current handle's ownership with the write.
+    /// current handle's ownership with the write. Returns the owner token held before the write.
     /// </summary>
-    internal void EnterTransactionState(
+    internal int EnterTransactionState(
         TransactionState next,
         string operation,
         bool refuseAbortable,
@@ -5919,8 +5943,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 throw CreateAbortableTransactionError(operation);
 
             _transactionState = next;
+            var ownerTokenBefore = _transactionOwnerToken;
             if (retireOwner)
-                _transactionOwnerToken = unchecked(_transactionOwnerToken + 1);
+                _transactionOwnerToken = unchecked(ownerTokenBefore + 1);
+
+            return ownerTokenBefore;
         }
     }
 
