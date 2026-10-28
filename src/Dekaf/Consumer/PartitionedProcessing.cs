@@ -941,7 +941,40 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     {
         var partitionArray = partitions as TopicPartition[] ?? partitions.ToArray();
         if (partitionArray.Length > 0)
-            TryQueueCommand(RuntimeCommand<TKey, TValue>.StopPartitions(partitionArray, stopReason));
+            TryQueueCommand(RuntimeCommand<TKey, TValue>.StopPartitions(partitionArray, stopReason, completion: null));
+    }
+
+    /// <summary>
+    /// Completes once the runtime loop has stopped the revoked lanes under <see cref="PartitionedProcessingOptions.StopPolicy"/>
+    /// and attempted the runtime-managed commit. The member releases a partition only after its
+    /// revocation callback returns, so returning earlier would let another member start from the
+    /// old committed offset while this lane still drains, and this lane's late commit could move
+    /// the offset backwards. Allocated once per revocation, never per message.
+    /// </summary>
+    private ValueTask StopRevokedPartitionsAsync(
+        IEnumerable<TopicPartition> partitions,
+        CancellationToken cancellationToken)
+    {
+        var partitionArray = partitions as TopicPartition[] ?? partitions.ToArray();
+        if (partitionArray.Length == 0)
+            return default;
+
+        // A leave's revocation ends the membership whatever the callback does, and the runtime's
+        // commit waits for that leave to finish. Waiting here would hold the leave until its
+        // rebalance timeout, so the leave keeps the stop asynchronous.
+        if (_consumer is IConsumerRebalanceEventSource { IsLeavingGroup: true })
+        {
+            QueueStoppedPartitions(partitionArray, PartitionStopReason.Revoke);
+            return default;
+        }
+
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!TryQueueCommand(RuntimeCommand<TKey, TValue>.StopPartitions(partitionArray, PartitionStopReason.Revoke, completion)))
+            return default;
+
+        // The runtime loop never awaits a poll in progress, so a callback delivered from the
+        // runtime's own poll cannot block the loop that completes it.
+        return new ValueTask(completion.Task.WaitAsync(cancellationToken));
     }
 
     private sealed class RuntimeRebalanceListener(
@@ -961,8 +994,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            runtime.QueueStoppedPartitions(partitions, PartitionStopReason.Revoke);
-            return default;
+            return runtime.StopRevokedPartitionsAsync(partitions, cancellationToken);
         }
 
         public ValueTask OnPartitionsLostAsync(
@@ -1370,10 +1402,20 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                     break;
 
                 case RuntimeCommandKind.StopPartitions:
-                    await StopPartitionsAsync(
-                        command.Partitions!,
-                        command.StopReason,
-                        cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        await StopPartitionsAsync(
+                            command.Partitions!,
+                            command.StopReason,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        // A failed or cancelled stop still releases the revocation callback:
+                        // the run is ending, and shutdown stops the remaining lanes.
+                        command.Completion?.TrySetResult();
+                    }
+
                     break;
             }
         }
@@ -1833,8 +1875,12 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     {
         while (TryReadCommand(out var command))
         {
+            // Shutdown has already stopped and committed every lane, so a revocation waiting
+            // for a stop command is released; a commit request that never ran is cancelled.
             if (command.Kind == RuntimeCommandKind.Commit)
                 command.Completion!.TrySetCanceled();
+            else
+                command.Completion?.TrySetResult();
         }
     }
 
@@ -2290,6 +2336,7 @@ internal readonly record struct RuntimeCommand<TKey, TValue>(
 
     public static RuntimeCommand<TKey, TValue> StopPartitions(
         TopicPartition[] partitions,
-        PartitionStopReason stopReason)
-        => new(RuntimeCommandKind.StopPartitions, null, partitions, default, stopReason, null, null, CancellationToken.None);
+        PartitionStopReason stopReason,
+        TaskCompletionSource? completion)
+        => new(RuntimeCommandKind.StopPartitions, null, partitions, default, stopReason, completion, null, CancellationToken.None);
 }
