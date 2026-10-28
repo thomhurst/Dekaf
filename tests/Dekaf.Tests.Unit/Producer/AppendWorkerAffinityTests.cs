@@ -58,6 +58,95 @@ public class AppendWorkerAffinityTests
         return (int)parameters[1]!.GetType().GetField("SlowPathAppendCount")!.GetValue(parameters[1])!;
     }
 
+    /// <summary>
+    /// A backpressured ProduceAsync record waits in its partition's append worker. A later
+    /// FireAsync or callback append for the same partition must not overtake it into the batch
+    /// (issue #3784): it queues behind the worker item instead of straight into the pending queue.
+    /// </summary>
+    [Test]
+    [Timeout(120_000)]
+    public async Task SpanAppend_BehindPendingWorkerItem_SamePartition_AppendsInCallOrder(
+        CancellationToken cancellationToken)
+    {
+        await using var pool = new ValueTaskSourcePool<RecordMetadata>();
+        await using var producer = (KafkaProducer<string, string>)Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithClientId("append-worker-call-order-test")
+            .WithBufferMemory(ulong.MaxValue)
+            .WithBatchSize(1_048_576)
+            .WithLinger(TimeSpan.FromSeconds(60))
+            .WithCloseTimeout(TimeSpan.FromMilliseconds(100))
+            .Build();
+        await producer.StopSenderLoopsForTestingAsync();
+
+        var accumulator = producer.RecordAccumulator;
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
+        var workerEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseWorker = new ManualResetEventSlim();
+        accumulator.BeforeAppendWorkerAppendForTest = () =>
+        {
+            workerEntered.TrySetResult();
+            releaseWorker.Wait(cancellationToken);
+        };
+
+        var tp = new TopicPartition("test-topic", 0);
+        try
+        {
+            accumulator.EnqueueAppend(
+                tp.Topic,
+                tp.Partition,
+                timestamp: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                key: PooledMemory.Null,
+                value: LeakGateHarness.RentPooled(16, seed: 1),
+                headers: null,
+                headerCount: 0,
+                completion: pool.Rent(),
+                cancellationToken: CancellationToken.None);
+            await workerEntered.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+
+            var second = accumulator.AppendFromSpansAsync(
+                tp.Topic,
+                tp.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                keyData: default,
+                keyIsNull: true,
+                valueData: new byte[] { 2, 2, 2, 2 },
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                callback: null,
+                cancellationToken);
+
+            // Before the fix the second record was appended here, ahead of the worker's record.
+            await Assert.That(HasBatchForPartition(GetPartitionDeques(accumulator), tp)).IsFalse();
+
+            releaseWorker.Set();
+            await Assert.That(await second.AsTask().WaitAsync(TimeSpan.FromSeconds(30), cancellationToken)).IsTrue();
+        }
+        finally
+        {
+            releaseWorker.Set();
+            accumulator.BeforeAppendWorkerAppendForTest = null;
+        }
+
+        var records = GetCurrentBatch(accumulator, tp).Complete()!.RecordBatch.Records;
+        await Assert.That(records.Count).IsEqualTo(2);
+        await Assert.That(records[0].Value.Span[0]).IsEqualTo((byte)1);
+        await Assert.That(records[1].Value.Span[0]).IsEqualTo((byte)2);
+        await Assert.That(GetSlowPathAppendCount(GetPartitionDeques(accumulator), tp)).IsEqualTo(0);
+
+        await producer.DisposeAsync();
+    }
+
+    private static PartitionBatch GetCurrentBatch(RecordAccumulator accumulator, TopicPartition tp)
+    {
+        var deques = GetPartitionDeques(accumulator);
+        var parameters = new object[] { tp, null! };
+        deques.GetType().GetMethod("TryGetValue")!.Invoke(deques, parameters);
+        var pd = parameters[1]!;
+        return (PartitionBatch)pd.GetType().GetField("CurrentBatch")!.GetValue(pd)!;
+    }
+
     [Test]
     [Timeout(120_000)]
     public async Task StopSenderLoopsForTestingAsync_DoesNotStopAppendWorkers(
@@ -282,6 +371,20 @@ public class AppendWorkerAffinityTests
             cancellationToken,
             TimeSpan.FromMilliseconds(1));
         var queued = Enqueue(seed: 3);
+        // A span append behind the worker's items waits in the same channel (#3784), where the
+        // purge's scan of the pending queue cannot reach it either.
+        var deferred = accumulator.AppendFromSpansAsync(
+            tp.Topic,
+            tp.Partition,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            keyData: default,
+            keyIsNull: true,
+            valueData: new byte[1_000],
+            valueIsNull: false,
+            headers: null,
+            headerCount: 0,
+            callback: null,
+            CancellationToken.None).AsTask();
 
         accumulator.Purge(
             PurgeOptions.Queue,
@@ -293,6 +396,10 @@ public class AppendWorkerAffinityTests
                 .Throws<Dekaf.Errors.ProduceException>();
             await Assert.That(exception!.Kind).IsEqualTo(Dekaf.Errors.ProduceErrorKind.Purged);
         }
+
+        var deferredException = await Assert.That(async () => await deferred.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken))
+            .Throws<Dekaf.Errors.ProduceException>();
+        await Assert.That(deferredException!.Kind).IsEqualTo(Dekaf.Errors.ProduceErrorKind.Purged);
 
         await Assert.That(HasBatchForPartition(deques, tp)).IsFalse();
         await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
