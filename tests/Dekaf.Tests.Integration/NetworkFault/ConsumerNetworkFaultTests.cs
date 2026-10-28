@@ -3,6 +3,7 @@ using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.Protocol;
+using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Tests.Integration.NetworkFault;
 
@@ -69,6 +70,88 @@ public sealed class ConsumerNetworkFaultTests(TransactionFaultKafkaContainer kaf
         // The same consumer instance joins and consumes once the coordinator is reachable.
         var recovered = await ConsumeNextAsync(consumer, TimeSpan.FromSeconds(90), cancellationToken);
         await Assert.That(recovered.Value).IsEqualTo("only-value");
+    }
+
+    [Test]
+    public async Task Subscribe_WhileStable_HeartbeatCarryingTheChangeLost_IsResentAndAssignsTheNewTopic()
+    {
+        using var testTimeout = new CancellationTokenSource(TestTimeout);
+        var cancellationToken = testTimeout.Token;
+        var firstTopic = await kafka.CreateTestTopicAsync();
+        var addedTopic = await kafka.CreateTestTopicAsync();
+        await SeedAsync(firstTopic, ["first-topic"], cancellationToken);
+        await SeedAsync(addedTopic, ["added-topic"], cancellationToken);
+
+        var subscriptionChanged = 0;
+        var heartbeatSentAfterChange = 0;
+        var heartbeatFailed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var logs = new CapturingLoggerProvider(entry =>
+        {
+            if (Volatile.Read(ref subscriptionChanged) == 0)
+                return;
+            if (entry.Message.StartsWith("Sending ConsumerGroupHeartbeat request", StringComparison.Ordinal))
+                Volatile.Write(ref heartbeatSentAfterChange, 1);
+            else if (entry.Message == "Heartbeat failed")
+                heartbeatFailed.TrySetResult();
+        });
+        using var loggerFactory = LoggerFactory.Create(builder =>
+        {
+            builder.SetMinimumLevel(LogLevel.Debug);
+            builder.AddProvider(logs);
+        });
+
+        // The broker's default 45 s session outlasts the outage, so the member keeps its
+        // membership and no rejoin resends the full subscription on its behalf. The request
+        // timeout is longer than the 5 s heartbeat interval: a shorter one lets another request
+        // that is in flight time out first and close the connection, and then the heartbeat
+        // fails while connecting, before a request carrying the change is built.
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.ConsumerBootstrapServers)
+            .WithGroupId($"network-fault-resubscribe-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithRequestTimeout(TimeSpan.FromSeconds(10))
+            .WithLoggerFactory(loggerFactory)
+            .BuildAsync(cancellationToken);
+        consumer.Subscribe(firstTopic);
+
+        var first = await ConsumeNextAsync(consumer, TimeSpan.FromSeconds(60), cancellationToken);
+        await Assert.That(first.Topic).IsEqualTo(firstTopic);
+
+        try
+        {
+            // Requests never reach the broker, so the heartbeat carrying the new topics is sent
+            // on the open coordinator connection, times out, and the broker keeps the old
+            // subscription.
+            await kafka.AddTimeoutAsync(
+                ToxiproxyLane.Consumer,
+                cancellationToken,
+                direction: ToxiproxyDirection.Upstream);
+            consumer.Subscribe(firstTopic, addedTopic);
+            Volatile.Write(ref subscriptionChanged, 1);
+            await heartbeatFailed.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+        }
+        finally
+        {
+            await kafka.HealNetworkFaultsAsync(CancellationToken.None);
+        }
+
+        await Assert.That(Volatile.Read(ref heartbeatSentAfterChange)).IsEqualTo(1);
+
+        // Only a later heartbeat that resends the topics gets the added topic assigned. The
+        // uncommitted record from the first topic can be delivered again first.
+        var deadline = Stopwatch.StartNew();
+        ConsumeResult<string, string> added;
+        do
+        {
+            var remaining = TimeSpan.FromSeconds(60) - deadline.Elapsed;
+            if (remaining <= TimeSpan.Zero)
+                throw new TimeoutException($"No record from {addedTopic} was consumed within 60 s.");
+            added = await ConsumeNextAsync(consumer, remaining, cancellationToken);
+        }
+        while (added.Topic == firstTopic);
+
+        await Assert.That(added.Topic).IsEqualTo(addedTopic);
+        await Assert.That(added.Value).IsEqualTo("added-topic");
     }
 
     [Test]
