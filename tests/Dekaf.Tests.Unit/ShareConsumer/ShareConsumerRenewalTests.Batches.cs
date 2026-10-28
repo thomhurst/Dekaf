@@ -80,7 +80,7 @@ public sealed partial class ShareConsumerRenewalTests
     public async Task Unsubscribe_ResubscribeWaitsForFinalAcknowledgement(bool batches)
     {
         var released = new TaskCompletionSource<ShareAcknowledgeResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var connection = new CapturingConnection(ApiKey.ShareFetch, 2, includeShareAcknowledge: true)
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2, includeShareAcknowledge: true, supportShareGroup: true)
         {
             ShareFetchResponse = CreateFetchResponse(0, 100),
             DelayedFinalAcknowledgement = released
@@ -117,6 +117,8 @@ public sealed partial class ShareConsumerRenewalTests
         }
         await Assert.That(await next).IsTrue();
         await Assert.That(connection.ShareFetchRequest!.ShareSessionEpoch).IsEqualTo(0);
+        // Unsubscribe left the group after the final acknowledgement; the poll rejoined at epoch 0.
+        await Assert.That(connection.ShareGroupHeartbeatRequests[0].MemberEpoch).IsEqualTo(0);
     }
 
     [Test]

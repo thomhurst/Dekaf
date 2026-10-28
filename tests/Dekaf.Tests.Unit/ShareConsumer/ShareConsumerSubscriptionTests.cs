@@ -76,18 +76,42 @@ public sealed class ShareConsumerSubscriptionTests
     }
 
     [Test]
-    public async Task Unsubscribe_PublishesEmptySubscription_AndAllowsResubscribe()
+    public async Task Unsubscribe_LeavesGroup_AndResubscribeRejoinsAtEpochZero()
     {
         await using var fixture = new Fixture();
         fixture.Consumer.Subscribe("first");
         await fixture.Heartbeat();
+        var memberId = fixture.Coordinator.MemberId;
         fixture.Consumer.Unsubscribe();
-        await fixture.Heartbeat();
-        await Assert.That(fixture.Requests[^1].SubscribedTopicNames).IsNotNull();
-        await Assert.That(fixture.Requests[^1].SubscribedTopicNames!.Count).IsEqualTo(0);
+        await fixture.WaitForPendingRelease();
+        await Assert.That(fixture.Requests[^1].MemberEpoch).IsEqualTo(-1);
+        await Assert.That(fixture.Requests[^1].MemberId).IsEqualTo(memberId);
+        await Assert.That(fixture.Coordinator.MemberEpoch).IsEqualTo(0);
+        await Assert.That(fixture.Coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+        await Assert.That(fixture.Coordinator.MemberId).IsEqualTo(memberId);
         fixture.Consumer.Subscribe("first");
         await fixture.Heartbeat();
+        await Assert.That(fixture.Requests[^1].MemberEpoch).IsEqualTo(0);
+        await Assert.That(fixture.Requests[^1].MemberId).IsEqualTo(memberId);
         await Assert.That(fixture.Requests[^1].SubscribedTopicNames).IsEquivalentTo(FirstTopics);
+    }
+
+    [Test]
+    public async Task Unsubscribe_StopsHeartbeatLoop_AndLaterLeaveSendsNothing()
+    {
+        await using var fixture = new Fixture();
+        fixture.Consumer.Subscribe("first");
+        fixture.PrepareJoin();
+        await fixture.Coordinator.EnsureActiveGroupAsync(CancellationToken.None);
+        await Assert.That(fixture.HeartbeatTask is not null).IsTrue();
+        fixture.Consumer.Unsubscribe();
+        await fixture.WaitForPendingRelease();
+        await Assert.That(fixture.HeartbeatTask is null).IsTrue();
+        await Assert.That(fixture.Requests[^1].MemberEpoch).IsEqualTo(-1);
+        var sent = fixture.Requests.Count;
+        // CloseAsync leaves again; the membership already ended.
+        await fixture.Coordinator.LeaveGroupAsync();
+        await Assert.That(fixture.Requests.Count).IsEqualTo(sent);
     }
 
     [Test]
@@ -182,6 +206,11 @@ public sealed class ShareConsumerSubscriptionTests
         await Assert.That(request.MemberEpoch).IsEqualTo(1);
         await Assert.That(request.SubscribedTopicNames!.Count).IsEqualTo(0);
         await Assert.That(failed).IsEqualTo(failFirstPublication);
+        // The leave waits for the join and runs after it, so the join cannot revive the membership.
+        await fixture.WaitForPendingRelease();
+        await Assert.That(fixture.Requests[^1].MemberEpoch).IsEqualTo(-1);
+        await Assert.That(fixture.Coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+        await Assert.That(fixture.HeartbeatTask is null).IsTrue();
     }
 
     private sealed class Fixture : IAsyncDisposable
@@ -265,6 +294,11 @@ public sealed class ShareConsumerSubscriptionTests
                 .SetValue(Consumer, true);
         }
         public void ResetMemberEpoch() => Set("_memberEpoch", 0);
+        public Task? HeartbeatTask => (Task?)typeof(ShareConsumerCoordinator)
+            .GetField("_heartbeatTask", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(Coordinator);
+        public Task WaitForPendingRelease() => ((Task?)typeof(KafkaShareConsumer<string, string>)
+            .GetField("_pendingReleaseTask", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(Consumer)
+            ?? Task.CompletedTask).WaitAsync(TimeSpan.FromSeconds(5));
         public ValueTask Heartbeat() => (ValueTask)SendHeartbeat.Invoke(Coordinator, [1, CancellationToken.None])!;
         public static ShareGroupHeartbeatResponse Success() => new() { ErrorCode = ErrorCode.None, MemberEpoch = 1 };
         public async ValueTask DisposeAsync()

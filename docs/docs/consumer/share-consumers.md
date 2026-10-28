@@ -465,7 +465,7 @@ as acceptance; session closure then releases remaining locks and stops local rep
 Shutdown is best-effort: if cancellation or broker failure prevents release, records
 remain available for redelivery after the broker's acquisition lock expires.
 
-`Unsubscribe` releases pending records and clears the subscription. To close:
+`Unsubscribe` releases pending records, clears the subscription and leaves the share group, so the group can become empty for admin operations such as `DeleteShareGroupsAsync`. A later `Subscribe` and poll rejoin under the same member ID. To close:
 
 ```csharp
 await consumer.CloseAsync();
