@@ -2240,6 +2240,66 @@ public class MetadataManagerTests
         await Assert.That(preferred[0].Address.ToString()).IsEqualTo("10.0.0.2");
     }
 
+    // Round-robin DNS returns another order to the connection's own lookup than to rebootstrap's.
+    // Each resolved address, the first included, must lead the connection's DNS order, so a
+    // healthy first address is still tried when the connection's lookup puts a broken one first.
+    [Test]
+    public async Task TryRebootstrapImmediateAsync_RoundRobinDnsReordersAddresses_StillTriesTheFirstResolvedAddress(
+        CancellationToken cancellationToken)
+    {
+        MetadataResponse ClusterMetadata() => CreateMetadataResponse((0, "broker-0", 9092));
+
+        var healthy = CreateRespondingConnection(-1, "kafka.example", 9092, ClusterMetadata);
+        var resolver = new ClientDnsEndpointResolver(
+            new RotatingDnsLookup(IPAddress.Parse("10.0.0.1"), IPAddress.Parse("10.0.0.2")));
+        var connectedAddresses = new List<string>();
+        await using var pool = new ConnectionPool(
+            "metadata-rebootstrap-round-robin-dns-test",
+            new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: async (_, host, port, _, token) =>
+            {
+                // Mirror KafkaConnection: connect to the first address in DNS order.
+                var endpoints = await resolver.ResolveAsync(host, port, ClientDnsLookup.UseAllDnsIps, token);
+                var address = endpoints[0].Address;
+                lock (connectedAddresses)
+                    connectedAddresses.Add(address.ToString());
+                if (address.Equals(IPAddress.Parse("10.0.0.2")))
+                    throw new SocketException((int)SocketError.ConnectionReset);
+
+                resolver.MarkSuccessful(host, port, ClientDnsLookup.UseAllDnsIps, address);
+                return healthy;
+            });
+        await using var manager = new MetadataManager(
+            pool,
+            ["kafka.example:9092"],
+            new MetadataOptions
+            {
+                EnableBackgroundRefresh = false,
+                MetadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap,
+                DnsResolver = resolver
+            });
+
+        var rebootstrapped = await manager.TryRebootstrapImmediateAsync(topics: null, cancellationToken);
+
+        await Assert.That(rebootstrapped).IsTrue();
+        await Assert.That(connectedAddresses).Contains("10.0.0.1");
+    }
+
+    private sealed class RotatingDnsLookup(params IPAddress[] addresses) : IDnsLookup
+    {
+        private int _lookups;
+
+        public ValueTask<IPAddress[]> GetHostAddressesAsync(string host, CancellationToken cancellationToken)
+        {
+            var offset = (Interlocked.Increment(ref _lookups) - 1) % addresses.Length;
+            return ValueTask.FromResult<IPAddress[]>([.. addresses[offset..], .. addresses[..offset]]);
+        }
+
+        public async ValueTask<IPHostEntry> GetHostEntryAsync(string host, CancellationToken cancellationToken) =>
+            new() { HostName = host, AddressList = await GetHostAddressesAsync(host, cancellationToken) };
+    }
+
     private sealed class FixedDnsLookup(params IPAddress[] addresses) : IDnsLookup
     {
         public ValueTask<IPAddress[]> GetHostAddressesAsync(string host, CancellationToken cancellationToken) =>

@@ -1635,21 +1635,18 @@ public sealed partial class MetadataManager : IAsyncDisposable
         // Try the newly resolved endpoints
         Exception? lastException = null;
         List<IKafkaConnection>? attemptedConnections = null;
-        (string Host, int Port) previousServer = default;
         foreach (var (host, port, address) in newEndpoints)
         {
             IKafkaConnection? connection = null;
             try
             {
                 // Always connect by bootstrap hostname: TLS and SASL (GSSAPI) must target the name
-                // the broker certificate and service principal use, never a raw IP. A later
-                // resolved address of the same server is made to lead the connection's own DNS
-                // order, so addresses that accept TCP but fail the handshake are tried in turn.
-                // The first address already leads: the resolver returned them in that order.
-                var server = (host, port);
-                if (address is not null && server == previousServer)
+                // the broker certificate and service principal use, never a raw IP. Each resolved
+                // address, the first included, is made to lead the connection's own DNS order, so
+                // addresses that accept TCP but fail the handshake are tried in turn even when
+                // round-robin DNS gives the connection's lookup a different order.
+                if (address is not null)
                     _options.DnsResolver.MarkSuccessful(host, port, _options.ClientDnsLookup, address);
-                previousServer = server;
 
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(host, port, cancellationToken)
                     .ConfigureAwait(false);
