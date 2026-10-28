@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using Avro.Generic;
 using Avro.IO;
 using Avro.Specific;
 using BenchmarkDotNet.Attributes;
@@ -11,7 +12,7 @@ using RegistrySchema = Dekaf.SchemaRegistry.Schema;
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
 /// <summary>
-/// Guards specific-record schema migration field mapping and allocation overhead.
+/// Measures prepared generic/specific datum-reader caches and schema migration overhead.
 /// </summary>
 [MemoryDiagnoser]
 [SimpleJob(launchCount: 1, warmupCount: 3, iterationCount: 10)]
@@ -49,6 +50,11 @@ public class AvroSchemaRegistryMigrationBenchmarks
 
     private AvroSchemaRegistryDeserializer<MigrationSpecificBenchmarkRecord> _baseline = null!;
     private AvroSchemaRegistryDeserializer<MigrationSpecificBenchmarkRecord> _latest = null!;
+    private AvroSchemaRegistryDeserializer<GenericRecord> _generic = null!;
+    private AvroSchemaRegistryDeserializer<GenericRecord> _headerGeneric = null!;
+    private AvroSchemaRegistryDeserializer<MigrationSpecificBenchmarkRecord> _headerSpecific = null!;
+    private SerializationContext _headerContext;
+    private byte[] _payload = null!;
     private byte[] _wire = null!;
 
     [GlobalSetup]
@@ -59,10 +65,27 @@ public class AvroSchemaRegistryMigrationBenchmarks
         _latest = new AvroSchemaRegistryDeserializer<MigrationSpecificBenchmarkRecord>(
             registry,
             new AvroDeserializerConfig { UseLatestVersion = true });
+        _generic = new AvroSchemaRegistryDeserializer<GenericRecord>(registry);
+        var headerConfig = new AvroDeserializerConfig { SchemaIdStrategy = SchemaIdDeserializerStrategy.Header };
+        _headerGeneric = new AvroSchemaRegistryDeserializer<GenericRecord>(registry, headerConfig);
+        _headerSpecific = new AvroSchemaRegistryDeserializer<MigrationSpecificBenchmarkRecord>(registry, headerConfig);
+        _headerContext = new SerializationContext
+        {
+            Topic = Context.Topic,
+            Component = SerializationComponent.Value,
+            Headers = new Headers().Add(new Header(
+                SchemaIdentityHeaderNames.Value,
+                SchemaIdentityFraming.CreateSchemaGuidFrame(
+                    Guid.Parse("89791762-2336-4186-9674-299b90a802e2"))))
+        };
         _wire = CreateWirePayload();
+        _payload = _wire.AsSpan(5).ToArray();
 
         _ = Baseline();
         _ = UseLatestVersion();
+        _ = Generic();
+        _ = HeaderGeneric();
+        _ = HeaderSpecific();
     }
 
     [Benchmark(Baseline = true)]
@@ -70,6 +93,15 @@ public class AvroSchemaRegistryMigrationBenchmarks
 
     [Benchmark]
     public MigrationSpecificBenchmarkRecord UseLatestVersion() => _latest.Deserialize(_wire, Context);
+
+    [Benchmark]
+    public GenericRecord Generic() => _generic.Deserialize(_wire, Context);
+
+    [Benchmark]
+    public GenericRecord HeaderGeneric() => _headerGeneric.Deserialize(_payload, _headerContext);
+
+    [Benchmark]
+    public MigrationSpecificBenchmarkRecord HeaderSpecific() => _headerSpecific.Deserialize(_payload, _headerContext);
 
     private static byte[] CreateWirePayload()
     {
@@ -110,6 +142,11 @@ public class AvroSchemaRegistryMigrationBenchmarks
             Version = 2,
             Schema = ReaderSchema
         };
+
+        public Task<RegistrySchema> GetSchemaByGuidAsync(
+            string guid,
+            string? format = null,
+            CancellationToken cancellationToken = default) => Task.FromResult(WriterSchema);
 
         public Task<RegistrySchema> GetSchemaAsync(
             int id,

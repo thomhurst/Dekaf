@@ -52,6 +52,7 @@ public sealed class AvroSchemaRegistryDeserializer<
 {
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
     private const int MaxCachedGuidSchemas = 1024;
+    private const int MaxCachedDatumReaders = 1024;
     private static readonly string FallbackRecordName = typeof(T).FullName ?? typeof(T).Name;
 
     private readonly ISchemaRegistryClient _schemaRegistry;
@@ -68,6 +69,12 @@ public sealed class AvroSchemaRegistryDeserializer<
         new(AvroSchemaPairReferenceComparer.Instance);
     private readonly ConcurrentDictionary<AvroSchemaPair, SpecificDatumReader<T>> _specificReaders =
         new(AvroSchemaPairReferenceComparer.Instance);
+    private readonly ConcurrentQueue<KeyValuePair<AvroSchemaPair, GenericDatumReader<GenericRecord>>>
+        _genericReaderEvictionQueue = new();
+    private readonly ConcurrentQueue<KeyValuePair<AvroSchemaPair, SpecificDatumReader<T>>>
+        _specificReaderEvictionQueue = new();
+    private int _cachedGenericReaderCount;
+    private int _cachedSpecificReaderCount;
     private readonly ConcurrentDictionary<AvroSchema, byte> _validatedSpecificMigrationSchemas =
         new(AvroSchemaReferenceComparer.Instance);
     private readonly AvroSchema? _readerSchema;
@@ -863,9 +870,16 @@ public sealed class AvroSchemaRegistryDeserializer<
         if (typeof(T) == typeof(GenericRecord))
         {
             var readerSchema = migrationReaderSchema ?? _readerSchema ?? writerSchema;
-            var reader = _genericReaders.GetOrAdd(
-                new AvroSchemaPair(writerSchema, readerSchema),
-                static key => new GenericDatumReader<GenericRecord>(key.WriterSchema, key.ReaderSchema));
+            var key = new AvroSchemaPair(writerSchema, readerSchema);
+            if (!_genericReaders.TryGetValue(key, out var reader))
+            {
+                reader = GetOrAddDatumReader(
+                    _genericReaders,
+                    _genericReaderEvictionQueue,
+                    ref _cachedGenericReaderCount,
+                    key,
+                    static pair => new GenericDatumReader<GenericRecord>(pair.WriterSchema, pair.ReaderSchema));
+            }
             var result = reader.Read(default!, decoder);
             return (T)(object)result;
         }
@@ -886,14 +900,53 @@ public sealed class AvroSchemaRegistryDeserializer<
                 _validatedSpecificMigrationSchemas.TryAdd(migrationReaderSchema, 0);
             }
 
-            var reader = _specificReaders.GetOrAdd(
-                new AvroSchemaPair(writerSchema, readerSchema),
-                static key => new SpecificDatumReader<T>(key.WriterSchema, key.ReaderSchema));
+            var key = new AvroSchemaPair(writerSchema, readerSchema);
+            if (!_specificReaders.TryGetValue(key, out var reader))
+            {
+                reader = GetOrAddDatumReader(
+                    _specificReaders,
+                    _specificReaderEvictionQueue,
+                    ref _cachedSpecificReaderCount,
+                    key,
+                    static pair => new SpecificDatumReader<T>(pair.WriterSchema, pair.ReaderSchema));
+            }
             return reader.Read(default!, decoder);
         }
 
         throw new InvalidOperationException(
             $"Type {typeof(T)} is not supported. Must be ISpecificRecord or GenericRecord.");
+    }
+
+    private static TReader GetOrAddDatumReader<TReader>(
+        ConcurrentDictionary<AvroSchemaPair, TReader> readers,
+        ConcurrentQueue<KeyValuePair<AvroSchemaPair, TReader>> evictionQueue,
+        ref int cachedCount,
+        AvroSchemaPair key,
+        Func<AvroSchemaPair, TReader> factory)
+        where TReader : class
+    {
+        if (readers.TryGetValue(key, out var cached))
+            return cached;
+
+        var reader = factory(key);
+        while (!readers.TryAdd(key, reader))
+        {
+            if (readers.TryGetValue(key, out cached))
+                return cached;
+        }
+
+        // Only the winning insertion records eviction work. Keep the exact reader instance
+        // so an eviction cannot remove a replacement inserted concurrently for the same pair.
+        Interlocked.Increment(ref cachedCount);
+        evictionQueue.Enqueue(new KeyValuePair<AvroSchemaPair, TReader>(key, reader));
+        while (Volatile.Read(ref cachedCount) > MaxCachedDatumReaders
+               && evictionQueue.TryDequeue(out var oldest))
+        {
+            if (((ICollection<KeyValuePair<AvroSchemaPair, TReader>>)readers).Remove(oldest))
+                Interlocked.Decrement(ref cachedCount);
+        }
+
+        return reader;
     }
 
     private AvroSchema GetWriterSchemaCached(int schemaId)

@@ -2522,6 +2522,132 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Deserializer_GuidTopicChurn_BoundsGenericDatumReaders(bool useReaderSchema)
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync("churn-value", new RegistrySchema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = SimpleRecordSchema
+        });
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(SimpleRecordSchema);
+        var record = new GenericRecord(schema);
+        record.Add("id", 42);
+        record.Add("name", "churn");
+        var payload = SerializeAvroRecord(record, schema);
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            registry,
+            new AvroDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
+                ReaderSchema = useReaderSchema ? SimpleRecordSchema : null
+            });
+
+        // Two passes revisit evicted GUID/topic entries and force schema reparsing.
+        for (var pass = 0; pass < 2; pass++)
+        {
+            for (var topic = 0; topic < 1100; topic++)
+            {
+                var result = deserializer.Deserialize(payload, CreateGuidChurnContext(schemaId, topic));
+                await Assert.That((int)result["id"]).IsEqualTo(42);
+                await Assert.That((string)result["name"]).IsEqualTo("churn");
+            }
+
+            await Assert.That(deserializer.CachedGenericReaderCount).IsLessThanOrEqualTo(1024);
+        }
+    }
+
+    [Test]
+    public async Task Deserializer_GuidTopicChurn_BoundsSpecificDatumReaders()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync("churn-value", new RegistrySchema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = SpecificMigrationRecordSchema
+        });
+        var record = new SpecificMigrationRecord { Name = "churn", Age = 42 };
+        var payload = SerializeSpecificAvroRecord(record);
+        await using var deserializer = new AvroSchemaRegistryDeserializer<SpecificMigrationRecord>(
+            registry,
+            new AvroDeserializerConfig { SchemaIdStrategy = SchemaIdDeserializerStrategy.Header });
+
+        for (var pass = 0; pass < 2; pass++)
+        {
+            for (var topic = 0; topic < 1100; topic++)
+            {
+                var result = deserializer.Deserialize(payload, CreateGuidChurnContext(schemaId, topic));
+                await Assert.That(result.Name).IsEqualTo("churn");
+                await Assert.That(result.Age).IsEqualTo(42);
+            }
+
+            await Assert.That(deserializer.CachedSpecificReaderCount).IsLessThanOrEqualTo(1024);
+        }
+    }
+
+    [Test]
+    public async Task Deserializer_ConcurrentGuidReaderInsertion_KeepsCacheBounded()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync("churn-value", new RegistrySchema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = SimpleRecordSchema
+        });
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(SimpleRecordSchema);
+        var record = new GenericRecord(schema);
+        record.Add("id", 42);
+        record.Add("name", "concurrent");
+        var payload = SerializeAvroRecord(record, schema);
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            registry,
+            new AvroDeserializerConfig { SchemaIdStrategy = SchemaIdDeserializerStrategy.Header });
+        for (var topic = 0; topic < 1024; topic++)
+            _ = deserializer.Deserialize(payload, CreateGuidChurnContext(schemaId, topic));
+
+        // Resolve schemas sequentially: Apache Avro parsing is not thread-safe. Each worker
+        // receives its own parsed writer schema, and only reader insertion/eviction races.
+        var contexts = new SerializationContext[64];
+        var preparer = (IAsyncDeserializerPreparer<GenericRecord>)deserializer;
+        for (var i = 0; i < contexts.Length; i++)
+        {
+            contexts[i] = CreateGuidChurnContext(schemaId, 1024 + i);
+            await preparer.PrepareAsync(payload, contexts[i], CancellationToken.None);
+        }
+
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var tasks = new Task<GenericRecord>[contexts.Length];
+        for (var i = 0; i < tasks.Length; i++)
+        {
+            var context = contexts[i];
+            tasks[i] = Task.Run(async () =>
+            {
+                await start.Task;
+                return deserializer.Deserialize(payload, context);
+            });
+        }
+
+        start.SetResult();
+        var results = await Task.WhenAll(tasks);
+        foreach (var result in results)
+            await Assert.That((int)result["id"]).IsEqualTo(42);
+        await Assert.That(deserializer.CachedGenericReaderCount).IsLessThanOrEqualTo(1024);
+        await Assert.That(deserializer.CachedGenericReaderCount).IsGreaterThan(0);
+    }
+
+    private static SerializationContext CreateGuidChurnContext(int schemaId, int topic) => new()
+    {
+        Topic = $"churn-{topic}",
+        Component = SerializationComponent.Value,
+        Headers = new Headers().Add(new Header(
+            SchemaIdentityHeaderNames.Value,
+            SchemaIdentityFraming.CreateSchemaGuidFrame(
+                new Guid(schemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))))
+    };
+
+    [Test]
     public async Task PooledMemoryStream_ResetWithOffset_ReadsOnlyRequestedRange()
     {
         var stream = new PooledMemoryStream([]);
