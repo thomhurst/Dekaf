@@ -569,7 +569,7 @@ internal sealed class AcknowledgementTracker
             {
                 explicitAcks = new KeyValuePair<long, AcknowledgeType>[_explicitAcks.Count];
                 ((ICollection<KeyValuePair<long, AcknowledgeType>>)_explicitAcks).CopyTo(explicitAcks, 0);
-                Array.Sort(explicitAcks, static (left, right) => left.Key.CompareTo(right.Key));
+                System.Array.Sort(explicitAcks, static (left, right) => left.Key.CompareTo(right.Key));
                 applied = new bool[explicitAcks.Length];
             }
 
