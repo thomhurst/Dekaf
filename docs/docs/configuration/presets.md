@@ -31,9 +31,9 @@ var producer = await Kafka.CreateProducer<string, string>()
 **Settings applied:**
 | Setting | Value | Effect |
 |---------|-------|--------|
-| Acks | Leader | Faster acknowledgment |
-| LingerMs | 5 | Allows batching |
-| BatchSize | 64KB | Larger batches |
+| Acks | Leader (All by default, see below) | Faster acknowledgment when idempotence is disabled |
+| LingerMs | 100 | Allows batching |
+| BatchSize | 2MB | Larger batches |
 | Compression | LZ4 | Reduces network usage |
 
 **Best for:** Log aggregation, metrics, analytics, high-volume event streams
@@ -54,11 +54,28 @@ var producer = await Kafka.CreateProducer<string, string>()
 **Settings applied:**
 | Setting | Value | Effect |
 |---------|-------|--------|
-| Acks | Leader | Fast acknowledgment |
+| Acks | Leader (All by default, see below) | Fast acknowledgment when idempotence is disabled |
 | LingerMs | 0 | No batching delay |
-| BatchSize | 16KB | Smaller batches |
+| BatchSize | 256KB | Smaller batches |
 
 **Best for:** Real-time notifications, interactive applications, low-volume critical messages
+
+### Acks and Idempotence
+
+`ForHighThroughput()` and `ForLowLatency()` set `Acks.Leader`, but idempotence is enabled by default and
+idempotent producers require `Acks.All`. When idempotence is enabled, `BuildAsync()` logs a warning and
+overrides acks to `All`, so the final acks for these presets is `All`. To keep `Acks.Leader`, disable
+idempotence:
+
+```csharp
+using Dekaf;
+
+var producer = await Kafka.CreateProducer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .ForLowLatency()
+    .WithIdempotence(false) // Keeps Acks.Leader; retries may write duplicates
+    .BuildAsync();
+```
 
 ### ForReliability
 
@@ -77,7 +94,7 @@ var producer = await Kafka.CreateProducer<string, string>()
 | Setting | Value | Effect |
 |---------|-------|--------|
 | Acks | All | Wait for all replicas |
-| EnableIdempotence | true | Prevent duplicates |
+| EnableIdempotence | true (default, not changed by the preset) | Prevent duplicates |
 
 **Best for:** Financial transactions, order processing, any data that cannot be lost
 
@@ -102,7 +119,14 @@ var consumer = await Kafka.CreateConsumer<string, string>()
 |---------|-------|--------|
 | MaxPollRecords | 1000 | Larger batches |
 | FetchMinBytes | 1KB | Wait for more data |
-| FetchMaxWaitMs | 500ms | Allow broker to accumulate more data |
+| FetchMaxWaitMs | 200ms | Same as the default; higher values stall when the prefetch pipeline restarts after hitting memory limits |
+| MaxPartitionFetchBytes | 4MB | Larger fetch responses reduce round-trip overhead per byte |
+| FetchMaxBytes | 100MB, adapting up to 200MB | Larger fetch responses across partitions |
+| FetchBufferMemory | 1000MB unless configured | Bounds queued and in-flight fetch responses (pipeline depth × adaptive fetch maximum) |
+| PrefetchPipelineDepth | 5 | Prefetches aggressively to hide network latency |
+| ConnectionsPerBroker | 3 (standalone consumers) | Two fetch connections plus one coordination connection |
+| AdaptiveFetchSizing | Enabled | Grows fetch sizes while the consumer keeps up and shrinks them under prefetch memory pressure |
+| CheckCrcs | false | Skips client-side CRC32C re-validation; re-enable with `WithCheckCrcs(true)` after the preset |
 
 **Best for:** Batch processing, ETL pipelines, analytics
 
@@ -153,11 +177,13 @@ The order matters - later calls override earlier ones:
 ```csharp
 using Dekaf;
 
-// Final acks will be Leader (from ForLowLatency)
+// Final linger is 0 and batch size is 256KB (from ForLowLatency).
+// Final acks is All: ForLowLatency sets Acks.Leader, but BuildAsync()
+// overrides it to All because idempotence is enabled by default.
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForReliability()      // Sets Acks.All
-    .ForLowLatency()       // Overrides to Acks.Leader
+    .ForLowLatency()       // Overrides to Acks.Leader, linger 0, batch size 256KB
     .BuildAsync();
 ```
 

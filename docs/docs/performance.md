@@ -139,6 +139,7 @@ var presetProducer = await Kafka.CreateProducer<string, string>()
 // Or manual configuration
 var manuallyTunedProducer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
+    .WithIdempotence(false)          // Required for Acks.Leader to take effect
     .WithAcks(Acks.Leader)           // Don't wait for all replicas
     .WithLinger(TimeSpan.FromMilliseconds(5)) // Batch for 5ms
     .WithBatchSize(65536)             // 64KB batches
@@ -161,6 +162,7 @@ var presetProducer = await Kafka.CreateProducer<string, string>()
 // Or manual configuration
 var manuallyTunedProducer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
+    .WithIdempotence(false) // Required for Acks.Leader to take effect
     .WithAcks(Acks.Leader)
     .WithLinger(TimeSpan.Zero) // Send immediately
     .WithBatchSize(16384) // Smaller batches
