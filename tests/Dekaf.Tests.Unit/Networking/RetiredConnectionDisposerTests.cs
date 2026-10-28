@@ -24,4 +24,89 @@ public sealed class RetiredConnectionDisposerTests
         await Assert.That(connection.DisposeCalls).IsEqualTo(0);
         retirableConnection.ReleaseLease();
     }
+
+    [Test]
+    public async Task DrainAndDisposeAsync_PendingRequests_DisposesOnlyAfterCountDrops()
+    {
+        var pendingCount = new DrainCount(initialValue: 1);
+        var disposalStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = new ConnectionPoolTests.TestIdleConnection(1, "localhost", 9092)
+        {
+            PendingRequestCountProvider = pendingCount.Read,
+            DisposalStarted = disposalStarted,
+        };
+
+        var drain = RetiredConnectionDisposer.DrainAndDisposeAsync(connection, CancellationToken.None).AsTask();
+
+        // A second nonzero read proves the disposer polled again instead of disposing.
+        // Disposal also ends the wait, so a disposer that skips the drain fails instead of hanging.
+        try
+        {
+            await Task.WhenAny(pendingCount.SecondNonZeroRead.Task, disposalStarted.Task);
+            await Assert.That(connection.DisposeCount).IsEqualTo(0);
+            await Assert.That(drain.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            // Release the drain even when an assertion fails, so it does not keep polling.
+            pendingCount.Value = 0;
+            await drain;
+        }
+
+        await Assert.That(connection.DisposeCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task DrainAndDisposeAsync_ActiveOperations_DisposesOnlyAfterCountDrops()
+    {
+        var activeCount = new DrainCount(initialValue: 1);
+        var connection = new TestKafkaConnection
+        {
+            ActiveOperationCountProvider = activeCount.Read,
+        };
+
+        var drain = RetiredConnectionDisposer.DrainAndDisposeAsync(connection, CancellationToken.None).AsTask();
+
+        // A second nonzero read proves the disposer polled again instead of disposing.
+        // Disposal also ends the wait, so a disposer that skips the drain fails instead of hanging.
+        try
+        {
+            await Task.WhenAny(activeCount.SecondNonZeroRead.Task, connection.DisposeStarted.Task);
+            await Assert.That(connection.DisposeCalls).IsEqualTo(0);
+            await Assert.That(connection.CompleteRetirementCalls).IsEqualTo(1);
+            await Assert.That(drain.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            // Release the drain even when an assertion fails, so it does not keep polling.
+            activeCount.Value = 0;
+            await drain;
+        }
+
+        await Assert.That(connection.DisposeCalls).IsEqualTo(1);
+    }
+
+    private sealed class DrainCount(int initialValue)
+    {
+        private int _value = initialValue;
+        private int _nonZeroReads;
+
+        public TaskCompletionSource SecondNonZeroRead { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int Value
+        {
+            get => Volatile.Read(ref _value);
+            set => Volatile.Write(ref _value, value);
+        }
+
+        public int Read()
+        {
+            var value = Value;
+            if (value > 0 && Interlocked.Increment(ref _nonZeroReads) == 2)
+                SecondNonZeroRead.TrySetResult();
+
+            return value;
+        }
+    }
 }
