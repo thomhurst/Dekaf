@@ -28,6 +28,7 @@ public class RoutingSerdeBenchmarks
     private TopicRoutingDeserializer<Event> _topicDeserializer = null!;
     private IAsyncDeserializerPreparer<Event> _preparedTopicDeserializer = null!;
     private SchemaIdRoutingDeserializer<Event> _schemaIdDeserializer = null!;
+    private IAsyncDeserializerPreparer<Event> _preparedSchemaIdDeserializer = null!;
     private HeaderRoutingDeserializer<Event> _headerDeserializer = null!;
     private IDeserializer<Event> _topicHeaderDeserializer = null!;
     private IDeserializer<Event> _schemaIdHeaderDeserializer = null!;
@@ -68,6 +69,9 @@ public class RoutingSerdeBenchmarks
             .Freeze();
         _schemaIdDeserializer = new SchemaIdRoutingDeserializer<Event>()
             .Register(42, _deserializer)
+            .Freeze();
+        _preparedSchemaIdDeserializer = new SchemaIdRoutingDeserializer<Event>()
+            .Register(42, new PreparedEventDeserializer())
             .Freeze();
         _headerDeserializer = new HeaderRoutingDeserializer<Event>(
             "event-type",
@@ -123,6 +127,15 @@ public class RoutingSerdeBenchmarks
 
     [Benchmark]
     public Event DeserializeBySchemaId() => _schemaIdDeserializer.Deserialize(FramedData, _context);
+
+    [Benchmark]
+    public Event DeserializePreparedBySchemaId()
+    {
+        if (!_preparedSchemaIdDeserializer.TryDeserialize(FramedData, _context, out var value))
+            throw new InvalidOperationException("Prepared route did not deserialize synchronously.");
+
+        return value;
+    }
 
     [Benchmark]
     public Event DeserializeByHeader() =>
