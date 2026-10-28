@@ -336,8 +336,8 @@ internal static class ConfluentConfigurationBinding
         if (!saslEnabled)
             return;
 
-        var mechanism = TryGetSaslMechanism(configuration, out var configuredMechanism)
-            ? configuredMechanism
+        var mechanism = TryGetEnum(configuration, "SaslMechanism", out ConfluentSaslMechanism configuredMechanism)
+            ? MapSaslMechanism(configuredMechanism)
             : SaslMechanism.Gssapi;
         TryGet(configuration, "SaslUsername", out string? username);
         TryGet(configuration, "SaslPassword", out string? password);
@@ -365,7 +365,7 @@ internal static class ConfluentConfigurationBinding
                 oauth = CreateOAuthConfig(configuration);
                 break;
             default:
-                throw UnsupportedValue("SaslMechanism", mechanism.ToString());
+                throw new UnreachableException();
         }
 
         builder.WithSaslOptions(mechanism, username, password, gssapi, oauth);
@@ -431,32 +431,12 @@ internal static class ConfluentConfigurationBinding
             : throw UnsupportedValue("SecurityProtocol", raw);
     }
 
-    private static bool TryGetSaslMechanism(
-        IConfiguration configuration,
-        out SaslMechanism mechanism)
-    {
-        var raw = Get(configuration, "SaslMechanism");
-        if (raw is null)
-        {
-            mechanism = default;
-            return false;
-        }
-
-        if (Enum.TryParse<SaslMechanism>(NormalizeEnumValue(raw), ignoreCase: true, out mechanism) &&
-            Enum.IsDefined(mechanism))
-            return true;
-        throw UnsupportedValue("SaslMechanism", raw);
-    }
-
-    private static bool GetEndpointIdentification(IConfiguration configuration)
-    {
-        var raw = Get(configuration, "SslEndpointIdentificationAlgorithm");
-        if (raw is null || raw.Equals("Https", StringComparison.OrdinalIgnoreCase))
-            return true;
-        if (raw.Equals("None", StringComparison.OrdinalIgnoreCase))
-            return false;
-        throw UnsupportedValue("SslEndpointIdentificationAlgorithm", raw);
-    }
+    private static bool GetEndpointIdentification(IConfiguration configuration) =>
+        !TryGetEnum(
+            configuration,
+            "SslEndpointIdentificationAlgorithm",
+            out ConfluentSslEndpointIdentificationAlgorithm algorithm) ||
+        algorithm == ConfluentSslEndpointIdentificationAlgorithm.Https;
 
     private static bool TryGetWholeMilliseconds(
         IConfiguration configuration,
@@ -680,6 +660,17 @@ internal static class ConfluentConfigurationBinding
             _ => throw new UnreachableException()
         };
 
+    private static SaslMechanism MapSaslMechanism(ConfluentSaslMechanism mechanism) =>
+        mechanism switch
+        {
+            ConfluentSaslMechanism.Gssapi => SaslMechanism.Gssapi,
+            ConfluentSaslMechanism.Plain => SaslMechanism.Plain,
+            ConfluentSaslMechanism.ScramSha256 => SaslMechanism.ScramSha256,
+            ConfluentSaslMechanism.ScramSha512 => SaslMechanism.ScramSha512,
+            ConfluentSaslMechanism.OAuthBearer => SaslMechanism.OAuthBearer,
+            _ => throw new UnreachableException()
+        };
+
     private static NotSupportedException UnsupportedValue(string key, string value) =>
         new($"Confluent property '{key}' value '{value}' has no exact Dekaf equivalent.");
 
@@ -689,6 +680,22 @@ internal static class ConfluentConfigurationBinding
         Ssl,
         SaslPlaintext,
         SaslSsl
+    }
+
+    // Numeric values follow Confluent.Kafka's enum numbering, not Dekaf's.
+    private enum ConfluentSaslMechanism
+    {
+        Gssapi,
+        Plain,
+        ScramSha256,
+        ScramSha512,
+        OAuthBearer
+    }
+
+    private enum ConfluentSslEndpointIdentificationAlgorithm
+    {
+        None,
+        Https
     }
 
     private enum ConfluentCompressionType
