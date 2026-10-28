@@ -925,6 +925,113 @@ public class DependencyInjectionTests
     }
 
     [Test]
+    [Arguments("0", SaslMechanism.Gssapi)]
+    [Arguments("1", SaslMechanism.Plain)]
+    [Arguments("2", SaslMechanism.ScramSha256)]
+    [Arguments("3", SaslMechanism.ScramSha512)]
+    [Arguments("4", SaslMechanism.OAuthBearer)]
+    [Arguments("GSSAPI", SaslMechanism.Gssapi)]
+    [Arguments("PLAIN", SaslMechanism.Plain)]
+    [Arguments("SCRAM-SHA-256", SaslMechanism.ScramSha256)]
+    [Arguments("SCRAM-SHA-512", SaslMechanism.ScramSha512)]
+    [Arguments("OAUTHBEARER", SaslMechanism.OAuthBearer)]
+    public async Task AddProducerFromConfluentConfig_TranslatesSaslMechanismWithConfluentNumbering(
+        string configuredValue,
+        SaslMechanism expected)
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:SecurityProtocol"] = "SaslPlaintext",
+            ["Config:SaslMechanism"] = configuredValue,
+            ["Config:SaslUsername"] = "user",
+            ["Config:SaslPassword"] = "password",
+            ["Config:SaslOauthbearerMethod"] = "Oidc",
+            ["Config:SaslOauthbearerTokenEndpointUrl"] = "https://identity.example/token",
+            ["Config:SaslOauthbearerClientId"] = "client-id"
+        });
+
+        services.AddDekaf(builder => builder.AddProducerFromConfluentConfig<string, string>(
+            configuration.GetSection("Config")));
+
+        await using var provider = services.BuildServiceProvider();
+        var options = GetProducerOptions(provider.GetRequiredService<IKafkaProducer<string, string>>());
+        await Assert.That(options.SaslMechanism).IsEqualTo(expected);
+    }
+
+    [Test]
+    [Arguments("5")]
+    [Arguments("-1")]
+    [Arguments("None")]
+    [Arguments("AwsMskIam")]
+    public async Task AddProducerFromConfluentConfig_UnsupportedSaslMechanism_FailsFast(string configuredValue)
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:SecurityProtocol"] = "SaslPlaintext",
+            ["Config:SaslMechanism"] = configuredValue,
+            ["Config:SaslUsername"] = "user",
+            ["Config:SaslPassword"] = "password"
+        });
+
+        await Assert.That(() => services.AddDekaf(builder =>
+                builder.AddProducerFromConfluentConfig<string, string>(
+                    configuration.GetSection("Config"))))
+            .Throws<NotSupportedException>()
+            .WithMessageContaining("SaslMechanism");
+    }
+
+    [Test]
+    [Arguments("0", false)]
+    [Arguments("1", true)]
+    [Arguments("None", false)]
+    [Arguments("https", true)]
+    public async Task AddProducerFromConfluentConfig_TranslatesSslEndpointIdentificationAlgorithm(
+        string configuredValue,
+        bool expected)
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:SecurityProtocol"] = "Ssl",
+            ["Config:SslEndpointIdentificationAlgorithm"] = configuredValue
+        });
+
+        services.AddDekaf(builder => builder.AddProducerFromConfluentConfig<string, string>(
+            configuration.GetSection("Config")));
+
+        await using var provider = services.BuildServiceProvider();
+        var options = GetProducerOptions(provider.GetRequiredService<IKafkaProducer<string, string>>());
+        await Assert.That(options.TlsConfig!.ValidateServerCertificateHostName).IsEqualTo(expected);
+    }
+
+    [Test]
+    [Arguments("2")]
+    [Arguments("-1")]
+    [Arguments("Strict")]
+    public async Task AddProducerFromConfluentConfig_UnsupportedSslEndpointIdentificationAlgorithm_FailsFast(
+        string configuredValue)
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:SecurityProtocol"] = "Ssl",
+            ["Config:SslEndpointIdentificationAlgorithm"] = configuredValue
+        });
+
+        await Assert.That(() => services.AddDekaf(builder =>
+                builder.AddProducerFromConfluentConfig<string, string>(
+                    configuration.GetSection("Config"))))
+            .Throws<NotSupportedException>()
+            .WithMessageContaining("SslEndpointIdentificationAlgorithm");
+    }
+
+    [Test]
     [Arguments("SslCaLocation", "ca.pem", "TLS")]
     [Arguments("SaslUsername", "user", "SASL")]
     public async Task AddProducerFromConfluentConfig_SecuritySettingWithoutProtocol_FailsFast(

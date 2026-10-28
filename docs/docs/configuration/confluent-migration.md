@@ -159,7 +159,8 @@ separately when replacing the Aspire Confluent integration.
 ## Compatibility matrix
 
 Property names and enum values are case-insensitive. Hyphens and underscores in enum values are
-ignored. An unknown property, unsupported value, or value that cannot be represented exactly
+ignored. Numeric enum values use Confluent.Kafka's numbering (for example, `SaslMechanism=4` is
+`OAuthBearer`). An unknown property, unsupported value, or value that cannot be represented exactly
 throws during DI registration; it is never silently ignored.
 
 ### Shared client properties
