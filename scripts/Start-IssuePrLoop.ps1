@@ -361,6 +361,13 @@ function Test-HasLabel($Issue, [string[]]$Names) {
     @($Issue.labels.nodes | Where-Object { $_.name -in $Names }).Count -gt 0
 }
 
+# P0 (critical) through P3 (low) map to 0-3. An issue without a priority label sorts after P3.
+function Get-IssuePriority($Issue) {
+    $levels = @($Issue.labels.nodes | Where-Object { $_.name -match '^P([0-3])$' } | ForEach-Object { [int]$Matches[1] })
+    if ($levels.Count -eq 0) { return 4 }
+    return ($levels | Measure-Object -Minimum).Minimum
+}
+
 function Test-HasOpenPr($Issue) {
     @($Issue.closedByPullRequestsReferences.nodes | Where-Object { $_.state -eq 'OPEN' }).Count -gt 0
 }
@@ -534,9 +541,12 @@ function Get-Candidates {
         $candidate.Comments = [int]$issue.comments.totalCount
         $candidate
     }
-    # Unblock the most other issues first, then prefer less discussion: such issues are
-    # usually smaller and clearer.
-    foreach ($c in @($ranked | Sort-Object Rank, @{ Expression = 'Blocking'; Descending = $true }, Comments, Number)) { $candidates.Add($c) }
+    # Highest priority label first. Within a priority, unblock the most other issues, then
+    # prefer less discussion: such issues are usually smaller and clearer.
+    $priorityByNumber = @{}
+    foreach ($issue in $issues) { $priorityByNumber[[int]$issue.number] = Get-IssuePriority $issue }
+    $byPriority = @{ Expression = { $priorityByNumber[$_.Number] } }
+    foreach ($c in @($ranked | Sort-Object $byPriority, Rank, @{ Expression = 'Blocking'; Descending = $true }, Comments, Number)) { $candidates.Add($c) }
 
     # A deferral that named an open blocker promotes it: working the blocker is the only
     # way the blocked item moves. Red main still comes first.

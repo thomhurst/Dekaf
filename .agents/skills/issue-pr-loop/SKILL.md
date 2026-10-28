@@ -16,7 +16,7 @@ Run unattended. At each iteration, run `pwsh scripts/Remove-MergedWorktrees.ps1`
 3. Fix conflicts, failed CI, or review findings on an open PR and push.
 4. Publish finished work stranded on a local `issue-<N>-*` branch that has no PR, or recover valuable changes from a preserved merged-PR worktree, following [recovery guidance](references/recovery.md).
 5. Tidy the issue queue: close a parent whose native sub-issues are all closed, and close an issue that `origin/main` already implements or that another issue supersedes.
-6. Claim an available issue, implement its full scope, and open a PR. Prefer issues that block other issues.
+6. Claim an available issue, implement its full scope, and open a PR. Take the highest priority (`P0` to `P3`) first, then prefer issues that block other issues.
 7. When nothing above is actionable, run a [triage unit](#triage) instead of waiting.
 
 After pushing or deferring, survey again. Pending CI/review means work another item; do not watch, sleep, poll one item, or schedule monitors while work is queueable. When only CI/review remains, periodically survey the whole queue and stay responsive.
@@ -65,7 +65,7 @@ For each item, acquire its lock (`issue-<N>` or `pr-<N>`), and skip it when `acq
 
 Make only changes that the evidence supports, and keep a comment short. Do not implement an issue in a triage unit.
 
-When the prompt says that fewer than five issues can be claimed now, also file up to three new issues for concrete defects you find in the repository: failing or flaky tests in recent CI runs, analyzer or build warnings, `TODO` or `FIXME` comments that describe a defect, documentation that contradicts the code, or missing tests for public behavior. Search open and closed issues first so that you do not file a duplicate. Give each issue the evidence (file and line, run, or log line) and acceptance criteria. Do not file issues for style preferences or speculative features.
+When the prompt says that fewer than five issues can be claimed now, also file up to three new issues for concrete defects you find in the repository: failing or flaky tests in recent CI runs, analyzer or build warnings, `TODO` or `FIXME` comments that describe a defect, documentation that contradicts the code, or missing tests for public behavior. Search open and closed issues first so that you do not file a duplicate. Give each issue the evidence (file and line, run, or log line), acceptance criteria, and one priority label (`P0` critical, `P1` high, `P2` medium, `P3` low) so the queue orders it. Do not file issues for style preferences or speculative features.
 
 Report `RESULT: triaged: <summary>`, for example `triaged: closed #12 #15, updated #18, filed #40`. Report `triaged: no changes` when every item was current.
 
@@ -214,7 +214,7 @@ Never bypass with direct `gh pr merge` or `--auto`. Nonzero exit means inspect/d
 
 ## Pick an issue
 
-Ensure `in-progress` exists, then list open, unassigned candidates without that label. Skip `wontfix`, `duplicate`, `question`, `needs-human`, `on-hold`, claimed items, issues with open native sub-issues or open `blocked_by` dependencies, and issues with an open closing PR. Prefer issues that block other issues, then clear, smaller tasks with fewer discussion comments; size alone is not a reason to stop when larger coherent work remains.
+Ensure `in-progress` exists, then list open, unassigned candidates without that label. Skip `wontfix`, `duplicate`, `question`, `needs-human`, `on-hold`, claimed items, issues with open native sub-issues or open `blocked_by` dependencies, and issues with an open closing PR. Take the highest priority label first (`P0` critical through `P3` low; an issue without one comes after `P3`). Within a priority, prefer issues that block other issues, then clear, smaller tasks with fewer discussion comments; size alone is not a reason to stop when larger coherent work remains.
 
 Under the issue lock, re-fetch state, assignees, labels, native dependencies, and linked PRs. Skip closed, assigned, or actively claimed items. Work an open blocker instead of a blocked item, and close an already implemented item with evidence, as described in [Resolve, do not defer](#resolve-do-not-defer). An `in-progress` claim with no open PR and no lock holder is stale: look for its branch or worktree and publish that work, or remove the claim and implement the issue. Add `in-progress` and verify the claim before branching. Keep it while the PR is open. Remove only your own claim if abandoning before PR creation; after lost ownership, leave shared claim state untouched and report the loss.
 
