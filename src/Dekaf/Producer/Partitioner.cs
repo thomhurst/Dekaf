@@ -586,11 +586,10 @@ internal sealed class StickyPartitionTracker
         return elapsedMs >= _availabilityTimeoutMs;
     }
 
+    // Weights are summed as long, so the target must span the full 64-bit range; a 32-bit
+    // draw leaves every cumulative interval above Int32.MaxValue unreachable.
     private long PositiveRandomLong(long upperExclusive)
-    {
-        var positiveRandom = (uint)_randomPartitionSelector.NextPartition(int.MaxValue);
-        return positiveRandom % upperExclusive;
-    }
+        => (long)(_randomPartitionSelector.NextUInt64() % (ulong)upperExclusive);
 
     private static long PackState(int partition, int producedBytes)
         => ((long)partition << 32) | (uint)producedBytes;
@@ -931,7 +930,12 @@ internal sealed class RandomPartitionSelector
     private const uint MixMultiplier1 = 0x7feb352d;
     private const uint MixMultiplier2 = 0x846ca68b;
 
+    private const long GoldenRatioIncrement64 = unchecked((long)0x9e3779b97f4a7c15);
+    private const ulong MixMultiplier64A = 0xbf58476d1ce4e5b9;
+    private const ulong MixMultiplier64B = 0x94d049bb133111eb;
+
     private int _state = Environment.TickCount;
+    private long _state64 = Environment.TickCount;
 
     public int NextPartition(int partitionCount)
     {
@@ -945,6 +949,15 @@ internal sealed class RandomPartitionSelector
         value *= MixMultiplier2;
         value ^= value >> 16;
         return (int)(value % (uint)partitionCount);
+    }
+
+    // SplitMix64 over an atomically advanced Weyl sequence.
+    public ulong NextUInt64()
+    {
+        var value = unchecked((ulong)Interlocked.Add(ref _state64, GoldenRatioIncrement64));
+        value = (value ^ (value >> 30)) * MixMultiplier64A;
+        value = (value ^ (value >> 27)) * MixMultiplier64B;
+        return value ^ (value >> 31);
     }
 }
 

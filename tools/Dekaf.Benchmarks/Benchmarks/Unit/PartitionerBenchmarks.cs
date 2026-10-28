@@ -28,11 +28,19 @@ public class PartitionerBenchmarks
     private readonly IPartitioner _baselinePartitioner = new HashingDefaultPartitioner();
     private readonly IPartitioner _partitioner = new DefaultPartitioner();
     private readonly IUniformStickyPartitioner _uniformPartitioner;
+    // Every rotation makes a weighted choice because partition 0 carries a 32 MiB backlog.
+    private readonly IPartitioner _adaptivePartitioner = new DefaultPartitioner(
+        stickyBatchSize: 16_384,
+        adaptivePartitioning: true);
+    private readonly IUniformStickyPartitioner _uniformAdaptivePartitioner;
     private readonly byte[] _key = "benchmark-partition-key"u8.ToArray();
 
     public PartitionerBenchmarks()
     {
         _uniformPartitioner = (IUniformStickyPartitioner)_partitioner;
+        _uniformAdaptivePartitioner = (IUniformStickyPartitioner)_adaptivePartitioner;
+        _uniformAdaptivePartitioner.SetPartitionQueueByteProvider(
+            static (_, partition) => partition == 0 ? 32L * 1024 * 1024 : 0);
     }
 
     [Params(1, 12)]
@@ -82,6 +90,28 @@ public class PartitionerBenchmarks
                 PartitionCount);
             _uniformPartitioner.OnRecordAppended(
                 topic,
+                partition,
+                bytes: 1_000,
+                PartitionCount);
+            result ^= partition;
+        }
+
+        return result;
+    }
+
+    [Benchmark(OperationsPerInvoke = 1_000)]
+    public int PartitionAndRecordNullKeysWithAdaptiveBacklog()
+    {
+        var result = 0;
+        for (var i = 0; i < 1_000; i++)
+        {
+            var partition = _adaptivePartitioner.Partition(
+                Topic,
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                PartitionCount);
+            _uniformAdaptivePartitioner.OnRecordAppended(
+                Topic,
                 partition,
                 bytes: 1_000,
                 PartitionCount);
