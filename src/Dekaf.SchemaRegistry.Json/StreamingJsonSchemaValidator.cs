@@ -1732,7 +1732,8 @@ internal sealed class SchemaCompiler : IDisposable
             string.Empty,
             root.EffectiveBaseUri,
             GetDialect(root.Document.RootElement, SchemaDialect.Draft7),
-            0);
+            0,
+            baseUriIsResolved: true);
         AssignValidationRuleMemberTables();
         return compiled;
     }
@@ -1982,7 +1983,8 @@ internal sealed class SchemaCompiler : IDisposable
         string pointer,
         Uri baseUri,
         SchemaDialect dialect,
-        int depth)
+        int depth,
+        bool baseUriIsResolved = false)
     {
         if (depth > _options.MaxSchemaDepth)
             throw new InvalidOperationException($"JSON Schema exceeds maximum depth {_options.MaxSchemaDepth}.");
@@ -2007,7 +2009,10 @@ internal sealed class SchemaCompiler : IDisposable
         if (schema.ValueKind != JsonValueKind.Object)
             throw new InvalidOperationException($"JSON Schema at '{pointer}' must be an object or boolean.");
 
-        baseUri = GetEffectiveBaseUri(schema, baseUri);
+        // Indexed reference targets and the document root already include this node's $id.
+        // Structural children still inherit their parent's base and must resolve their own $id.
+        if (!baseUriIsResolved)
+            baseUri = GetEffectiveBaseUri(schema, baseUri);
         dialect = GetDialect(schema, dialect);
         if (schema.TryGetProperty("$ref", out var referenceElement))
         {
@@ -2020,7 +2025,8 @@ internal sealed class SchemaCompiler : IDisposable
                 target.Pointer,
                 target.BaseUri,
                 target.Dialect,
-                depth + 1);
+                depth + 1,
+                baseUriIsResolved: true);
 
             if (dialect == SchemaDialect.Draft7)
             {
@@ -2106,7 +2112,8 @@ internal sealed class SchemaCompiler : IDisposable
             }
         }
 
-        return CompileNode(target.Document, target.Element, target.Pointer, target.BaseUri, target.Dialect, depth + 1);
+        return CompileNode(target.Document, target.Element, target.Pointer, target.BaseUri, target.Dialect, depth + 1,
+            baseUriIsResolved: true);
     }
 
     // 2019-09 $recursiveRef has the same static rule: it is a plain $ref to the current resource
@@ -2130,7 +2137,8 @@ internal sealed class SchemaCompiler : IDisposable
                 "JSON Schema $recursiveRef resolves through the dynamic scope because more than one resource sets $recursiveAnchor.");
         }
 
-        return CompileNode(target.Document, target.Element, target.Pointer, target.BaseUri, target.Dialect, depth + 1);
+        return CompileNode(target.Document, target.Element, target.Pointer, target.BaseUri, target.Dialect, depth + 1,
+            baseUriIsResolved: true);
     }
 
     private static bool ContainsCompositionTraversal(CompiledSchemaNode[] nodes)

@@ -236,6 +236,72 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    [Arguments("$dynamicRef", "sub/#node")]
+    [Arguments("$dynamicRef", "sub/")]
+    [Arguments("$dynamicRef", "#/$defs/tree")]
+    [Arguments("$ref", "sub/#node")]
+    [Arguments("$ref", "sub/")]
+    [Arguments("$ref", "#/$defs/tree")]
+    public async Task Validator_ResolvesReferencesToResourcesWithRelativeDirectoryIds(string keyword, string reference)
+    {
+        var schema = $$$"""
+            {
+              "$schema":"https://json-schema.org/draft/2020-12/schema",
+              "$id":"https://example.test/root.json",
+              "$defs":{
+                "tree":{
+                  "$id":"sub/",
+                  "$dynamicAnchor":"node",
+                  "type":"object",
+                  "required":["name"],
+                  "properties":{
+                    "name":{"type":"string"},
+                    "child":{"$dynamicRef":"#node"},
+                    "label":{"$id":"labels/","$ref":"text.json"}
+                  },
+                  "$defs":{"text":{"$id":"labels/text.json","type":"string"}}
+                }
+              },
+              "{{{keyword}}}":"{{{reference}}}"
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schema));
+
+        validator.Validate("""{"name":"root","child":{"name":"leaf"},"label":"text"}"""u8, 45);
+        var missing = Assert.Throws<JsonSchemaValidationException>(
+            () => validator.Validate("""{"name":"root","child":{}}"""u8, 45));
+        var wrongType = Assert.Throws<JsonSchemaValidationException>(
+            () => validator.Validate("""{"name":"root","label":5}"""u8, 45));
+
+        await Assert.That(missing.Keyword).IsEqualTo("required");
+        await Assert.That(missing.JsonPath).IsEqualTo("$['child']");
+        await Assert.That(wrongType.Keyword).IsEqualTo("type");
+        await Assert.That(wrongType.JsonPath).IsEqualTo("$['label']");
+    }
+
+    [Test]
+    [Arguments("2020-12", "\"$dynamicAnchor\":\"node\"", "$dynamicRef", "#node")]
+    [Arguments("2019-09", "\"$recursiveAnchor\":true", "$recursiveRef", "#")]
+    public void Validator_ResolvesReferencesWithinRootWithRelativeDirectoryId(
+        string draft, string anchor, string keyword, string reference)
+    {
+        var schema = $$$"""
+            {
+              "$schema":"https://json-schema.org/draft/{{{draft}}}/schema",
+              "$id":"sub/",
+              {{{anchor}}},
+              "type":"object",
+              "required":["name"],
+              "properties":{"child":{"{{{keyword}}}":"{{{reference}}}"}}
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schema));
+
+        validator.Validate("""{"name":"root","child":{"name":"leaf"}}"""u8, 46);
+        Assert.Throws<JsonSchemaValidationException>(() => validator.Validate("""{"name":"root","child":{}}"""u8, 46));
+    }
+
+    [Test]
     public void Validator_AppliesDynamicReferenceAlongsideRef()
     {
         var validator = CreateFactory().GetOrCreate(CreateSchema(
