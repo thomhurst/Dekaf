@@ -153,8 +153,11 @@ internal static class ConfluentConfigurationBinding
             builder.UseCompression(MapCompressionType(compressionType));
         if (TryGet(configuration, "CompressionLevel", out int compressionLevel) && compressionLevel != -1)
             builder.WithCompressionLevel(compressionLevel);
-        if (TryGetEnum(configuration, "Partitioner", out ConfluentPartitioner partitioner))
-            builder.WithPartitioner(MapPartitioner(partitioner));
+        // Confluent defaults to consistent_random; Dekaf's default (Murmur2) would route keys elsewhere.
+        builder.WithPartitioner(
+            TryGetEnum(configuration, "Partitioner", out ConfluentPartitioner partitioner)
+                ? MapPartitioner(partitioner)
+                : PartitionerType.ConsistentRandom);
 
         var clientBuilder = new ProducerClientBuilder<TKey, TValue>(builder);
         ApplySharedClient(configuration, clientBuilder);

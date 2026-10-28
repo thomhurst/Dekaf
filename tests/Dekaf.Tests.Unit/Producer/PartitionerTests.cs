@@ -872,6 +872,25 @@ public class LibrdkafkaPartitionerTests
     }
 
     [Test]
+    public async Task ConsistentRandomPartitioner_NonEmptyKeys_MatchLibrdkafkaCrc32Vectors()
+    {
+        var partitioner = new ConsistentRandomPartitioner();
+
+        foreach (var vector in HashVectors)
+        {
+            var key = Encoding.UTF8.GetBytes(vector.Key);
+
+            await Assert.That(partitioner.Partition("topic", key, keyIsNull: false, vector.PartitionCount))
+                .IsEqualTo(vector.Crc32Partition);
+        }
+
+        // Confluent's default routes "order-123" over eight partitions to 5; Dekaf's Murmur2 default picks 1.
+        await Assert.That(partitioner.Partition("topic", "order-123"u8, keyIsNull: false, 8)).IsEqualTo(5);
+        await Assert.That(new DefaultPartitioner().Partition("topic", "order-123"u8, keyIsNull: false, 8))
+            .IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ConsistentRandomPartitioner_EmptyKey_UsesRandomPartition()
     {
         var partitioner = new ConsistentRandomPartitioner();

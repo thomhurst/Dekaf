@@ -190,6 +190,13 @@ Supported compression values are `None`, `Gzip`, `Snappy`, `Lz4`, and `Zstd`. Su
 partitioner values are `Random`, `Consistent`, `ConsistentRandom`, `Murmur2`, `Murmur2Random`,
 `Fnv1a`, and `Fnv1aRandom`.
 
+When the configuration omits `Partitioner`, the adapter uses `ConsistentRandom`, Confluent's
+`consistent_random` default, instead of Dekaf's Murmur2 `Default` partitioner. A nonempty key
+therefore lands on the same partition as it did with Confluent.Kafka (CRC32 of the key), so
+per-key ordering and compacted state survive a migration or a rolling deployment that mixes both
+clients. Empty and null keys go to a random partition, as in librdkafka. A partitioner set in the
+fluent callback still wins.
+
 Dekaf's Brotli codec is not a producer compression option. Standard Kafka brokers reject Brotli,
 so the producer builder throws `NotSupportedException` from `Build()`, even when both clients
 install `Dekaf.Compression.Brotli`. Use `BrotliCompressionCodec` directly only for client-side
