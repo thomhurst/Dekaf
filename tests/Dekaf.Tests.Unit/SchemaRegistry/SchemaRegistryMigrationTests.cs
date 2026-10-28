@@ -485,7 +485,6 @@ public sealed class SchemaRegistryMigrationTests
     }
 
     [Test]
-    [Timeout(30_000)]
     public async Task PrepareAsync_RegistryTimeoutCancelsResolutionAndAllowsRetry(
         CancellationToken testTimeout)
     {

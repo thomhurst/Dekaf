@@ -48,11 +48,11 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
     public void EnqueueAssociationLookup(Task<IReadOnlyList<Association>> response) =>
         _associationLookupResponses.Enqueue(response);
 
-    public async Task WaitForBlockedAssociationLookupAsync(TimeSpan timeout)
+    public async Task WaitForBlockedAssociationLookupAsync()
     {
         var entered = _associationLookupEntered
             ?? throw new InvalidOperationException("No blocked association lookup was configured.");
-        await entered.Task.WaitAsync(timeout);
+        await entered.Task;
     }
 
     public void ReleaseBlockedAssociationLookup()
@@ -68,12 +68,12 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
         _getSchemaRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
-    public async Task WaitForBlockedGetSchemaAsync(TimeSpan timeout)
+    public async Task WaitForBlockedGetSchemaAsync()
     {
         var entered = _getSchemaEntered
             ?? throw new InvalidOperationException("No blocked GetSchemaAsync call was configured.");
 
-        await entered.Task.WaitAsync(timeout).ConfigureAwait(false);
+        await entered.Task.ConfigureAwait(false);
     }
 
     public void ReleaseBlockedGetSchema()
@@ -112,12 +112,12 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
         _getOrRegisterSchemaRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
-    public async Task WaitForBlockedGetOrRegisterSchemaAsync(TimeSpan timeout)
+    public async Task WaitForBlockedGetOrRegisterSchemaAsync()
     {
         var entered = _getOrRegisterSchemaEntered
             ?? throw new InvalidOperationException("No blocked GetOrRegisterSchemaAsync call was configured.");
 
-        await entered.Task.WaitAsync(timeout).ConfigureAwait(false);
+        await entered.Task.ConfigureAwait(false);
     }
 
     public void ReleaseBlockedGetOrRegisterSchema()

@@ -790,7 +790,7 @@ public sealed class SubjectNameStrategyTests
 
         schemaRegistry.BlockNextGetOrRegisterSchema();
         var first = serializer.WarmupAsync("overflow-single-flight", overflow);
-        await schemaRegistry.WaitForBlockedGetOrRegisterSchemaAsync(TimeSpan.FromSeconds(5));
+        await schemaRegistry.WaitForBlockedGetOrRegisterSchemaAsync();
         var second = serializer.WarmupAsync("overflow-single-flight", overflow);
 
         await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(2);

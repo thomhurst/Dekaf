@@ -2338,7 +2338,7 @@ public sealed class AvroSerializerTests
 
         using var firstWaiterCts = new CancellationTokenSource();
         var firstWaiter = serializer.WarmupAsync("shared-topic", record, cancellationToken: firstWaiterCts.Token);
-        await schemaRegistry.WaitForBlockedGetOrRegisterSchemaAsync(TimeSpan.FromSeconds(2));
+        await schemaRegistry.WaitForBlockedGetOrRegisterSchemaAsync();
 
         var secondWaiter = serializer.WarmupAsync("shared-topic", record);
         try
@@ -2373,7 +2373,7 @@ public sealed class AvroSerializerTests
         // Cold path: the schema fetch is in flight, so preparation must be genuinely asynchronous
         // (not blocking a thread) - that is the whole point of the hook.
         var prepare = serializer.PrepareAsync(record, CreateContext("prepare-topic"));
-        await schemaRegistry.WaitForBlockedGetOrRegisterSchemaAsync(TimeSpan.FromSeconds(2));
+        await schemaRegistry.WaitForBlockedGetOrRegisterSchemaAsync();
         await Assert.That(prepare.IsCompleted).IsFalse();
 
         schemaRegistry.ReleaseBlockedGetOrRegisterSchema();

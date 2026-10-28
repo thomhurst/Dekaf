@@ -126,7 +126,7 @@ public sealed class AssociatedNameStrategyTests
         for (var index = 0; index < resolutions.Length; index++)
             resolutions[index] = resolver.GetSubjectNameAsync("orders", "Order", isKey: true);
 
-        await client.WaitForBlockedAssociationLookupAsync(TimeSpan.FromSeconds(5));
+        await client.WaitForBlockedAssociationLookupAsync();
         await Assert.That(client.AssociationLookupCallCount).IsEqualTo(1);
         client.ReleaseBlockedAssociationLookup();
 
@@ -146,7 +146,7 @@ public sealed class AssociatedNameStrategyTests
         var cancelledWaiter = resolver.GetSubjectNameAsync(
             "orders", "Order", isKey: false, cancellation.Token);
         var sharedWaiter = resolver.GetSubjectNameAsync("orders", "Order", isKey: false);
-        await client.WaitForBlockedAssociationLookupAsync(TimeSpan.FromSeconds(5));
+        await client.WaitForBlockedAssociationLookupAsync();
 
         await cancellation.CancelAsync();
         _ = await Assert.ThrowsAsync<OperationCanceledException>(() => cancelledWaiter.AsTask());
@@ -334,8 +334,7 @@ public sealed class AssociatedNameStrategyTests
         var resolver = CreateResolver(client);
 
         var normalLookup = resolver.GetSubjectNameAsync("orders", "Order", isKey: false);
-        await Assert.That(() => client.AssociationLookupCallCount)
-            .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
+        await TestWait.UntilAsync(() => client.AssociationLookupCallCount == 1, CancellationToken.None);
         var refresh = resolver.RefreshAsync("orders", "Order", isKey: false);
 
         await Assert.That(await refresh).IsEqualTo("orders-v2");
@@ -360,8 +359,7 @@ public sealed class AssociatedNameStrategyTests
         var resolver = CreateResolver(client);
 
         var staleAliasLookup = resolver.GetSubjectNameAsync("orders", "OrderRecord", isKey: false);
-        await Assert.That(() => client.AssociationLookupCallCount)
-            .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
+        await TestWait.UntilAsync(() => client.AssociationLookupCallCount == 1, CancellationToken.None);
         var refresh = resolver.RefreshAsync("orders", typeof(int).FullName, isKey: false);
 
         await Assert.That(await refresh).IsEqualTo("orders-v2");
@@ -379,8 +377,9 @@ public sealed class AssociatedNameStrategyTests
         client.BlockNextAssociationLookup();
         var resolver = CreateResolver(client, lookupTimeout: TimeSpan.FromMilliseconds(250));
 
+        // The lookup starts on the thread pool and the timeout starts with it, so the lookup
+        // times out whether or not a starved pool has let it reach the blocked client yet.
         var lookup = resolver.GetSubjectNameAsync("orders", "Order", isKey: false);
-        await client.WaitForBlockedAssociationLookupAsync(TimeSpan.FromSeconds(5));
         try
         {
             _ = await Assert.ThrowsAsync<TimeoutException>(() => lookup.AsTask());
@@ -390,10 +389,11 @@ public sealed class AssociatedNameStrategyTests
             client.ReleaseBlockedAssociationLookup();
         }
 
+        var lookupsBeforeRecovery = client.AssociationLookupCallCount;
         await AssociateAsync(client, "orders", "orders-recovered");
         await Assert.That(await resolver.GetSubjectNameAsync("orders", "Order", isKey: false))
             .IsEqualTo("orders-recovered");
-        await Assert.That(client.AssociationLookupCallCount).IsEqualTo(2);
+        await Assert.That(client.AssociationLookupCallCount).IsEqualTo(lookupsBeforeRecovery + 1);
     }
 
     [Test]
@@ -975,8 +975,7 @@ public sealed class AssociatedNameStrategyTests
             isKey: false,
             typeof(int).FullName!,
             CancellationToken.None);
-        await Assert.That(() => client.AssociationLookupCallCount)
-            .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
+        await TestWait.UntilAsync(() => client.AssociationLookupCallCount == 1, CancellationToken.None);
 
         await Assert.That(resolver.Invalidate("orders", typeof(int).FullName, isKey: false)).IsFalse();
         staleResponse.SetResult([CreateAssociation("orders", "orders-v1")]);
@@ -1305,7 +1304,7 @@ public sealed class AssociatedNameStrategyTests
         client.BlockNextAssociationLookup();
         var resolver = CreateResolver(client);
         var lookup = resolver.GetSubjectNameAsync("orders", "Order", isKey: false);
-        await client.WaitForBlockedAssociationLookupAsync(TimeSpan.FromSeconds(5));
+        await client.WaitForBlockedAssociationLookupAsync();
 
         await Assert.That(resolver.Invalidate("orders", "Order", isKey: false)).IsFalse();
         client.ReleaseBlockedAssociationLookup();
@@ -1327,15 +1326,13 @@ public sealed class AssociatedNameStrategyTests
             [CreateAssociation("orders", "orders-v2")]));
         var resolver = CreateResolver(client);
         var staleLookup = resolver.GetSubjectNameAsync("orders", "Order", isKey: false);
-        await Assert.That(() => client.AssociationLookupCallCount)
-            .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
+        await TestWait.UntilAsync(() => client.AssociationLookupCallCount == 1, CancellationToken.None);
 
         await Assert.That(resolver.Invalidate("orders", "Order", isKey: false)).IsFalse();
         var freshLookup = resolver.GetSubjectNameAsync("orders", "Order", isKey: false);
         try
         {
-            await Assert.That(() => client.AssociationLookupCallCount)
-                .Eventually(count => count.IsEqualTo(2), TimeSpan.FromSeconds(5));
+            await TestWait.UntilAsync(() => client.AssociationLookupCallCount == 2, CancellationToken.None);
         }
         finally
         {
@@ -1355,7 +1352,7 @@ public sealed class AssociatedNameStrategyTests
         client.BlockNextAssociationLookup();
         var resolver = CreateResolver(client);
         var lookup = resolver.GetSubjectNameAsync("orders", "Order", isKey: false);
-        await client.WaitForBlockedAssociationLookupAsync(TimeSpan.FromSeconds(5));
+        await client.WaitForBlockedAssociationLookupAsync();
 
         await Assert.That(resolver.Invalidate("payments", "Payment", isKey: false)).IsFalse();
         client.ReleaseBlockedAssociationLookup();

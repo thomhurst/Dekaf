@@ -159,17 +159,34 @@ public sealed class AdminClientDetailedClientQuotaTests
     {
         var (admin, connection) = CreateAdmin(initializeMetadata: dispatched);
         await using var client = admin;
+        var sends = 0;
         if (dispatched)
             connection.SendAsync<AlterClientQuotasRequest, AlterClientQuotasResponse>(Arg.Any<AlterClientQuotasRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-                .Returns(call => new ValueTask<AlterClientQuotasResponse>(WaitForCancellation<AlterClientQuotasResponse>(call.Arg<CancellationToken>())));
+                .Returns(call =>
+                {
+                    Interlocked.Increment(ref sends);
+                    return new ValueTask<AlterClientQuotasResponse>(WaitForCancellation<AlterClientQuotasResponse>(call.Arg<CancellationToken>()));
+                });
         else
             connection.SendAsync<MetadataRequest, MetadataResponse>(Arg.Any<MetadataRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
                 .Returns(call => new ValueTask<MetadataResponse>(WaitForCancellation<MetadataResponse>(call.Arg<CancellationToken>())));
-        var results = await admin.AlterClientQuotasDetailedAsync(Alterations(), new() { TimeoutMs = 1000 }).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
-        foreach (var result in results.Values)
+
+        // A starved thread pool can let the deadline fire before the send is dispatched. That
+        // run must still report NotAttempted, so check it, then lengthen the deadline until the
+        // send is reached, instead of racing one fixed deadline against the scheduler.
+        for (var timeoutMs = 1000; ; timeoutMs *= 2)
         {
-            await Assert.That(result.Outcome).IsEqualTo(dispatched ? AdminMutationOutcome.Unknown : AdminMutationOutcome.NotAttempted);
-            await Assert.That(result.Exception).IsTypeOf<KafkaTimeoutException>();
+            var sendsBefore = Volatile.Read(ref sends);
+            var results = await admin.AlterClientQuotasDetailedAsync(Alterations(), new() { TimeoutMs = timeoutMs });
+            var sent = Volatile.Read(ref sends) != sendsBefore;
+            foreach (var result in results.Values)
+            {
+                await Assert.That(result.Outcome).IsEqualTo(sent ? AdminMutationOutcome.Unknown : AdminMutationOutcome.NotAttempted);
+                await Assert.That(result.Exception).IsTypeOf<KafkaTimeoutException>();
+            }
+
+            if (sent == dispatched)
+                break;
         }
     }
 
@@ -184,14 +201,31 @@ public sealed class AdminClientDetailedClientQuotaTests
         var pool = (IConnectionPool)typeof(AdminClient)
             .GetField("_connectionPool", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
             .GetValue(admin)!;
+        var connectionAttempts = 0;
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
-            .Returns<ValueTask<IKafkaConnection>>(_ => throw new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionRefused));
-        var results = await admin.AlterClientQuotasDetailedAsync(Alterations(), new() { TimeoutMs = 300 }).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
-        foreach (var result in results.Values)
+            .Returns<ValueTask<IKafkaConnection>>(_ =>
+            {
+                Interlocked.Increment(ref connectionAttempts);
+                throw new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionRefused);
+            });
+
+        // A deadline that fires before the first connection attempt has no transport failure to
+        // carry. Lengthen it until an attempt runs, instead of racing a starved scheduler.
+        for (var timeoutMs = 300; ; timeoutMs *= 2)
         {
-            await Assert.That(result.Outcome).IsEqualTo(AdminMutationOutcome.NotAttempted);
-            await Assert.That(result.Exception).IsTypeOf<KafkaTimeoutException>();
-            await Assert.That(result.Exception!.InnerException).IsTypeOf<System.Net.Sockets.SocketException>();
+            var attemptsBefore = Volatile.Read(ref connectionAttempts);
+            var results = await admin.AlterClientQuotasDetailedAsync(Alterations(), new() { TimeoutMs = timeoutMs });
+            var attempted = Volatile.Read(ref connectionAttempts) != attemptsBefore;
+            foreach (var result in results.Values)
+            {
+                await Assert.That(result.Outcome).IsEqualTo(AdminMutationOutcome.NotAttempted);
+                await Assert.That(result.Exception).IsTypeOf<KafkaTimeoutException>();
+                if (attempted)
+                    await Assert.That(result.Exception!.InnerException).IsTypeOf<System.Net.Sockets.SocketException>();
+            }
+
+            if (attempted)
+                break;
         }
     }
 

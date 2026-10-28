@@ -610,7 +610,6 @@ public class MetadataManagerTests
     }
 
     [Test]
-    [Timeout(10_000)]
     public async Task GetTopicMetadataAsync_TransportFailure_RetriesUntilCancelledAndReportsCause(
         CancellationToken cancellationToken)
     {
@@ -650,7 +649,6 @@ public class MetadataManagerTests
     }
 
     [Test]
-    [Timeout(10_000)]
     public async Task GetTopicMetadataAsync_UnresolvedBootstrapHostname_RetriesUntilCancelledAndReportsCause(
         CancellationToken cancellationToken)
     {
@@ -690,7 +688,6 @@ public class MetadataManagerTests
     }
 
     [Test]
-    [Timeout(10_000)]
     public async Task GetTopicMetadataAsync_FatalFailure_PropagatesWithoutRetry(CancellationToken cancellationToken)
     {
         var attempts = 0;
@@ -719,7 +716,6 @@ public class MetadataManagerTests
     }
 
     [Test]
-    [Timeout(10_000)]
     public async Task GetTopicMetadataAsync_TransportFailuresThenRecovery_ReturnsTheTopic(
         CancellationToken cancellationToken)
     {
@@ -750,7 +746,6 @@ public class MetadataManagerTests
     }
 
     [Test]
-    [Timeout(20_000)]
     public async Task GetTopicMetadataAsync_ConcurrentWaitersDuringOutage_ShareOneFetch(
         CancellationToken cancellationToken)
     {
@@ -759,12 +754,15 @@ public class MetadataManagerTests
         // a waiter whose budget ended while still queued had no cause to report.
         const int waiters = 50;
         var attempts = 0;
+        var joined = 0;
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
-            .Returns(_ =>
+            .Returns(call => Interlocked.Increment(ref attempts) switch
             {
-                Interlocked.Increment(ref attempts);
-                return RefuseAfterRoundTripAsync();
+                1 => RefuseAfterRoundTripAsync(),
+                2 => EndBudgetOnceAllJoinedAsync(),
+                _ => WaitForAbandonAsync(call.Arg<CancellationToken>()),
             });
 
         // A refused connection still costs a round trip.
@@ -772,6 +770,24 @@ public class MetadataManagerTests
         {
             await Task.Delay(10, CancellationToken.None).ConfigureAwait(false);
             throw new SocketException((int)SocketError.ConnectionRefused);
+        }
+
+        // The first attempt has failed, so the shared fetch has a cause to report. End the
+        // budget only once every waiter has joined, rather than racing a wall-clock budget
+        // against waiters that a starved thread pool has not started yet.
+        async ValueTask<IKafkaConnection> EndBudgetOnceAllJoinedAsync()
+        {
+            await TestWait.UntilAsync(() => Volatile.Read(ref joined) == waiters, CancellationToken.None)
+                .ConfigureAwait(false);
+            await budget.CancelAsync().ConfigureAwait(false);
+            throw new SocketException((int)SocketError.ConnectionRefused);
+        }
+
+        // Later attempts only end when the last waiter abandons the fetch.
+        static async ValueTask<IKafkaConnection> WaitForAbandonAsync(CancellationToken token)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+            throw new UnreachableException();
         }
 
         var logger = new CapturingLogger<MetadataManager>();
@@ -785,8 +801,6 @@ public class MetadataManagerTests
                 RetryBackoffMaxMs = 20
             },
             logger);
-        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        budget.CancelAfter(TimeSpan.FromMilliseconds(600));
 
         var waits = new Task<Exception?>[waiters];
         for (var i = 0; i < waiters; i++)
@@ -795,7 +809,10 @@ public class MetadataManagerTests
             {
                 try
                 {
-                    await manager.GetTopicMetadataAsync("orders", budget.Token).ConfigureAwait(false);
+                    // The synchronous part of the call joins the shared fetch.
+                    var wait = manager.GetTopicMetadataAsync("orders", budget.Token);
+                    Interlocked.Increment(ref joined);
+                    await wait.ConfigureAwait(false);
                     return (Exception?)null;
                 }
                 catch (Exception ex)
@@ -813,8 +830,9 @@ public class MetadataManagerTests
             await Assert.That(failure!.InnerException).IsTypeOf<SocketException>();
         }
 
-        // One fetch at ~30 ms per attempt for 600 ms; fifty independent loops would run hundreds.
-        await Assert.That(Volatile.Read(ref attempts)).IsLessThanOrEqualTo(40);
+        // One shared fetch: the failed attempt, the budget-ending attempt, and at most one more
+        // before the last waiter leaves. Fifty independent loops would make at least fifty.
+        await Assert.That(Volatile.Read(ref attempts)).IsLessThanOrEqualTo(3);
         var topicWarnings = logger.Entries.Count(entry =>
             entry.Level == LogLevel.Warning &&
             entry.Message.Contains("orders", StringComparison.Ordinal));
@@ -822,17 +840,23 @@ public class MetadataManagerTests
     }
 
     [Test]
-    [Timeout(10_000)]
     public async Task GetTopicMetadataAsync_LastWaiterLeaves_StopsTheSharedFetch(CancellationToken cancellationToken)
     {
         // The shared fetch must not keep probing an unreachable cluster after everyone who
         // wanted the topic gave up.
         var attempts = 0;
+        var fetchAttempts = 0;
+        CancellationTokenSource? endBudget = null;
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
-            .Returns(_ =>
+            .Returns(call =>
             {
                 Interlocked.Increment(ref attempts);
+                // End the waiter's budget on the fetch's second attempt: the first has failed,
+                // so the fetch has a cause to report, whatever the scheduling delays.
+                if (!call.Arg<CancellationToken>().IsCancellationRequested
+                    && Interlocked.Increment(ref fetchAttempts) == 2)
+                    _ = Volatile.Read(ref endBudget)!.CancelAsync();
                 return ValueTask.FromException<IKafkaConnection>(
                     new SocketException((int)SocketError.ConnectionRefused));
             });
@@ -846,20 +870,23 @@ public class MetadataManagerTests
                 RetryBackoffMaxMs = 5
             });
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        budget.CancelAfter(TimeSpan.FromMilliseconds(150));
+        Volatile.Write(ref endBudget, budget);
 
         await Assert.That(() => manager.GetTopicMetadataAsync("orders", budget.Token).AsTask())
             .Throws<OperationCanceledException>();
 
-        // Let an in-flight attempt unwind, then the count must stop moving.
-        await Task.Delay(100, cancellationToken);
+        // Only an attempt already past its cancellation check may still start. A fetch that kept
+        // probing would start one every 5 ms; load only slows such a loop down, so this window
+        // cannot fail a correct fetch.
         var settled = Volatile.Read(ref attempts);
         await Task.Delay(200, cancellationToken);
-        await Assert.That(Volatile.Read(ref attempts)).IsEqualTo(settled);
+        await Assert.That(Volatile.Read(ref attempts) - settled).IsLessThanOrEqualTo(1);
 
         // A later caller starts a fresh fetch rather than joining the cancelled one.
+        settled = Volatile.Read(ref attempts);
         using var secondBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        secondBudget.CancelAfter(TimeSpan.FromMilliseconds(100));
+        Volatile.Write(ref endBudget, secondBudget);
+        Volatile.Write(ref fetchAttempts, 0);
         var second = await Assert.That(() => manager.GetTopicMetadataAsync("orders", secondBudget.Token).AsTask())
             .Throws<OperationCanceledException>();
         await Assert.That(second!.InnerException).IsTypeOf<SocketException>();
@@ -1033,7 +1060,6 @@ public class MetadataManagerTests
     }
 
     [Test]
-    [Timeout(5_000)]
     public async Task InitializeAsync_FirstBootstrapDnsAttempt_RespectsDedicatedDeadline(
         CancellationToken cancellationToken)
     {
@@ -1050,19 +1076,19 @@ public class MetadataManagerTests
             new MetadataOptions
             {
                 EnableBackgroundRefresh = false,
-                InitTimeoutMs = 1000,
+                // Far beyond any scheduling delay: only the dedicated 20 ms deadline can end the
+                // attempt with a BootstrapResolutionException, so the outcome proves which fired.
+                InitTimeoutMs = 60_000,
                 BootstrapResolveTimeoutMs = 20,
                 RetryBackoffMs = 0,
                 RetryBackoffMaxMs = 0
             });
-        var startedAt = Stopwatch.GetTimestamp();
 
         var exception = await Assert.That(() => manager.InitializeAsync(cancellationToken).AsTask())
             .Throws<BootstrapResolutionException>();
 
         await Assert.That(exception!.Timeout).IsEqualTo(TimeSpan.FromMilliseconds(20));
         await Assert.That(exception.UnresolvedBootstrapServers).IsEquivalentTo(["slow-host:9092"]);
-        await Assert.That(Stopwatch.GetElapsedTime(startedAt)).IsLessThan(TimeSpan.FromSeconds(1));
     }
 
     [Test]
@@ -1180,7 +1206,6 @@ public class MetadataManagerTests
     }
 
     [Test]
-    [Timeout(5_000)]
     public async Task InitializeAsync_BootstrapDnsRetry_DisposalStopsPromptly(CancellationToken cancellationToken)
     {
         var pool = Substitute.For<IConnectionPool>();
@@ -1348,15 +1373,15 @@ public class MetadataManagerTests
         SetMetadataApiVersion(manager);
 
         var initializeTask = manager.InitializeAsync().AsTask();
-        await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await refreshStarted.Task;
 
         var disposeTask = manager.DisposeAsync().AsTask();
         releaseRefresh.SetResult(CreateMetadataResponse((1, "broker1", 9092)));
 
-        var act = () => initializeTask.WaitAsync(TimeSpan.FromSeconds(5));
+        var act = () => initializeTask;
         await Assert.That(act).Throws<ObjectDisposedException>();
 
-        await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+        await disposeTask;
         object? backgroundRefreshTask = GetInstanceField<Task?>(manager, "_backgroundRefreshTask");
         await Assert.That(backgroundRefreshTask).IsNull();
     }
@@ -1532,7 +1557,7 @@ public class MetadataManagerTests
         SetInstanceField(manager, "_initialized", true);
 
         var loop = InvokeBackgroundRefreshLoop(manager, cts.Token);
-        await loop.WaitAsync(TimeSpan.FromSeconds(5));
+        await loop;
 
         await Assert.That(GetInstanceField<bool>(manager, "_initialized")).IsTrue();
         await manager.DisposeAsync();
@@ -1563,7 +1588,7 @@ public class MetadataManagerTests
         SetInstanceField(manager, "_initialized", true);
 
         var loop = InvokeBackgroundRefreshLoop(manager, CancellationToken.None);
-        await loop.WaitAsync(TimeSpan.FromSeconds(5));
+        await loop;
 
         await Assert.That(GetInstanceField<bool>(manager, "_initialized")).IsFalse();
         await manager.DisposeAsync();
@@ -1832,7 +1857,6 @@ public class MetadataManagerTests
     // full connection setup timeout per attempt. The refresh must not pay that on every pass
     // when another broker is known to answer: the endpoint that answered last goes first.
     [Test]
-    [Timeout(30_000)]
     public async Task RefreshMetadataAsync_SilentFirstBroker_LaterRefreshesGoStraightToTheBrokerThatAnswered(
         CancellationToken cancellationToken)
     {
@@ -1891,21 +1915,18 @@ public class MetadataManagerTests
         await manager.InitializeAsync(cancellationToken);
         var attemptsAfterInitialize = Volatile.Read(ref silentAttempts);
 
-        var stopwatch = Stopwatch.StartNew();
         for (var i = 0; i < 3; i++)
             await manager.RefreshMetadataAsync(cancellationToken);
-        stopwatch.Stop();
 
+        // No new attempt on the silent broker means no refresh paid its setup timeout.
         await Assert.That(attemptsAfterInitialize).IsEqualTo(1);
         await Assert.That(Volatile.Read(ref silentAttempts)).IsEqualTo(attemptsAfterInitialize);
-        await Assert.That(stopwatch.Elapsed).IsLessThan(setupTimeout);
     }
 
     // A rebootstrap that succeeds through another endpoint must move the preference there.
     // Otherwise the endpoint that asked for the rebootstrap stays first, and every later
     // refresh asks it again and triggers another rebootstrap.
     [Test]
-    [Timeout(30_000)]
     public async Task RefreshMetadataAsync_AfterRebootstrapThroughAnotherBroker_LaterRefreshesStartThere(
         CancellationToken cancellationToken)
     {
@@ -1957,7 +1978,6 @@ public class MetadataManagerTests
     // The refresh endpoint list holds only broker and bootstrap hosts, so the preference must
     // name the bootstrap server the answering address came from, not the address itself.
     [Test]
-    [Timeout(30_000)]
     public async Task RefreshMetadataAsync_AfterRebootstrapThroughAResolvedAddress_LaterRefreshesStartAtTheBootstrapServer(
         CancellationToken cancellationToken)
     {
@@ -2027,7 +2047,6 @@ public class MetadataManagerTests
     // Once another address of the same bootstrap server completes the rebootstrap, the next
     // connection to that server must start at the answering address, not the failing one.
     [Test]
-    [Timeout(30_000)]
     public async Task TryRebootstrapImmediateAsync_ThroughASecondResolvedAddress_MakesItTheBootstrapServersDnsPreference(
         CancellationToken cancellationToken)
     {

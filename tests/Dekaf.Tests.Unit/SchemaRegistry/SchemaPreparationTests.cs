@@ -472,7 +472,7 @@ public sealed class SchemaPreparationTests
         await using var serializer = CreateGenericSerializer(registry, schema);
 
         var first = serializer.PrepareAsync("orders", 1);
-        await registry.WaitForBlockedGetOrRegisterSchemaAsync(TimeSpan.FromSeconds(2));
+        await registry.WaitForBlockedGetOrRegisterSchemaAsync();
         var second = serializer.PrepareAsync("orders", 2);
 
         await Assert.That(first.IsCompleted).IsFalse();
@@ -509,7 +509,7 @@ public sealed class SchemaPreparationTests
         using var cancellation = new CancellationTokenSource();
 
         var canceledWaiter = serializer.PrepareAsync("orders", 1, cancellationToken: cancellation.Token);
-        await registry.WaitForBlockedGetOrRegisterSchemaAsync(TimeSpan.FromSeconds(2));
+        await registry.WaitForBlockedGetOrRegisterSchemaAsync();
         var successfulWaiter = serializer.PrepareAsync("orders", 2);
         cancellation.Cancel();
 
@@ -1000,7 +1000,7 @@ public sealed class SchemaPreparationTests
             },
             cancellation.Token).AsTask();
 
-        await registry.WaitForBlockedGetOrRegisterSchemaAsync(TimeSpan.FromSeconds(2));
+        await registry.WaitForBlockedGetOrRegisterSchemaAsync();
         await Assert.That(produce.IsCompleted).IsFalse();
         cancellation.Cancel();
 
@@ -1035,7 +1035,7 @@ public sealed class SchemaPreparationTests
                 Topic = "orders",
                 Component = SerializationComponent.Value
             });
-        await registry.WaitForBlockedGetOrRegisterSchemaAsync(TimeSpan.FromSeconds(2));
+        await registry.WaitForBlockedGetOrRegisterSchemaAsync();
 
         try
         {

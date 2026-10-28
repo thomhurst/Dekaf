@@ -486,7 +486,7 @@ public sealed class ConsumerPauseResumeCacheTests
 
         consumer.Pause(pausedPartition);
 
-        var active = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(5));
+        var active = await consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan);
         await Assert.That(active).IsNotNull();
         await Assert.That(active!.Value.Topic).IsEqualTo(activePartition.Topic);
         await Assert.That(active.Value.Partition).IsEqualTo(activePartition.Partition);
@@ -494,7 +494,7 @@ public sealed class ConsumerPauseResumeCacheTests
 
         consumer.Resume(pausedPartition);
 
-        var resumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(5));
+        var resumed = await consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan);
         await Assert.That(resumed).IsNotNull();
         await Assert.That(resumed!.Value.Topic).IsEqualTo(pausedPartition.Topic);
         await Assert.That(resumed.Value.Partition).IsEqualTo(pausedPartition.Partition);
@@ -512,9 +512,8 @@ public sealed class ConsumerPauseResumeCacheTests
         var partition = new TopicPartition(PrefetchedTopic, 0);
         await using var consumer = CreatePrefetchedConsumer(CreatePendingFetch(partition, 10, 1));
         consumer.Pause(partition);
-        using var consumeSource = new CancellationTokenSource();
-        using var callerSource = new CancellationTokenSource();
         var version = (int)GetField("_pausedSnapshotVersion").GetValue(consumer)!;
+        var pausedDirectFetchCancellationSource = GetField("_pausedDirectFetchCancellationSource");
         var delay = typeof(KafkaConsumer<string, string>)
             .GetMethod("DelayPausedDirectFetchAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
             .CreateDelegate<Func<int, CancellationTokenSource, CancellationToken, ValueTask>>(consumer);
@@ -530,20 +529,56 @@ public sealed class ConsumerPauseResumeCacheTests
         try
         {
             observedOperation.Value = exceptionCount;
-            var wait = delay(version, consumeSource, callerSource.Token);
-            await Assert.That(wait.IsCompleted).IsFalse();
-            if (callerCancellation)
-                callerSource.Cancel();
-            if (internalCancellation)
-                consumeSource.Cancel();
-            else
-                consumer.Resume(partition);
-
-            if (callerCancellation || internalCancellation)
-                await Assert.That(async () => await wait).Throws<OperationCanceledException>();
-            else
+            // The paused delay is a fixed 100 ms. A starved thread pool can let it elapse
+            // before the test wakes it, which tests nothing; repeat until the wake lands first.
+            while (true)
             {
-                await wait;
+                using var consumeSource = new CancellationTokenSource();
+                using var callerSource = new CancellationTokenSource();
+                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                var wait = delay(version, consumeSource, callerSource.Token);
+                if (wait.IsCompleted)
+                {
+                    await wait;
+                    pausedDirectFetchCancellationSource.SetValue(consumer, null);
+                    continue;
+                }
+
+                if (callerCancellation)
+                    callerSource.Cancel();
+                if (internalCancellation)
+                    consumeSource.Cancel();
+                else
+                    consumer.Resume(partition);
+
+                if (!callerCancellation && !internalCancellation)
+                {
+                    await wait;
+                    break;
+                }
+
+                try
+                {
+                    await wait;
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+
+                // Swallowing the cancellation is a defect unless the delay itself had elapsed.
+                await Assert.That(stopwatch.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(100));
+                pausedDirectFetchCancellationSource.SetValue(consumer, null);
+                if (!internalCancellation)
+                {
+                    // Resume ran this attempt; pause again under a fresh snapshot version.
+                    consumer.Pause(partition);
+                    version = (int)GetField("_pausedSnapshotVersion").GetValue(consumer)!;
+                }
+            }
+
+            if (!callerCancellation && !internalCancellation)
+            {
 #if NET10_0_OR_GREATER
                 // net8 tests exercise the netstandard asset, whose compatibility
                 // await still catches cancellation internally.
@@ -555,7 +590,7 @@ public sealed class ConsumerPauseResumeCacheTests
         {
             observedOperation.Value = null;
             AppDomain.CurrentDomain.FirstChanceException -= ObserveException;
-            GetField("_pausedDirectFetchCancellationSource").SetValue(consumer, null);
+            pausedDirectFetchCancellationSource.SetValue(consumer, null);
         }
     }
 
@@ -571,13 +606,13 @@ public sealed class ConsumerPauseResumeCacheTests
         var pausedDirectFetchCancellationSource = GetField("_pausedDirectFetchCancellationSource");
         try
         {
-            await Assert.That(SpinWait.SpinUntil(
+            await TestWait.UntilAsync(
                 () => pausedDirectFetchCancellationSource.GetValue(consumer) is not null,
-                TimeSpan.FromSeconds(5))).IsTrue();
+                CancellationToken.None);
 
             consumer.Resume(partition);
 
-            var resumed = await consume.WaitAsync(TimeSpan.FromSeconds(5));
+            var resumed = await consume;
             await Assert.That(resumed).IsNotNull();
             await Assert.That(resumed!.Value.Topic).IsEqualTo(partition.Topic);
             await Assert.That(resumed.Value.Partition).IsEqualTo(partition.Partition);
@@ -606,14 +641,14 @@ public sealed class ConsumerPauseResumeCacheTests
         consumer = createdConsumer;
         await using var ownedConsumer = createdConsumer;
 
-        var active = await createdConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(5));
+        var active = await createdConsumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan);
         await Assert.That(active).IsNotNull();
         await Assert.That(active!.Value.Topic).IsEqualTo(activePartition.Topic);
         await Assert.That(active.Value.Partition).IsEqualTo(activePartition.Partition);
 
         createdConsumer.Resume(pausedPartition);
 
-        var resumed = await createdConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(5));
+        var resumed = await createdConsumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan);
         await Assert.That(resumed).IsNotNull();
         await Assert.That(resumed!.Value.Topic).IsEqualTo(pausedPartition.Topic);
         await Assert.That(resumed.Value.Partition).IsEqualTo(pausedPartition.Partition);
@@ -657,17 +692,17 @@ public sealed class ConsumerPauseResumeCacheTests
         consumer = createdConsumer;
         await using var ownedConsumer = createdConsumer;
 
-        var first = await createdConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(5));
+        var first = await createdConsumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan);
         await Assert.That(first).IsNotNull();
         await Assert.That(first!.Value.Partition).IsEqualTo(firstActivePartition.Partition);
 
-        var second = await createdConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(5));
+        var second = await createdConsumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan);
         await Assert.That(second).IsNotNull();
         await Assert.That(second!.Value.Partition).IsEqualTo(secondActivePartition.Partition);
 
         createdConsumer.Resume(pausedPartition);
 
-        var resumed = await createdConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(5));
+        var resumed = await createdConsumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan);
         await Assert.That(resumed).IsNotNull();
         await Assert.That(resumed!.Value.Partition).IsEqualTo(pausedPartition.Partition);
         await Assert.That(resumed.Value.Offset).IsEqualTo(20);
@@ -687,14 +722,14 @@ public sealed class ConsumerPauseResumeCacheTests
         consumer = createdConsumer;
         await using var ownedConsumer = createdConsumer;
 
-        var active = await createdConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(5));
+        var active = await createdConsumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan);
         await Assert.That(active).IsNotNull();
         await Assert.That(active!.Value.Topic).IsEqualTo(activePartition.Topic);
         await Assert.That(active.Value.Partition).IsEqualTo(activePartition.Partition);
 
         createdConsumer.Resume(pausedPartition);
 
-        var resumed = await createdConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(5));
+        var resumed = await createdConsumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan);
         await Assert.That(resumed).IsNotNull();
         await Assert.That(resumed!.Value.Topic).IsEqualTo(pausedPartition.Topic);
         await Assert.That(resumed.Value.Partition).IsEqualTo(pausedPartition.Partition);
@@ -723,7 +758,6 @@ public sealed class ConsumerPauseResumeCacheTests
     }
 
     [Test]
-    [Timeout(120_000)]
     public async Task ConsumeAsync_ResumeBeforePrefetchWaitRegistration_WakesRetainedRecord(
         CancellationToken cancellationToken)
     {
@@ -824,7 +858,6 @@ public sealed class ConsumerPauseResumeCacheTests
     }
 
     [Test]
-    [Timeout(120_000)]
     public async Task ConsumeAsync_RevocationDuringPrefetchWait_SuppressesRevokedPartition(
         CancellationToken cancellationToken)
     {

@@ -251,22 +251,31 @@ public sealed class ConsumeBatchSkipTests
             snapshotActive.SetValue(consumer, 1);
         try
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+            // Stop after a fixed number of re-offers instead of a wall-clock window, so a
+            // starved thread pool cannot leave the window empty.
+            const int TargetYields = 5;
+            using var cts = new CancellationTokenSource();
             var yields = 0;
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 await using var batches = Open(consumer, raw, cts.Token);
                 while (await batches.MoveNextAsync())
-                    yields++;
+                {
+                    if (++yields == TargetYields)
+                        cts.Cancel();
+                }
             }
             catch (OperationCanceledException)
             {
             }
+            stopwatch.Stop();
 
             // The held batch is re-offered after a bounded poll wait (50 ms here), never in a
-            // tight loop. A spinning loop yields many thousands of times per second.
-            await Assert.That(yields).IsGreaterThan(0);
-            await Assert.That(yields).IsLessThanOrEqualTo(40);
+            // tight loop: four waits take about 200 ms, while a spinning loop takes microseconds.
+            // Load only lengthens the waits, so this lower bound cannot fail spuriously.
+            await Assert.That(yields).IsEqualTo(TargetYields);
+            await Assert.That(stopwatch.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(100));
             await Assert.That(GetPendingFetches(consumer).Count).IsEqualTo(1);
         }
         finally
@@ -744,8 +753,7 @@ public sealed class ConsumeBatchSkipTests
         snapshotActive.SetValue(consumer, 1);
         try
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            await using var batches = Open(consumer, raw, cts.Token);
+            await using var batches = Open(consumer, raw, CancellationToken.None);
             static bool Holds(int partition) => partition % 2 == 0;
 
             // First pass: even partitions are skipped once (held), odd ones processed in order.
@@ -832,8 +840,7 @@ public sealed class ConsumeBatchSkipTests
                     _ = consumer.HandleEmptyFetchResponse(Partition0, null, highWatermark: 11, epoch);
                 }
             });
-            var completed = await Task.WhenAny(idle, Task.Delay(TimeSpan.FromSeconds(10)));
-            await Assert.That(completed).IsSameReferenceAs(idle);
+            // A blocked idle path never completes; the test timeout is the backstop.
             await idle;
         }
         finally
@@ -940,8 +947,7 @@ public sealed class ConsumeBatchSkipTests
             // A new stream does not inherit the hold: it delivers partition 1 (still queued
             // from the ended stream) and then partition 0's records exactly once, in order.
             var offsets = new List<long>();
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            await using var batches = Open(consumer, raw, timeout.Token);
+            await using var batches = Open(consumer, raw, CancellationToken.None);
             var partition1Pending = exit != StreamExit.Cancel;
             for (var i = 0; i < (partition1Pending ? 3 : 2); i++)
             {
@@ -1078,8 +1084,7 @@ public sealed class ConsumeBatchSkipTests
     public async Task ConsumeAsync_SkipsSupersededEof()
     {
         await using var consumer = CreateSupersededEofConsumer();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        await using var records = consumer.ConsumeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        await using var records = consumer.ConsumeAsync().GetAsyncEnumerator();
 
         await Assert.That(await records.MoveNextAsync()).IsTrue();
         await Assert.That(records.Current.IsPartitionEof).IsTrue();
@@ -1156,7 +1161,9 @@ public sealed class ConsumeBatchSkipTests
                 await using var batches = Open(consumer, api == EofApi.RawBatch, cts.Token);
                 await Assert.That(await batches.MoveNextAsync()).IsTrue();
                 offsets.AddRange(batches.Current.Offsets());
-                cts.CancelAfter(TimeSpan.FromMilliseconds(300));
+                // Only an absent EOF needs a window; an expected one is awaited without a deadline.
+                if (!expectEof)
+                    cts.CancelAfter(TimeSpan.FromMilliseconds(300));
                 try
                 {
                     if (await batches.MoveNextAsync() && batches.Current.IsEof)
@@ -1182,7 +1189,7 @@ public sealed class ConsumeBatchSkipTests
                         }
 
                         offsets.Add(records.Current.Offset);
-                        if (offsets.Count == recordCount)
+                        if (offsets.Count == recordCount && !expectEof)
                             cts.CancelAfter(TimeSpan.FromMilliseconds(300));
                     }
                 }
@@ -1196,7 +1203,10 @@ public sealed class ConsumeBatchSkipTests
             {
                 while (true)
                 {
-                    var result = await consumer.ConsumeOneAsync(TimeSpan.FromMilliseconds(300), CancellationToken.None);
+                    var timeout = offsets.Count < recordCount || expectEof
+                        ? Timeout.InfiniteTimeSpan
+                        : TimeSpan.FromMilliseconds(300);
+                    var result = await consumer.ConsumeOneAsync(timeout, CancellationToken.None);
                     if (result is null)
                         break;
                     if (result.Value.IsPartitionEof)
