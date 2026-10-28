@@ -582,6 +582,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         {
             MetadataRecoveryStrategy = options.MetadataRecoveryStrategy,
             MetadataClusterCheckEnabled = options.MetadataClusterCheckEnabled,
+            AllowAutoTopicCreation = options.AllowAutoCreateTopics,
             RetryBackoffMs = options.RetryBackoffMs,
             RetryBackoffMaxMs = options.RetryBackoffMaxMs,
             MetadataRecoveryRebootstrapTriggerMs = options.MetadataRecoveryRebootstrapTriggerMs,

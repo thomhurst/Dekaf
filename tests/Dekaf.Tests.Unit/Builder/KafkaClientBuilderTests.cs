@@ -46,6 +46,21 @@ public sealed class KafkaClientBuilderTests
     }
 
     [Test]
+    public async Task RootClient_AllowAutoCreateTopics_IsAppliedToSharedMetadataManager()
+    {
+        await using var client = new KafkaClientBuilder()
+            .WithBootstrapServers("localhost:9092")
+            .WithAllowAutoCreateTopics(false)
+            .Build();
+        await using var producer = client.CreateProducer<string, string>().Build();
+
+        var manager = GetField<MetadataManager>(producer, "_metadataManager");
+        var options = GetField<MetadataOptions>(manager, "_options");
+
+        await Assert.That(options.AllowAutoTopicCreation).IsFalse();
+    }
+
+    [Test]
     public async Task RootClient_CreatedClients_ShareMetadataAndUseRoleAppropriateConnectionPools()
     {
         await using var client = Kafka.Connect("broker1:9092,broker2:9092");
@@ -226,6 +241,8 @@ public sealed class KafkaClientBuilderTests
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateProducer<string, string>().WithMetadataClusterCheck(false))
             .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateProducer<string, string>().WithAllowAutoCreateTopics(false))
+            .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateProducer<string, string>().WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMinutes(1)))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateProducer<string, string>().WithMetadataMaxAge(TimeSpan.FromMinutes(1)))
@@ -259,6 +276,8 @@ public sealed class KafkaClientBuilderTests
         await Assert.That(() => client.CreateConsumer<string, string>().WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.None))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateConsumer<string, string>().WithMetadataClusterCheck(false))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateConsumer<string, string>().WithAllowAutoCreateTopics(false))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateConsumer<string, string>().WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMinutes(1)))
             .Throws<InvalidOperationException>();

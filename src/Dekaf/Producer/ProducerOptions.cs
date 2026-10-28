@@ -656,6 +656,13 @@ public sealed class ProducerOptions
     public bool MetadataClusterCheckEnabled { get; init; } = true;
 
     /// <summary>
+    /// Whether topic metadata lookups ask the broker to auto-create missing topics
+    /// (Java's <c>allow.auto.create.topics</c>). The broker creates a topic only when its
+    /// <c>auto.create.topics.enable</c> is also true. Default is true.
+    /// </summary>
+    public bool AllowAutoCreateTopics { get; init; } = true;
+
+    /// <summary>
     /// How long in milliseconds to wait before triggering a rebootstrap when all known brokers
     /// are unavailable. Only applies when <see cref="MetadataRecoveryStrategy"/> is
     /// <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.

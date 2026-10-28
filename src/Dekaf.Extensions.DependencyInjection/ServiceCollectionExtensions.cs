@@ -1184,6 +1184,7 @@ internal static partial class DekafOptionsBinding
         builder.WithInitialBatchRecordCapacity(options.InitialBatchRecordCapacity);
         builder.WithMetadataRecoveryStrategy(options.MetadataRecoveryStrategy);
         builder.WithMetadataClusterCheck(options.MetadataClusterCheckEnabled);
+        builder.WithAllowAutoCreateTopics(options.AllowAutoCreateTopics);
         builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(options.MetadataRecoveryRebootstrapTriggerMs));
         builder.WithClientDnsLookup(options.ClientDnsLookup);
         builder.WithBootstrapResolveTimeout(TimeSpan.FromMilliseconds(options.BootstrapResolveTimeoutMs));
@@ -1292,6 +1293,7 @@ internal static partial class DekafOptionsBinding
         builder.WithIsolationLevel(options.IsolationLevel);
         builder.WithMetadataRecoveryStrategy(options.MetadataRecoveryStrategy);
         builder.WithMetadataClusterCheck(options.MetadataClusterCheckEnabled);
+        builder.WithAllowAutoCreateTopics(options.AllowAutoCreateTopics);
         builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(options.MetadataRecoveryRebootstrapTriggerMs));
         builder.WithClientDnsLookup(options.ClientDnsLookup);
         builder.WithBootstrapResolveTimeout(TimeSpan.FromMilliseconds(options.BootstrapResolveTimeoutMs));
@@ -1594,6 +1596,8 @@ internal static class DekafConfigurationBinding
             builder.WithMetadataRecoveryStrategy(metadataRecoveryStrategy);
         if (TryGetValue<bool>(configuration, nameof(ProducerOptions.MetadataClusterCheckEnabled), out var metadataClusterCheckEnabled))
             builder.WithMetadataClusterCheck(metadataClusterCheckEnabled);
+        if (TryGetValue<bool>(configuration, nameof(ProducerOptions.AllowAutoCreateTopics), out var allowAutoCreateTopics))
+            builder.WithAllowAutoCreateTopics(allowAutoCreateTopics);
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.MetadataRecoveryRebootstrapTriggerMs), out var rebootstrapMs))
             builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(rebootstrapMs));
         if (TryGetValue<ClientDnsLookup>(configuration, nameof(ProducerOptions.ClientDnsLookup), out var clientDnsLookup))
@@ -1724,6 +1728,8 @@ internal static class DekafConfigurationBinding
             builder.WithMetadataRecoveryStrategy(metadataRecoveryStrategy);
         if (TryGetValue<bool>(configuration, nameof(ConsumerOptions.MetadataClusterCheckEnabled), out var metadataClusterCheckEnabled))
             builder.WithMetadataClusterCheck(metadataClusterCheckEnabled);
+        if (TryGetValue<bool>(configuration, nameof(ConsumerOptions.AllowAutoCreateTopics), out var allowAutoCreateTopics))
+            builder.WithAllowAutoCreateTopics(allowAutoCreateTopics);
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.MetadataRecoveryRebootstrapTriggerMs), out var rebootstrapMs))
             builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(rebootstrapMs));
         if (TryGetValue<ClientDnsLookup>(configuration, nameof(ConsumerOptions.ClientDnsLookup), out var clientDnsLookup))

@@ -1989,6 +1989,7 @@ public class DependencyInjectionTests
             ["Kafka:Producers:Orders:BufferMemoryAllocationStrategy"] = "Incremental",
             ["Kafka:Producers:Orders:MetadataRecoveryStrategy"] = "None",
             ["Kafka:Producers:Orders:MetadataClusterCheckEnabled"] = "false",
+            ["Kafka:Producers:Orders:AllowAutoCreateTopics"] = "false",
             ["Kafka:Producers:Orders:MetadataRecoveryRebootstrapTriggerMs"] = "60000",
             ["Kafka:Producers:Orders:ClientDnsLookup"] = "ResolveCanonicalBootstrapServersOnly",
             ["Kafka:Producers:Orders:BootstrapResolveTimeoutMs"] = "11000"
@@ -2047,6 +2048,7 @@ public class DependencyInjectionTests
             .IsEqualTo(BufferMemoryAllocationStrategy.Incremental);
         await Assert.That(options.MetadataRecoveryStrategy).IsEqualTo(MetadataRecoveryStrategy.None);
         await Assert.That(options.MetadataClusterCheckEnabled).IsFalse();
+        await Assert.That(options.AllowAutoCreateTopics).IsFalse();
         await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(60000);
         await Assert.That(options.ClientDnsLookup).IsEqualTo(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly);
         await Assert.That(options.BootstrapResolveTimeoutMs).IsEqualTo(11000);
@@ -2232,6 +2234,7 @@ public class DependencyInjectionTests
             ["Kafka:Consumers:Orders:QueuedMaxMessagesKbytes"] = "32768",
             ["Kafka:Consumers:Orders:MetadataRecoveryStrategy"] = "None",
             ["Kafka:Consumers:Orders:MetadataClusterCheckEnabled"] = "false",
+            ["Kafka:Consumers:Orders:AllowAutoCreateTopics"] = "false",
             ["Kafka:Consumers:Orders:MetadataRecoveryRebootstrapTriggerMs"] = "90000",
             ["Kafka:Consumers:Orders:ClientDnsLookup"] = "ResolveCanonicalBootstrapServersOnly",
             ["Kafka:Consumers:Orders:BootstrapResolveTimeoutMs"] = "12000",
@@ -2299,6 +2302,7 @@ public class DependencyInjectionTests
         await Assert.That(options.IsAutoTuned).IsFalse();
         await Assert.That(options.MetadataRecoveryStrategy).IsEqualTo(MetadataRecoveryStrategy.None);
         await Assert.That(options.MetadataClusterCheckEnabled).IsFalse();
+        await Assert.That(options.AllowAutoCreateTopics).IsFalse();
         await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(90000);
         await Assert.That(options.ClientDnsLookup).IsEqualTo(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly);
         await Assert.That(options.BootstrapResolveTimeoutMs).IsEqualTo(12000);

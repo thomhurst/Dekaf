@@ -122,6 +122,7 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithOAuthBearerJwtBearer(...)` | Runtime callback | Signs JWT assertions with RSA/ECDSA keys |
 | `WithMetadataRecoveryStrategy(...)` | `MetadataRecoveryStrategy` | `None` or `Rebootstrap` |
 | `WithMetadataClusterCheck(...)` | `MetadataClusterCheckEnabled` | KIP-1242 identity check; default `true`, ignored with `None` recovery |
+| `WithAllowAutoCreateTopics(...)` | `AllowAutoCreateTopics` | Boolean; Kafka `allow.auto.create.topics`, default `true` |
 | `WithMetadataRecoveryRebootstrapTrigger(...)` | `MetadataRecoveryRebootstrapTriggerMs` | Milliseconds |
 
 Topics, deserializers, rebalance listeners, interceptors, and retry policies are objects or runtime choices, so configure those in the fluent callback.

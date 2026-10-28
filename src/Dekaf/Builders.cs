@@ -74,6 +74,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private int? _deliveryLatencyTargetMs;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private bool _metadataClusterCheckEnabled = true;
+    private bool _allowAutoCreateTopics = true;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
     private int _bootstrapResolveTimeoutMs = 120000;
@@ -931,6 +932,18 @@ public sealed class ProducerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Controls whether topic metadata lookups ask the broker to auto-create missing topics
+    /// (Java's <c>allow.auto.create.topics</c>). Default is true. The broker creates a topic
+    /// only when its <c>auto.create.topics.enable</c> is also true.
+    /// </summary>
+    public ProducerBuilder<TKey, TValue> WithAllowAutoCreateTopics(bool allow = true)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _allowAutoCreateTopics = allow;
+        return this;
+    }
+
+    /// <summary>
     /// Sets how long to wait before triggering a rebootstrap when all known
     /// brokers are unavailable.
     /// </summary>
@@ -1500,6 +1513,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             AwsMskIamConfig = _awsMskIamConfig,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataClusterCheckEnabled = _metadataClusterCheckEnabled,
+            AllowAutoCreateTopics = _allowAutoCreateTopics,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
             BootstrapResolveTimeoutMs = _bootstrapResolveTimeoutMs,
@@ -1523,6 +1537,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             MetadataRefreshInterval = _metadataMaxAge ?? TimeSpan.FromMinutes(15),
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataClusterCheckEnabled = _metadataClusterCheckEnabled,
+            AllowAutoTopicCreation = _allowAutoCreateTopics,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
             BootstrapResolveTimeoutMs = _bootstrapResolveTimeoutMs,
@@ -1696,6 +1711,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int? _queuedMaxMessagesKbytes;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private bool _metadataClusterCheckEnabled = true;
+    private bool _allowAutoCreateTopics = true;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
     private int _bootstrapResolveTimeoutMs = 120000;
@@ -2734,6 +2750,18 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Controls whether topic metadata lookups ask the broker to auto-create missing topics
+    /// (Java's <c>allow.auto.create.topics</c>). Default is true. The broker creates a topic
+    /// only when its <c>auto.create.topics.enable</c> is also true.
+    /// </summary>
+    public ConsumerBuilder<TKey, TValue> WithAllowAutoCreateTopics(bool allow = true)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _allowAutoCreateTopics = allow;
+        return this;
+    }
+
+    /// <summary>
     /// Sets how long to wait before triggering a rebootstrap when all known
     /// brokers are unavailable.
     /// </summary>
@@ -3330,6 +3358,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             IsolationLevel = _isolationLevel,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataClusterCheckEnabled = _metadataClusterCheckEnabled,
+            AllowAutoCreateTopics = _allowAutoCreateTopics,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
             BootstrapResolveTimeoutMs = _bootstrapResolveTimeoutMs,
@@ -3350,6 +3379,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             MetadataRefreshInterval = _metadataMaxAge ?? TimeSpan.FromMinutes(15),
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataClusterCheckEnabled = _metadataClusterCheckEnabled,
+            AllowAutoTopicCreation = _allowAutoCreateTopics,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
             BootstrapResolveTimeoutMs = _bootstrapResolveTimeoutMs,

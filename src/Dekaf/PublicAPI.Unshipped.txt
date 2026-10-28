@@ -262,3 +262,10 @@ static Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterHeaders.TryGetPartition(Sys
 static Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterHeaders.TryParse(System.Collections.Generic.IReadOnlyList<Dekaf.Serialization.Header>? headers, out Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext context) -> bool
 ~override Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.Equals(object obj) -> bool
 ~override Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.ToString() -> string
+Dekaf.ConsumerBuilder<TKey, TValue>.WithAllowAutoCreateTopics(bool allow = true) -> Dekaf.ConsumerBuilder<TKey, TValue>!
+Dekaf.Consumer.ConsumerOptions.AllowAutoCreateTopics.get -> bool
+Dekaf.Consumer.ConsumerOptions.AllowAutoCreateTopics.init -> void
+Dekaf.KafkaClientBuilder.WithAllowAutoCreateTopics(bool allow = true) -> Dekaf.KafkaClientBuilder!
+Dekaf.ProducerBuilder<TKey, TValue>.WithAllowAutoCreateTopics(bool allow = true) -> Dekaf.ProducerBuilder<TKey, TValue>!
+Dekaf.Producer.ProducerOptions.AllowAutoCreateTopics.get -> bool
+Dekaf.Producer.ProducerOptions.AllowAutoCreateTopics.init -> void
