@@ -373,12 +373,22 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         if (!_consumerInitialized)
             return;
 
+        // The base stop also returns when the caller's stop token expires while the consume loop
+        // still runs, for example inside a handler that ignores cancellation. That record is
+        // unfinished, not processed: treat it as in doubt, and do not pull from the consumer
+        // concurrently with the loop's own enumeration.
+        var processingLoopActive = ExecuteTask is { IsCompleted: false };
+        if (processingLoopActive)
+        {
+            LogStopWaitExpiredWithActiveProcessing();
+        }
+
         // Then drain any remaining buffered messages — unless the consume loop stopped with an
-        // in-doubt failed record: draining pulls from the consumer, which would prove that record
+        // in-doubt record: draining pulls from the consumer, which would prove that record
         // processed and let the final commit discard it without a durable DLQ copy.
         if (_serviceOptions.DrainOnShutdown)
         {
-            if (_hasInDoubtFailedRecord)
+            if (_hasInDoubtFailedRecord || processingLoopActive)
             {
                 LogDrainSkippedForInDoubtRecord();
             }
@@ -403,7 +413,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
             _consumer is not IConsumerCommitConfiguration commitConfiguration
             || commitConfiguration.OffsetCommitMode == OffsetCommitMode.Auto
             || commitConfiguration.EnableAutoOffsetStore;
-        if (_hasInDoubtFailedRecord && commitWouldVouchForInDoubtRecord)
+        if ((_hasInDoubtFailedRecord || processingLoopActive) && commitWouldVouchForInDoubtRecord)
         {
             LogFinalCommitSkippedForInDoubtRecord();
             return;
@@ -508,6 +518,8 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
     private async ValueTask DisposeAsyncCore()
     {
+        await WaitForProcessingLoopAsync().ConfigureAwait(false);
+
         // Flush and dispose DLQ producer
         if (_dlqProducer is not null)
         {
@@ -547,6 +559,32 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         catch (Exception ex)
         {
             LogConsumerDisposalError(ex);
+        }
+    }
+
+    /// <summary>
+    /// Waits, up to <see cref="KafkaConsumerServiceOptions.ShutdownTimeout"/>, for the consume loop
+    /// to end before the clients it uses are disposed.
+    /// </summary>
+    private async ValueTask WaitForProcessingLoopAsync()
+    {
+        if (ExecuteTask is not { IsCompleted: false } executeTask)
+            return;
+
+        // Disposal can follow a stop whose wait expired, or run without a stop. Cancel the loop
+        // (BackgroundService.Dispose only cancels the stopping token) so a cooperative handler ends.
+        base.Dispose();
+        try
+        {
+            await executeTask.WaitAsync(_serviceOptions.ShutdownTimeout).ConfigureAwait(false);
+        }
+        catch (TimeoutException) when (!executeTask.IsCompleted)
+        {
+            LogProcessingLoopStillActiveAtDisposal(_serviceOptions.ShutdownTimeout);
+        }
+        catch (Exception)
+        {
+            // The loop's own failure: the host observes it through ExecuteTask.
         }
     }
 
@@ -1400,6 +1438,12 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Skipping the final explicit commit: it would vouch for the in-doubt failed record. The consumer's close commit covers proven offsets only; the record will be redelivered on restart.")]
     private partial void LogFinalCommitSkippedForInDoubtRecord();
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "The stop wait ended while a record was still being processed. Skipping the shutdown drain and any final commit that would vouch for that record; it will be redelivered on restart.")]
+    private partial void LogStopWaitExpiredWithActiveProcessing();
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "The consume loop did not end within {Timeout} after cancellation; disposing the consumer while a record is still being processed")]
+    private partial void LogProcessingLoopStillActiveAtDisposal(TimeSpan timeout);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Started consuming from topics: {Topics}")]
     private partial void LogStartedConsuming(string topics);

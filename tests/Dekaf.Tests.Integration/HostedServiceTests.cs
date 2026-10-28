@@ -557,6 +557,64 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
     }
 
     [Test]
+    [Timeout(120_000)]
+    public async Task StopWaitExpiresWhileHandlerRuns_UnfinishedRecordRedeliveredToReplacement(
+        CancellationToken cancellationToken)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        var groupId = $"hosted-stop-expired-{Guid.NewGuid():N}";
+        var processed = new ConcurrentBag<string>();
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        await producer.ProduceAsync(topic, "k1", "ok-1", cancellationToken);
+        await producer.ProduceAsync(topic, "k2", "hang-1", cancellationToken);
+
+        var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        var service = new UncooperativeConsumerService(
+            consumer,
+            GlobalTestSetup.GetLoggerFactory().CreateLogger<UncooperativeConsumerService>(),
+            processed,
+            new TestTopicHolder(topic));
+
+        try
+        {
+            await service.StartAsync(cancellationToken);
+            await service.HangStarted.Task.WaitAsync(TimeSpan.FromSeconds(45), cancellationToken);
+
+            // The host's stop budget is already spent while hang-1 is still being handled.
+            await service.StopAsync(new CancellationToken(canceled: true));
+            await Assert.That(service.ExecuteTask!.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            // The handler gives up without finishing hang-1, then the consumer closes.
+            service.ReleaseHang.TrySetCanceled(CancellationToken.None);
+            await service.DisposeAsync();
+        }
+
+        await Assert.That(processed).IsEquivalentTo(["ok-1"]);
+
+        // ok-1 was proven and committed on close; the unfinished hang-1 must come back.
+        await using var replacement = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .BuildAsync(cancellationToken);
+        replacement.Subscribe(topic);
+        var next = await replacement.ConsumeOneAsync(TimeSpan.FromSeconds(30), cancellationToken);
+        await Assert.That(next).IsNotNull();
+        await Assert.That(next!.Value.Value).IsEqualTo("hang-1");
+    }
+
+    [Test]
     public async Task UnhandledFailure_RetryDisposition_RedeliveredOnRestart()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
@@ -1184,6 +1242,35 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         protected virtual void OnProcessed(ConsumeResult<string, string> result)
         {
+        }
+    }
+
+    /// <summary>A service whose handler ignores cancellation on hang-* records until released.</summary>
+    private sealed class UncooperativeConsumerService(
+        IKafkaConsumer<string, string> consumer,
+        ILogger<UncooperativeConsumerService> logger,
+        ConcurrentBag<string> processed,
+        TestTopicHolder topicHolder)
+        : KafkaConsumerService<string, string>(consumer, logger)
+    {
+        public TaskCompletionSource HangStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource ReleaseHang { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        protected override IEnumerable<string> Topics => [topicHolder.Topic];
+
+        protected override async ValueTask ProcessAsync(
+            ConsumeResult<string, string> result, CancellationToken cancellationToken)
+        {
+            if (result.Value?.StartsWith("hang-", StringComparison.Ordinal) == true)
+            {
+                HangStarted.TrySetResult();
+                await ReleaseHang.Task;
+            }
+
+            processed.Add(result.Value!);
         }
     }
 

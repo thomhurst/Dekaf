@@ -795,6 +795,147 @@ public sealed partial class KafkaConsumerServiceTests
         await consumer.DidNotReceive().CommitAsync(Arg.Any<CancellationToken>());
     }
 
+    [Test]
+    public async Task StopAsync_StopWaitExpiresWhileHandlerRuns_SkipsDrainAndFinalCommit()
+    {
+        var consumer = CreateConsumerSubstitute();
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(callInfo => YieldOneThenWait(
+                CreateResult("orders", partition: 1, offset: 42),
+                callInfo.ArgAt<CancellationToken>(0)));
+
+        var service = new UncooperativeProcessConsumerService(consumer, ["orders"]);
+        try
+        {
+            await service.StartAsync(CancellationToken.None);
+            await service.ProcessingStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            // The host's stop budget is already spent: the base stop returns while the handler
+            // still runs, so offset 42 is unfinished and nothing may vouch for it.
+            await service.StopAsync(new CancellationToken(canceled: true));
+
+            await Assert.That(service.ExecuteTask!.IsCompleted).IsFalse();
+            await consumer.DidNotReceive().ConsumeOneAsync(Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
+            await consumer.DidNotReceive().CommitAsync(Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            service.ReleaseProcessing.TrySetResult();
+            await service.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task StopAsync_StopWaitExpiresUnderStrictManualMode_StillCommitsStoredOffsets()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>, IConsumerCommitConfiguration>();
+        ((IConsumerCommitConfiguration)consumer).OffsetCommitMode.Returns(OffsetCommitMode.Manual);
+        ((IConsumerCommitConfiguration)consumer).EnableAutoOffsetStore.Returns(false);
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(callInfo => YieldOneThenWait(
+                CreateResult("orders", partition: 1, offset: 42),
+                callInfo.ArgAt<CancellationToken>(0)));
+
+        var service = new UncooperativeProcessConsumerService(consumer, ["orders"]);
+        try
+        {
+            await service.StartAsync(CancellationToken.None);
+            await service.ProcessingStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            await service.StopAsync(new CancellationToken(canceled: true));
+
+            // Strict manual mode commits only explicitly stored offsets, which never include the
+            // unfinished record, and has no close-path fallback: the commit must still run.
+            await consumer.DidNotReceive().ConsumeOneAsync(Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
+            await consumer.Received(1).CommitAsync(Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            service.ReleaseProcessing.TrySetResult();
+            await service.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task DisposeAsync_HandlerStillRunning_WaitsForLoopBeforeDisposingConsumer()
+    {
+        var consumer = CreateConsumerSubstitute();
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(callInfo => YieldOneThenWait(
+                CreateResult("orders", partition: 1, offset: 42),
+                callInfo.ArgAt<CancellationToken>(0)));
+
+        var service = new UncooperativeProcessConsumerService(consumer, ["orders"]);
+        var consumerDisposedWhileHandlerRan = false;
+        consumer.DisposeAsync().Returns(_ =>
+        {
+            consumerDisposedWhileHandlerRan = !service.ReleaseProcessing.Task.IsCompleted;
+            return ValueTask.CompletedTask;
+        });
+
+        await service.StartAsync(CancellationToken.None);
+        await service.ProcessingStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await service.StopAsync(new CancellationToken(canceled: true));
+
+        var disposal = service.DisposeAsync().AsTask();
+        await Assert.That(disposal.IsCompleted).IsFalse();
+
+        service.ReleaseProcessing.TrySetResult();
+        await disposal.WaitAsync(TimeSpan.FromSeconds(30));
+
+        await consumer.Received(1).DisposeAsync();
+        await Assert.That(consumerDisposedWhileHandlerRan).IsFalse();
+        await Assert.That(service.ExecuteTask!.IsCompleted).IsTrue();
+    }
+
+    [Test]
+    public async Task DisposeAsync_HandlerOutlivesShutdownTimeout_StillDisposesConsumer()
+    {
+        var consumer = CreateConsumerSubstitute();
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(callInfo => YieldOneThenWait(
+                CreateResult("orders", partition: 1, offset: 42),
+                callInfo.ArgAt<CancellationToken>(0)));
+
+        var service = new UncooperativeProcessConsumerService(
+            consumer, ["orders"], new KafkaConsumerServiceOptions { ShutdownTimeout = TimeSpan.FromMilliseconds(50) });
+        try
+        {
+            await service.StartAsync(CancellationToken.None);
+            await service.ProcessingStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            await service.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+
+            await consumer.Received(1).DisposeAsync();
+        }
+        finally
+        {
+            service.ReleaseProcessing.TrySetResult();
+        }
+    }
+
+    /// <summary>A handler that ignores cancellation until the test releases it.</summary>
+    private sealed class UncooperativeProcessConsumerService : TestableKafkaConsumerService
+    {
+        public TaskCompletionSource ProcessingStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource ReleaseProcessing { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public UncooperativeProcessConsumerService(
+            IKafkaConsumer<string, string> consumer, string[] topics, KafkaConsumerServiceOptions? options = null)
+            : base(consumer, topics, options)
+        {
+        }
+
+        protected override async ValueTask ProcessAsync(
+            ConsumeResult<string, string> result, CancellationToken cancellationToken)
+        {
+            ProcessingStarted.TrySetResult();
+            await ReleaseProcessing.Task;
+        }
+    }
+
     private sealed class BlockingProcessConsumerService : TestableKafkaConsumerService
     {
         public TaskCompletionSource ProcessingStarted { get; } =
