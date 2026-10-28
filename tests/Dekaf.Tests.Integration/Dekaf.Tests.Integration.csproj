@@ -109,6 +109,8 @@
     <None Include="../../tools/Shared/TelemetryReceiver/*" Exclude="../../tools/Shared/TelemetryReceiver/*.proto"
           Link="TelemetryReceiver/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Protobuf Include="../../tools/Shared/TelemetryReceiver/telemetry_metrics.proto" GrpcServices="None" />
+    <None Include="../../tools/Shared/TopologyDescriptionPlugin/*"
+          Link="TopologyDescriptionPlugin/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
