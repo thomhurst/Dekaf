@@ -117,7 +117,9 @@ public sealed class KafkaConnectionBrokerThrottleTests
     public async Task PoolThrottleWait_AllowsIdleCloseAndSurvivesReconnect(
         CancellationToken cancellationToken)
     {
-        const int throttleTimeMs = 300;
+        // The client must still be throttled after the steps that follow, so keep the
+        // window far longer than a thread-pool-starved continuation can take (#3668).
+        const int throttleTimeMs = 2_000;
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
@@ -168,7 +170,9 @@ public sealed class KafkaConnectionBrokerThrottleTests
     public async Task BootstrapThrottle_SurvivesBrokerRegistrationAndReconnect(
         CancellationToken cancellationToken)
     {
-        const int throttleTimeMs = 300;
+        // The client must still be throttled after the steps that follow, so keep the
+        // window far longer than a thread-pool-starved continuation can take (#3668).
+        const int throttleTimeMs = 2_000;
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
