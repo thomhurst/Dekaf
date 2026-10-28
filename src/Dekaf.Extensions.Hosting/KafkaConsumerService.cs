@@ -559,14 +559,17 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     {
         // Topic membership, not a header, identifies a retry record. Retry headers on any other
         // record (a replayed retry or DLQ copy, or a producer-supplied value) control nothing.
-        var isRetryTopic = TryGetRetrySourceTopic(result.Topic, out var retrySourceTopic);
-        if (isRetryTopic && PostponeRetryTopicMessageIfNeeded(result, stoppingToken))
-            return;
+        var previousFailureCount = 0;
+        if (TryGetRetrySourceTopic(result.Topic, out _))
+        {
+            if (PostponeRetryTopicMessageIfNeeded(result, stoppingToken))
+                return;
+
+            previousFailureCount = RetryTopicHeaders.GetFailureCount(result.Headers);
+        }
 
         byte[]? rawKey = null;
         byte[]? rawValue = null;
-        ConsumeResult<TKey, TValue>? routingResult = null;
-        var previousFailureCount = isRetryTopic ? RetryTopicHeaders.GetFailureCount(result.Headers) : 0;
 
         var maxAttemptsWithoutPolicy = _retryTopicOptions?.IsEnabled == true ? 1 : _deadLetterOptions?.MaxFailures ?? 1;
         var attempt = 0;
@@ -602,89 +605,121 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                     continue;
                 }
 
-                var deadLetterFailureCount = (int)Math.Min((long)previousFailureCount + attempt, int.MaxValue);
-                var retryTopicFailureCount = GetNextRetryTopicFailureCount(previousFailureCount);
-                // Hooks and dispositions keep the original record; routing decisions and the
-                // headers of routed copies see only retry metadata this service can vouch for.
-                routingResult ??= _dlqProducer is null && _deadLetterPolicy is null
-                    ? result
-                    : CreateRoutingResult(result, retrySourceTopic);
-                var sourceTopic = retrySourceTopic ?? result.Topic;
-                var retryTopicOutcome = await TryRouteToRetryTopicAsync(
+                if (await RouteFailedRecordAsync(
                         result,
-                        routingResult.Value,
-                        sourceTopic,
+                        ex,
                         rawKey,
                         rawValue,
-                        retryTopicFailureCount,
+                        previousFailureCount,
+                        attempt,
+                        maxAttemptsWithoutPolicy,
                         stoppingToken)
-                    .ConfigureAwait(false);
-                if (retryTopicOutcome.Result == RetryTopicRouteResult.Routed)
+                    .ConfigureAwait(false))
                 {
-                    StoreResolvedOffsetIfRequired(result);
-                    return;
-                }
-
-                if (retryTopicOutcome.Result == RetryTopicRouteResult.OwnershipEnded)
-                    return;
-
-                if (ShouldRouteToDeadLetter(routingResult.Value, ex, deadLetterFailureCount, retryTopicOutcome.Result))
-                {
-                    // The partition's next owner routes the record itself; a copy from here
-                    // would be a duplicate.
-                    if (AbandonIfOwnershipChanged(result))
-                        return;
-
-                    var deadLetterException = await RouteToDeadLetterAsync(
-                            result,
-                            routingResult.Value,
-                            sourceTopic,
-                            ex,
-                            rawKey,
-                            rawValue,
-                            deadLetterFailureCount,
-                            stoppingToken)
-                        .ConfigureAwait(false);
-                    if (deadLetterException is null)
-                    {
-                        StoreResolvedOffsetIfRequired(result);
-                        return;
-                    }
-
-                    await ResolveUnhandledFailureAsync(
-                            result,
-                            ex,
-                            attempt,
-                            deadLetterFailureCount,
-                            MessageFailureStage.DeadLetterRouting,
-                            deadLetterException,
-                            stoppingToken)
-                        .ConfigureAwait(false);
-                    return;
-                }
-
-                if (_retryPolicy is null && attempt < maxAttemptsWithoutPolicy)
-                {
-                    if (AbandonIfOwnershipChanged(result))
-                        return;
-
                     continue;
                 }
 
-                await ResolveUnhandledFailureAsync(
-                        result,
-                        ex,
-                        attempt,
-                        deadLetterFailureCount,
-                        retryTopicOutcome.Result == RetryTopicRouteResult.Failed
-                            ? MessageFailureStage.RetryTopicRouting
-                            : MessageFailureStage.Processing,
-                        retryTopicOutcome.RoutingException,
-                        stoppingToken)
-                    .ConfigureAwait(false);
                 return;
             }
         }
+    }
+
+    /// <summary>
+    /// Routes a record whose local retries are spent to its retry topic or dead-letter topic, or
+    /// resolves it as unhandled. Returns true when the caller should process the record again.
+    /// </summary>
+    /// <remarks>
+    /// Kept out of <see cref="ProcessWithRetriesAsync"/> so that the routing locals, including the
+    /// sanitized record copy, are not hoisted into the per-record state machine, which every
+    /// suspending handler boxes.
+    /// </remarks>
+    private async ValueTask<bool> RouteFailedRecordAsync(
+        ConsumeResult<TKey, TValue> result,
+        Exception ex,
+        byte[]? rawKey,
+        byte[]? rawValue,
+        int previousFailureCount,
+        int attempt,
+        int maxAttemptsWithoutPolicy,
+        CancellationToken stoppingToken)
+    {
+        var deadLetterFailureCount = (int)Math.Min((long)previousFailureCount + attempt, int.MaxValue);
+        var retryTopicFailureCount = GetNextRetryTopicFailureCount(previousFailureCount);
+        TryGetRetrySourceTopic(result.Topic, out var retrySourceTopic);
+        // Hooks and dispositions keep the original record; routing decisions and the
+        // headers of routed copies see only retry metadata this service can vouch for.
+        var routingResult = _dlqProducer is null && _deadLetterPolicy is null
+            ? result
+            : CreateRoutingResult(result, retrySourceTopic);
+        var sourceTopic = retrySourceTopic ?? result.Topic;
+        var retryTopicOutcome = await TryRouteToRetryTopicAsync(
+                result,
+                routingResult,
+                sourceTopic,
+                rawKey,
+                rawValue,
+                retryTopicFailureCount,
+                stoppingToken)
+            .ConfigureAwait(false);
+        if (retryTopicOutcome.Result == RetryTopicRouteResult.Routed)
+        {
+            StoreResolvedOffsetIfRequired(result);
+            return false;
+        }
+
+        if (retryTopicOutcome.Result == RetryTopicRouteResult.OwnershipEnded)
+            return false;
+
+        if (ShouldRouteToDeadLetter(routingResult, ex, deadLetterFailureCount, retryTopicOutcome.Result))
+        {
+            // The partition's next owner routes the record itself; a copy from here
+            // would be a duplicate.
+            if (AbandonIfOwnershipChanged(result))
+                return false;
+
+            var deadLetterException = await RouteToDeadLetterAsync(
+                    result,
+                    routingResult,
+                    sourceTopic,
+                    ex,
+                    rawKey,
+                    rawValue,
+                    deadLetterFailureCount,
+                    stoppingToken)
+                .ConfigureAwait(false);
+            if (deadLetterException is null)
+            {
+                StoreResolvedOffsetIfRequired(result);
+                return false;
+            }
+
+            await ResolveUnhandledFailureAsync(
+                    result,
+                    ex,
+                    attempt,
+                    deadLetterFailureCount,
+                    MessageFailureStage.DeadLetterRouting,
+                    deadLetterException,
+                    stoppingToken)
+                .ConfigureAwait(false);
+            return false;
+        }
+
+        if (_retryPolicy is null && attempt < maxAttemptsWithoutPolicy)
+            return !AbandonIfOwnershipChanged(result);
+
+        await ResolveUnhandledFailureAsync(
+                result,
+                ex,
+                attempt,
+                deadLetterFailureCount,
+                retryTopicOutcome.Result == RetryTopicRouteResult.Failed
+                    ? MessageFailureStage.RetryTopicRouting
+                    : MessageFailureStage.Processing,
+                retryTopicOutcome.RoutingException,
+                stoppingToken)
+            .ConfigureAwait(false);
+        return false;
     }
 
     private async ValueTask ResolveUnhandledFailureAsync(
