@@ -76,6 +76,11 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
         var ourTopic = topicList.FirstOrDefault(t => t.Name == topicName);
         await Assert.That(ourTopic).IsNotNull();
 
+        // Explicit options with ListInternal = false must list the same user topics as null options
+        var optionsTopicList = await admin.ListTopicsAsync(new ListTopicsOptions());
+        await Assert.That(optionsTopicList.Any(t => t.Name == topicName)).IsTrue();
+        await Assert.That(optionsTopicList.Any(t => t.IsInternal)).IsFalse();
+
         // Step 6: Delete topic
         await admin.DeleteTopicsAsync([topicName]);
     }

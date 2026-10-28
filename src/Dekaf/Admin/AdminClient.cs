@@ -777,9 +777,10 @@ public sealed partial class AdminClient :
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
         var topics = _metadataManager.Metadata.GetTopics();
+        var listInternal = options?.ListInternal ?? false;
 
         return topics
-            .Where(t => options?.ListInternal ?? false || !t.IsInternal)
+            .Where(t => listInternal || !t.IsInternal)
             .Select(t => new TopicListing
             {
                 Name = t.Name,
