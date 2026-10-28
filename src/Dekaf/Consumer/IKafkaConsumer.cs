@@ -1211,9 +1211,9 @@ public readonly struct ConsumeResult<TKey, TValue>
 
     /// <summary>
     /// The message headers. Empty if the record has no headers; never null.
-    /// Borrowed header storage is copied lazily on first access; if a
+    /// Borrowed header storage, including header values, is copied lazily on first access; if a
     /// result is retained beyond the consume loop, access this property before the owning
-    /// fetch batch is disposed to keep a safe snapshot.
+    /// fetch batch is disposed to keep a safe snapshot that stays valid after the fetch is released.
     /// </summary>
     public IReadOnlyList<Header> Headers
     {

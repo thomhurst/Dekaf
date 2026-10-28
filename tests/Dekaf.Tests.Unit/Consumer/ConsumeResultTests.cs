@@ -427,6 +427,33 @@ public class ConsumeResultTests
     }
 
     [Test]
+    public async Task LazyConsumeHeaders_SnapshotOwnsValuesAfterFetchDisposed()
+    {
+        var backing = "abcdef"u8.ToArray();
+        var pooledHeaders = new[]
+        {
+            new Header("trace-id", backing.AsMemory(0, 3)),
+            new Header("nullable", ReadOnlyMemory<byte>.Empty, isNull: true),
+            new Header("empty", ReadOnlyMemory<byte>.Empty),
+            new Header("span-id", backing.AsMemory(3, 3))
+        };
+        var pending = CreatePendingFetchData(pooledHeaders);
+        pending.EagerParseAll();
+        pending.MoveNext();
+
+        var headers = LazyConsumeHeaders.Create(pooledHeaders, pooledHeaders.Length, pending, pending.HeaderGeneration);
+        _ = headers[0];
+        pending.Dispose();
+        "zzzzzz"u8.CopyTo(backing);
+
+        await Assert.That(headers[0].GetValueAsString()).IsEqualTo("abc");
+        await Assert.That(headers[1].IsValueNull).IsTrue();
+        await Assert.That(headers[2].IsValueNull).IsFalse();
+        await Assert.That(headers[2].Value.Length).IsEqualTo(0);
+        await Assert.That(headers[3].GetValueAsString()).IsEqualTo("def");
+    }
+
+    [Test]
     public async Task LazyConsumeHeaders_AccessAfterDisposeBeforeMaterialize_ThrowsObjectDisposedException()
     {
         var pooledHeaders = new[]
