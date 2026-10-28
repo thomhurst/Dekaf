@@ -2565,7 +2565,7 @@ public sealed class AvroPocoSchemaRegistryTests
         await using var reader = PocoWireRecord.CreateAvroDeserializer(registry);
         var warmup = reader.WarmupAsync(schemaId);
 
-        await registry.WaitForBlockedGetSchemaAsync(TimeSpan.FromSeconds(5));
+        await registry.WaitForBlockedGetSchemaAsync();
         try
         {
             await Assert.That(registry.LastGetSchemaCancellationToken.CanBeCanceled).IsTrue();

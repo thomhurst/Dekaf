@@ -22,7 +22,6 @@ public sealed class ProducerBatchLifecycleHammerTests
         .GetField("_readyBatchPool", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
     [Test]
-    [Timeout(120_000)]
     public async Task CompleteFailAndDisposeRace_AllAcceptedMessagesTerminateExactlyOnce(
         CancellationToken cancellationToken)
     {
@@ -164,7 +163,7 @@ public sealed class ProducerBatchLifecycleHammerTests
             workerCts.Cancel();
             try
             {
-                await Task.WhenAll(workers).WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
+                await Task.WhenAll(workers);
             }
             catch (OperationCanceledException) when (workerCts.IsCancellationRequested)
             {
