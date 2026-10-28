@@ -247,6 +247,14 @@ internal sealed class AcknowledgementTracker
 
             foreach (var batch in batches)
             {
+                // A gap batch can cover a large compacted hole. Gap tracking merges with any
+                // gap queued since the flush, so it needs no per-offset walk.
+                if (batch.IsGapOnly)
+                {
+                    partitionAcks.TrackRange(batch.FirstOffset, batch.LastOffset, AcknowledgeType.Gap);
+                    continue;
+                }
+
                 long? runStart = null;
                 long runEnd = 0;
                 var runType = AcknowledgeType.Accept;

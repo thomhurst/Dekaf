@@ -94,6 +94,23 @@ public class AcknowledgementTrackerTests
     }
 
     [Test]
+    public async Task RequeueAcks_GapBatch_MergesWithLaterGapsWithoutExpanding()
+    {
+        var tracker = new AcknowledgementTracker();
+        var partition = new TopicPartition("topic", 0);
+        tracker.TrackGapRecords(partition, 1, 1_000_000);
+        var failed = tracker.Flush();
+        tracker.TrackGapRecords(partition, 999_999, 1_000_005);
+
+        tracker.RequeueAcks(failed);
+        var batch = tracker.Flush()[partition].Single();
+
+        await Assert.That(batch.FirstOffset).IsEqualTo(1);
+        await Assert.That(batch.LastOffset).IsEqualTo(1_000_005);
+        await Assert.That(batch.IsGapOnly).IsTrue();
+    }
+
+    [Test]
     public async Task TrackGapRecords_InterleavedWithLaterDeliveries_FlushesOrderedDispositions()
     {
         var tracker = new AcknowledgementTracker();
