@@ -582,7 +582,9 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
                 sent++;
                 return BlockUntilCanceled(call.Arg<CancellationToken>());
             });
-        var results = await Invoke(admin, "groups", timeoutMs: 100);
+        // The send blocks until the deadline cancels it. A 100 ms deadline could expire during
+        // coordinator discovery under load, before any send.
+        var results = await Invoke(admin, "groups", timeoutMs: 2000);
         await Assert.That(sent).IsEqualTo(1);
         await Assert.That(results["good"].Outcome).IsEqualTo(AdminMutationOutcome.Unknown);
         await Assert.That(results["good"].Exception).IsTypeOf<KafkaTimeoutException>();
