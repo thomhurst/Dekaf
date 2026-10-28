@@ -854,7 +854,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
         {
             var topic = await GetTopicMetadataSlowAsync(
                 topicName,
-                allowAutoTopicCreation: true,
+                allowAutoTopicCreation: _options.AllowAutoTopicCreation,
                 fetch,
                 fetch.Cancellation.Token).ConfigureAwait(false);
             fetch.Completion.TrySetResult(topic);
@@ -936,7 +936,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
             static (t, self) => new Lazy<Task<TopicInfo?>>(
                 () => self.GetTopicMetadataSlowAsync(
                     t,
-                    allowAutoTopicCreation: true,
+                    allowAutoTopicCreation: self._options.AllowAutoTopicCreation,
                     sharedFetch: null,
                     self._disposalCts.Token).AsTask()),
             this);
@@ -1191,7 +1191,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
             topics,
             forceRefresh,
             BootstrapResolutionFailureMode.PublicException,
-            allowAutoTopicCreation: true,
+            allowAutoTopicCreation: _options.AllowAutoTopicCreation,
             cancellationToken);
 
     private ValueTask RefreshMetadataForInitializationAsync(CancellationToken cancellationToken) =>
@@ -1199,7 +1199,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
             topics: null,
             forceRefresh: false,
             BootstrapResolutionFailureMode.Pending,
-            allowAutoTopicCreation: true,
+            allowAutoTopicCreation: _options.AllowAutoTopicCreation,
             cancellationToken);
 
     private ValueTask RefreshMetadataAfterBootstrapResolutionAsync(CancellationToken cancellationToken) =>
@@ -1207,7 +1207,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
             topics: null,
             forceRefresh: false,
             BootstrapResolutionFailureMode.MetadataFailure,
-            allowAutoTopicCreation: true,
+            allowAutoTopicCreation: _options.AllowAutoTopicCreation,
             cancellationToken);
 
     private async ValueTask RefreshMetadataAsyncCore(
@@ -1565,7 +1565,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
     internal async ValueTask<bool> TryRebootstrapAsync(
         IEnumerable<string>? topics,
         CancellationToken cancellationToken,
-        bool allowAutoTopicCreation = true)
+        bool? allowAutoTopicCreation = null)
     {
         var now = Dekaf.MonotonicClock.GetMilliseconds();
 
@@ -1583,7 +1583,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
         LogRebootstrapTriggered(elapsedMs);
         return await ExecuteRebootstrapAsync(
             topics,
-            allowAutoTopicCreation,
+            allowAutoTopicCreation ?? _options.AllowAutoTopicCreation,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -1604,12 +1604,12 @@ public sealed partial class MetadataManager : IAsyncDisposable
     internal async ValueTask<bool> TryRebootstrapImmediateAsync(
         IEnumerable<string>? topics,
         CancellationToken cancellationToken,
-        bool allowAutoTopicCreation = true)
+        bool? allowAutoTopicCreation = null)
     {
         LogBrokerInitiatedRebootstrap();
         return await ExecuteRebootstrapAsync(
             topics,
-            allowAutoTopicCreation,
+            allowAutoTopicCreation ?? _options.AllowAutoTopicCreation,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -2278,7 +2278,9 @@ public sealed class MetadataOptions
     public bool EnableBackgroundRefresh { get; init; } = true;
 
     /// <summary>
-    /// Whether to allow auto-creation of topics.
+    /// Whether topic metadata lookups ask the broker to auto-create missing topics.
+    /// The broker creates a topic only when its <c>auto.create.topics.enable</c> is also true.
+    /// Default is true, matching Java's <c>allow.auto.create.topics</c>.
     /// </summary>
     public bool AllowAutoTopicCreation { get; init; } = true;
 

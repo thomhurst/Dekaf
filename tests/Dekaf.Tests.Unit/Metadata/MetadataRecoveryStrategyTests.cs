@@ -352,6 +352,48 @@ public sealed class MetadataRecoveryStrategyTests
     }
 
     [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task ProducerBuilder_WithAllowAutoCreateTopics_IsAppliedToMetadataManager(bool allow)
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithAllowAutoCreateTopics(allow)
+            .Build();
+
+        await Assert.That(GetMetadataOptions(producer).AllowAutoTopicCreation).IsEqualTo(allow);
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task ConsumerBuilder_WithAllowAutoCreateTopics_IsAppliedToMetadataManager(bool allow)
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("group")
+            .WithAllowAutoCreateTopics(allow)
+            .Build();
+
+        await Assert.That(GetMetadataOptions(consumer).AllowAutoTopicCreation).IsEqualTo(allow);
+    }
+
+    [Test]
+    public async Task Builders_AllowAutoCreateTopics_DefaultsToTrue()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .Build();
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("group")
+            .Build();
+
+        await Assert.That(GetMetadataOptions(producer).AllowAutoTopicCreation).IsTrue();
+        await Assert.That(GetMetadataOptions(consumer).AllowAutoTopicCreation).IsTrue();
+    }
+
+    [Test]
     public async Task ProducerBuilder_MetadataRecoveryOptions_AreAppliedToMetadataManager()
     {
         await using var producer = Kafka.CreateProducer<string, string>()

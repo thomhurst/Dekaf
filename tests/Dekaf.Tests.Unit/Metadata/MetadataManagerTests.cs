@@ -949,6 +949,42 @@ public class MetadataManagerTests
     }
 
     [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task TopicLookups_SendAllowAutoTopicCreationFromOptions(bool allow, CancellationToken cancellationToken)
+    {
+        // Every topic lookup used to hardcode allowAutoTopicCreation: true, so a client with the
+        // option off still created mistyped topics on brokers with auto.create.topics.enable=true.
+        var pool = Substitute.For<IConnectionPool>();
+        var connection = CreateTopicMetadataConnection("orders");
+        pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection>(connection));
+        var options = new MetadataOptions { EnableBackgroundRefresh = false, AllowAutoTopicCreation = allow };
+
+        // Each lookup path needs a cold cache, so each gets its own manager.
+        await using (var manager = new MetadataManager(pool, ["localhost:9092"], options))
+            await Assert.That(await manager.GetTopicMetadataAsync("orders", cancellationToken)).IsNotNull();
+        await using (var manager = new MetadataManager(pool, ["localhost:9092"], options))
+            await Assert.That(manager.WaitForTopicMetadataSync("orders", 30_000)).IsNotNull();
+        await using (var manager = new MetadataManager(pool, ["localhost:9092"], options))
+            await manager.RefreshMetadataAsync(["orders"], cancellationToken: cancellationToken);
+
+        var topicRequests = connection.ReceivedCalls()
+            .Select(call => call.GetArguments()[0])
+            .OfType<MetadataRequest>()
+            .Where(request => request.Topics is not null)
+            .ToList();
+        await Assert.That(topicRequests.Count).IsEqualTo(3);
+        await Assert.That(topicRequests.All(request => request.AllowAutoTopicCreation == allow)).IsTrue();
+    }
+
+    [Test]
+    public async Task MetadataOptions_AllowAutoTopicCreation_DefaultsToTrue()
+    {
+        await Assert.That(new MetadataOptions().AllowAutoTopicCreation).IsTrue();
+    }
+
+    [Test]
     public async Task InitializeAsync_DefaultRetries_TimeBounded_ThrowsKafkaTimeoutException()
     {
         var pool = CreateFailingConnectionPool();

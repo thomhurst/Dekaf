@@ -16,48 +16,63 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
     [Test]
     public async Task ProduceToNonExistentTopic_AutoCreateDisabled_ReturnsError()
     {
-        // Arrange - use a topic name that definitely does not exist and will not be auto-created.
-        // Kafka's default broker config has auto.create.topics.enable=true in many setups,
-        // but the Metadata request's AllowAutoTopicCreation flag controls client-side behavior.
-        // The producer's metadata lookup will fail when the topic doesn't exist and the broker
-        // cannot find it. With a short timeout, this should surface as a KafkaException.
+        // The test broker runs with auto.create.topics.enable=true, so only the client's
+        // AllowAutoTopicCreation flag stops the producer's metadata lookup creating the topic.
         var nonExistentTopic = $"non-existent-topic-{Guid.NewGuid():N}";
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-no-topic")
             .WithAcks(Acks.All)
-            .WithMaxBlock(TimeSpan.FromSeconds(10))
+            .WithAllowAutoCreateTopics(false)
+            .WithMaxBlock(TimeSpan.FromSeconds(5))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        // Act & Assert - producing to a non-existent topic should eventually throw.
-        // The error may manifest as a KafkaException (UnknownTopicOrPartition) or a timeout
-        // when metadata cannot be resolved. Either way, it should not succeed silently.
-        Exception? caughtException = null;
-        try
-        {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+        await Assert.That(async () => await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = nonExistentTopic,
                 Key = "key",
                 Value = "value"
-            }, CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            caughtException = ex;
-        }
+            }, CancellationToken.None))
+            .Throws<KafkaException>();
 
-        // The produce should either throw a KafkaException or succeed if auto-create is enabled.
-        // If auto-create is enabled on the broker (common in test containers), the produce may succeed.
-        // In that case, verify the topic was indeed auto-created by checking we got a valid result.
-        if (caughtException is not null)
+        await Assert.That(await TopicExistsAsync(nonExistentTopic)).IsFalse();
+    }
+
+    [Test]
+    public async Task ProduceToNonExistentTopic_AutoCreateAllowed_BrokerCreatesTopic()
+    {
+        // Control for the test above: with the default setting, the same lookup creates the topic.
+        var topic = $"auto-created-topic-{Guid.NewGuid():N}";
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer-auto-create")
+            .WithAcks(Acks.All)
+            .WithMaxBlock(TimeSpan.FromSeconds(30))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
         {
-            // Should be a Kafka-related exception
-            await Assert.That(caughtException).IsAssignableTo<KafkaException>();
-        }
-        // If no exception, auto-create was enabled - this is acceptable behavior
+            Topic = topic,
+            Key = "key",
+            Value = "value"
+        }, CancellationToken.None);
+
+        await Assert.That(await TopicExistsAsync(topic)).IsTrue();
+    }
+
+    private async Task<bool> TopicExistsAsync(string topic)
+    {
+        await using var adminClient = Kafka.CreateAdminClient()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .Build();
+
+        var topics = await adminClient.ListTopicsAsync();
+        return topics.Any(listing => listing.Name == topic);
     }
 
     [Test]

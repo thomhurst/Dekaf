@@ -134,6 +134,7 @@ public sealed class KafkaClientBuilder
     private TimeSpan? _metadataMaxAge;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private bool _metadataClusterCheckEnabled = true;
+    private bool _allowAutoCreateTopics = true;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
     private int _bootstrapResolveTimeoutMs = 120000;
@@ -567,6 +568,17 @@ public sealed class KafkaClientBuilder
         return this;
     }
 
+    /// <summary>
+    /// Controls whether topic metadata lookups from this client's producers and consumers ask the
+    /// broker to auto-create missing topics (Java's <c>allow.auto.create.topics</c>). Default is true.
+    /// The broker creates a topic only when its <c>auto.create.topics.enable</c> is also true.
+    /// </summary>
+    public KafkaClientBuilder WithAllowAutoCreateTopics(bool allow = true)
+    {
+        _allowAutoCreateTopics = allow;
+        return this;
+    }
+
     public KafkaClientBuilder WithMetadataRecoveryRebootstrapTrigger(TimeSpan trigger)
     {
         ArgumentOutOfRangeException.ThrowIfGreaterThan(trigger.TotalMilliseconds, int.MaxValue, nameof(trigger));
@@ -662,6 +674,7 @@ public sealed class KafkaClientBuilder
             MetadataMaxAge = _metadataMaxAge,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataClusterCheckEnabled = _metadataClusterCheckEnabled,
+            AllowAutoCreateTopics = _allowAutoCreateTopics,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
             BootstrapResolveTimeoutMs = _bootstrapResolveTimeoutMs,
@@ -732,6 +745,7 @@ internal sealed class KafkaClientOptions
     public TimeSpan? MetadataMaxAge { get; init; }
     public MetadataRecoveryStrategy MetadataRecoveryStrategy { get; init; }
     public bool MetadataClusterCheckEnabled { get; init; } = true;
+    public bool AllowAutoCreateTopics { get; init; } = true;
     public int MetadataRecoveryRebootstrapTriggerMs { get; init; }
     public ClientDnsLookup ClientDnsLookup { get; init; }
     public int BootstrapResolveTimeoutMs { get; init; } = 120000;
@@ -823,6 +837,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
             MetadataRefreshInterval = options.MetadataMaxAge ?? TimeSpan.FromMinutes(15),
             MetadataRecoveryStrategy = options.MetadataRecoveryStrategy,
             MetadataClusterCheckEnabled = options.MetadataClusterCheckEnabled,
+            AllowAutoTopicCreation = options.AllowAutoCreateTopics,
             MetadataRecoveryRebootstrapTriggerMs = options.MetadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = options.ClientDnsLookup,
             BootstrapResolveTimeoutMs = options.BootstrapResolveTimeoutMs,
