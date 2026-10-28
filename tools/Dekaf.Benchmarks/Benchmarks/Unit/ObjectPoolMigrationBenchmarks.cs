@@ -115,8 +115,10 @@ public class PoolHotPathBenchmarks
 {
     private const int ArenaCapacity = 1024 * 1024;
     private static readonly IReadOnlyList<RecordBatch> EmptyBatches = Array.Empty<RecordBatch>();
+    private static readonly byte[] ResponseFrame = [0, 0, 0, 1, 10];
     private ValueTaskSourcePool<int> _valueTaskSources = null!;
     private PendingRequestPool _pendingRequests = null!;
+    private CancellationTokenSource _requestTimeout = null!;
     private PipeMemoryPool _pipeMemory = null!;
 
     [GlobalSetup]
@@ -124,6 +126,7 @@ public class PoolHotPathBenchmarks
     {
         _valueTaskSources = new ValueTaskSourcePool<int>(4096);
         _pendingRequests = new PendingRequestPool();
+        _requestTimeout = new CancellationTokenSource();
         _pipeMemory = new PipeMemoryPool();
 
         var source = _valueTaskSources.Rent();
@@ -175,6 +178,23 @@ public class PoolHotPathBenchmarks
         return _pendingRequests.ApproximateCount;
     }
 
+    /// <summary>
+    /// Per-request pending lifecycle with a connection-owned timeout registration, as on
+    /// every send that does not own its timeout (issue #3816 added admission-wait state).
+    /// </summary>
+    [Benchmark]
+    public int PendingRequestTimeoutLifecycle()
+    {
+        var request = _pendingRequests.Rent();
+        request.Initialize(responseHeaderVersion: 0, CancellationToken.None, registerCancellation: false);
+        request.RegisterCancellation(_requestTimeout.Token);
+        request.TryComplete(new PooledResponseBuffer(ResponseFrame, ResponseFrame.Length, isPooled: false));
+        var length = request.AsValueTask().GetAwaiter().GetResult().Length;
+        request.DisposeRegistration();
+        _pendingRequests.Return(request);
+        return length;
+    }
+
     [Benchmark]
     public int PipeMemoryOwnerRentReturn()
     {
@@ -185,5 +205,9 @@ public class PoolHotPathBenchmarks
     }
 
     [GlobalCleanup]
-    public void Cleanup() => _pipeMemory.Dispose();
+    public void Cleanup()
+    {
+        _requestTimeout.Dispose();
+        _pipeMemory.Dispose();
+    }
 }

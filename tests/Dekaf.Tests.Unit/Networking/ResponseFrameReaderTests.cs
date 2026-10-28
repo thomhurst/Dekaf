@@ -93,6 +93,60 @@ public sealed class ResponseFrameReaderTests
     }
 
     [Test]
+    public async Task ReadBoundedFrameAsync_ReportsOnlyAdmissionWaitsThatBlock()
+    {
+        using var pool = new FetchBufferMemoryPool(100);
+        var chunk = Concat(
+            BuildFrame(correlationId: 1, payloadSize: 60),
+            BuildFrame(correlationId: 2, payloadSize: 50));
+        using var stream = new ScriptedReadStream([chunk]);
+        var waits = new List<bool>();
+        using var reader = CreateAdmissionReader(stream, waits);
+        ResponseFrameAdmission GetAdmission(int _) => new(pool, Discard: false);
+
+        var first = await reader.ReadBoundedFrameAsync(GetAdmission);
+        await Assert.That(waits).IsEmpty();
+
+        var secondRead = reader.ReadBoundedFrameAsync(GetAdmission).AsTask();
+        await Assert.That(secondRead.IsCompleted).IsFalse();
+        await Assert.That(string.Join(",", waits)).IsEqualTo("True");
+
+        first.Buffer.Dispose();
+        first.Reservation?.Dispose();
+        var second = await secondRead.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(string.Join(",", waits)).IsEqualTo("True,False");
+
+        second.Buffer.Dispose();
+        second.Reservation?.Dispose();
+    }
+
+    [Test]
+    public async Task ReadBoundedFrameAsync_AbortedAdmissionWaitReportsEnd()
+    {
+        using var pool = new FetchBufferMemoryPool(100);
+        using var existing = await pool.ReserveAsync(100, CancellationToken.None);
+        using var stream = new ScriptedReadStream([BuildFrame(correlationId: 1, payloadSize: 60)]);
+        var waits = new List<bool>();
+        using var reader = CreateAdmissionReader(stream, waits);
+
+        var read = reader.ReadBoundedFrameAsync(
+            _ => new ResponseFrameAdmission(pool, Discard: false)).AsTask();
+        reader.Abort();
+
+        await Assert.That(async () => await read).Throws<OperationCanceledException>();
+        await Assert.That(string.Join(",", waits)).IsEqualTo("True,False");
+    }
+
+    private static ResponseFrameReader CreateAdmissionReader(Stream stream, List<bool> waits)
+        => new(
+            socket: null,
+            stream,
+            receiveBufferSize: 4096,
+            ResponseBufferPool.Default,
+            new PipeMemoryPool(),
+            onAdmissionWait: waits.Add);
+
+    [Test]
     public async Task ReadFrameAsync_OversizedFetchProgressesOnlyAsSoleReservation()
     {
         using var pool = new FetchBufferMemoryPool(100);

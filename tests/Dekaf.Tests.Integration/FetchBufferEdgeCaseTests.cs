@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.Reflection;
 using Dekaf.Consumer;
+using Dekaf.Networking;
 using Dekaf.Producer;
+using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Tests.Integration;
 
@@ -307,6 +309,82 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         await Assert.That(messages).Count().IsEqualTo(messageCount - 1);
         await Assert.That(pool.UsedBytes).IsLessThanOrEqualTo(fetchBufferBytes);
         await Assert.That(pool.DepletedDurationSeconds).IsGreaterThan(0);
+    }
+
+    [Test]
+    public async Task FetchBufferMemory_StallLongerThanRequestTimeout_KeepsFetchConnections()
+    {
+        // Issue #3816: while the application stops draining records, a fetch response waits
+        // for fetch-buffer memory. That local wait must not trip the receive timeout.
+        const int messageCount = 18;
+        const int messageSize = 12_000;
+        var requestTimeout = TimeSpan.FromSeconds(3);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
+        var groupId = $"stalled-fetch-{Guid.NewGuid():N}";
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        for (var i = 0; i < messageCount; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"key-{i}",
+                Value = new string('X', messageSize),
+                Partition = i % 3
+            }, CancellationToken.None);
+        }
+
+        using var logs = new CapturingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder =>
+        {
+            builder.SetMinimumLevel(LogLevel.Warning);
+            builder.AddProvider(logs);
+        });
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithFetchMaxBytes(32 * 1024)
+            .WithFetchBufferMemory(64 * 1024)
+            .WithMaxPartitionFetchBytes(32 * 1024)
+            .WithPrefetchPipelineDepth(5)
+            .WithConnectionsPerBroker(2)
+            .WithRequestTimeout(requestTimeout)
+            .WithLoggerFactory(loggerFactory)
+            .BuildAsync();
+
+        consumer.Subscribe(topic);
+
+        var pool = (FetchBufferMemoryPool)typeof(KafkaConsumer<string, string>)
+            .GetField("_fetchBufferMemoryPool", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue((KafkaConsumer<string, string>)consumer)!;
+
+        using var consumeTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var first = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), consumeTimeout.Token);
+        await Assert.That(first).IsNotNull();
+
+        var depletionDeadline = Stopwatch.GetTimestamp() + (5 * Stopwatch.Frequency);
+        while (pool.DepletedDurationSeconds == 0 && Stopwatch.GetTimestamp() < depletionDeadline)
+            await Task.Delay(10, consumeTimeout.Token);
+        await Assert.That(pool.DepletedDurationSeconds).IsGreaterThan(0);
+
+        // The application stalls well past RequestTimeout with the fetch buffer full.
+        await Task.Delay(requestTimeout * 3, consumeTimeout.Token);
+
+        var messages = await ConsumeMessagesAsync(consumer, messageCount - 1);
+
+        await Assert.That(messages).Count().IsEqualTo(messageCount - 1);
+        var receiveTimeouts = logs.Entries
+            .Where(entry => entry.CategoryName == typeof(KafkaConnection).FullName
+                && entry.Message.StartsWith("Receive timeout", StringComparison.Ordinal))
+            .ToList();
+        await Assert.That(receiveTimeouts).IsEmpty();
     }
 
     [Test]
