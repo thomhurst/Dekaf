@@ -9,9 +9,11 @@ public sealed class ApiKeyTests
     {
         var heartbeat = Enum.Parse<ApiKey>(nameof(ApiKey.StreamsGroupHeartbeat));
         var describe = Enum.Parse<ApiKey>(nameof(ApiKey.StreamsGroupDescribe));
+        var topologyDescriptionUpdate = Enum.Parse<ApiKey>(nameof(ApiKey.StreamsGroupTopologyDescriptionUpdate));
 
         await Assert.That((short)heartbeat).IsEqualTo((short)88);
         await Assert.That((short)describe).IsEqualTo((short)89);
+        await Assert.That((short)topologyDescriptionUpdate).IsEqualTo((short)93);
     }
 
     [Test]

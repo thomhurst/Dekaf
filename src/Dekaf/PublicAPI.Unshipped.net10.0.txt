@@ -895,3 +895,34 @@ static Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData.Read(ref Dekaf
 static Dekaf.Protocol.Messages.StreamsTopologyDescriptionSubtopologyData.Read(ref Dekaf.Protocol.KafkaProtocolReader reader) -> Dekaf.Protocol.Messages.StreamsTopologyDescriptionSubtopologyData!
 Dekaf.Protocol.Messages.DeleteGroupsResponseResult.ErrorMessage.get -> string?
 Dekaf.Protocol.Messages.DeleteGroupsResponseResult.ErrorMessage.init -> void
+Dekaf.Protocol.ApiKey.StreamsGroupTopologyDescriptionUpdate = 93 -> Dekaf.Protocol.ApiKey
+Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateRequest
+Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateRequest.GroupId.get -> string!
+Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateRequest.GroupId.init -> void
+Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateRequest.MemberId.get -> string!
+Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateRequest.MemberId.init -> void
+Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateRequest.StreamsGroupTopologyDescriptionUpdateRequest() -> void
+Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateRequest.TopologyDescription.get -> Dekaf.Protocol.Messages.StreamsTopologyDescriptionData!
+Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateRequest.TopologyDescription.init -> void
+Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateRequest.TopologyEpoch.get -> int
+Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateRequest.TopologyEpoch.init -> void
+Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateRequest.Write(ref Dekaf.Protocol.KafkaProtocolWriter writer, short version) -> void
+Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateResponse
+Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateResponse.ErrorCode.get -> Dekaf.Protocol.ErrorCode
+Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateResponse.ErrorCode.init -> void
+Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateResponse.ErrorMessage.get -> string?
+Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateResponse.ErrorMessage.init -> void
+Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateResponse.StreamsGroupTopologyDescriptionUpdateResponse() -> void
+Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateResponse.ThrottleTimeMs.get -> int
+Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateResponse.ThrottleTimeMs.init -> void
+Dekaf.Streams.StreamsGroupHeartbeatResult.TopologyDescriptionRequired.get -> bool
+Dekaf.Streams.StreamsGroupHeartbeatResult.TopologyDescriptionRequired.init -> void
+Dekaf.Streams.StreamsGroupTopology.Description.get -> Dekaf.Admin.StreamsGroupTopologyDescription?
+Dekaf.Streams.StreamsGroupTopology.Description.init -> void
+static Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateRequest.ApiKey.get -> Dekaf.Protocol.ApiKey
+static Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateRequest.HighestSupportedVersion.get -> short
+static Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateRequest.LowestSupportedVersion.get -> short
+static Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateResponse.ApiKey.get -> Dekaf.Protocol.ApiKey
+static Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateResponse.HighestSupportedVersion.get -> short
+static Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateResponse.LowestSupportedVersion.get -> short
+static Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateResponse.Read(ref Dekaf.Protocol.KafkaProtocolReader reader, short version) -> Dekaf.Protocol.IKafkaResponse!

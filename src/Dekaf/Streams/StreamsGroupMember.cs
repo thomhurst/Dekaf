@@ -61,6 +61,8 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
     private bool _requestWriteStarted;
 
     private StreamsGroupHeartbeatTopology? _topology;
+    private StreamsTopologyDescriptionData? _topologyDescription;
+    private TopologyDescriptionPublication? _topologyDescriptionPublication;
     private IReadOnlyList<StreamsGroupHeartbeatTaskIds>? _activeTasks;
     private IReadOnlyList<StreamsGroupHeartbeatTaskIds>? _standbyTasks;
     private IReadOnlyList<StreamsGroupHeartbeatTaskIds>? _warmupTasks;
@@ -404,6 +406,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         catch (Exception exception)
         {
             MarkUnjoined();
+            await StopTopologyDescriptionPublicationAsync().ConfigureAwait(false);
             Volatile.Write(ref _backgroundFailure, exception);
             _commands.Writer.TryComplete(exception);
             Volatile.Read(ref _closeCommand)?.Completion.TrySetException(exception);
@@ -578,9 +581,137 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             fatal ? exception : null);
     }
 
+    // Runs on the worker. The coordinator asks again after its back-off window while it has no
+    // description for the epoch, so one publication in flight is enough.
+    private void StartTopologyDescriptionPublication()
+    {
+        if (_topology is null || _topologyDescription is null)
+            return;
+
+        var current = _topologyDescriptionPublication;
+        if (current is not null && !current.Cancellation.IsCancellationRequested)
+        {
+            if (!current.Task.IsCompleted)
+                return;
+            current.Cancellation.Dispose();
+            current = null;
+        }
+
+        var request = new StreamsGroupTopologyDescriptionUpdateRequest
+        {
+            GroupId = GroupId,
+            MemberId = _memberId,
+            TopologyEpoch = _topology.Epoch,
+            TopologyDescription = _topologyDescription
+        };
+        var cancellation = new CancellationTokenSource();
+        _topologyDescriptionPublication = new TopologyDescriptionPublication(
+            PublishTopologyDescriptionAsync(current, request, cancellation.Token),
+            cancellation);
+    }
+
+    private void CancelTopologyDescriptionPublication() =>
+        _topologyDescriptionPublication?.Cancellation.Cancel();
+
+    private async ValueTask StopTopologyDescriptionPublicationAsync()
+    {
+        var publication = _topologyDescriptionPublication;
+        if (publication is null)
+            return;
+
+        _topologyDescriptionPublication = null;
+        publication.Cancellation.Cancel();
+        await publication.Task.ConfigureAwait(false);
+        publication.Cancellation.Dispose();
+    }
+
+    // Never faults: a failed publication ends, and the coordinator requests the description again on a
+    // later heartbeat. A publication that replaces a cancelled one waits for it and disposes it.
+    private async Task PublishTopologyDescriptionAsync(
+        TopologyDescriptionPublication? previous,
+        StreamsGroupTopologyDescriptionUpdateRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (previous is not null)
+        {
+            await previous.Task.ConfigureAwait(false);
+            previous.Cancellation.Dispose();
+        }
+
+        var coordinatorId = Volatile.Read(ref _coordinatorId);
+        var failureCount = 0;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                if (coordinatorId < 0)
+                    coordinatorId = await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+
+                StreamsGroupTopologyDescriptionUpdateResponse response;
+                using (var lease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken)
+                           .ConfigureAwait(false))
+                {
+                    var connection = lease.Connection;
+                    // A coordinator without the API has no plugin to store the description.
+                    if (!_metadataManager.HasApiKey(connection, ApiKey.StreamsGroupTopologyDescriptionUpdate))
+                        return;
+
+                    var version = _metadataManager.GetNegotiatedApiVersion(
+                        connection,
+                        ApiKey.StreamsGroupTopologyDescriptionUpdate,
+                        StreamsGroupTopologyDescriptionUpdateRequest.LowestSupportedVersion,
+                        StreamsGroupTopologyDescriptionUpdateRequest.HighestSupportedVersion);
+                    response = await connection
+                        .SendAsync<StreamsGroupTopologyDescriptionUpdateRequest,
+                            StreamsGroupTopologyDescriptionUpdateResponse>(request, version, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
+                switch (response.ErrorCode)
+                {
+                    case ErrorCode.None:
+                        return;
+                    case ErrorCode.UnknownMemberId or ErrorCode.FencedMemberEpoch:
+                        // The heartbeat path owns fencing recovery; heartbeat now so the member rejoins.
+                        QueueHeartbeat();
+                        return;
+                    case ErrorCode.NotCoordinator or ErrorCode.CoordinatorNotAvailable:
+                        coordinatorId = -1;
+                        break;
+                    case var errorCode when !errorCode.IsRetriable():
+                        return;
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception exception) when (
+                IsRetriableConnectionFailure(exception)
+                || exception is GroupException { ErrorCode: { } errorCode } && errorCode.IsRetriable())
+            {
+                coordinatorId = -1;
+            }
+            catch (Exception)
+            {
+                return;
+            }
+
+            try
+            {
+                await DelayForRetryAsync(++failureCount, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+    }
+
     private async ValueTask ProcessCloseAsync(StreamsGroupCloseOptions options)
     {
         _heartbeatTimer.Change(Timeout.Infinite, Timeout.Infinite);
+        await StopTopologyDescriptionPublicationAsync().ConfigureAwait(false);
         int? terminalEpoch = options.GroupMembershipOperation switch
         {
             StreamsGroupMembershipOperation.RemainInGroup => null,
@@ -687,7 +818,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             for (var attempt = 0; attempt < attemptLimit; attempt++)
             {
                 if (_coordinatorId < 0)
-                    await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+                    _coordinatorId = await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
 
                 StreamsGroupHeartbeatResponse response;
                 _requestWriteStarted = false;
@@ -843,6 +974,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
     {
         _memberEpoch = 0;
         _ambiguousMembership = false;
+        CancelTopologyDescriptionPublication();
         ResetTaskAssignment(markUnjoined: true);
     }
 
@@ -870,7 +1002,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         };
     }
 
-    private async ValueTask FindCoordinatorAsync(CancellationToken cancellationToken)
+    private async ValueTask<int> FindCoordinatorAsync(CancellationToken cancellationToken)
     {
         var brokers = _metadataManager.Metadata.GetBrokers();
         if (brokers.Count == 0)
@@ -925,8 +1057,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                 }
 
                 _connectionPool.RegisterBroker(coordinator.NodeId, coordinator.Host, coordinator.Port);
-                _coordinatorId = coordinator.NodeId;
-                return;
+                return coordinator.NodeId;
             }
             catch (Exception exception) when (
                 IsRetriableConnectionFailure(exception)
@@ -1094,12 +1225,16 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             };
         }
 
+        if (response.TopologyDescriptionRequired)
+            StartTopologyDescriptionPublication();
+
         if (!createResult)
             return null;
 
         return new StreamsGroupHeartbeatResult
         {
             ThrottleTime = TimeSpan.FromMilliseconds(response.ThrottleTimeMs),
+            TopologyDescriptionRequired = response.TopologyDescriptionRequired,
             MemberId = _memberId,
             MemberEpoch = response.MemberEpoch,
             HeartbeatInterval = heartbeatInterval,
@@ -1119,7 +1254,11 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         _endpointInformationEpoch = update.EndpointInformationEpoch;
         if (update.Topology is not null)
         {
+            CancelTopologyDescriptionPublication();
             _topology = MapTopology(update.Topology);
+            _topologyDescription = update.Topology.Description is null
+                ? null
+                : MapTopologyDescription(update.Topology.Description);
             _activeTasks = [];
             _standbyTasks = [];
             _warmupTasks = [];
@@ -1148,6 +1287,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
 
     private OperationState CaptureOperationState() => new(
         _topology,
+        _topologyDescription,
         _activeTasks,
         _standbyTasks,
         _warmupTasks,
@@ -1161,6 +1301,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
     private void RestoreOperationState(in OperationState state)
     {
         _topology = state.Topology;
+        _topologyDescription = state.TopologyDescription;
         _activeTasks = state.ActiveTasks;
         _standbyTasks = state.StandbyTasks;
         _warmupTasks = state.WarmupTasks;
@@ -1322,6 +1463,47 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
 
         return new StreamsGroupHeartbeatTopology { Epoch = source.Epoch, Subtopologies = subtopologies };
     }
+
+    private static StreamsTopologyDescriptionData MapTopologyDescription(
+        Admin.StreamsGroupTopologyDescription source)
+    {
+        var subtopologies = new StreamsTopologyDescriptionSubtopologyData[source.Subtopologies.Count];
+        for (var i = 0; i < subtopologies.Length; i++)
+        {
+            var item = source.Subtopologies[i];
+            var nodes = new StreamsTopologyDescriptionNodeData[item.Nodes.Count];
+            for (var j = 0; j < nodes.Length; j++)
+                nodes[j] = MapTopologyNode(item.Nodes[j]);
+            subtopologies[i] = new StreamsTopologyDescriptionSubtopologyData
+            {
+                SubtopologyId = item.SubtopologyId,
+                Nodes = nodes
+            };
+        }
+
+        var globalStores = new StreamsTopologyDescriptionGlobalStoreData[source.GlobalStores.Count];
+        for (var i = 0; i < globalStores.Length; i++)
+        {
+            var item = source.GlobalStores[i];
+            globalStores[i] = new StreamsTopologyDescriptionGlobalStoreData
+            {
+                Source = MapTopologyNode(item.Source),
+                Processor = MapTopologyNode(item.Processor)
+            };
+        }
+
+        return new StreamsTopologyDescriptionData { Subtopologies = subtopologies, GlobalStores = globalStores };
+    }
+
+    private static StreamsTopologyDescriptionNodeData MapTopologyNode(Admin.StreamsGroupTopologyNode source) => new()
+    {
+        Name = source.Name,
+        NodeType = (sbyte)source.NodeType,
+        SourceTopics = Copy(source.SourceTopics),
+        SinkTopic = source.SinkTopic,
+        Stores = Copy(source.Stores),
+        Successors = Copy(source.Successors)
+    };
 
     private static StreamsGroupHeartbeatTopicInfo[] MapTopicInfo(IReadOnlyList<StreamsGroupTopicInfo> source)
     {
@@ -1485,6 +1667,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
 
     private readonly record struct OperationState(
         StreamsGroupHeartbeatTopology? Topology,
+        StreamsTopologyDescriptionData? TopologyDescription,
         IReadOnlyList<StreamsGroupHeartbeatTaskIds>? ActiveTasks,
         IReadOnlyList<StreamsGroupHeartbeatTaskIds>? StandbyTasks,
         IReadOnlyList<StreamsGroupHeartbeatTaskIds>? WarmupTasks,
@@ -1494,6 +1677,8 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         IReadOnlyList<StreamsGroupHeartbeatTaskOffset>? TaskOffsets,
         IReadOnlyList<StreamsGroupHeartbeatTaskOffset>? TaskEndOffsets,
         int EndpointInformationEpoch);
+
+    private sealed record TopologyDescriptionPublication(Task Task, CancellationTokenSource Cancellation);
 
     private sealed class AmbiguousHeartbeatException(Exception innerException) : Exception(
         "StreamsGroupHeartbeat completion is ambiguous.",
