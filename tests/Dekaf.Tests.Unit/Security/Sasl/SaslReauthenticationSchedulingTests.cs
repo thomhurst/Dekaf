@@ -1,3 +1,4 @@
+using Dekaf.Networking;
 using Dekaf.Security.Sasl;
 
 namespace Dekaf.Tests.Unit.Security.Sasl;
@@ -160,5 +161,46 @@ public sealed class SaslReauthenticationSchedulingTests
         await Assert.That(state.ShouldReauthenticateNow(authTime.AddSeconds(94))).IsFalse();
         // Should re-auth at 95 seconds
         await Assert.That(state.ShouldReauthenticateNow(authTime.AddSeconds(95))).IsTrue();
+    }
+
+    [Test]
+    public async Task RetryDelay_DoublesPerFailureWithinTheSessionWindow()
+    {
+        // A 60 minute OAUTHBEARER session fails its first renewal at 54 minutes: 6 minutes remain.
+        const long remainingMs = 360_000;
+        const long requestTimeoutMs = 30_000;
+
+        await Assert.That(KafkaConnection.ComputeReauthenticationRetryDelayMs(remainingMs, requestTimeoutMs, 1))
+            .IsEqualTo(1_000L);
+        await Assert.That(KafkaConnection.ComputeReauthenticationRetryDelayMs(remainingMs, requestTimeoutMs, 2))
+            .IsEqualTo(2_000L);
+        await Assert.That(KafkaConnection.ComputeReauthenticationRetryDelayMs(remainingMs, requestTimeoutMs, 4))
+            .IsEqualTo(8_000L);
+    }
+
+    [Test]
+    public async Task RetryDelay_LeavesARequestTimeoutForTheNextAttempt()
+    {
+        // Backoff is capped at half the time left before the last attempt can still finish.
+        await Assert.That(KafkaConnection.ComputeReauthenticationRetryDelayMs(40_000, 30_000, 10))
+            .IsEqualTo(5_000L);
+        await Assert.That(KafkaConnection.ComputeReauthenticationRetryDelayMs(
+                30_000 + 2 * KafkaConnection.ReauthenticationRetryMinDelayMs, 30_000, 1))
+            .IsEqualTo(KafkaConnection.ReauthenticationRetryMinDelayMs);
+        await Assert.That(KafkaConnection.ComputeReauthenticationRetryDelayMs(long.MaxValue / 2, 30_000, int.MaxValue))
+            .IsGreaterThan(0L);
+    }
+
+    [Test]
+    [Arguments(30_199L)]
+    [Arguments(30_050L)]
+    [Arguments(30_000L)]
+    [Arguments(10_000L)]
+    [Arguments(-5_000L)]
+    public async Task RetryDelay_RetiresWhenNoAttemptCanFinishBeforeExpiry(long remainingMs)
+    {
+        // The minimum delay must still leave a request timeout before expiry; never schedule past it.
+        await Assert.That(KafkaConnection.ComputeReauthenticationRetryDelayMs(remainingMs, 30_000, 1))
+            .IsEqualTo(-1L);
     }
 }

@@ -201,6 +201,8 @@ public sealed partial class KafkaConnection :
     // SASL re-authentication (KIP-368)
     private SaslSessionState? _saslSessionState;
     private Timer? _reauthTimer;
+    // Consecutive pre-exchange re-authentication failures; only touched under _reauthLock.
+    private int _reauthFailures;
     private readonly SemaphoreSlim _reauthLock = new(1, 1);
     private volatile bool _reauthenticating;
 
@@ -4035,14 +4037,73 @@ public sealed partial class KafkaConnection :
 
         LogSchedulingReauthentication(sessionLifetimeMs, delayMs, _saslSessionState.ReauthenticationDeadline, BrokerId);
 
+        ArmReauthenticationTimer(delayMs);
+    }
+
+    private void ArmReauthenticationTimer(long delayMs)
+    {
         // Replace existing timer, disposing old one AFTER assignment to avoid race window
         var oldTimer = _reauthTimer;
-        _reauthTimer = new Timer(
+        var timer = new Timer(
             OnReauthenticationTimerElapsed,
             null,
             delayMs,
-            Timeout.Infinite); // One-shot timer, re-scheduled after each re-auth
+            Timeout.Infinite); // One-shot timer, re-scheduled after each re-auth attempt
+        _reauthTimer = timer;
         oldTimer?.Dispose();
+
+        // Disposal may have released the previous timer before this one was published.
+        if (Volatile.Read(ref _disposed) != 0)
+            timer.Dispose();
+    }
+
+    /// <summary>
+    /// Plans the next re-authentication attempt after one failed before the exchange reached the
+    /// wire (credential provider, token fetch, or admission drain). The current session stays
+    /// valid until expiry, so retry with backoff inside that window. When too little of the
+    /// session is left for another attempt, retire the connection so the pool opens a freshly
+    /// authenticated one instead of letting the broker close it under in-flight requests.
+    /// Returns the retry delay, or 0 when no retry should be armed. Call under _reauthLock and
+    /// arm the timer only after releasing it, so the retry cannot fire into the guards.
+    /// </summary>
+    private long PlanReauthenticationRetry()
+    {
+        var expiry = _saslSessionState?.SessionExpiryTime;
+        if (expiry is null || !IsConnected)
+            return 0;
+
+        var failures = ++_reauthFailures;
+        var remainingMs = (long)(expiry.Value - DateTimeOffset.UtcNow).TotalMilliseconds;
+        var delayMs = ComputeReauthenticationRetryDelayMs(
+            remainingMs, (long)_options.RequestTimeout.TotalMilliseconds, failures);
+
+        if (delayMs < 0)
+        {
+            LogRetiringConnectionAfterReauthenticationFailures(BrokerId, failures, remainingMs);
+            AbortAfterWriteFailure();
+            return 0;
+        }
+
+        LogSchedulingReauthenticationRetry(BrokerId, failures, delayMs, remainingMs);
+        return delayMs;
+    }
+
+    internal const long ReauthenticationRetryBaseDelayMs = 1_000;
+    internal const long ReauthenticationRetryMinDelayMs = 100;
+
+    /// <summary>
+    /// Returns the delay before the next re-authentication attempt, or -1 when the connection
+    /// should be retired instead because even the minimum delay leaves no request timeout
+    /// for that attempt before the session expires.
+    /// The delay doubles per consecutive failure and is capped at half the time left before the
+    /// last point where an attempt can still finish within its request timeout.
+    /// </summary>
+    internal static long ComputeReauthenticationRetryDelayMs(long remainingMs, long requestTimeoutMs, int failures)
+    {
+        var usableMs = remainingMs - requestTimeoutMs;
+        var backoffMs = ReauthenticationRetryBaseDelayMs << Math.Min(Math.Max(failures - 1, 0), 20);
+        var delayMs = Math.Min(backoffMs, usableMs / 2);
+        return delayMs < ReauthenticationRetryMinDelayMs ? -1 : delayMs;
     }
 
     private void OnReauthenticationTimerElapsed(object? state)
@@ -4089,6 +4150,7 @@ public sealed partial class KafkaConnection :
             return;
         }
 
+        long retryDelayMs = 0;
         try
         {
             _reauthenticating = true;
@@ -4104,21 +4166,27 @@ public sealed partial class KafkaConnection :
             LogSaslReauthenticationSuccessful(BrokerId, sessionLifetimeMs);
 
             // Schedule the next re-authentication
+            _reauthFailures = 0;
             ScheduleReauthentication(sessionLifetimeMs);
         }
         catch (Exception ex) when (Volatile.Read(ref _disposed) == 0)
         {
             LogSaslReauthenticationFailed(ex, BrokerId);
 
-            // Credential resolution can fail before the wire exchange starts. The current
-            // session remains usable until expiry. Failures inside the exchange itself
-            // abort the transport before reopening request admission.
+            // Credential resolution or the admission drain can fail before the wire exchange
+            // starts. The current session remains usable until expiry, so retry within it.
+            // Failures inside the exchange itself abort the transport before reopening
+            // request admission.
+            retryDelayMs = PlanReauthenticationRetry();
         }
         finally
         {
             _reauthenticating = false;
             SemaphoreHelper.ReleaseSafely(_reauthLock);
         }
+
+        if (retryDelayMs > 0)
+            ArmReauthenticationTimer(retryDelayMs);
     }
 
     /// <summary>
@@ -4235,9 +4303,13 @@ public sealed partial class KafkaConnection :
 
         if (_options.OAuthBearerConfig is not null)
         {
-            // Create and track the provider for disposal
-            _ownedTokenProvider = new OAuthBearerTokenProvider(_options.OAuthBearerConfig);
-            return new OAuthBearerAuthenticator(_ownedTokenProvider.GetTokenAsync);
+            // Create and track the provider for disposal. Each (re-)authentication attempt gets a
+            // fresh provider; attempts are serialized, so the previous one is no longer in use.
+            var provider = new OAuthBearerTokenProvider(_options.OAuthBearerConfig);
+            var previous = _ownedTokenProvider;
+            _ownedTokenProvider = provider;
+            previous?.Dispose();
+            return new OAuthBearerAuthenticator(provider.GetTokenAsync);
         }
 
         throw new InvalidOperationException(
@@ -4749,6 +4821,12 @@ public sealed partial class KafkaConnection :
 
     [LoggerMessage(Level = LogLevel.Error, Message = "SASL re-authentication failed for broker {BrokerId}")]
     private partial void LogSaslReauthenticationFailed(Exception ex, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Retrying SASL re-authentication for broker {BrokerId} in {DelayMs}ms after {Failures} failed attempt(s); session expires in {RemainingMs}ms")]
+    private partial void LogSchedulingReauthenticationRetry(int brokerId, int failures, long delayMs, long remainingMs);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Retiring connection to broker {BrokerId}: SASL re-authentication failed {Failures} time(s) and the session expires in {RemainingMs}ms")]
+    private partial void LogRetiringConnectionAfterReauthenticationFailures(int brokerId, int failures, long remainingMs);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Disposing connection to broker {BrokerId}: {PendingRequestCount} pending requests")]
     private partial void LogConnectionDisposing(int brokerId, int pendingRequestCount);
