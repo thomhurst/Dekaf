@@ -78,11 +78,23 @@ internal sealed class SaslSessionState
     /// <summary>
     /// Gets the absolute time at which the session expires.
     /// Returns null if the session does not expire.
+    /// Lifetimes beyond the representable UTC range saturate at <see cref="DateTimeOffset.MaxValue"/>.
     /// </summary>
-    public DateTimeOffset? SessionExpiryTime =>
-        _sessionLifetimeMs > 0
-            ? _authenticationTime.AddMilliseconds(_sessionLifetimeMs)
-            : null;
+    public DateTimeOffset? SessionExpiryTime
+    {
+        get
+        {
+            if (_sessionLifetimeMs <= 0)
+                return null;
+
+            var authenticationTimeUtc = _authenticationTime.ToUniversalTime();
+            var availableTicks = DateTimeOffset.MaxValue.Ticks - authenticationTimeUtc.Ticks;
+            if (_sessionLifetimeMs > availableTicks / TimeSpan.TicksPerMillisecond)
+                return DateTimeOffset.MaxValue;
+
+            return authenticationTimeUtc.AddTicks(_sessionLifetimeMs * TimeSpan.TicksPerMillisecond);
+        }
+    }
 
     /// <summary>
     /// Checks whether re-authentication should be initiated now based on the current time.
