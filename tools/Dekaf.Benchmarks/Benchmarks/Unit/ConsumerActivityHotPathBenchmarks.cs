@@ -11,6 +11,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
 /// <summary>
 /// Broker-free cost benchmark for sampled consumer activities with and without producer context.
+/// The span tags the partition id through the same cached tag value the traced producer send uses.
 /// Activity sampling intentionally creates a diagnostic span; the zero-listener consume path
 /// remains the zero-allocation hot-path gate.
 /// </summary>
@@ -26,6 +27,11 @@ public class ConsumerActivityHotPathBenchmarks
 
     [Params(false, true)]
     public bool WithProducerContext { get; set; }
+
+    // Partition ids other than the first; 2048 is past the cached partition id table, so the span
+    // tags it from the overflow cache.
+    [Params(3, 2048)]
+    public int Partition { get; set; }
 
     [GlobalSetup]
     public void Setup()
@@ -51,8 +57,7 @@ public class ConsumerActivityHotPathBenchmarks
             },
             Serializers.String,
             Serializers.String);
-        // A non-zero partition, so the span tags a partition id other than the first one.
-        _pending = PendingFetchData.Create("orders", 3, Array.Empty<RecordBatch>());
+        _pending = PendingFetchData.Create("orders", Partition, Array.Empty<RecordBatch>());
 
         var method = typeof(KafkaConsumer<string, string>).GetMethod(
             "StartConsumeActivity",

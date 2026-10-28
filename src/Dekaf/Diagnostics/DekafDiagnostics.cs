@@ -80,9 +80,12 @@ public static class DekafDiagnostics
 
     // messaging.destination.partition.id is a string attribute in the messaging semconv.
     // One cached string per partition keeps traced sends, consume spans and lag observations
-    // free of per-call formatting and int boxing; ids outside the table fall back to ToString.
+    // free of per-call formatting and int boxing. Ids past the table go to a dictionary, so large
+    // topics also format each id once; it holds only ids this process has tagged. Negative ids are
+    // not real partitions and are formatted per call.
     private const int CachedPartitionIdCount = 1024;
     private static readonly string?[] PartitionIds = new string?[CachedPartitionIdCount];
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, string> OverflowPartitionIds = new();
 
     /// <summary>
     /// The <see cref="MessagingDestinationPartitionId"/> tag value for <paramref name="partition"/>.
@@ -90,11 +93,16 @@ public static class DekafDiagnostics
     /// </summary>
     internal static string PartitionIdTagValue(int partition)
     {
-        if ((uint)partition >= (uint)PartitionIds.Length)
-            return partition.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if ((uint)partition < (uint)PartitionIds.Length)
+            return PartitionIds[partition] ??= FormatPartitionId(partition);
 
-        return PartitionIds[partition] ??= partition.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return partition < 0
+            ? FormatPartitionId(partition)
+            : OverflowPartitionIds.GetOrAdd(partition, static id => FormatPartitionId(id));
     }
+
+    private static string FormatPartitionId(int partition) =>
+        partition.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
     /// <summary>
     /// Span name per messaging semconv: "{operation name} {destination}". Derived from the

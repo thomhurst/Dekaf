@@ -20,10 +20,22 @@ public sealed class DekafDiagnosticsTests
     }
 
     [Test]
-    [Arguments(1024, "1024")]
-    [Arguments(int.MaxValue, "2147483647")]
+    [Arguments(1024)]
+    [Arguments(5000)]
+    [Arguments(int.MaxValue)]
+    public async Task PartitionIdTagValue_PastTable_ReturnsSameInvariantString(int partition)
+    {
+        var first = DekafDiagnostics.PartitionIdTagValue(partition);
+        var second = DekafDiagnostics.PartitionIdTagValue(partition);
+
+        await Assert.That(first).IsEqualTo(partition.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        await Assert.That(second).IsSameReferenceAs(first);
+    }
+
+    [Test]
     [Arguments(-1, "-1")]
-    public async Task PartitionIdTagValue_OutsideCache_FormatsInvariantString(int partition, string expected)
+    [Arguments(int.MinValue, "-2147483648")]
+    public async Task PartitionIdTagValue_Negative_FormatsInvariantString(int partition, string expected)
     {
         await Assert.That(DekafDiagnostics.PartitionIdTagValue(partition)).IsEqualTo(expected);
     }
