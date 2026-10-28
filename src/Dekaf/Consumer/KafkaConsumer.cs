@@ -1543,6 +1543,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private volatile string? _topicPattern;
     private long _lastFilterRefreshTicks;
 
+    private bool IsGroupSubscribed
+        => _topicFilter is not null || _topicPattern is not null || _subscriptionSnapshot.Count != 0;
+
     // Thread-safety notes:
     // - _positions and _fetchPositions use ConcurrentDictionary for thread-safe reads/writes
     // - Individual operations (e.g., dict[key] = value) are atomic, but sequences like:
@@ -2646,10 +2649,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public KafkaClientStatus GetStatus()
     {
         var stopped = Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _consumerDisposed) != 0;
-        var hasConsumerGroup = _topicFilter is not null
-            || _topicPattern is not null
-            || _subscriptionSnapshot.Count != 0;
-        var consumerGroup = hasConsumerGroup
+        var consumerGroup = IsGroupSubscribed
             ? _coordinator?.CaptureGroupStatus()
             : null;
         if (consumerGroup is null)
@@ -2690,7 +2690,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             LastHeartbeatFailure: null)
         : _coordinator.CaptureGroupLiveness(
             Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _consumerDisposed) != 0,
-            _topicFilter is not null || _topicPattern is not null || _subscriptionSnapshot.Count != 0);
+            IsGroupSubscribed);
 
     IDisposable IConsumerRebalanceEventSource.RegisterRuntimeRebalanceListener(IRebalanceListener listener)
     {
@@ -2849,7 +2849,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (_coordinator is not { } coordinator)
             return;
 
-        var groupSubscribed = _topicFilter is not null || _topicPattern is not null || _subscriptionSnapshot.Count != 0;
+        var groupSubscribed = IsGroupSubscribed;
 
         // First: whatever follows, the member leaves. The leave delivers no revocation until the
         // caller releases it (ReleaseLeaveRequest, in its finally) once the capture is complete.
@@ -3331,6 +3331,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public void IncrementalUnassign(IEnumerable<TopicPartition> partitions)
     {
+        // The coordinator owns a subscribed consumer's assignment. Dropping partitions locally
+        // would leave the coordinator assigning them to this member while nobody consumes them.
+        if (IsGroupSubscribed)
+        {
+            throw new InvalidOperationException(
+                $"{nameof(IncrementalUnassign)} applies only to manually assigned partitions and cannot be used " +
+                "while the consumer is subscribed. Call Unsubscribe to leave the group.");
+        }
+
         // Materialize once: the enumerable is iterated three times (assignment removal,
         // state cleanup, fetch buffer clear) and a forward-only sequence would silently
         // yield zero items on the second and third passes.

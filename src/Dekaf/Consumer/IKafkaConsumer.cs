@@ -464,19 +464,31 @@ public interface IConsumerPartitions
     void Unassign();
 
     /// <summary>
-    /// Incrementally adds partitions to the current assignment.
-    /// Used with cooperative rebalancing (CooperativeSticky assignor).
-    /// Unlike <see cref="Assign"/>, does not replace the entire assignment.
+    /// Manually adds partitions to the current assignment.
+    /// Unlike <see cref="Assign"/>, does not replace the partitions already assigned.
     /// </summary>
+    /// <remarks>
+    /// This is a manual-assignment operation, not a way to accept a group assignment. Like
+    /// <see cref="Assign"/>, it replaces any subscription, and a consumer that has joined its group
+    /// leaves it, as <see cref="IKafkaConsumer{TKey, TValue}.Unsubscribe"/> does. The group then
+    /// moves every partition the member owned to other members. Do not call it from a rebalance
+    /// callback: the consumer applies the assignments the group coordinator sends automatically.
+    /// </remarks>
     /// <param name="partitions">The partitions to add with optional starting offsets.</param>
     void IncrementalAssign(IEnumerable<TopicPartitionOffset> partitions);
 
     /// <summary>
-    /// Incrementally removes partitions from the current assignment.
-    /// Used with cooperative rebalancing (CooperativeSticky assignor).
+    /// Manually removes partitions from the current assignment.
     /// Unlike <see cref="Unassign"/>, only removes the specified partitions.
     /// </summary>
+    /// <remarks>
+    /// Use it only on a consumer with a manual assignment (<see cref="Assign"/> or
+    /// <see cref="IncrementalAssign"/>). It does not release partitions to the group: the group
+    /// coordinator owns the assignment of a subscribed consumer, so this method throws while the
+    /// consumer is subscribed rather than drop partitions the coordinator still assigns to it.
+    /// </remarks>
     /// <param name="partitions">The partitions to remove.</param>
+    /// <exception cref="InvalidOperationException">The consumer is subscribed to topics or a pattern.</exception>
     void IncrementalUnassign(IEnumerable<TopicPartition> partitions);
 
     /// <summary>

@@ -1,5 +1,6 @@
 using Dekaf.Consumer;
 using Dekaf.Serialization;
+using Dekaf.Testing;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
@@ -436,5 +437,92 @@ public class IncrementalAssignmentTests
 
         // Assert
         await Assert.That(consumer.Assignment).Count().IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task IncrementalUnassign_WhileSubscribedToTopics_ThrowsAndKeepsSubscription()
+    {
+        await using var consumer = new KafkaConsumer<string, string>(
+            CreateTestOptions(),
+            Serializers.String,
+            Serializers.String);
+
+        consumer.Subscribe("topic1");
+
+        await Assert.That(() => consumer.IncrementalUnassign([new TopicPartition("topic1", 0)]))
+            .Throws<InvalidOperationException>();
+        await Assert.That(consumer.Subscription).Count().IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task IncrementalUnassign_WhileSubscribedWithTopicFilter_Throws()
+    {
+        await using var consumer = new KafkaConsumer<string, string>(
+            CreateTestOptions(),
+            Serializers.String,
+            Serializers.String);
+
+        consumer.Subscribe(topic => topic.StartsWith("topic", StringComparison.Ordinal));
+
+        await Assert.That(() => consumer.IncrementalUnassign([new TopicPartition("topic1", 0)]))
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task IncrementalUnassign_AfterUnsubscribe_RemovesManualPartitions()
+    {
+        await using var consumer = new KafkaConsumer<string, string>(
+            CreateTestOptions(),
+            Serializers.String,
+            Serializers.String);
+
+        consumer.Subscribe("topic1");
+        consumer.Unsubscribe();
+        consumer.Assign(new TopicPartition("topic1", 0), new TopicPartition("topic1", 1));
+
+        consumer.IncrementalUnassign([new TopicPartition("topic1", 1)]);
+
+        await Assert.That(consumer.Assignment).Count().IsEqualTo(1);
+        await Assert.That(consumer.Assignment.Contains(new TopicPartition("topic1", 0))).IsTrue();
+    }
+
+    [Test]
+    public async Task InMemoryConsumer_IncrementalAssign_ClearsSubscription()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("topic1", partitionCount: 2);
+        await using var consumer = new InMemoryConsumer<string, string>(cluster);
+
+        consumer.Subscribe("topic1");
+        consumer.IncrementalAssign([new TopicPartitionOffset("topic1", 0, 0)]);
+
+        await Assert.That(consumer.Subscription).Count().IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task InMemoryConsumer_IncrementalUnassign_WhileSubscribed_ThrowsAndKeepsAssignment()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("topic1", partitionCount: 2);
+        await using var consumer = new InMemoryConsumer<string, string>(cluster);
+
+        consumer.Subscribe("topic1");
+
+        await Assert.That(() => consumer.IncrementalUnassign([new TopicPartition("topic1", 0)]))
+            .Throws<InvalidOperationException>();
+        await Assert.That(consumer.Assignment).Count().IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task InMemoryConsumer_IncrementalUnassign_WhileFilterSubscriptionMatchesNoTopics_Throws()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("topic1", partitionCount: 2);
+        await using var consumer = new InMemoryConsumer<string, string>(cluster);
+
+        consumer.Subscribe(topic => topic.StartsWith("missing", StringComparison.Ordinal));
+
+        await Assert.That(() => consumer.IncrementalUnassign([new TopicPartition("topic1", 0)]))
+            .Throws<InvalidOperationException>();
     }
 }

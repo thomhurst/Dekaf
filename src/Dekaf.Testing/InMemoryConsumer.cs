@@ -105,6 +105,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private int _consumerGroupGeneration = -1;
     private long _consumerGroupRegistrationId;
     private string? _subscriptionPattern;
+    // A filter subscription stays a group subscription even when it matches no topics.
+    private bool _subscribedWithTopicFilter;
     private TaskCompletionSource? _autoCommitAdvancementWaiterEntered;
     private Task? _closeTask;
     private bool _disposed;
@@ -404,6 +406,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     public void Subscribe(params string[] topics)
     {
         ArgumentNullException.ThrowIfNull(topics);
+        SubscribeTopics(topics, subscribedWithTopicFilter: false);
+    }
+
+    private void SubscribeTopics(string[] topics, bool subscribedWithTopicFilter)
+    {
         ThrowIfDisposed();
         var subscription = topics
             .Where(topic => !string.IsNullOrWhiteSpace(topic))
@@ -419,6 +426,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 .SelectMany(topic => _cluster.GetTopicPartitions(topic))
                 .ToArray();
             _subscriptionPattern = null;
+            _subscribedWithTopicFilter = subscribedWithTopicFilter;
             _subscription.Clear();
             foreach (var topic in subscription)
                 _subscription.Add(topic);
@@ -437,7 +445,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             .Where(topicFilter)
             .ToArray();
 
-        Subscribe(topics);
+        SubscribeTopics(topics, subscribedWithTopicFilter: true);
     }
 
     public void SubscribePattern(string pattern)
@@ -463,6 +471,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             ApplyGroupTransitionFaults();
             ThrowIfDisposed();
             _subscriptionPattern = pattern;
+            _subscribedWithTopicFilter = false;
             _subscription.Clear();
             ReplaceAssignment(topicPartitions);
             RegisterConsumerGroupMemberUnderLock();
@@ -480,6 +489,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 ApplyGroupTransitionFaultUnderLock(KafkaFaultOperation.Rebalance);
 
             _subscriptionPattern = null;
+            _subscribedWithTopicFilter = false;
             _subscription.Clear();
             _assignment.Clear();
             _paused.Clear();
@@ -1347,6 +1357,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             ThrowIfAutoCommitAdvancementPendingUnderLock();
             _subscriptionPattern = null;
+            _subscribedWithTopicFilter = false;
             _subscription.Clear();
             ReplaceAssignment(partitions);
             RegisterConsumerGroupMemberUnderLock();
@@ -1379,6 +1390,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             ThrowIfAutoCommitAdvancementPendingUnderLock();
+            // Manual assignment replaces any subscription, as KafkaConsumer.IncrementalAssign does.
+            _subscriptionPattern = null;
+            _subscribedWithTopicFilter = false;
+            _subscription.Clear();
             var changed = false;
             foreach (var offset in partitions)
             {
@@ -1408,6 +1423,13 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             ThrowIfAutoCommitAdvancementPendingUnderLock();
+            if (_subscriptionPattern is not null || _subscribedWithTopicFilter || _subscription.Count != 0)
+            {
+                throw new InvalidOperationException(
+                    $"{nameof(IncrementalUnassign)} applies only to manually assigned partitions and cannot be used " +
+                    "while the consumer is subscribed. Call Unsubscribe to leave the group.");
+            }
+
             var changed = false;
             foreach (var partition in partitions)
             {

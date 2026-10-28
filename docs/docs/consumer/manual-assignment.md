@@ -134,6 +134,13 @@ consumer.Partitions.IncrementalUnassign(new[]
 });
 ```
 
+Both methods are manual assignment. They do not accept or release partitions that a consumer group assigns:
+
+- `IncrementalAssign`, like `Assign`, replaces any subscription. A consumer that has joined its group leaves it, and the group moves its partitions to other members.
+- `IncrementalUnassign` throws `InvalidOperationException` while the consumer is subscribed, because the group coordinator owns that assignment.
+
+Do not call either method from a rebalance listener. With the KIP-848 protocol the consumer applies the coordinator's assignments itself. When you migrate code that called these methods from partitions-assigned or partitions-revoked handlers, remove those calls.
+
 Assignment and seek methods mutate a live consumer and return `void`, so write them as sequential commands:
 
 ```csharp

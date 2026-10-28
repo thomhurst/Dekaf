@@ -5,7 +5,7 @@ using Dekaf.Producer;
 namespace Dekaf.Tests.Integration;
 
 /// <summary>
-/// Integration tests for cooperative sticky rebalancing and incremental assign/unassign.
+/// Integration tests for KIP-848 incremental group rebalancing and manual incremental assign/unassign.
 /// </summary>
 [Category("ConsumerGroup")]
 public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
@@ -123,6 +123,60 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
     }
 
     [Test]
+    public async Task IncrementalUnassign_WhileGroupSubscribed_ThrowsAndKeepsCoordinatorAssignment()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
+        var listener = new TestRebalanceListener();
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "key-before",
+            Value = "value-before",
+            Partition = 0
+        }, CancellationToken.None);
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId($"incremental-unassign-subscribed-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithRebalanceListener(listener)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+        consumer.Subscribe(topic);
+
+        // Consuming the first record proves the member joined and received its assignment.
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var first = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+        await Assert.That(first).IsNotNull();
+        await Assert.That(() => consumer.Assignment.Count)
+            .Eventually(x => x.IsEqualTo(2), TimeSpan.FromSeconds(30));
+
+        await Assert.That(() => consumer.IncrementalUnassign([new TopicPartition(topic, 1)]))
+            .Throws<InvalidOperationException>();
+        await Assert.That(consumer.Assignment).Contains(new TopicPartition(topic, 1));
+
+        // The rejected call leaves partition 1 consumed by this member.
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "key-after",
+            Value = "value-after",
+            Partition = 1
+        }, CancellationToken.None);
+
+        var second = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+        await Assert.That(second).IsNotNull();
+        await Assert.That(second!.Value.Partition).IsEqualTo(1);
+        await Assert.That(listener.RevokedCallCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task CooperativeRebalance_TwoConsumers_PartitionsRedistributed()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
@@ -148,7 +202,7 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
         }
 
         // First consumer joins
-        // CooperativeSticky is the default partition assignment strategy
+        // The KIP-848 group coordinator assigns partitions incrementally on the server
         await using var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
