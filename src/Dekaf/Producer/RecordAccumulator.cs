@@ -678,6 +678,17 @@ internal readonly struct AppendWorkItem
     /// <summary>The queue purge epoch the item was queued in (see <c>RecordAccumulator._queuePurgeEpoch</c>).</summary>
     public readonly int QueuePurgeEpoch;
 
+    /// <summary>
+    /// A pending append from another produce path that must queue behind this partition's
+    /// earlier worker items (issue #3784). When set, only <see cref="Topic"/>,
+    /// <see cref="Partition"/> and <see cref="DeferredGeneration"/> are meaningful: the pending
+    /// append owns the record and its completion.
+    /// </summary>
+    public readonly PendingAppend? DeferredAppend;
+
+    /// <summary>The <see cref="PendingAppend.Generation"/> of <see cref="DeferredAppend"/>.</summary>
+    public readonly int DeferredGeneration;
+
     public AppendWorkItem(
         string topic,
         int partition,
@@ -704,6 +715,21 @@ internal readonly struct AppendWorkItem
         HeaderCount = headerCount;
         Completion = completion;
         CancellationToken = cancellationToken;
+    }
+
+    public AppendWorkItem(
+        string topic,
+        int partition,
+        PendingAppend deferredAppend,
+        int deferredGeneration,
+        int queuePurgeEpoch)
+    {
+        Topic = topic;
+        Partition = partition;
+        QueuePurgeEpoch = queuePurgeEpoch;
+        Completion = null!;
+        DeferredAppend = deferredAppend;
+        DeferredGeneration = deferredGeneration;
     }
 }
 
@@ -2180,6 +2206,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         public int AdmissionInProgress;
 
         public int SlowPathAppendCount;
+
+        /// <summary>
+        /// Items for this partition in its append-worker channel, including the one the worker is
+        /// processing. While nonzero, other produce paths queue their backpressured appends behind
+        /// the worker instead of straight into the pending queue, so call order is kept (#3784).
+        /// </summary>
+        public int AppendWorkerItemCount;
 
         /// <summary>
         /// Bytes in sealed or in-flight batches for this partition. Access atomically because
@@ -3994,6 +4027,31 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var reader = _appendWorkerChannels[workerIndex].Reader;
         await foreach (var workItem in reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
+            if (workItem.DeferredAppend is { } deferredAppend)
+            {
+                try
+                {
+                    // Queued before a PurgeOptions.Queue purge, whose scan of the pending queue
+                    // could not reach it here (#3723).
+                    if (workItem.QueuePurgeEpoch != Volatile.Read(ref _queuePurgeEpoch))
+                    {
+                        deferredAppend.TryFail(
+                            Volatile.Read(ref _queuePurgeException)!,
+                            workItem.DeferredGeneration);
+                    }
+                    else
+                    {
+                        EnqueuePendingAppend(deferredAppend, workItem.DeferredGeneration);
+                    }
+                }
+                finally
+                {
+                    ReleaseAppendWorkItem(in workItem, workerIndex);
+                }
+
+                continue;
+            }
+
             var appendStarted = false;
             try
             {
@@ -4060,10 +4118,23 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
             finally
             {
-                DecrementSlowPathAppendCount(workItem.Topic, workItem.Partition);
-                MarkAppendWorkItemProcessed(workerIndex);
+                ReleaseAppendWorkItem(in workItem, workerIndex);
             }
         }
+    }
+
+    /// <summary>
+    /// Releases the per-partition counts and the flush checkpoint slot of a work item that the
+    /// worker, a rejected channel write, or disposal has finished with.
+    /// </summary>
+    private void ReleaseAppendWorkItem(in AppendWorkItem workItem, int workerIndex)
+    {
+        var pd = GetOrCreateDeque(workItem.Topic, workItem.Partition);
+        Interlocked.Decrement(ref pd.AppendWorkerItemCount);
+        // A deferred pending append holds its own FIFO count until it completes.
+        if (workItem.DeferredAppend is null)
+            Interlocked.Decrement(ref pd.SlowPathAppendCount);
+        MarkAppendWorkItemProcessed(workerIndex);
     }
 
     /// <summary>
@@ -4127,14 +4198,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             transactionalGeneration ?? NoTransactionalGeneration, Volatile.Read(ref _queuePurgeEpoch),
             cancellationToken);
 
-        IncrementSlowPathAppendCount(topic, partition);
+        var pd = GetOrCreateDeque(topic, partition);
+        Interlocked.Increment(ref pd.SlowPathAppendCount);
+        Interlocked.Increment(ref pd.AppendWorkerItemCount);
         // Counted before the write: a flush that reads this sequence after this call returned
         // then waits for this item (see WaitForAppendWorkerCheckpointAsync).
         Interlocked.Increment(ref _appendWorkerQueuedSequences[workerIndex * AppendWorkerSequenceStride]);
         if (!_appendWorkerChannels[workerIndex].Writer.TryWrite(workItem))
         {
-            DecrementSlowPathAppendCount(topic, partition);
-            MarkAppendWorkItemProcessed(workerIndex);
+            ReleaseAppendWorkItem(in workItem, workerIndex);
             CleanupWorkItemResources(in workItem);
             PooledCompletionSource.TrySetException(
                 completion,
@@ -5105,7 +5177,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int recordSize,
         CancellationToken cancellationToken,
         int partitionCount = 0,
-        int transactionalGeneration = NoTransactionalGeneration)
+        int transactionalGeneration = NoTransactionalGeneration,
+        bool behindAppendWorker = false)
     {
         if (Volatile.Read(ref _disposed) != 0)
         {
@@ -5136,13 +5209,24 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         bool wasQueueEmpty = false;
         bool enqueueRejected;
-        lock (_pendingAppendQueueLock)
+        if (behindAppendWorker)
         {
-            enqueueRejected = Volatile.Read(ref _disposed) != 0;
-            if (!enqueueRejected)
+            // An append worker still holds earlier records for this partition. Queue this one
+            // behind them in the same worker channel, which moves it into the pending queue only
+            // after those records were appended (#3784). The caller's value task and the
+            // max.block.ms deadline already run from here.
+            enqueueRejected = !TryEnqueueBehindAppendWorker(topic, partition, op, generation);
+        }
+        else
+        {
+            lock (_pendingAppendQueueLock)
             {
-                wasQueueEmpty = _pendingAppends.IsEmpty;
-                _pendingAppends.Enqueue(new QueuedPendingAppend(op, generation));
+                enqueueRejected = Volatile.Read(ref _disposed) != 0;
+                if (!enqueueRejected)
+                {
+                    wasQueueEmpty = _pendingAppends.IsEmpty;
+                    _pendingAppends.Enqueue(new QueuedPendingAppend(op, generation));
+                }
             }
         }
 
@@ -5166,6 +5250,54 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             DrainPendingAppends();
 
         return new ValueTask<bool>(op, op.Version);
+    }
+
+    /// <summary>
+    /// Writes a pending append to the worker channel that owns its partition, behind the
+    /// partition's earlier worker items. Returns false when the channel is closed for disposal;
+    /// the caller then still owns <paramref name="op"/>.
+    /// </summary>
+    private bool TryEnqueueBehindAppendWorker(string topic, int partition, PendingAppend op, int generation)
+    {
+        var workerIndex = (int)((uint)partition % (uint)_appendWorkerCount);
+        var workItem = new AppendWorkItem(topic, partition, op, generation,
+            Volatile.Read(ref _queuePurgeEpoch));
+        Interlocked.Increment(ref GetOrCreateDeque(topic, partition).AppendWorkerItemCount);
+        Interlocked.Increment(ref _appendWorkerQueuedSequences[workerIndex * AppendWorkerSequenceStride]);
+        if (_appendWorkerChannels[workerIndex].Writer.TryWrite(workItem))
+            return true;
+
+        ReleaseAppendWorkItem(in workItem, workerIndex);
+        return false;
+    }
+
+    /// <summary>
+    /// Moves a pending append that waited behind an append worker into the pending queue. The
+    /// rental may have timed out or been cancelled meanwhile; its generation then no longer
+    /// matches and the drain skips the entry.
+    /// </summary>
+    private void EnqueuePendingAppend(PendingAppend op, int generation)
+    {
+        if (!op.IsPending(generation))
+            return;
+
+        bool wasQueueEmpty = false;
+        bool enqueueRejected;
+        lock (_pendingAppendQueueLock)
+        {
+            enqueueRejected = Volatile.Read(ref _disposed) != 0;
+            if (!enqueueRejected)
+            {
+                wasQueueEmpty = _pendingAppends.IsEmpty;
+                _pendingAppends.Enqueue(new QueuedPendingAppend(op, generation));
+            }
+        }
+
+        // Disposal's final drain may already have run; the caller still awaits this rental.
+        if (enqueueRejected)
+            op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator)), generation);
+        else if (wasQueueEmpty)
+            DrainPendingAppends();
     }
 
     /// <summary>
@@ -5825,9 +5957,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var keyPooled = keyIsNull ? PooledMemory.Null : CopySpanToPooledMemory(keyData);
         var valuePooled = valueIsNull ? PooledMemory.Null : CopySpanToPooledMemory(valueData);
 
-        return AppendFromSpansSlowPathPooled(topic, partition, timestamp, keyPooled, valuePooled,
-            headers, headerCount, callback, recordSize, partitionCount, transactionalGeneration,
-            cancellationToken);
+        return AppendSlowPathPooled(topic, partition, timestamp, keyPooled, valuePooled,
+            headers, headerCount, completionSource: null, callback, recordSize, cancellationToken,
+            partitionCount, transactionalGeneration,
+            behindAppendWorker: Volatile.Read(ref pd.AppendWorkerItemCount) != 0);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -6143,29 +6276,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             DrainPendingAppends();
 
         return true;
-    }
-
-    /// <summary>
-    /// Zero-allocation slow path for span-based append using pooled <see cref="PendingAppend"/>.
-    /// Delegates to <see cref="AppendSlowPathPooled"/> with null completionSource.
-    /// </summary>
-    private ValueTask<bool> AppendFromSpansSlowPathPooled(
-        string topic,
-        int partition,
-        long timestamp,
-        PooledMemory keyPooled,
-        PooledMemory valuePooled,
-        Header[]? headers,
-        int headerCount,
-        Action<RecordMetadata, Exception?>? callback,
-        int recordSize,
-        int partitionCount,
-        int transactionalGeneration,
-        CancellationToken cancellationToken)
-    {
-        return AppendSlowPathPooled(topic, partition, timestamp, keyPooled, valuePooled,
-            headers, headerCount, null, callback, recordSize, cancellationToken, partitionCount,
-            transactionalGeneration);
     }
 
     /// <summary>
@@ -9609,13 +9719,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 try
                 {
-                    CleanupWorkItemResources(in workItem);
-                    PooledCompletionSource.TrySetException(workItem.Completion, disposedException);
+                    if (workItem.DeferredAppend is { } deferredAppend)
+                    {
+                        deferredAppend.TryFail(disposedException, workItem.DeferredGeneration);
+                    }
+                    else
+                    {
+                        CleanupWorkItemResources(in workItem);
+                        PooledCompletionSource.TrySetException(workItem.Completion, disposedException);
+                    }
                 }
                 finally
                 {
-                    DecrementSlowPathAppendCount(workItem.Topic, workItem.Partition);
-                    MarkAppendWorkItemProcessed(workerIndex);
+                    ReleaseAppendWorkItem(in workItem, workerIndex);
                 }
             }
         }

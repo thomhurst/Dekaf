@@ -30,6 +30,11 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// covers it, and carries the queue purge epoch that the worker compares before appending
 /// (#3723). Expected: 0 B per handoff; the flush allocations are per flush.
 /// </para>
+/// <para>
+/// <see cref="MixedAppendWorkerHandoff"/> pairs each handoff with a span append for the same
+/// partition, as a FireAsync after a backpressured ProduceAsync does. The span append queues
+/// behind the worker item so it cannot overtake it (#3784). Expected: 0 B per pair.
+/// </para>
 /// </remarks>
 [MemoryDiagnoser]
 [SimpleJob(RunStrategy.Throughput, launchCount: 1, warmupCount: 3, iterationCount: 5)]
@@ -50,6 +55,7 @@ public class FlushCheckpointBenchmarks
     private readonly CancellationTokenSource _workerCts = new();
     private readonly ValueTaskSourcePool<RecordMetadata> _completionPool = new();
     private readonly ValueTask<RecordMetadata>[] _handoffs = new ValueTask<RecordMetadata>[HandoffsPerInvoke];
+    private readonly ValueTask<bool>[] _spanAppends = new ValueTask<bool>[HandoffsPerInvoke];
 
     [GlobalSetup]
     public void Setup()
@@ -73,6 +79,7 @@ public class FlushCheckpointBenchmarks
         BatchLifecycle();
         FlushWithDelivery();
         AppendWorkerHandoff();
+        MixedAppendWorkerHandoff();
     }
 
     [GlobalCleanup]
@@ -150,6 +157,37 @@ public class FlushCheckpointBenchmarks
         {
             while (!_handoffs[i].IsCompleted)
                 FlushAndDeliver();
+            _handoffs[i].GetAwaiter().GetResult();
+        }
+    }
+
+    [Benchmark(OperationsPerInvoke = HandoffsPerInvoke)]
+    public void MixedAppendWorkerHandoff()
+    {
+        while (_inFlight.Count > 0)
+            Retire(_inFlight.Dequeue());
+
+        var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        for (var i = 0; i < HandoffsPerInvoke; i++)
+        {
+            var completion = _completionPool.Rent();
+            _handoffs[i] = completion.Task;
+            _accumulator.EnqueueAppend(
+                Topic, 0, ts, PooledMemory.Null, PooledMemory.Null,
+                null, 0, completion, CancellationToken.None);
+            _spanAppends[i] = _accumulator.AppendFromSpansAsync(
+                Topic, 0, ts,
+                ReadOnlySpan<byte>.Empty, true, _valueBytes, false,
+                null, 0, null, CancellationToken.None);
+        }
+
+        FlushAndDeliver();
+
+        for (var i = 0; i < HandoffsPerInvoke; i++)
+        {
+            while (!_spanAppends[i].IsCompleted || !_handoffs[i].IsCompleted)
+                FlushAndDeliver();
+            _spanAppends[i].GetAwaiter().GetResult();
             _handoffs[i].GetAwaiter().GetResult();
         }
     }

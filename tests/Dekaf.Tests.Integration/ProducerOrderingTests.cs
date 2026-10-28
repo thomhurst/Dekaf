@@ -912,6 +912,109 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         }
     }
 
+    /// <summary>
+    /// A BufferMemory-backpressured ProduceAsync hands its record to the partition's append
+    /// worker. A FireAsync or callback produce for the same partition that follows it must not
+    /// reach the broker first (issue #3784).
+    /// </summary>
+    [Test, NotInParallel]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task BackpressuredProduceAsync_ThenSpanProduce_SamePartition_ConsumedInCallOrder(bool useCallback)
+    {
+        const int bufferMemory = 65_536;
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+
+        await using var producer = (KafkaProducer<string, string>)await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-backpressured-mixed-api-order")
+            .WithAcks(Acks.All)
+            .WithBufferMemory(bufferMemory)
+            .WithMaxBlock(TimeSpan.FromSeconds(30))
+            .WithLinger(TimeSpan.Zero)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        // Warm metadata so the next ProduceAsync takes the synchronous path and hands off.
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic, Key = "order-key", Value = "warmup", Partition = 0
+        }, CancellationToken.None);
+
+        var accumulator = producer.RecordAccumulator;
+        var workerEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseWorker = new ManualResetEventSlim();
+        accumulator.BeforeAppendWorkerAppendForTest = () =>
+        {
+            workerEntered.TrySetResult();
+            releaseWorker.Wait(TimeSpan.FromSeconds(30));
+        };
+
+        await Assert.That(accumulator.TryReserveMemoryForTest(bufferMemory)).IsTrue();
+        var reservationHeld = true;
+        var callbackDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            // No BufferMemory left: the record goes to the append worker, which holds it.
+            var first = producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic, Key = "order-key", Value = "first", Partition = 0
+            }, CancellationToken.None);
+            await workerEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            var secondMessage = new ProducerMessage<string, string>
+            {
+                Topic = topic, Key = "order-key", Value = "second", Partition = 0
+            };
+            var second = useCallback
+                ? producer.FireAsync(secondMessage, (_, ex) =>
+                {
+                    if (ex is null) callbackDone.TrySetResult();
+                    else callbackDone.TrySetException(ex);
+                })
+                : producer.FireAsync(secondMessage);
+
+            // Before the fix the freed memory admitted the second record here, ahead of the
+            // first one that the worker still holds.
+            accumulator.ReleaseMemory(bufferMemory);
+            reservationHeld = false;
+            releaseWorker.Set();
+
+            await second.AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+            await first.AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+            await producer.FlushWithTimeoutAsync();
+            if (useCallback)
+                await callbackDone.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        finally
+        {
+            releaseWorker.Set();
+            accumulator.BeforeAppendWorkerAppendForTest = null;
+            if (reservationHeld)
+                accumulator.ReleaseMemory(bufferMemory);
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+        consumer.Assign(new TopicPartition(topic, 0));
+
+        var values = new List<string?>();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        {
+            values.Add(msg.Value);
+            if (values.Count >= 3) break;
+        }
+
+        await Assert.That(values).Count().IsEqualTo(3);
+        await Assert.That(values[0]).IsEqualTo("warmup");
+        await Assert.That(values[1]).IsEqualTo("first");
+        await Assert.That(values[2]).IsEqualTo("second");
+    }
+
     [Test]
     public async Task SustainedProduction_ContinuousWaves_OrderingPreserved()
     {
