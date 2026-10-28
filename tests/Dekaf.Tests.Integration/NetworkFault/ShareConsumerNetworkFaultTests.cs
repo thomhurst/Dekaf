@@ -84,6 +84,112 @@ public sealed class ShareConsumerNetworkFaultTests(ShareFaultKafkaContainer kafk
     }
 
     [Test]
+    public async Task ConnectionReset_WhileRecordsAreBuffered_DeliversThemAndAcknowledgesOnTheNewSession()
+    {
+        using var testTimeout = new CancellationTokenSource(TestTimeout);
+        var cancellationToken = testTimeout.Token;
+        var topic = await kafka.CreateTestTopicAsync(partitions: 1);
+
+        using var handshakes = new ConnectionHandshakeObserver();
+        using var loggerFactory = handshakes.CreateLoggerFactory();
+        var acknowledged = new HashSet<long>();
+
+        await using var consumer = await Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers(kafka.ConsumerBootstrapServers)
+            .WithGroupId($"network-fault-share-buffered-{Guid.NewGuid():N}")
+            .WithAcknowledgementMode(ShareAcknowledgementMode.Implicit)
+            .WithAcknowledgementCommitCallback(results =>
+            {
+                foreach (ref readonly var result in results)
+                {
+                    if (result.Exception is not null)
+                        continue;
+                    lock (acknowledged)
+                    {
+                        for (var i = 0; i < result.Offsets.Length; i++)
+                            acknowledged.Add(result.Offsets[i]);
+                    }
+                }
+            })
+            .WithRequestTimeoutMs(5_000)
+            .WithConnectionTimeout(TimeSpan.FromSeconds(2))
+            .WithLoggerFactory(loggerFactory)
+            .BuildAsync(cancellationToken);
+        consumer.Subscribe(topic);
+        await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
+
+        await SeedBatchAsync(topic, "buffered", 3, cancellationToken);
+
+        // One fetch acquires the whole batch. The application stops after one record, so the other
+        // two stay buffered and the next poll drains the first acknowledgement with a ShareAcknowledge.
+        var delivered = new Dictionary<string, ShareConsumeResult<string, string>>(StringComparer.Ordinal);
+        await PollBufferedAsync(consumer, delivered, 1, cancellationToken);
+
+        try
+        {
+            var handshakesBeforeFault = handshakes.Handshakes;
+            await kafka.AddResetPeerAsync(ToxiproxyLane.Consumer, cancellationToken);
+
+            // The reset fails the drain, and the broker drops the session with the connection.
+            using (var pollTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            {
+                pollTimeout.CancelAfter(TimeSpan.FromSeconds(10));
+                try
+                {
+                    await foreach (var record in consumer.PollAsync(pollTimeout.Token))
+                        delivered.TryAdd(record.Value, record);
+                }
+                catch (Exception) when (!cancellationToken.IsCancellationRequested)
+                {
+                }
+            }
+
+            await handshakes.WaitForHandshakeAfterAsync(handshakesBeforeFault, cancellationToken);
+        }
+        finally
+        {
+            await kafka.HealNetworkFaultsAsync(CancellationToken.None);
+        }
+
+        // The broker releases the records the dropped session acquired, so they come back as
+        // redeliveries on the new session. A ShareAcknowledge cannot open that session: a client
+        // that keeps sending one before it fetches is rejected on every poll and never fetches them.
+        await PollBufferedAsync(consumer, delivered, 3, cancellationToken);
+        var offsets = delivered.Values.Select(static record => record.Offset).ToArray();
+
+        // Every record ends acknowledged on the new session, the redelivered ones included.
+        using (var acknowledgeTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+        {
+            acknowledgeTimeout.CancelAfter(TimeSpan.FromSeconds(30));
+            while (!AllAcknowledged(acknowledged, offsets))
+            {
+                using var window = CancellationTokenSource.CreateLinkedTokenSource(acknowledgeTimeout.Token);
+                window.CancelAfter(TimeSpan.FromSeconds(1));
+                try
+                {
+                    await foreach (var _ in consumer.PollAsync(window.Token))
+                    {
+                    }
+                }
+                catch (OperationCanceledException) when (!acknowledgeTimeout.IsCancellationRequested)
+                {
+                }
+
+                try
+                {
+                    await consumer.CommitAsync(acknowledgeTimeout.Token);
+                }
+                catch (KafkaException)
+                {
+                    // An acknowledgement for a released acquisition is rejected; its redelivery is not.
+                }
+            }
+        }
+
+        await consumer.CloseAsync(cancellationToken);
+    }
+
+    [Test]
     public async Task MemberExpired_WithAcknowledgementsPending_RejoinsAndKeepsConsuming()
     {
         using var testTimeout = new CancellationTokenSource(TestTimeout);
@@ -290,6 +396,52 @@ public sealed class ShareConsumerNetworkFaultTests(ShareFaultKafkaContainer kafk
             string.Join(',', seen));
     }
 
+    private static bool AllAcknowledged(HashSet<long> acknowledged, long[] offsets)
+    {
+        lock (acknowledged)
+            return offsets.All(acknowledged.Contains);
+    }
+
+    /// <summary>
+    /// Polls until <paramref name="delivered"/> holds <paramref name="count"/> distinct values,
+    /// retrying a failed poll the way a long-running service does.
+    /// </summary>
+    private static async Task PollBufferedAsync(
+        IKafkaShareConsumer<string, string> consumer,
+        Dictionary<string, ShareConsumeResult<string, string>> delivered,
+        int count,
+        CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(20));
+        try
+        {
+            while (true)
+            {
+                try
+                {
+                    await foreach (var record in consumer.PollAsync(timeout.Token))
+                    {
+                        delivered.TryAdd(record.Value, record);
+                        if (delivered.Count >= count)
+                            return;
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(200), timeout.Token);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+        }
+
+        throw new TimeoutException(
+            $"Received {delivered.Count} of {count} records within 20 seconds: " +
+            string.Join(',', delivered.Keys));
+    }
+
     private static async Task UseEarliestShareOffsetResetAsync(
         IAdminClient admin,
         string groupId,
@@ -311,6 +463,22 @@ public sealed class ShareConsumerNetworkFaultTests(ShareFaultKafkaContainer kafk
                 throw new TimeoutException($"Group {groupId} did not report {offsetReset}=earliest.");
             await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
         }
+    }
+
+    /// <summary>Produces <paramref name="count"/> records as one batch.</summary>
+    private async Task SeedBatchAsync(string topic, string label, int count, CancellationToken cancellationToken)
+    {
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.ProducerBootstrapServers)
+            .WithAcks(Acks.All)
+            .WithLinger(TimeSpan.FromMilliseconds(200))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+
+        var deliveries = new Task[count];
+        for (var i = 0; i < count; i++)
+            deliveries[i] = producer.ProduceAsync(topic, "key", $"{label}-{i}", cancellationToken).AsTask();
+        await Task.WhenAll(deliveries);
     }
 
     private async Task SeedAsync(string topic, string label, int count, CancellationToken cancellationToken)
