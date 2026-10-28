@@ -126,6 +126,21 @@ public sealed class AdminClientFeatureTests
     }
 
     [Test]
+    public async Task DescribeFeaturesAsync_DefaultV5_SendsLeasedNodeIdentity()
+    {
+        // A pooled connection can report BrokerId -1 (bootstrap identity). ApiVersions v5 needs the
+        // cluster ID and node ID together, so the default query must use the node it leased.
+        var (admin, first, _) = CreateAdmin(updateFeaturesVersion: 1, firstApiVersionsMaxVersion: 5);
+        first.BrokerId.Returns(-1);
+
+        await admin.DescribeFeaturesAsync();
+
+        await first.Received(1).SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+            Arg.Is<ApiVersionsRequest>(request => request.NodeId == 1 && request.ClusterId == "test-cluster"),
+            5, Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task DescribeFeaturesAsync_UnknownNode_DoesNotFallBack()
     {
         var (admin, first, second) = CreateAdmin(updateFeaturesVersion: 1);
@@ -339,14 +354,15 @@ public sealed class AdminClientFeatureTests
 
     private static (AdminClient Admin, IKafkaConnection First, IKafkaConnection Second) CreateAdmin(
         short updateFeaturesVersion,
-        bool changeControllerOnRefresh = false)
+        bool changeControllerOnRefresh = false,
+        short firstApiVersionsMaxVersion = 4)
     {
         var apiVersions = new ApiVersionsResponse
         {
             ErrorCode = ErrorCode.None,
             ApiKeys =
             [
-                new ApiVersion(ApiKey.ApiVersions, 0, 4),
+                new ApiVersion(ApiKey.ApiVersions, 0, firstApiVersionsMaxVersion),
                 new ApiVersion(ApiKey.Metadata, 9, 13),
                 new ApiVersion(ApiKey.UpdateFeatures, 0, updateFeaturesVersion)
             ],

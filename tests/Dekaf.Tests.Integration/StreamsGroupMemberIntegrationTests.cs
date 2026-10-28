@@ -15,6 +15,9 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
     // Kafka 4.4 completes the KIP-1071 lifecycle used by these gated tests.
     private const int CompleteStreamsGroupSupport = 440;
 
+    // Kafka 4.4.0 still answers "Topology updates are not supported yet."
+    private const int TopologyUpdateSupport = 450;
+
     [Test]
     public async Task MemberJoinsReceivesTasksLeavesAndRejoins()
     {
@@ -149,7 +152,7 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
     }
 
     [Test]
-    [SupportsKafka(CompleteStreamsGroupSupport)]
+    [SupportsKafka(TopologyUpdateSupport, "KIP-1071 topology updates for joined members did not ship in Kafka 4.4.0; tracked in #3625")]
     public async Task TopologyEpochMustAdvanceOneAtATime()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
@@ -204,21 +207,33 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
         await using var restarted = CreateStaticMember(client, groupId, instanceId);
         await restarted.InitializeAsync();
         await restarted.JoinAsync(CreateInitialState(topic, "static-process-b"));
-        await Assert.That(restarted.Snapshot.MemberId).IsEqualTo(firstMemberId);
         await Assert.That(restarted.Snapshot.IsJoined).IsTrue();
+
+        // Member IDs are client-generated (KIP-1082), so the restarted process joins with a
+        // new ID. Static identity is the instance ID: the broker replaces the old member.
+        var restartedMemberId = restarted.Snapshot.MemberId;
+        var replaced = await admin.DescribeStreamsGroupsAsync([groupId]);
+        var staticMembers = replaced[groupId].Members
+            .Where(member => member.InstanceId == instanceId)
+            .ToList();
+        await Assert.That(staticMembers).Count().IsEqualTo(1);
+        await Assert.That(staticMembers[0].MemberId).IsEqualTo(restartedMemberId);
+        await Assert.That(replaced[groupId].Members
+            .Any(member => member.MemberId == firstMemberId)).IsFalse();
+
         await restarted.CloseAsync(new StreamsGroupCloseOptions
         {
             GroupMembershipOperation = StreamsGroupMembershipOperation.RemainInGroup
         });
         var retained = await admin.DescribeStreamsGroupsAsync([groupId]);
         await Assert.That(retained[groupId].Members
-            .Any(member => member.MemberId == firstMemberId)).IsTrue();
+            .Any(member => member.MemberId == restartedMemberId)).IsTrue();
 
         await TestWait.WaitForConditionAsync(
             async () => (await admin.DescribeStreamsGroupsAsync([groupId]))[groupId].Members,
-            members => members.All(member => member.MemberId != firstMemberId),
+            members => members.All(member => member.MemberId != restartedMemberId),
             initialDelayMs: 250,
-            description: $"Streams member {firstMemberId} to expire from group {groupId}");
+            description: $"Streams member {restartedMemberId} to expire from group {groupId}");
 
         await using var afterCrash = CreateStaticMember(client, groupId, instanceId);
         await afterCrash.InitializeAsync();

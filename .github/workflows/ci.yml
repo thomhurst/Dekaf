@@ -692,7 +692,7 @@ jobs:
       fail-fast: false
       matrix:
         framework: [net8.0, net10.0]
-        kafka: ['4.0.2', '4.1.2', '4.2.1', '4.3.1']
+        kafka: ['4.0.2', '4.1.2', '4.2.1', '4.3.1', '4.4.0']
     uses: ./.github/workflows/integration-groups.yml
     with:
       framework: ${{ matrix.framework }}
@@ -706,7 +706,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        kafka: ['4.0.2', '4.3.1']
+        kafka: ['4.0.2', '4.4.0']
     uses: ./.github/workflows/integration-groups.yml
     with:
       framework: aot
@@ -826,7 +826,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      KAFKA_TEST_IMAGE_TAG: '4.3.1'
+      KAFKA_TEST_IMAGE_TAG: '4.4.0'
 
     steps:
       # Watchdog deadline: job start + 25 min timeout - 8 min reserve for the

@@ -30,12 +30,12 @@ to execute the `net8.0` test binaries. The configured CI/release coverage is:
 | Validation | Runtime / target | Broker versions |
 | --- | --- | --- |
 | Unit tests for code changes | .NET 8 and .NET 10 | No broker required |
-| PR integration tests | .NET 10 | Kafka 4.3.1 |
-| GSSAPI NuGet consumer round trips (Linux) | .NET 8 and .NET 10 | Kafka 4.3.1 |
-| NuGet release integration gate | .NET 8 and .NET 10 | Kafka 4.0.2, 4.1.2, 4.2.1, 4.3.1 |
+| PR integration tests | .NET 10 | Kafka 4.4.0 |
+| GSSAPI NuGet consumer round trips (Linux) | .NET 8 and .NET 10 | Kafka 4.4.0 |
+| NuGet release integration gate | .NET 8 and .NET 10 | Kafka 4.0.2, 4.1.2, 4.2.1, 4.3.1, 4.4.0 |
 | Native AOT core and DI smoke apps | .NET 10, `linux-x64` | No broker required |
-| PR Native AOT integration smoke subset | .NET 10, `linux-x64` | Kafka 4.3.1 |
-| NuGet release Native AOT integration sweep | .NET 10, `linux-x64` | Kafka 4.0.2 and 4.3.1 |
+| PR Native AOT integration smoke subset | .NET 10, `linux-x64` | Kafka 4.4.0 |
+| NuGet release Native AOT integration sweep | .NET 10, `linux-x64` | Kafka 4.0.2 and 4.4.0 |
 
 Manual non-publishing CI runs also execute ordinary integration tests on both
 .NET 8 and .NET 10. Native AOT coverage validates the scenarios exercised by

@@ -1061,13 +1061,16 @@ public sealed partial class AdminClient :
         return await WithRetryAsync(async attemptToken =>
         {
             await EnsureInitializedAsync(attemptToken, nameof(DescribeFeaturesAsync)).ConfigureAwait(false);
+            // Use the leased node's metadata ID, not connection.BrokerId: a pooled connection can still
+            // carry the bootstrap identity (-1), which ApiVersions v5 cannot pair with the cluster ID.
+            var brokerNodeId = _controllerMetadataManager is null ? GetAnyBrokerNodeId() : -1;
             using var connectionLease = _controllerMetadataManager is null
-                ? await LeaseAnyBrokerConnectionAsync(attemptToken).ConfigureAwait(false)
+                ? await _connectionPool.LeaseConnectionAsync(brokerNodeId, attemptToken).ConfigureAwait(false)
                 : await LeaseControllerAsync(Protocol.ApiKey.ApiVersions, attemptToken).ConfigureAwait(false);
             var connection = connectionLease.Connection;
             var request = CreateFeatureRequest(
                 connection,
-                _controllerMetadataManager?.Snapshot.ActiveControllerId ?? connection.BrokerId,
+                _controllerMetadataManager?.Snapshot.ActiveControllerId ?? brokerNodeId,
                 out var apiVersion);
             var response = await connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
                 request, apiVersion, attemptToken).ConfigureAwait(false);
@@ -1085,14 +1088,16 @@ public sealed partial class AdminClient :
             Protocol.ApiKey.ApiVersions,
             ApiVersionsRequest.LowestSupportedVersion,
             ApiVersionsRequest.HighestSupportedVersion);
+        // v5 sends the expected identity as a pair; with either half unknown, send the bootstrap identity.
+        var clusterId = apiVersion >= 5 && nodeId >= 0
+            ? _controllerMetadataManager?.Snapshot.ClusterId ?? _metadataManager.Metadata.ClusterId
+            : null;
         return new ApiVersionsRequest
         {
             ClientSoftwareName = "dekaf",
             ClientSoftwareVersion = typeof(AdminClient).Assembly.GetName().Version?.ToString() ?? "0.0.0",
-            ClusterId = apiVersion >= 5
-                ? _controllerMetadataManager?.Snapshot.ClusterId ?? _metadataManager.Metadata.ClusterId
-                : null,
-            NodeId = apiVersion >= 5 ? nodeId : -1
+            ClusterId = clusterId,
+            NodeId = clusterId is null ? -1 : nodeId
         };
     }
 
@@ -3338,7 +3343,10 @@ public sealed partial class AdminClient :
             }).ToList()
         };
 
-    private async ValueTask<KafkaConnectionLease> LeaseAnyBrokerConnectionAsync(CancellationToken cancellationToken)
+    private async ValueTask<KafkaConnectionLease> LeaseAnyBrokerConnectionAsync(CancellationToken cancellationToken) =>
+        await _connectionPool.LeaseConnectionAsync(GetAnyBrokerNodeId(), cancellationToken).ConfigureAwait(false);
+
+    private int GetAnyBrokerNodeId()
     {
         if (_controllerMetadataManager is not null)
         {
@@ -3353,7 +3361,7 @@ public sealed partial class AdminClient :
             throw new InvalidOperationException("No brokers available");
         }
 
-        return await _connectionPool.LeaseConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+        return brokers[0].NodeId;
     }
 
     private ValueTask<KafkaConnectionLease> LeaseBrokerOrControllerConnectionAsync(

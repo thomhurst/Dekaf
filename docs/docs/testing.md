@@ -133,9 +133,9 @@ network call. Mandatory negotiation adds one `ApiVersions` request/response roun
 physical connection is created. A broker that rejects v4 adds one v3 fallback round trip. Snapshot
 creation happens once per physical connection generation and is measured separately from lookup.
 
-The release integration matrix retains Kafka 4.0.2 as the compatibility floor and Kafka 4.3.1 as
-the current release, with intermediate 4.1.2 and 4.2.1 coverage. NativeAOT release gates cover the
-4.0.2 floor and 4.3.1 current release.
+The release integration matrix retains Kafka 4.0.2 as the compatibility floor and Kafka 4.4.0 as
+the current release, with intermediate 4.1.2, 4.2.1 and 4.3.1 coverage. NativeAOT release gates cover the
+4.0.2 floor and 4.4.0 current release.
 
 ## NativeAOT smoke validation
 

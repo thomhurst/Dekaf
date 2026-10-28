@@ -81,16 +81,16 @@ the full maintained API surface.
 | [KIP-516][kip516] topic IDs in Admin operations | Complete: describe and delete by ID | `Metadata` v10+ for description; `DeleteTopics` v6 for deletion | [Topic identifiers](admin/topic-identifiers.md) | Configured CI: [Admin topic-ID tests][unit/Admin/AdminClientTopicIdTests.cs]. No outstanding issue tracked. |
 | [KIP-1043][kip1043] group administration | Complete: group-type listing and classic group description | `ListGroups` v4 for state filters, v5 for type filters; classic description uses `DescribeGroups` | [Group listing](admin/group-listing.md) | Configured CI: [listing tests][unit/Admin/AdminClientGroupListingTests.cs], [classic description tests][unit/Admin/AdminClientClassicGroupDescriptionTests.cs]. Does not add classic consumer participation. |
 | [KIP-584][kip584] feature administration | Complete: inspect finalized features and request feature updates | `ApiVersions` v3+ feature fields and `UpdateFeatures` v0+; requested level must be supported by destination | [Node features](admin/node-features.md), [Admin API][src/Admin/IAdminClient.cs] | Configured CI: [feature tests][unit/Admin/AdminClientFeatureTests.cs]. Broker upgrade policy remains an operator responsibility. |
-| [KIP-1071][kip1071] Streams membership | Partial / experimental for complete lifecycle: join, assignments, leave/rejoin and fencing implemented; later lifecycle fields await broker acceptance | `StreamsGroupHeartbeat` v0-v1 (v1 on Kafka 4.4+: 64-bit `AcceptableRecoveryLagOffsets` and `StreamsGroupStatusCode.MissingClientTags`); Dekaf requires Kafka 4.2+. Task offsets/static membership tests target Kafka 4.4 because 4.3.1 rejects them | [Membership interface][src/Streams/IStreamsGroupMember.cs], [Streams administration](admin/streams-group-management.md) | Configured CI: [membership tests][integration/StreamsGroupMemberIntegrationTests.cs], with explicit 4.4 capability skips. Source: [unit tests][unit/Streams/StreamsGroupMemberTests.cs]. Complete lifecycle: [#2958][issue2958], parent [#2766][issue2766]. |
+| [KIP-1071][kip1071] Streams membership | Partial / experimental for complete lifecycle: join, assignments, leave/rejoin, fencing, task offsets and static membership implemented; topology updates for a joined member await broker support | `StreamsGroupHeartbeat` v0-v1 (v1 on Kafka 4.4+: 64-bit `AcceptableRecoveryLagOffsets` and `StreamsGroupStatusCode.MissingClientTags`); Dekaf requires Kafka 4.2+. Task offsets and static membership need Kafka 4.4, because 4.3.1 rejects them. Kafka 4.4.0 rejects topology updates with "Topology updates are not supported yet" | [Membership interface][src/Streams/IStreamsGroupMember.cs], [Streams administration](admin/streams-group-management.md) | Configured CI: [membership tests][integration/StreamsGroupMemberIntegrationTests.cs] on Kafka 4.4.0; the topology-update test skips until a broker supports it ([#3625][issue3625]). Source: [unit tests][unit/Streams/StreamsGroupMemberTests.cs]. Complete lifecycle: [#2958][issue2958], parent [#2766][issue2766]. |
 | Streams processing runtime (distinct from [KIP-1071][kip1071]) | Deferred: no topology DSL, state stores, changelog restoration or processing runtime | Not applicable until runtime scope is reopened | [Membership scope][src/Streams/IStreamsGroupMember.cs] | Source: [in-memory membership tests][unit/Testing/InMemoryStreamsGroupMemberTests.cs] cover membership only, not a runtime. Existing decision tracker [#2748][issue2748]. |
 
 ## Released brokers and future protocol work
 
 Use the [configured compatibility coverage](api-compatibility.md#package-assets-and-tested-runtimes)
-and [CI workflow][ci] for released Kafka 4.x testing. Kafka 4.4.0 is released, but
-the configured CI matrix does not yet include it ([#3612][issue3612]). Kafka 4.4
-lifecycle checks remain future acceptance under [#2958][issue2958]; do not treat
-their source or capability skips as a passing 4.4 run. Likewise, the KIP-939 row records a feature
+and [CI workflow][ci] for released Kafka 4.x testing. Kafka 4.4.0 is the newest release in that
+coverage. A test gated on a feature that no released broker ships yet skips with
+a reason that names the KIP and the tracking issue; do not treat such a skip as a
+passing run. Streams lifecycle evidence on 4.4 is tracked in [#2958][issue2958]. Likewise, the KIP-939 row records a feature
 level requirement, not a claim that every released 4.x broker supports it.
 
 KIP-1327 (newly expanded partition classification, `ConsumerGroupHeartbeat` v2) and
@@ -138,7 +138,7 @@ SHA, runtime, broker image and relevant results; skipped cases remain unverified
 [issue3311]: https://github.com/thomhurst/Dekaf/issues/3311
 [issue3312]: https://github.com/thomhurst/Dekaf/issues/3312
 [issue3313]: https://github.com/thomhurst/Dekaf/issues/3313
-[issue3612]: https://github.com/thomhurst/Dekaf/issues/3612
+[issue3625]: https://github.com/thomhurst/Dekaf/issues/3625
 [kip1043]: https://cwiki.apache.org/confluence/pages/viewpage.action?pageId=305171038
 [kip1071]: https://cwiki.apache.org/confluence/pages/viewpage.action?pageId=311627992
 [kip12]: https://cwiki.apache.org/confluence/pages/viewpage.action?pageId=51809888
