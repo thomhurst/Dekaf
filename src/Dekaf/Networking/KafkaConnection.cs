@@ -48,7 +48,14 @@ internal static class ConnectionHelper
             result |= (b & 0x7F) << shift;
 
             if ((b & 0x80) == 0)
+            {
+                // The fifth byte carries bits 28-31; setting bit 31 or any higher bit exceeds Int32 and
+                // would be truncated or turn the value negative.
+                if (shift == 28 && b > 0x07)
+                    return (result, bytesRead, false);
+
                 return (result, bytesRead, true);
+            }
 
             shift += 7;
         }
