@@ -21,6 +21,7 @@ internal static class DeterministicResponseFixtureFactory
             ["ApiVersionsResponse.v3"] = EncodeApiVersionsResponse(version: 3),
             ["ApiVersionsResponse.v4"] = EncodeApiVersionsResponse(version: 4),
             ["ApiVersionsResponse.v5"] = EncodeApiVersionsResponse(version: 5),
+            ["DeleteGroupsResponse.v3"] = Encode(WriteDeleteGroupsResponseV3),
             ["DescribeClusterResponse.v0"] = EncodeDescribeClusterResponse(version: 0),
             ["DescribeClusterResponse.v1"] = EncodeDescribeClusterResponse(version: 1),
             ["DescribeClusterResponse.v2"] = EncodeDescribeClusterResponse(version: 2),
@@ -974,6 +975,21 @@ internal static class DeterministicResponseFixtureFactory
         }
 
         writer.WriteInt32(0x1FFF);
+        WriteEmptyTaggedFields(ref writer);
+    }
+
+    private static void WriteDeleteGroupsResponseV3(ref KafkaProtocolWriter writer)
+    {
+        writer.WriteInt32(11);
+        WriteCompactArrayLength(ref writer, 2);
+        writer.WriteCompactString("deleted-group");
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteCompactNullableString(null);
+        WriteEmptyTaggedFields(ref writer);
+        writer.WriteCompactString("kept-group");
+        writer.WriteInt16((short)ErrorCode.GroupDeletionFailed);
+        writer.WriteCompactNullableString("topology description could not be deleted");
+        WriteEmptyTaggedFields(ref writer);
         WriteEmptyTaggedFields(ref writer);
     }
 

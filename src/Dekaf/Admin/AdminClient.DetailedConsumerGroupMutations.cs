@@ -116,7 +116,7 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
                     }
 
                     var received = MapMutationResults(response.Results, static item => item.GroupId,
-                        static item => item.ErrorCode, static _ => null);
+                        static item => item.ErrorCode, static item => item.ErrorMessage);
                     foreach (var group in batch.Value)
                     {
                         var result = received.TryGetValue(group, out var outcome) ? outcome

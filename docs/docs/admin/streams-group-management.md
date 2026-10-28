@@ -56,7 +56,13 @@ subsequent `GroupIdNotFound` as success.
 
 The four operations reuse protocol shapes already covered by golden wire
 snapshots: OffsetFetch v6–v10, OffsetCommit v8–v10, OffsetDelete v0, and
-DeleteGroups v2.
+DeleteGroups v2–v3.
+
+On Kafka 4.4+ (DeleteGroups v3, KIP-1331), `DeleteStreamsGroupResult.ErrorMessage`
+carries the broker's reason for a failed deletion. `GroupDeletionFailed` means the
+broker kept the group because it could not delete the group's stored topology
+description. It is not retriable: the group still exists, so fix the cause and
+delete it again.
 
 Dekaf's built-in and in-memory admin clients implement the optional capability.
 Custom `IAdminClient` implementations can add it without an interface binary

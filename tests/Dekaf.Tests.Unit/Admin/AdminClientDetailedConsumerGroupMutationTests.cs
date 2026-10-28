@@ -543,6 +543,33 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
     }
 
     [Test]
+    public async Task DeleteGroupsErrorMessage_ReachesDetailedResult()
+    {
+        var (admin, connection) = CreateAdmin();
+        await using var owned = admin;
+        UseSeparateGroupCoordinators(connection);
+        connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(Arg.Any<DeleteGroupsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(call => ValueTask.FromResult(new DeleteGroupsResponse
+            {
+                Results = call.Arg<DeleteGroupsRequest>().GroupsNames
+                    .Select(static group => new DeleteGroupsResponseResult
+                    {
+                        GroupId = group,
+                        ErrorCode = group == "bad" ? ErrorCode.GroupDeletionFailed : ErrorCode.None,
+                        ErrorMessage = group == "bad" ? "plugin failed" : null
+                    })
+                    .ToArray()
+            }));
+
+        var results = await admin.DeleteConsumerGroupsDetailedAsync(["good", "bad"]);
+
+        await Assert.That(results["good"].IsSuccess).IsTrue();
+        await Assert.That(results["bad"].ErrorCode).IsEqualTo(ErrorCode.GroupDeletionFailed);
+        await Assert.That(results["bad"].ErrorMessage).IsEqualTo("plugin failed");
+        await Assert.That(results["bad"].Outcome).IsEqualTo(AdminMutationOutcome.Failed);
+    }
+
+    [Test]
     public async Task DeadlineDuringSend_IsUnknownAndDoesNotResetForNextGroup()
     {
         var (admin, connection) = CreateAdmin();

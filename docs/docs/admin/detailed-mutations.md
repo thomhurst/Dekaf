@@ -163,8 +163,9 @@ groups sharing a coordinator. After a rejection it rediscovers and regroups only
 unsent groups, so a coordinator change cannot replay another group's confirmed deletion.
 Offset requests batch partitions by topic and retry only confirmed coordinator rejections.
 
-These Kafka responses carry error codes but no error-message field, so `ErrorMessage` is null
-for broker responses. Local failures retain an explanatory message and exception. An omitted
+The offset responses carry error codes but no error-message field, so `ErrorMessage` is null
+for their broker results. Group deletion fills `ErrorMessage` when the broker sends one, which
+DeleteGroups v3 (Kafka 4.4+, KIP-1331) allows; older brokers send none. Local failures retain an explanatory message and exception. An omitted
 partition, duplicate outcome, lost response or stale topic-ID mapping never confirms success.
 
 ```csharp

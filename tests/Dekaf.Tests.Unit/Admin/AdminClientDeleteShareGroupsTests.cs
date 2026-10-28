@@ -93,6 +93,36 @@ public sealed class AdminClientDeleteShareGroupsTests
     }
 
     [Test]
+    public async Task DeleteShareGroupsAsync_SurfacesBrokerErrorMessagePerGroup()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                Arg.Any<DeleteGroupsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new DeleteGroupsResponse
+            {
+                Results =
+                [
+                    new DeleteGroupsResponseResult { GroupId = FirstGroupId, ErrorCode = ErrorCode.None, ErrorMessage = "ignored" },
+                    new DeleteGroupsResponseResult
+                    {
+                        GroupId = SecondGroupId,
+                        ErrorCode = ErrorCode.GroupDeletionFailed,
+                        ErrorMessage = "plugin failed"
+                    }
+                ]
+            }));
+
+        var results = await admin.DeleteShareGroupsAsync([FirstGroupId, SecondGroupId]);
+
+        await Assert.That(results[FirstGroupId].ErrorMessage).IsNull();
+        await Assert.That(results[SecondGroupId].ErrorCode).IsEqualTo(ErrorCode.GroupDeletionFailed);
+        await Assert.That(results[SecondGroupId].ErrorMessage).IsEqualTo("plugin failed");
+    }
+
+    [Test]
     public async Task DeleteShareGroupsAsync_PreservesTerminalCoordinatorErrorPerGroup()
     {
         var (admin, connection) = CreateAdmin();

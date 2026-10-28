@@ -997,7 +997,7 @@ public sealed partial class AdminClient
                                 retryErrors[groupResult.GroupId] = errorCode;
                                 retryFailure ??= new Errors.GroupException(
                                     errorCode,
-                                    $"DeleteStreamsGroups failed for group '{groupResult.GroupId}': {errorCode}",
+                                    FormatDeleteGroupFailure("DeleteStreamsGroups", groupResult),
                                     isRetriable: true)
                                 {
                                     GroupId = groupResult.GroupId
@@ -1011,7 +1011,10 @@ public sealed partial class AdminClient
                                 errorCode = Protocol.ErrorCode.None;
                             }
 
-                            results[groupResult.GroupId] = DeleteGroupResult(groupResult.GroupId, errorCode);
+                            results[groupResult.GroupId] = DeleteGroupResult(
+                                groupResult.GroupId,
+                                errorCode,
+                                errorCode == Protocol.ErrorCode.None ? null : groupResult.ErrorMessage);
                         }
                     }
                     catch (Exception exception) when (
@@ -1262,10 +1265,12 @@ public sealed partial class AdminClient
 
     private static DeleteStreamsGroupResult DeleteGroupResult(
         string groupId,
-        Protocol.ErrorCode errorCode) => new()
+        Protocol.ErrorCode errorCode,
+        string? errorMessage = null) => new()
     {
         GroupId = groupId,
-        ErrorCode = errorCode
+        ErrorCode = errorCode,
+        ErrorMessage = errorMessage
     };
 
     private static Protocol.ErrorCode GetRetryErrorCode(Exception exception) =>

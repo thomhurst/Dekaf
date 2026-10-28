@@ -172,6 +172,44 @@ public sealed class AdminClientIdempotentRetryTests
     }
 
     [Test]
+    public async Task DeleteConsumerGroupsAsync_GroupDeletionFailed_ThrowsWithBrokerMessageWithoutRetry()
+    {
+        var (admin, connection) = CreateAdminWithMockConnection(ApiKey.DeleteGroups);
+        SetupFindCoordinator(connection);
+        var calls = 0;
+
+        connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                Arg.Any<DeleteGroupsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref calls);
+                return ValueTask.FromResult(new DeleteGroupsResponse
+                {
+                    Results =
+                    [
+                        new DeleteGroupsResponseResult
+                        {
+                            GroupId = GroupId,
+                            ErrorCode = ErrorCode.GroupDeletionFailed,
+                            ErrorMessage = "topology description could not be deleted"
+                        }
+                    ]
+                });
+            });
+
+        var exception = await Assert.ThrowsAsync<GroupException>(async () =>
+            await admin.DeleteConsumerGroupsAsync([GroupId]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.GroupDeletionFailed);
+        await Assert.That(exception.IsRetriable).IsFalse();
+        await Assert.That(exception.GroupId).IsEqualTo(GroupId);
+        await Assert.That(exception.Message).Contains("topology description could not be deleted");
+        await Assert.That(calls).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task CreatePartitionsAsync_InvalidPartitionsOnRetry_WhenMetadataShowsTarget_TreatedAsSuccess()
     {
         var (admin, connection) = CreateAdminWithMockConnection(ApiKey.CreatePartitions);
