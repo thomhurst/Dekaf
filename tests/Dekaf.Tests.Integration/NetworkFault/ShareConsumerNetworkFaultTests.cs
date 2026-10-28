@@ -1,3 +1,5 @@
+using Dekaf.Admin;
+using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.ShareConsumer;
 
@@ -116,6 +118,71 @@ public sealed class ShareConsumerNetworkFaultTests(ShareFaultKafkaContainer kafk
         await consumer.CloseAsync(cancellationToken);
     }
 
+    // The coordinator answers GROUP_ID_NOT_FOUND to the returning member's old epoch once its
+    // group was deleted. The same consumer instance must rejoin from epoch 0, which recreates the
+    // group, instead of failing that heartbeat on every poll.
+    [Test]
+    public async Task GroupDeletedWhileMemberExpired_RejoinsAndKeepsConsuming()
+    {
+        using var testTimeout = new CancellationTokenSource(TestTimeout);
+        var cancellationToken = testTimeout.Token;
+        var topic = await kafka.CreateTestTopicAsync(partitions: 1);
+        var groupId = $"network-fault-share-deleted-{Guid.NewGuid():N}";
+        await kafka.UseShortGroupSessionAsync(groupId, cancellationToken, shareGroup: true);
+
+        await using var consumer = await Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers(kafka.ConsumerBootstrapServers)
+            .WithGroupId(groupId)
+            .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit)
+            .WithRequestTimeoutMs(5_000)
+            .WithConnectionTimeout(TimeSpan.FromSeconds(2))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        consumer.Subscribe(topic);
+        await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
+
+        await SeedAsync(topic, "before", 5, cancellationToken);
+        await PollUntilAsync(consumer, "before-", 5, cancellationToken);
+        await consumer.CommitAsync(cancellationToken);
+
+        try
+        {
+            await kafka.DisableLaneAsync(ToxiproxyLane.Consumer, cancellationToken);
+
+            // The admin client uses the producer lane. DeleteGroups is refused with NON_EMPTY_GROUP
+            // until the coordinator expires the unreachable member.
+            await using var admin = kafka.CreateAdminClient();
+            using var deleteTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            deleteTimeout.CancelAfter(TimeSpan.FromSeconds(60));
+            while (true)
+            {
+                try
+                {
+                    await admin.DeleteConsumerGroupsAsync([groupId], deleteTimeout.Token);
+                    break;
+                }
+                catch (KafkaException) when (!deleteTimeout.IsCancellationRequested)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(500), deleteTimeout.Token);
+                }
+            }
+
+            // The recreated group starts from the latest offset by default, which races the records
+            // seeded below; start it from the earliest instead before the member can return.
+            await UseEarliestShareOffsetResetAsync(admin, groupId, cancellationToken);
+        }
+        finally
+        {
+            await kafka.HealNetworkFaultsAsync(CancellationToken.None);
+        }
+
+        await SeedAsync(topic, "after", 5, cancellationToken);
+        await PollUntilAsync(consumer, "after-", 5, cancellationToken);
+
+        await consumer.CommitAsync(cancellationToken);
+        await consumer.CloseAsync(cancellationToken);
+    }
+
     [Test]
     public async Task MemberExpired_WhilePolling_RejoinsAndKeepsConsuming()
     {
@@ -221,6 +288,29 @@ public sealed class ShareConsumerNetworkFaultTests(ShareFaultKafkaContainer kafk
         throw new TimeoutException(
             $"Received {seen.Count} of {count} '{prefix}' records within 90 seconds: " +
             string.Join(',', seen));
+    }
+
+    private static async Task UseEarliestShareOffsetResetAsync(
+        IAdminClient admin,
+        string groupId,
+        CancellationToken cancellationToken)
+    {
+        const string offsetReset = "share.auto.offset.reset";
+        var resource = new ConfigResource { Type = ConfigResourceType.Group, Name = groupId };
+        await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+        {
+            [resource] = [ConfigAlter.Set(offsetReset, "earliest")]
+        }, cancellationToken: cancellationToken);
+
+        for (var attempt = 0; ; attempt++)
+        {
+            var configs = await admin.DescribeConfigsAsync([resource], cancellationToken: cancellationToken);
+            if (configs[resource].Any(entry => entry.Name == offsetReset && entry.Value == "earliest"))
+                return;
+            if (attempt == 20)
+                throw new TimeoutException($"Group {groupId} did not report {offsetReset}=earliest.");
+            await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
+        }
     }
 
     private async Task SeedAsync(string topic, string label, int count, CancellationToken cancellationToken)
