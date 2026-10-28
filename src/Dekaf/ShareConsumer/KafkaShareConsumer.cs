@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using Dekaf.Compression;
 using Dekaf.Diagnostics;
@@ -1054,15 +1055,26 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     private void ReleasePendingAcks()
     {
         var pending = FlushAcknowledgements();
-        // Override all ack types to Release so the broker redelivers to other members
+        // Override ack types to Release so the broker redelivers to other members.
+        // Gaps have no data record to redeliver and stay gaps.
         var released = new Dictionary<TopicPartition, List<AcknowledgementBatchData>>();
         foreach (var (tp, batches) in pending)
         {
             var releasedBatches = new List<AcknowledgementBatchData>(batches.Count);
             foreach (var batch in batches)
             {
+                if (batch.IsGapOnly)
+                {
+                    releasedBatches.Add(batch);
+                    continue;
+                }
                 var types = new byte[batch.AcknowledgeTypes.Length];
-                Array.Fill(types, (byte)AcknowledgeType.Release);
+                for (var i = 0; i < types.Length; i++)
+                {
+                    types[i] = batch.AcknowledgeTypes[i] == (byte)AcknowledgeType.Gap
+                        ? (byte)AcknowledgeType.Gap
+                        : (byte)AcknowledgeType.Release;
+                }
                 releasedBatches.Add(new AcknowledgementBatchData(batch.FirstOffset, batch.LastOffset, types));
             }
             released[tp] = releasedBatches;
@@ -1754,6 +1766,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 }
                 catch (InsufficientDataException)
                 {
+                    TrackTruncatedTailGaps(topicInfo, partition, ref parserState);
                     parserState.NextBatchByteOffset = partition.RecordBytes.Length;
                     break;
                 }
@@ -1931,6 +1944,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     }
                     catch (InsufficientDataException)
                     {
+                        TrackTruncatedTailGaps(topicInfo, partition, ref parserState);
                         parserState.NextBatchByteOffset = partition.RecordBytes.Length;
                         break; // Partial batch
                     }
@@ -3059,6 +3073,42 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         TrackAcquiredGaps(new TopicPartition(topicInfo.Name, partition.PartitionIndex),
             partition.AcquiredRecords, ref parserState.GapRangeIndex, parserState.NextGapOffset, lastAcquired);
         parserState.NextGapOffset = lastAcquired + 1;
+    }
+
+    // The broker cut the last batch at the response byte limit. That batch holds data
+    // records, so only the acquired offsets below it are gaps.
+    private void TrackTruncatedTailGaps(
+        TopicInfo topicInfo,
+        ShareFetchResponsePartition partition,
+        ref DeserializerPreparationParserState parserState)
+    {
+        if (partition.AcquiredRecords.Count != 0)
+        {
+            var lastGap = LastTrailingGapOffset(partition.RecordBytes, parserState.NextBatchByteOffset,
+                partition.AcquiredRecords[partition.AcquiredRecords.Count - 1].LastOffset);
+            if (parserState.NextGapOffset <= lastGap)
+            {
+                TrackAcquiredGaps(new TopicPartition(topicInfo.Name, partition.PartitionIndex),
+                    partition.AcquiredRecords, ref parserState.GapRangeIndex, parserState.NextGapOffset, lastGap);
+            }
+        }
+        // Nothing past the cut is a gap; TrackTrailingGaps must not cover it.
+        parserState.NextGapOffset = long.MaxValue;
+    }
+
+    /// <summary>
+    /// Returns the last offset that trailing gap tracking may cover once a partition's
+    /// complete batches are walked. When the broker cut the last batch at the response
+    /// byte limit, that batch's base offset (its first field) bounds the gaps; when fewer
+    /// than eight bytes of it survive, no trailing offset is a gap.
+    /// </summary>
+    private static long LastTrailingGapOffset(ReadOnlyMemory<byte> recordBytes, int byteOffset, long lastAcquired)
+    {
+        if (byteOffset >= recordBytes.Length)
+            return lastAcquired;
+        return recordBytes.Length - byteOffset >= sizeof(long)
+            ? Math.Min(lastAcquired, BinaryPrimitives.ReadInt64BigEndian(recordBytes.Span[byteOffset..]) - 1)
+            : long.MinValue;
     }
 
     /// <summary>

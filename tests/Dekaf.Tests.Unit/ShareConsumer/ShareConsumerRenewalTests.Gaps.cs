@@ -14,18 +14,23 @@ public sealed partial class ShareConsumerRenewalTests
     // marker, and offsets 5-6 have no record bytes in the response.
     private static readonly long[] GapResponseDataOffsets = [0, 2, 4];
     private static readonly (long First, long Last)[] GapResponseGaps = [(1, 1), (3, 3), (5, 6)];
+    // With a truncated tail, offsets 5-6 are a data batch the broker cut at the response
+    // byte limit. They hold records, so they must not be acknowledged as gaps.
+    private static readonly (long First, long Last)[] TruncatedResponseGaps = [(1, 1), (3, 3)];
 
     [Test]
-    [Arguments(false, ShareAcknowledgementMode.Implicit)]
-    [Arguments(true, ShareAcknowledgementMode.Implicit)]
-    [Arguments(false, ShareAcknowledgementMode.Explicit)]
-    [Arguments(true, ShareAcknowledgementMode.Explicit)]
+    [Arguments(false, ShareAcknowledgementMode.Implicit, false)]
+    [Arguments(true, ShareAcknowledgementMode.Implicit, false)]
+    [Arguments(false, ShareAcknowledgementMode.Explicit, false)]
+    [Arguments(true, ShareAcknowledgementMode.Explicit, false)]
+    [Arguments(false, ShareAcknowledgementMode.Implicit, true)]
+    [Arguments(true, ShareAcknowledgementMode.Implicit, true)]
     public async Task Poll_ControlRecordsAndAcquiredGaps_AreNotDeliveredAndAcknowledgedAsGaps(
-        bool prepared, ShareAcknowledgementMode mode)
+        bool prepared, ShareAcknowledgementMode mode, bool truncatedTail)
     {
         var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
         {
-            ShareFetchResponses = new([CreateGapFetchResponse()])
+            ShareFetchResponses = new([CreateGapFetchResponse(truncatedTail)])
         };
         IDeserializer<string> deserializer = prepared
             ? new PreparedWindowCountingDeserializer(int.MaxValue)
@@ -45,18 +50,20 @@ public sealed partial class ShareConsumerRenewalTests
 
         await Assert.That(delivered).IsEquivalentTo(GapResponseDataOffsets);
         var types = ExpandFlushedTypes(FlushPendingAcknowledgements(fixture.Consumer)[new("topic", 0)]);
-        await AssertGapTypes(types, mode == ShareAcknowledgementMode.Implicit ? AcknowledgeType.Accept : null);
+        await AssertGapTypes(types, mode == ShareAcknowledgementMode.Implicit ? AcknowledgeType.Accept : null,
+            truncatedTail ? TruncatedResponseGaps : GapResponseGaps);
     }
 
     [Test]
-    [Arguments(ShareAcknowledgementMode.Implicit)]
-    [Arguments(ShareAcknowledgementMode.Explicit)]
+    [Arguments(ShareAcknowledgementMode.Implicit, false)]
+    [Arguments(ShareAcknowledgementMode.Explicit, false)]
+    [Arguments(ShareAcknowledgementMode.Implicit, true)]
     public async Task PollBatches_ControlRecordsAndAcquiredGaps_AreNotDeliveredAndAcknowledgedAsGaps(
-        ShareAcknowledgementMode mode)
+        ShareAcknowledgementMode mode, bool truncatedTail)
     {
         var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
         {
-            ShareFetchResponses = new([CreateGapFetchResponse(), CreateFetchResponse(0, 100)])
+            ShareFetchResponses = new([CreateGapFetchResponse(truncatedTail), CreateFetchResponse(0, 100)])
         };
         await using var fixture = CreateFixture(connection, mode, valueDeserializer: Serializers.String);
         PrepareForPoll(fixture.Consumer);
@@ -87,7 +94,40 @@ public sealed partial class ShareConsumerRenewalTests
         var sent = connection.ShareFetchRequests[1].Topics[0].Partitions[0].AcknowledgementBatches!;
         var types = ExpandFlushedTypes(sent.Select(static batch =>
             new AcknowledgementBatchData(batch.FirstOffset, batch.LastOffset, batch.AcknowledgeTypes.ToArray())).ToList());
-        await AssertGapTypes(types, mode == ShareAcknowledgementMode.Implicit ? AcknowledgeType.Accept : null);
+        await AssertGapTypes(types, mode == ShareAcknowledgementMode.Implicit ? AcknowledgeType.Accept : null,
+            truncatedTail ? TruncatedResponseGaps : GapResponseGaps);
+    }
+
+    [Test]
+    public async Task Unsubscribe_PendingGaps_AreNotReleased()
+    {
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2, includeShareAcknowledge: true)
+        {
+            ShareFetchResponses = new([CreateGapFetchResponse()]),
+            ShareAcknowledgeResponse = CreateAcknowledgeResponse((0, ErrorCode.None))
+        };
+        await using var fixture = CreateFixture(connection, valueDeserializer: Serializers.String);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Subscribe("topic");
+        await using (var poll = fixture.Consumer.PollAsync().GetAsyncEnumerator())
+        {
+            for (var index = 0; index < GapResponseDataOffsets.Length; index++)
+                await Assert.That(await poll.MoveNextAsync()).IsTrue();
+            fixture.Consumer.Unsubscribe();
+        }
+        await fixture.Consumer.DisposeAsync();
+
+        var sent = connection.ShareAcknowledgeRequest!.Topics[0].Partitions[0].AcknowledgementBatches!;
+        var types = ExpandFlushedTypes(sent.Select(static batch =>
+            new AcknowledgementBatchData(batch.FirstOffset, batch.LastOffset, batch.AcknowledgeTypes.ToArray())).ToList());
+        // Releasing a gap would only make the broker acquire it again. The final epoch
+        // releases the delivered records without listing them.
+        foreach (var (first, last) in GapResponseGaps)
+            for (var offset = first; offset <= last; offset++)
+                await Assert.That(types[offset]).IsEqualTo((byte)AcknowledgeType.Gap);
+        foreach (var offset in GapResponseDataOffsets)
+            if (types.TryGetValue(offset, out var type))
+                await Assert.That(type).IsEqualTo((byte)AcknowledgeType.Release);
     }
 
     [Test]
@@ -116,10 +156,11 @@ public sealed partial class ShareConsumerRenewalTests
         await Assert.That(types[102]).IsEqualTo((byte)AcknowledgeType.Reject);
     }
 
-    private static async Task AssertGapTypes(Dictionary<long, byte> types, AcknowledgeType? deliveredType)
+    private static async Task AssertGapTypes(Dictionary<long, byte> types, AcknowledgeType? deliveredType,
+        (long First, long Last)[] gaps)
     {
         var expected = new Dictionary<long, byte>();
-        foreach (var (first, last) in GapResponseGaps)
+        foreach (var (first, last) in gaps)
             for (var offset = first; offset <= last; offset++)
                 expected[offset] = (byte)AcknowledgeType.Gap;
         if (deliveredType is { } type)
@@ -151,7 +192,7 @@ public sealed partial class ShareConsumerRenewalTests
             .GetMethod("FlushAcknowledgements", BindingFlags.Instance | BindingFlags.NonPublic)!
             .Invoke(consumer, [false])!;
 
-    private static ShareFetchResponse CreateGapFetchResponse()
+    private static ShareFetchResponse CreateGapFetchResponse(bool truncatedTail = false)
     {
         var buffer = new ArrayBufferWriter<byte>();
         using (var compacted = new RecordBatch
@@ -192,6 +233,27 @@ public sealed partial class ShareConsumerRenewalTests
         {
             data.Write(buffer);
         }
+        var recordBytes = buffer.WrittenMemory;
+        if (truncatedTail)
+        {
+            var tailStart = buffer.WrittenCount;
+            using (var tail = new RecordBatch
+            {
+                BaseOffset = 5,
+                LastOffsetDelta = 1,
+                Records =
+                [
+                    new Record { OffsetDelta = 0, IsKeyNull = true, Value = "new-value"u8.ToArray() },
+                    new Record { OffsetDelta = 1, IsKeyNull = true, Value = "new-value"u8.ToArray() }
+                ]
+            })
+            {
+                tail.Write(buffer);
+            }
+            // Keep the base offset and length but cut the body, as the broker does at
+            // the response byte limit.
+            recordBytes = buffer.WrittenMemory[..(tailStart + (buffer.WrittenCount - tailStart) / 2)];
+        }
 
         return new ShareFetchResponse
         {
@@ -207,7 +269,7 @@ public sealed partial class ShareConsumerRenewalTests
                         {
                             PartitionIndex = 0,
                             CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
-                            RecordBytes = buffer.WrittenMemory,
+                            RecordBytes = recordBytes,
                             AcquiredRecords = [new ShareFetchAcquiredRecords { FirstOffset = 0, LastOffset = 6, DeliveryCount = 1 }]
                         }
                     ]

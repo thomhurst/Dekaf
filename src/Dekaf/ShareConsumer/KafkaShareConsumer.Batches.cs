@@ -250,10 +250,12 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                                 yield break;
                             cancellationToken.ThrowIfCancellationRequested();
                         }
-                        // Every batch is walked; the remaining acquired offsets have no data record.
-                        var lastAcquired = partition.AcquiredRecords[partition.AcquiredRecords.Count - 1].LastOffset;
-                        if (nextGapOffset <= lastAcquired)
-                            TrackAcquiredGaps(topicPartition, partition.AcquiredRecords, ref gapRangeIndex, nextGapOffset, lastAcquired);
+                        // Every complete batch is walked; the remaining acquired offsets below a
+                        // truncated last batch have no data record.
+                        var lastGap = LastTrailingGapOffset(partition.RecordBytes, byteOffset,
+                            partition.AcquiredRecords[partition.AcquiredRecords.Count - 1].LastOffset);
+                        if (nextGapOffset <= lastGap)
+                            TrackAcquiredGaps(topicPartition, partition.AcquiredRecords, ref gapRangeIndex, nextGapOffset, lastGap);
                     }
                 }
             }

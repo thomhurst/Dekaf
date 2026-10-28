@@ -70,6 +70,61 @@ public class AcknowledgementTrackerTests
     }
 
     [Test]
+    public async Task TrackGapRecords_AdjacentDeliveries_KeepGapBatchSingleType()
+    {
+        var tracker = new AcknowledgementTracker();
+        var partition = new TopicPartition("topic", 0);
+        // The parser queues gaps before the records around them are delivered.
+        tracker.TrackGapRecords(partition, 1, 1_000_000);
+        tracker.TrackDeliveredRecords(partition, 0, 0);
+        tracker.TrackDeliveredRecords(partition, 1_000_001, 1_000_001);
+
+        var batches = tracker.Flush()[partition];
+
+        await Assert.That(batches.Count).IsEqualTo(3);
+        await Assert.That(batches[0].FirstOffset).IsEqualTo(0);
+        await Assert.That(batches[0].LastOffset).IsEqualTo(0);
+        await Assert.That(batches[0].GetAcknowledgeType(0)).IsEqualTo((byte)AcknowledgeType.Accept);
+        await Assert.That(batches[1].FirstOffset).IsEqualTo(1);
+        await Assert.That(batches[1].LastOffset).IsEqualTo(1_000_000);
+        await Assert.That(batches[1].IsGapOnly).IsTrue();
+        await Assert.That(batches[2].FirstOffset).IsEqualTo(1_000_001);
+        await Assert.That(batches[2].LastOffset).IsEqualTo(1_000_001);
+        await Assert.That(batches[2].GetAcknowledgeType(0)).IsEqualTo((byte)AcknowledgeType.Accept);
+    }
+
+    [Test]
+    public async Task TrackGapRecords_InterleavedWithLaterDeliveries_FlushesOrderedDispositions()
+    {
+        var tracker = new AcknowledgementTracker();
+        var partition = new TopicPartition("topic", 0);
+        // A transactional poll: every 4-record batch is followed by a COMMIT marker. The
+        // markers are queued while parsing, before any record is delivered.
+        const int Batches = 64;
+        for (var batch = 0; batch < Batches; batch++)
+            tracker.TrackGapRecords(partition, batch * 5 + 4, batch * 5 + 4);
+        for (var batch = 0; batch < Batches; batch++)
+            for (var record = 0; record < 4; record++)
+                tracker.TrackDeliveredRecords(partition, batch * 5 + record, batch * 5 + record);
+
+        var batches = tracker.Flush()[partition];
+
+        var next = 0L;
+        foreach (var batch in batches)
+        {
+            await Assert.That(batch.FirstOffset).IsEqualTo(next);
+            for (var offset = batch.FirstOffset; offset <= batch.LastOffset; offset++)
+            {
+                var expected = offset % 5 == 4 ? AcknowledgeType.Gap : AcknowledgeType.Accept;
+                await Assert.That(batch.GetAcknowledgeType(checked((int)(offset - batch.FirstOffset))))
+                    .IsEqualTo((byte)expected);
+            }
+            next = batch.LastOffset + 1;
+        }
+        await Assert.That(next).IsEqualTo(Batches * 5L);
+    }
+
+    [Test]
     public async Task FlushForPoll_DoesNotReuseAnOutstandingSnapshot()
     {
         var tracker = new AcknowledgementTracker();

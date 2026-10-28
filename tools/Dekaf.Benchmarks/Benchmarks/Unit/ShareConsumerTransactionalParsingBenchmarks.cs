@@ -12,8 +12,9 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// <summary>
 /// Parses one share partition from a transactional topic: every producer batch is followed
 /// by its COMMIT marker. The broker acquires the marker offsets, so the parser skips each
-/// control batch and queues its offset as a gap. Each operation includes parsing, traversal,
-/// the poll-boundary acknowledgement flush that carries the gaps, and poll cleanup.
+/// control batch and queues its offset as a gap. Each operation includes parsing, traversal
+/// with implicit delivery tracking, the poll-boundary acknowledgement flush that carries the
+/// accepted records and the gaps, and poll cleanup.
 /// </summary>
 [MemoryDiagnoser]
 public class ShareConsumerTransactionalParsingBenchmarks
@@ -25,6 +26,7 @@ public class ShareConsumerTransactionalParsingBenchmarks
     private Action _release = null!;
     private AcknowledgementTracker _tracker = null!;
     private readonly TopicInfo _topic = new() { Name = "share-transactional", Partitions = [] };
+    private readonly TopicPartition _topicPartition = new("share-transactional", 0);
     private ShareFetchResponsePartition _partition = null!;
     private int _maxRecords;
 
@@ -143,7 +145,11 @@ public class ShareConsumerTransactionalParsingBenchmarks
             throw new InvalidOperationException("Incomplete transactional poll.");
         long checksum = 0;
         foreach (var record in records)
+        {
+            // Implicit PollAsync tracks each record as it is delivered.
+            _tracker.TrackDeliveredRecords(_topicPartition, record.Offset, record.Offset);
             checksum += record.Offset + record.Key + record.Value.Length;
+        }
         return checksum;
     }
 
