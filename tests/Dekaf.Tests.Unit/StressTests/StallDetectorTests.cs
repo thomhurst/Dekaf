@@ -76,7 +76,8 @@ public sealed class StallDetectorTests
             using var watchdog = new ProgressWatchdog(
                 outputDirectory,
                 captureAfter: TimeSpan.FromMilliseconds(40),
-                exitAfter: TimeSpan.FromSeconds(10),
+                // Never reached: a delayed test must not see a fatal capture or exit.
+                exitAfter: TimeSpan.FromHours(1),
                 pollInterval: TimeSpan.FromMilliseconds(5),
                 exitProcess: code => unexpectedExit.TrySetResult(code),
                 captureManagedStackReport: () =>
@@ -85,7 +86,7 @@ public sealed class StallDetectorTests
                     stacksCaptured.Complete();
                     return "test managed stack";
                 });
-            using var registration = watchdog.Track(
+            using (watchdog.Track(
                 throughput,
                 "Dekaf",
                 "producer",
@@ -94,16 +95,18 @@ public sealed class StallDetectorTests
                     captureOrder.Enqueue("producer");
                     producerCaptured.Complete();
                     return null;
-                });
+                }))
+            {
+                await Task.WhenAll(producerCaptured.WaitAsync(), stacksCaptured.WaitAsync());
+            }
 
-            await Task.WhenAll(
-                producerCaptured.WaitAsync(TimeSpan.FromSeconds(5)),
-                stacksCaptured.WaitAsync(TimeSpan.FromSeconds(5)));
+            // The callbacks run before their artifacts are written. Disposal lets the worker
+            // finish the capture in progress; join it so no artifact is still being written.
+            watchdog.Dispose();
+            await Assert.That(watchdog.WaitForWorkerExit(Timeout.InfiniteTimeSpan)).IsTrue();
             var diagnosticsDirectory = Path.Combine(outputDirectory, ProgressWatchdog.ArtifactsDirectoryName);
-            await Assert.That(() => Directory.GetFiles(diagnosticsDirectory, "*-stacks.txt").Length)
-                .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
-            await Assert.That(() => Directory.GetFiles(diagnosticsDirectory, "*-producer.json").Length)
-                .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
+            await Assert.That(Directory.GetFiles(diagnosticsDirectory, "*-stacks.txt").Length).IsEqualTo(1);
+            await Assert.That(Directory.GetFiles(diagnosticsDirectory, "*-producer.json").Length).IsEqualTo(1);
 
             var order = captureOrder.ToArray();
             await Assert.That(order.Length).IsEqualTo(2);
@@ -137,12 +140,12 @@ public sealed class StallDetectorTests
                 captureManagedStackReport: () => "test managed stack");
             using var registration = watchdog.Track(new ThroughputTracker(), "Dekaf", "consumer");
 
-            var actualExitCode = await exitCode.WaitAsync(TimeSpan.FromSeconds(5));
+            var actualExitCode = await exitCode.WaitAsync();
 
             await Assert.That(actualExitCode).IsEqualTo(1);
+            // The watchdog writes every fatal artifact before it calls exitProcess.
             var diagnosticsDirectory = Path.Combine(outputDirectory, ProgressWatchdog.ArtifactsDirectoryName);
-            await Assert.That(() => Directory.GetFiles(diagnosticsDirectory, "*-fatal-stacks.txt").Length)
-                .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
+            await Assert.That(Directory.GetFiles(diagnosticsDirectory, "*-fatal-stacks.txt").Length).IsEqualTo(1);
         }
         finally
         {

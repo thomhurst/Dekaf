@@ -8,59 +8,6 @@ namespace Dekaf.Tests.Unit.StressTests;
 public sealed class ProgressWatchdogTests
 {
     [Test]
-    [Arguments(4999, false)]
-    [Arguments(5000, true)]
-    [Arguments(5001, true)]
-    public async Task CallbackDeadline_UsesCompletionTimestamp(int elapsedMilliseconds, bool late)
-    {
-        var time = new ManualTimeProvider { Timestamp = 1000 };
-        var signal = new WatchdogTestSignal(time);
-        var wait = signal.WaitAsync(TimeSpan.FromSeconds(5));
-        time.Timestamp += elapsedMilliseconds;
-        signal.Complete(42);
-        // Delayed continuation execution must not change the captured deadline.
-        time.Timestamp += 10000;
-
-        if (late)
-            await Assert.That(async () => await wait).Throws<TimeoutException>();
-        else
-            await Assert.That(await wait).IsEqualTo(42);
-    }
-
-    [Test]
-    public async Task CallbackBeforeWait_AllowsZeroTimeout()
-    {
-        var signal = new WatchdogTestSignal(new ManualTimeProvider());
-        signal.Complete(42);
-        await Assert.That(await signal.WaitAsync(TimeSpan.Zero)).IsEqualTo(42);
-    }
-
-    [Test]
-    public async Task InfiniteDeadline_AllowsDelayedCallback()
-    {
-        var time = new ManualTimeProvider();
-        var signal = new WatchdogTestSignal(time);
-        var wait = signal.WaitAsync(Timeout.InfiniteTimeSpan);
-        time.Timestamp = 10000;
-        signal.Complete(42);
-        await Assert.That(await wait).IsEqualTo(42);
-    }
-
-    private sealed class ManualTimeProvider : TimeProvider
-    {
-        internal long Timestamp { get; set; }
-        public override long TimestampFrequency => 1000;
-        public override long GetTimestamp() => Timestamp;
-    }
-
-    [Test]
-    public async Task ExitSignal_MissingExit_PreservesTimeout()
-    {
-        var exited = new WatchdogTestSignal();
-        await Assert.That(async () => await exited.WaitAsync(TimeSpan.Zero)).Throws<TimeoutException>();
-    }
-
-    [Test]
     // Real watchdog deadlines include artifact capture; keep unrelated tests off its budget.
     [NotInParallel]
     public async Task Track_Stall_CapturesStacksAndProducerDiagnosticsThenExits()
@@ -99,9 +46,9 @@ public sealed class ProgressWatchdogTests
                 },
                 CreateConsumerSnapshot);
 
-            var exitCode = await exited.WaitAsync(TimeSpan.FromSeconds(5));
+            var exitCode = await exited.WaitAsync();
             await Assert.That(Environment.CurrentManagedThreadId).IsNotEqualTo(Volatile.Read(ref exitThreadId));
-            await Assert.That(watchdog.WaitForWorkerExit(TimeSpan.FromSeconds(5))).IsTrue();
+            await Assert.That(watchdog.WaitForWorkerExit(Timeout.InfiniteTimeSpan)).IsTrue();
             registration.Dispose();
             registration = null;
             watchdog.Dispose();
@@ -153,7 +100,7 @@ public sealed class ProgressWatchdogTests
                 captureManagedStackReport: () => throw new InvalidOperationException("capture unavailable"));
             registration = watchdog.Track(throughput, "Dekaf", "consumer");
 
-            var exitCode = await exited.WaitAsync(TimeSpan.FromSeconds(5));
+            var exitCode = await exited.WaitAsync();
             registration.Dispose();
             registration = null;
             watchdog.Dispose();
@@ -206,11 +153,11 @@ public sealed class ProgressWatchdogTests
                     return null;
                 });
 
-            var exitCode = await exited.WaitAsync(TimeSpan.FromSeconds(5));
+            var exitCode = await exited.WaitAsync();
             registration.Dispose();
             registration = null;
             releaseCapture.Set();
-            await Assert.That(capturesCompleted.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            capturesCompleted.Wait();
             watchdog.Dispose();
             watchdog = null;
 

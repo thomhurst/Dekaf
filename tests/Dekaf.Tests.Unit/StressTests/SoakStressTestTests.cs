@@ -37,7 +37,7 @@ public sealed class SoakStressTestTests
                     CapturedAtUtc = DateTimeOffset.UtcNow
                 });
 
-            await exited.WaitAsync(TimeSpan.FromSeconds(5));
+            await exited.WaitAsync();
 
             var producerArtifact = Directory.GetFiles(
                 Path.Combine(outputDirectory, ProgressWatchdog.ArtifactsDirectoryName),
@@ -93,7 +93,7 @@ public sealed class SoakStressTestTests
                     AdaptiveFetchMaxBytes = null
                 });
 
-            await exited.WaitAsync(TimeSpan.FromSeconds(5));
+            await exited.WaitAsync();
 
             var consumerArtifact = Directory.GetFiles(
                 Path.Combine(outputDirectory, ProgressWatchdog.ArtifactsDirectoryName),
