@@ -22,13 +22,20 @@ public readonly struct ShareAcknowledgedOffsets
         {
             var batch = batches[i];
             var types = batch.AcknowledgeTypes;
+            // A compact gap can cover more offsets than fit in an int; skip it before counting.
+            if (batch.IsGapOnly)
+            {
+                hasGaps = true;
+                continue;
+            }
+
             var count = batch.OffsetCount;
             hasCompactRanges |= count != types.Length;
             var firstGap = types.AsSpan().IndexOf((byte)AcknowledgeType.Gap);
             if (firstGap >= 0)
             {
                 hasGaps = true;
-                count -= types.Length == 1 ? count : CountGaps(types.AsSpan(firstGap));
+                count -= CountGaps(types.AsSpan(firstGap));
             }
             length = checked(length + count);
         }
