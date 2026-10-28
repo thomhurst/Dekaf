@@ -1362,6 +1362,278 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
     }
 
     /// <summary>
+    /// The broker rejects A (NOT_ENOUGH_REPLICAS) without appending it, so B, pipelined behind it,
+    /// is answered OutOfOrderSequenceNumber only because of the gap A left (#3823). B is not the
+    /// partition's next sequence: it is resent with its stamp behind A's resend, without an epoch
+    /// bump (idempotent) and without failing the transaction (transactional), as Java's
+    /// TransactionManager.canRetry does for !isNextSequence.
+    /// </summary>
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task OutOfOrderSequence_BehindARejectedPredecessor_IsResentWithItsStamp(
+        bool transactional,
+        CancellationToken cancellationToken)
+    {
+        var responses = Enumerable.Range(0, 4).Select(_ => NewResponseSource()).ToArray();
+        var (pool, connection) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>(responses));
+        connection.CaptureProduceRequests = true;
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(
+            maxInFlightRequestsPerConnection: 2,
+            retryBackoffMs: 0,
+            transactionalId: transactional ? "test-transaction" : null);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var state = new ProducerStateHolder(new ProducerIdAndEpoch(1234, 5));
+        var bumpRequests = new List<short>();
+        var transactionFailures = 0;
+        accumulator.OnTransactionalBatchFailed = (_, _, _, _) =>
+        {
+            Interlocked.Increment(ref transactionFailures);
+            return true;
+        };
+        var behindPredecessor = new EventLogger("LogOutOfOrderSequenceBehindRejectedPredecessor");
+        BrokerSender sender;
+        if (transactional)
+        {
+            sender = CreateSender(
+                pool, options, accumulator, (_, _, _, _, _) => { },
+                produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
+                isTransactional: true,
+                usesTransactionV2: true,
+                logger: behindPredecessor);
+        }
+        else
+        {
+            accumulator.PublishProducerState(state.Value);
+            sender = CreateSender(
+                pool, options, accumulator, (_, _, _, _, _) => { },
+                bumpEpoch: LocalBump(accumulator, bumpRequests, state),
+                getProducerState: () => state.Read(),
+                logger: behindPredecessor);
+        }
+
+        try
+        {
+            var (batchA, deliveryA) = CreateTrackedBatch(valueTaskSourcePool, Partition0, producerId: 1234, producerEpoch: 5);
+            sender.Enqueue(batchA);
+            await WaitForSendsAsync(connection, 1, cancellationToken);
+            var (batchB, deliveryB) = CreateTrackedBatch(valueTaskSourcePool, Partition0, producerId: 1234, producerEpoch: 5, recordCount: 2);
+            sender.Enqueue(batchB);
+            await WaitForSendsAsync(connection, 2, cancellationToken);
+
+            // B's rejection is answered once A's resend is on the wire: the order in which a
+            // connection answers them (this harness can complete two answers out of order).
+            responses[0].SetResult(CreateErrorResponse(Topic, 0, ErrorCode.NotEnoughReplicas));
+            await WaitForSendsAsync(connection, 3, cancellationToken);
+            responses[1].SetResult(CreateErrorResponse(Topic, 0, ErrorCode.OutOfOrderSequenceNumber));
+            await behindPredecessor.WaitAsync(cancellationToken);
+
+            // A goes first, then B, both with the stamps they were first sent with.
+            responses[2].SetResult(CreateSuccessResponse(Topic, 0, baseOffset: 0));
+            await WaitForSendsAsync(connection, 4, cancellationToken);
+            responses[3].SetResult(CreateSuccessResponse(Topic, 0, baseOffset: 1));
+
+            await Assert.That((await deliveryA.WaitAsync(cancellationToken)).Offset).IsEqualTo(0L);
+            await Assert.That((await deliveryB.WaitAsync(cancellationToken)).Offset).IsEqualTo(1L);
+            await Assert.That(StampsOf(connection, request: 2)).IsEquivalentTo([(0, 1, 1234L, (short)5, 0)]);
+            await Assert.That(StampsOf(connection, request: 3)).IsEquivalentTo([(0, 2, 1234L, (short)5, 1)]);
+            int bumps;
+            lock (bumpRequests)
+                bumps = bumpRequests.Count;
+            await Assert.That(bumps).IsEqualTo(0);
+            await Assert.That(GetEpochBumpRequestedForEpoch(sender)).IsEqualTo(-1);
+            await Assert.That(Volatile.Read(ref transactionFailures)).IsEqualTo(0);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Assert.Fail($"A wait was cancelled before the send loop got there. Requests written so far:{Environment.NewLine}{DescribeRequests(connection)}");
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// A first send that is merely unanswered is no rejected predecessor: when B is answered
+    /// OutOfOrderSequenceNumber ahead of A, the epoch recovery still runs (#3823 keeps it).
+    /// </summary>
+    [Test]
+    public async Task OutOfOrderSequence_AheadOfAnUnansweredPredecessor_StillBumpsTheEpoch(CancellationToken cancellationToken)
+    {
+        var responses = Enumerable.Range(0, 4).Select(_ => NewResponseSource()).ToArray();
+        var (pool, connection) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>(responses));
+        connection.CaptureProduceRequests = true;
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(maxInFlightRequestsPerConnection: 2, retryBackoffMs: 0);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var state = new ProducerStateHolder(new ProducerIdAndEpoch(1234, 5));
+        accumulator.PublishProducerState(state.Value);
+        var bumpRequests = new List<short>();
+        var sender = CreateSender(
+            pool, options, accumulator, (_, _, _, _, _) => { },
+            bumpEpoch: LocalBump(accumulator, bumpRequests, state),
+            getProducerState: () => state.Read());
+
+        try
+        {
+            var (batchA, _) = CreateTrackedBatch(valueTaskSourcePool, Partition0, producerId: 1234, producerEpoch: 5);
+            sender.Enqueue(batchA);
+            await WaitForSendsAsync(connection, 1, cancellationToken);
+            var (batchB, _) = CreateTrackedBatch(valueTaskSourcePool, Partition0, producerId: 1234, producerEpoch: 5, recordCount: 2);
+            sender.Enqueue(batchB);
+            await WaitForSendsAsync(connection, 2, cancellationToken);
+
+            responses[1].SetResult(CreateErrorResponse(Topic, 0, ErrorCode.OutOfOrderSequenceNumber));
+
+            await WaitUntilAsync(() => { lock (bumpRequests) return bumpRequests.Count > 0; }, cancellationToken);
+            short firstBump;
+            lock (bumpRequests)
+                firstBump = bumpRequests[0];
+            await Assert.That(firstBump).IsEqualTo((short)5);
+        }
+        finally
+        {
+            // Whatever the recovery resends after the bump is answered too.
+            foreach (var response in responses)
+                response.TrySetResult(CreateSuccessResponse(Topic, 0, baseOffset: 0));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// The issue's KIP-126 case (#3823): A is too large for the topic and is split, and B, sent
+    /// behind it, is answered OutOfOrderSequenceNumber because nothing of A was appended. The
+    /// split children keep A's sequences, B follows them with its own, and the transaction is
+    /// never failed.
+    /// </summary>
+    [Test]
+    public async Task OutOfOrderSequence_BehindASplitPredecessor_KeepsTheTransaction(CancellationToken cancellationToken)
+    {
+        var responses = Enumerable.Range(0, 5).Select(_ => NewResponseSource()).ToArray();
+        var (pool, connection) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>(responses));
+        connection.CaptureProduceRequests = true;
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(
+            maxInFlightRequestsPerConnection: 2,
+            retryBackoffMs: 0,
+            transactionalId: "test-transaction",
+            batchSize: 1_000);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var transactionFailures = 0;
+        accumulator.OnTransactionalBatchFailed = (_, _, _, _) =>
+        {
+            Interlocked.Increment(ref transactionFailures);
+            return true;
+        };
+        var acknowledgements = new List<Exception?>();
+        var behindPredecessor = new EventLogger("LogOutOfOrderSequenceBehindRejectedPredecessor");
+        var sender = CreateSender(
+            pool, options, accumulator,
+            (_, _, _, _, exception) =>
+            {
+                lock (acknowledgements)
+                    acknowledgements.Add(exception);
+            },
+            produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
+            isTransactional: true,
+            usesTransactionV2: true,
+            logger: behindPredecessor);
+
+        try
+        {
+            var batchA = CreateSplittableBatch(options, recordCount: 8, producerId: 1234, producerEpoch: 5);
+            sender.Enqueue(batchA);
+            await WaitForSendsAsync(connection, 1, cancellationToken);
+            var (batchB, deliveryB) = CreateTrackedBatch(valueTaskSourcePool, Partition0, producerId: 1234, producerEpoch: 5, recordCount: 2);
+            sender.Enqueue(batchB);
+            await WaitForSendsAsync(connection, 2, cancellationToken);
+
+            // B's rejection is answered once the first split child is on the wire, as the
+            // connection would answer them.
+            responses[0].SetResult(CreateErrorResponse(Topic, 0, ErrorCode.MessageTooLarge));
+            await WaitForSendsAsync(connection, 3, cancellationToken);
+            responses[1].SetResult(CreateErrorResponse(Topic, 0, ErrorCode.OutOfOrderSequenceNumber));
+            await behindPredecessor.WaitAsync(cancellationToken);
+
+            for (var request = 2; request < responses.Length; request++)
+            {
+                await WaitForSendsAsync(connection, request + 1, cancellationToken);
+                responses[request].SetResult(CreateSuccessResponse(Topic, 0, baseOffset: request));
+            }
+
+            await deliveryB.WaitAsync(cancellationToken);
+            var first = StampsOf(connection, request: 2);
+            var second = StampsOf(connection, request: 3);
+            await Assert.That(first.Length).IsEqualTo(1);
+            await Assert.That(second.Length).IsEqualTo(1);
+            await Assert.That(first[0].BaseSequence).IsEqualTo(0);
+            await Assert.That(second[0].BaseSequence).IsEqualTo(first[0].RecordCount);
+            await Assert.That(first[0].RecordCount + second[0].RecordCount).IsEqualTo(8);
+            await Assert.That(StampsOf(connection, request: 4)).IsEquivalentTo([(0, 2, 1234L, (short)5, 8)]);
+            await Assert.That(Volatile.Read(ref transactionFailures)).IsEqualTo(0);
+            await WaitUntilAsync(() => { lock (acknowledgements) return acknowledgements.Count == 3; }, cancellationToken);
+            bool allSucceeded;
+            lock (acknowledgements)
+                allSucceeded = acknowledgements.All(static exception => exception is null);
+            await Assert.That(allSucceeded).IsTrue();
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Assert.Fail($"A wait was cancelled before the send loop got there. Requests written so far:{Environment.NewLine}{DescribeRequests(connection)}");
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// A sealed batch of <paramref name="recordCount"/> encoded records on partition 0 that the
+    /// sender can split, stamped with the given producer ID and epoch.
+    /// </summary>
+    private static ReadyBatch CreateSplittableBatch(ProducerOptions options, int recordCount, long producerId, short producerEpoch)
+    {
+        var builder = new PartitionBatch(Partition0, options);
+        // Room for every record; the split itself uses the configured batch size.
+        builder.SetSplitBatchSizeLimit(4_096);
+        builder.SetTransactionState(producerId, producerEpoch, isTransactional: true);
+        for (var i = 0; i < recordCount; i++)
+        {
+            var value = new byte[120];
+            value.AsSpan().Fill((byte)i);
+            var appended = builder.TryAppendFromSpans(
+                timestamp: 1_000 + i,
+                keyData: default,
+                keyIsNull: true,
+                valueData: value,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                completionSource: null,
+                callback: null,
+                estimatedSize: PartitionBatch.EstimateRecordSize(0, value.Length, null, 0));
+            if (!appended.Success)
+                throw new InvalidOperationException("Test record did not fit.");
+        }
+
+        var batch = builder.Complete()!;
+        batch.MarkPreSerialized();
+        batch.TrySetMemoryReleased();
+        return batch;
+    }
+
+    /// <summary>
     /// The producer's local bump as the send loop sees it: epoch+1 published to the accumulator
     /// and to <paramref name="state"/>, with <paramref name="afterBump"/> run before the send loop
     /// continues.
@@ -1398,7 +1670,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
     private static ProducerOptions CreateOptions(
         int maxInFlightRequestsPerConnection = 1,
         int deliveryTimeoutMs = 30_000,
-        int retryBackoffMs = 1) => new()
+        int retryBackoffMs = 1,
+        string? transactionalId = null,
+        int batchSize = 1_048_576) => new()
     {
         BootstrapServers = ["localhost:9092"],
         MaxInFlightRequestsPerConnection = maxInFlightRequestsPerConnection,
@@ -1411,7 +1685,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         // 0 disables the backoff and with it the jitter that decides which retries are due together.
         RetryBackoffMs = retryBackoffMs,
         RetryBackoffMaxMs = retryBackoffMs,
-        LingerMs = 0
+        LingerMs = 0,
+        TransactionalId = transactionalId,
+        BatchSize = batchSize
     };
 
     private (IConnectionPool pool, TestKafkaConnection connection) CreateMockConnection(
@@ -1489,6 +1765,29 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
                     $"  request {index + 1}: " + string.Join(", ", request.Batches.Select(batch =>
                         $"{batch.Topic}-{batch.Partition} ({batch.ProducerId}, {batch.ProducerEpoch}, {batch.BaseSequence}) x{batch.RecordCount}"))));
         }
+    }
+
+    /// <summary>Signals once the sender logs the event named <paramref name="eventName"/>.</summary>
+    private sealed class EventLogger(string eventName) : Microsoft.Extensions.Logging.ILogger
+    {
+        private readonly TaskCompletionSource _logged = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            Microsoft.Extensions.Logging.LogLevel logLevel,
+            Microsoft.Extensions.Logging.EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (eventId.Name == eventName)
+                _logged.TrySetResult();
+        }
+
+        public Task WaitAsync(CancellationToken cancellationToken) => _logged.Task.WaitAsync(cancellationToken);
     }
 
     /// <summary>
