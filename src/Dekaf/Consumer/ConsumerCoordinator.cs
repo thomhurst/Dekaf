@@ -2189,17 +2189,21 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     public ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> FetchOffsetsAsync(
         IEnumerable<TopicPartition> partitions,
         CancellationToken cancellationToken)
-        => FetchOffsetsAsync(partitions, rejoinOnMembershipLoss: true, cancellationToken);
+        => FetchOffsetsAsync(partitions, rejoinOnMembershipLoss: true, unstablePartitions: null, cancellationToken);
 
     /// <summary>
     /// Fetches committed offsets for the group. With <paramref name="rejoinOnMembershipLoss"/>
     /// false, a fetch that finds the member has left the group throws
     /// <see cref="GroupRejoinRequiredException"/> instead of rejoining: the caller holds a lock
     /// a rebalance callback may need, so it rejoins itself once that lock is released.
+    /// With <paramref name="unstablePartitions"/> set, a partition whose offset a pending
+    /// transaction committed (KIP-447 <c>UNSTABLE_OFFSET_COMMIT</c>) is added to it and left out of
+    /// the result instead of being waited out, so the caller can retry it later.
     /// </summary>
     internal async ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> FetchOffsetsAsync(
         IEnumerable<TopicPartition> partitions,
         bool rejoinOnMembershipLoss,
+        HashSet<TopicPartition>? unstablePartitions,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrEmpty(_options.GroupId))
@@ -2228,6 +2232,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     {
                         return await RetryHelper.WithRetryAsync(async () =>
                         {
+                            // A retried pass reports the partitions its own response found unstable.
+                            unstablePartitions?.Clear();
                             if (_coordinatorId < 0)
                                 await FindCoordinatorAsync(operationToken).ConfigureAwait(false);
 
@@ -2356,7 +2362,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                                     foreach (var partition in topic.Partitions)
                                     {
                                         if (partition.ErrorCode != ErrorCode.None)
+                                        {
+                                            if (TryDeferUnstablePartition(unstablePartitions, topic.Name, partition))
+                                                continue;
                                             throw CreatePartitionFetchException(topic.Name, partition);
+                                        }
 
                                         if (partition.CommittedOffset >= 0)
                                         {
@@ -2406,7 +2416,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                                         foreach (var partition in topic.Partitions)
                                         {
                                             if (partition.ErrorCode != ErrorCode.None)
+                                            {
+                                                if (TryDeferUnstablePartition(unstablePartitions, topicName, partition))
+                                                    continue;
                                                 throw CreatePartitionFetchException(topicName, partition);
+                                            }
 
                                             if (partition.CommittedOffset >= 0)
                                             {
@@ -2487,6 +2501,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 $"({_options.RequestTimeoutMs}ms)",
                 ex.InnerException ?? (Exception?)unstableCause ?? ex);
         }
+    }
+
+    private static bool TryDeferUnstablePartition(
+        HashSet<TopicPartition>? unstablePartitions,
+        string topic,
+        OffsetFetchResponsePartition partition)
+    {
+        if (unstablePartitions is null || partition.ErrorCode != ErrorCode.UnstableOffsetCommit)
+            return false;
+
+        unstablePartitions.Add(new TopicPartition(topic, partition.PartitionIndex));
+        return true;
     }
 
     // UNSTABLE_OFFSET_COMMIT is waited out by FetchOffsetsAsync until its deadline, so the

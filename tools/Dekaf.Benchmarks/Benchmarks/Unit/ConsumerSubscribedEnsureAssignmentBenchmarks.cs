@@ -9,7 +9,8 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// The steady-state assignment check a subscribed group consumer makes on its poll path
 /// (<c>EnsureAssignmentForPollAsync</c>): a stable member, an unchanged subscription and an
 /// assignment already synchronized return without the assignment lock or the network. Measures
-/// the per-poll cost of that check, including the subscription-generation bookkeeping.
+/// the per-poll cost of that check, including the subscription-generation bookkeeping and the
+/// check for a deferred committed-offset lookup that is due for a retry (none is pending here).
 /// </summary>
 [MemoryDiagnoser]
 public class ConsumerSubscribedEnsureAssignmentBenchmarks

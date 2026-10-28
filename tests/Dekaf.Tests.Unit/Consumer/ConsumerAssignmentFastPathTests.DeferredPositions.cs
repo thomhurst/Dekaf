@@ -1,0 +1,167 @@
+using System.Reflection;
+using Dekaf.Consumer;
+using Dekaf.Errors;
+using Dekaf.Networking;
+using Dekaf.Protocol;
+using Dekaf.Protocol.Messages;
+using NSubstitute;
+
+namespace Dekaf.Tests.Unit.Consumer;
+
+/// <summary>
+/// Position initialization on the poll path does not wait out a committed offset it cannot read
+/// yet (issue #3796): the partition stays without a position, every other partition is
+/// initialized, and a later poll retries the lookup after a backoff.
+/// </summary>
+public sealed partial class ConsumerAssignmentFastPathTests
+{
+    private static readonly FieldInfo DeferredPositionRetryDueField = typeof(KafkaConsumer<string, string>).GetField(
+            "_deferredPositionRetryDueMs",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+        ?? throw new InvalidOperationException("_deferredPositionRetryDueMs field not found.");
+
+    [Test]
+    public async Task EnsureAssignmentAsync_UnstableOffsetCommit_InitializesStablePartitionsAndRetriesTheUnstableOneLater()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0, 1));
+
+        // Partition 1's offsets were committed by a transaction that is still open.
+        var requests = 0;
+        var transactionOpen = 1;
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref requests);
+                return ValueTask.FromResult(Volatile.Read(ref transactionOpen) != 0
+                    ? CreateOffsetFetchResponseWithUnstablePartition1()
+                    : CreateSuccessfulOffsetFetchResponse());
+            });
+
+        // A backoff far longer than the test, so only the forced retry below can refetch.
+        await using var consumer = CreateGroupConsumer(
+            connectionPool,
+            metadataManager,
+            retryBackoffMs: 600_000,
+            retryBackoffMaxMs: 600_000);
+        consumer.Subscribe("test-topic");
+
+        // Waiting the transaction out (until the 30 s request timeout) would cancel this.
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await consumer.EnsureAssignmentAsync(timeout.Token);
+
+        var stablePartition = new TopicPartition("test-topic", 0);
+        var unstablePartition = new TopicPartition("test-topic", 1);
+        await Assert.That(consumer.Assignment).Contains(unstablePartition);
+        await Assert.That(GetFetchPositions(consumer)[stablePartition]).IsEqualTo(10L);
+        await Assert.That(GetFetchPositions(consumer).ContainsKey(unstablePartition)).IsFalse();
+        await Assert.That(Volatile.Read(ref requests)).IsEqualTo(1);
+
+        // Before the retry is due, a poll takes the fast path and does not refetch.
+        await consumer.EnsureAssignmentAsync(timeout.Token);
+        await Assert.That(Volatile.Read(ref requests)).IsEqualTo(1);
+
+        Volatile.Write(ref transactionOpen, 0);
+        DeferredPositionRetryDueField.SetValue(consumer, 1L);
+        await consumer.EnsureAssignmentAsync(timeout.Token);
+
+        await Assert.That(Volatile.Read(ref requests)).IsEqualTo(2);
+        await Assert.That(GetFetchPositions(consumer)[unstablePartition]).IsEqualTo(20L);
+        await Assert.That(GetFetchPositions(consumer)[stablePartition]).IsEqualTo(10L);
+        await Assert.That((long)DeferredPositionRetryDueField.GetValue(consumer)!).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task EnsureAssignmentAsync_RetriableLookupOutlastsRequestTimeout_DefersPositionsWithoutThrowing()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0, 1));
+        SetupOffsetFetchError(connection, ErrorCode.CoordinatorLoadInProgress);
+
+        await using var consumer = CreateGroupConsumer(
+            connectionPool,
+            metadataManager,
+            requestTimeoutMs: 200,
+            retryBackoffMs: 10,
+            retryBackoffMaxMs: 20);
+        consumer.Subscribe("test-topic");
+
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        await Assert.That(consumer.Assignment).Count().IsEqualTo(2);
+        await Assert.That(GetFetchPositions(consumer).IsEmpty).IsTrue();
+        await Assert.That((long)DeferredPositionRetryDueField.GetValue(consumer)!).IsNotEqualTo(0L);
+    }
+
+    [Test]
+    public async Task EnsureAssignmentAsync_NonRetriableLookupError_StillThrows()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0, 1));
+        SetupOffsetFetchError(connection, ErrorCode.GroupAuthorizationFailed);
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        consumer.Subscribe("test-topic");
+
+        var exception = await Assert.ThrowsAsync<GroupException>(async () =>
+            await consumer.EnsureAssignmentAsync(CancellationToken.None));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.GroupAuthorizationFailed);
+        await Assert.That((long)DeferredPositionRetryDueField.GetValue(consumer)!).IsEqualTo(0L);
+    }
+
+    private static void SetupOffsetFetchError(IKafkaConnection connection, ErrorCode errorCode)
+    {
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromResult(new OffsetFetchResponse { ErrorCode = errorCode }));
+    }
+
+    private static OffsetFetchResponse CreateOffsetFetchResponseWithUnstablePartition1() => new()
+    {
+        ErrorCode = ErrorCode.None,
+        Topics =
+        [
+            new OffsetFetchResponseTopic
+            {
+                Name = "test-topic",
+                Partitions =
+                [
+                    new OffsetFetchResponsePartition
+                    {
+                        PartitionIndex = 0,
+                        CommittedOffset = 10,
+                        CommittedLeaderEpoch = 4,
+                        ErrorCode = ErrorCode.None
+                    },
+                    new OffsetFetchResponsePartition
+                    {
+                        PartitionIndex = 1,
+                        CommittedOffset = -1,
+                        ErrorCode = ErrorCode.UnstableOffsetCommit
+                    }
+                ]
+            }
+        ]
+    };
+}
