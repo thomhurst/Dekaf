@@ -4,7 +4,7 @@ Read [AGENTS.md](../../../../AGENTS.md) for validation, public contracts, and pe
 
 - Docs-site changes require `npm run build --prefix docs`.
 - There is no Aspire AppHost. Integration tests use Docker/Testcontainers Kafka; stop only resources created for this work.
-- Run before/after benchmarks on the same GitHub Actions `ubuntu-latest` runner VM as required by [AGENTS.md](../../../../AGENTS.md#performance-gate). Local measurements are diagnostic only. No local Redis `performance` lock is required for heavy work; retain PR/issue ownership locks.
+- Add a benchmark fixture only when [AGENTS.md](../../../../AGENTS.md#performance-requirements) requires one: the change materially moves steady-state per-message or per-batch cost. Most bug fixes do not; state the one-line per-message cost in the PR instead. The [performance gate](../../../../AGENTS.md#performance-gate) measures on GitHub Actions; local measurements are diagnostic only. No local Redis `performance` lock is required for heavy work; retain PR/issue ownership locks.
 
 ## Draft review lifecycle
 
