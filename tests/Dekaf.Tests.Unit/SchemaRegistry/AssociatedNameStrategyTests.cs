@@ -992,6 +992,55 @@ public sealed class AssociatedNameStrategyTests
     }
 
     [Test]
+    public async Task GenericDeserializer_TombstoneReturnsDefaultWithoutReadingFrame()
+    {
+        using var client = new MockSchemaRegistryClient();
+        await using var deserializer = SchemaRegistryDeserializer.Create<string>(
+            client,
+            static (_, _) => throw new InvalidOperationException("Delegate must not run for a tombstone."));
+        var context = new SerializationContext
+        {
+            Topic = "orders",
+            Component = SerializationComponent.Value,
+            IsNull = true
+        };
+
+        var value = deserializer.Deserialize(ReadOnlyMemory<byte>.Empty, context);
+
+        await Assert.That(value).IsNull();
+    }
+
+    [Test]
+    public async Task GenericDeserializer_PreparedTombstoneReturnsDefaultWithoutPreparation()
+    {
+        using var client = new MockSchemaRegistryClient();
+        await using var deserializer = new SchemaRegistryDeserializer<string>(
+            client,
+            static (_, _) => throw new InvalidOperationException("Delegate must not run for a tombstone."),
+            ownsClient: false,
+            new CapturingRuleExecutor(),
+            new SchemaRegistryDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Prefix,
+                SubjectNameStrategy = SubjectNameStrategy.AssociatedName
+            });
+        var preparer = (IAsyncDeserializerPreparer<string>)deserializer;
+        var context = new SerializationContext
+        {
+            Topic = "orders",
+            Component = SerializationComponent.Value,
+            IsNull = true
+        };
+
+        await preparer.PrepareAsync(ReadOnlyMemory<byte>.Empty, context);
+        var deserialized = preparer.TryDeserialize(ReadOnlyMemory<byte>.Empty, context, out var value);
+
+        await Assert.That(deserialized).IsTrue();
+        await Assert.That(value).IsNull();
+        await Assert.That(client.AssociationLookupCallCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task GenericDeserializer_AssociatedNamePreparesBeforeReadRules()
     {
         using var client = new MockSchemaRegistryClient();

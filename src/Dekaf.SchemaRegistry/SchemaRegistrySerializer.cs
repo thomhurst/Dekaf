@@ -1096,7 +1096,8 @@ public sealed class SchemaRegistryDeserializer<T> :
         SerializationContext context,
         CancellationToken cancellationToken)
     {
-        if (_ruleExecutor is null
+        if (context is { IsNull: true, Component: SerializationComponent.Value }
+            || _ruleExecutor is null
             || _subjectNames is not { RequiresPreparation: true }
             || !DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId))
         {
@@ -1117,6 +1118,12 @@ public sealed class SchemaRegistryDeserializer<T> :
         SerializationContext context,
         out T value)
     {
+        if (context is { IsNull: true, Component: SerializationComponent.Value })
+        {
+            value = default!;
+            return true;
+        }
+
         string? preparedSubject = null;
         if (_ruleExecutor is not null
             && _subjectNames is { RequiresPreparation: true } subjectNames
@@ -1143,6 +1150,9 @@ public sealed class SchemaRegistryDeserializer<T> :
 
     public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
+        if (context is { IsNull: true, Component: SerializationComponent.Value })
+            return default!;
+
         var span = data.Span;
 
         if (span.Length < 5)
@@ -1215,6 +1225,9 @@ public sealed class SchemaRegistryDeserializer<T> :
         SerializationContext context,
         string subject)
     {
+        if (context is { IsNull: true, Component: SerializationComponent.Value })
+            return default!;
+
         var span = data.Span;
 
         if (span.Length < 5)
