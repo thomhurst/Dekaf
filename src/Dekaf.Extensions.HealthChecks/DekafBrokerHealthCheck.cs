@@ -6,7 +6,8 @@ namespace Dekaf.Extensions.HealthChecks;
 /// <summary>
 /// Health check that verifies broker connectivity by describing the cluster via the admin client.
 /// Reports <see cref="HealthStatus.Healthy"/> when the cluster is reachable and has brokers,
-/// and <see cref="HealthStatus.Unhealthy"/> when the cluster cannot be reached or has no brokers.
+/// and the registration's failure status (<see cref="HealthStatus.Unhealthy"/> by default)
+/// when the cluster cannot be reached or has no brokers.
 /// </summary>
 public sealed class DekafBrokerHealthCheck : IHealthCheck
 {
@@ -31,6 +32,8 @@ public sealed class DekafBrokerHealthCheck : IHealthCheck
         HealthCheckContext context,
         CancellationToken cancellationToken = default)
     {
+        var failureStatus = context.GetFailureStatus();
+
         try
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -47,7 +50,8 @@ public sealed class DekafBrokerHealthCheck : IHealthCheck
 
             if (cluster.Nodes.Count == 0)
             {
-                return HealthCheckResult.Unhealthy(
+                return new HealthCheckResult(
+                failureStatus,
                     "Cluster is reachable but reports no brokers.",
                     data: data);
             }
@@ -58,12 +62,14 @@ public sealed class DekafBrokerHealthCheck : IHealthCheck
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return HealthCheckResult.Unhealthy(
+            return new HealthCheckResult(
+                failureStatus,
                 $"Broker connectivity check timed out after {_options.Timeout.TotalSeconds}s.");
         }
         catch (Exception ex)
         {
-            return HealthCheckResult.Unhealthy(
+            return new HealthCheckResult(
+                failureStatus,
                 "Failed to connect to Kafka brokers.",
                 exception: ex);
         }

@@ -8,7 +8,7 @@ namespace Dekaf.Extensions.HealthChecks;
 /// <summary>
 /// Health check that verifies a share consumer (KIP-932) holds live share group membership.
 /// Reports <see cref="HealthStatus.Healthy"/> when the member is stable and its heartbeat is fresh,
-/// and <see cref="HealthStatus.Unhealthy"/> otherwise.
+/// and the registration's failure status (<see cref="HealthStatus.Unhealthy"/> by default) otherwise.
 /// A heartbeat is considered stale after three missed broker-directed heartbeat intervals.
 /// </summary>
 /// <remarks>
@@ -38,23 +38,26 @@ public sealed class DekafShareConsumerHealthCheck<TKey, TValue> : IHealthCheck
         HealthCheckContext context,
         CancellationToken cancellationToken = default)
     {
+        var failureStatus = context.GetFailureStatus();
+
         if (_consumer is not IKafkaClientStatusProvider statusProvider)
         {
-            return Task.FromResult(HealthCheckResult.Unhealthy(
+            return Task.FromResult(new HealthCheckResult(
+                failureStatus,
                 "Share consumer does not expose operational status."));
         }
 
         var status = statusProvider.GetStatus();
-        return Task.FromResult(Evaluate(status.IsStopped, status.ConsumerGroup));
+        return Task.FromResult(Evaluate(status.IsStopped, status.ConsumerGroup, failureStatus));
     }
 
-    private static HealthCheckResult Evaluate(bool isStopped, ConsumerGroupStatus? group)
+    private static HealthCheckResult Evaluate(bool isStopped, ConsumerGroupStatus? group, HealthStatus failureStatus)
     {
         if (isStopped)
-            return HealthCheckResult.Unhealthy("Share consumer is stopped.");
+            return new HealthCheckResult(failureStatus, "Share consumer is stopped.");
 
         if (group is null || !group.HasConsumerGroup)
-            return HealthCheckResult.Unhealthy("Share consumer has no share group.");
+            return new HealthCheckResult(failureStatus, "Share consumer has no share group.");
 
         var data = new Dictionary<string, object>
         {
@@ -65,14 +68,16 @@ public sealed class DekafShareConsumerHealthCheck<TKey, TValue> : IHealthCheck
 
         if (group.LastHeartbeatFailure is { Length: > 0 } failure)
         {
-            return HealthCheckResult.Unhealthy(
+            return new HealthCheckResult(
+                failureStatus,
                 $"Share consumer heartbeat failed: {failure}",
                 data: data);
         }
 
         if (group.State != CoordinatorState.Stable || string.IsNullOrEmpty(group.MemberId))
         {
-            return HealthCheckResult.Unhealthy(
+            return new HealthCheckResult(
+                failureStatus,
                 "Share consumer is not a stable member of its share group.",
                 data: data);
         }
@@ -81,7 +86,8 @@ public sealed class DekafShareConsumerHealthCheck<TKey, TValue> : IHealthCheck
             || group.HeartbeatInterval <= TimeSpan.Zero
             || heartbeatAge > group.HeartbeatInterval * HeartbeatStaleIntervalMultiplier)
         {
-            return HealthCheckResult.Unhealthy(
+            return new HealthCheckResult(
+                failureStatus,
                 "Share consumer heartbeat is missing or stale.",
                 data: data);
         }

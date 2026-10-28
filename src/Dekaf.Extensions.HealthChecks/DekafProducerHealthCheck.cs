@@ -6,7 +6,8 @@ namespace Dekaf.Extensions.HealthChecks;
 /// <summary>
 /// Health check that waits for a producer flush checkpoint to complete.
 /// Reports <see cref="HealthStatus.Healthy"/> when the flush completes,
-/// and <see cref="HealthStatus.Unhealthy"/> when the flush throws or times out.
+/// and the registration's failure status (<see cref="HealthStatus.Unhealthy"/> by default)
+/// when the flush throws or times out.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -53,6 +54,8 @@ public sealed class DekafProducerHealthCheck<TKey, TValue> : IHealthCheck
         HealthCheckContext context,
         CancellationToken cancellationToken = default)
     {
+        var failureStatus = context.GetFailureStatus();
+
         try
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -65,12 +68,14 @@ public sealed class DekafProducerHealthCheck<TKey, TValue> : IHealthCheck
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return HealthCheckResult.Unhealthy(
+            return new HealthCheckResult(
+                failureStatus,
                 $"Producer flush timed out after {_options.Timeout.TotalSeconds}s.");
         }
         catch (Exception ex)
         {
-            return HealthCheckResult.Unhealthy(
+            return new HealthCheckResult(
+                failureStatus,
                 "Producer flush checkpoint check failed.",
                 exception: ex);
         }
