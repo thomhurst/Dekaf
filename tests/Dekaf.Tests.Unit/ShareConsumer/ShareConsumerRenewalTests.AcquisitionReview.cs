@@ -328,7 +328,15 @@ public sealed partial class ShareConsumerRenewalTests
         await Assert.That(await pending).IsTrue();
         await Assert.That(next.Current.Offset).IsEqualTo(200);
 
+        if (transportFailure)
+        {
+            // The transport failure closed the share session, and a ShareAcknowledge cannot open
+            // one. The release waits for the fetch that reopened it and goes out on the next poll.
+            await Assert.That(connection.ShareAcknowledgeRequests).IsEmpty();
+            await Assert.That(await next.MoveNextAsync()).IsTrue();
+        }
         await Assert.That(connection.ShareAcknowledgeRequests).HasSingleItem();
+        await Assert.That(connection.ShareAcknowledgeRequests[0].ShareSessionEpoch).IsNotEqualTo(0);
         var released = connection.ShareAcknowledgeRequests[0].Topics[0].Partitions[0];
         await Assert.That(released.PartitionIndex).IsEqualTo(0);
         await Assert.That(released.AcknowledgementBatches[0].FirstOffset).IsEqualTo(100);

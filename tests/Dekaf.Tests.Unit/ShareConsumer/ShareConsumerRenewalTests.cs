@@ -1587,7 +1587,6 @@ public sealed partial class ShareConsumerRenewalTests
             acknowledgements,
             false,
             CancellationToken.None,
-            false,
             false)!;
 
     private static void ApplySuccessfulAcknowledgements(
