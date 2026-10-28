@@ -51,10 +51,12 @@ public sealed class ConsumerOptions
     /// </summary>
     public required IReadOnlyList<string> BootstrapServers { get; init; }
 
+    internal const string DefaultClientId = "dekaf-consumer";
+
     /// <summary>
     /// Client ID.
     /// </summary>
-    public string? ClientId { get; init; } = "dekaf-consumer";
+    public string? ClientId { get; init; } = DefaultClientId;
 
     /// <summary>
     /// Consumer group ID.

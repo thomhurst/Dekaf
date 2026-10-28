@@ -1783,19 +1783,14 @@ internal static class DekafConfigurationBinding
             builder.WithBootstrapResolveTimeout(TimeSpan.FromMilliseconds(bootstrapResolveTimeoutMs));
     }
 
-    private const string DefaultShareConsumerClientId = "dekaf-share-consumer";
-
     public static void ApplyShareConsumer<TKey, TValue>(
         IConfiguration configuration,
         ShareConsumerBuilder<TKey, TValue> builder)
     {
         if (TryGetBootstrapServers(configuration, out var bootstrapServers))
             builder.WithBootstrapServers(bootstrapServers);
-        // Configuration-bound share consumers keep the ShareConsumerOptions client ID default.
-        builder.WithClientId(
-            TryGetValue<string>(configuration, nameof(ShareConsumerOptions.ClientId), out var clientId)
-                ? clientId
-                : DefaultShareConsumerClientId);
+        if (TryGetValue<string>(configuration, nameof(ShareConsumerOptions.ClientId), out var clientId))
+            builder.WithClientId(clientId);
         if (TryGetValue<string>(configuration, nameof(ShareConsumerOptions.GroupId), out var groupId))
             builder.WithGroupId(groupId);
         if (TryGetAutoOffsetReset(
