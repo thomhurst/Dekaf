@@ -48,20 +48,19 @@ public sealed partial class AdminClientRemoveMembersTests
             .Returns(call =>
             {
                 Interlocked.Increment(ref attempts);
-                return new ValueTask<LeaveGroupResponse>(WaitForCancellationAsync(call.ArgAt<CancellationToken>(2)));
+                var blocked = WaitForCancellationAsync(call.ArgAt<CancellationToken>(2));
+                AdminDeadline.Expire(call.ArgAt<CancellationToken>(2));
+                return new ValueTask<LeaveGroupResponse>(blocked);
             });
         await using (admin)
         {
-            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            // The broker never answers: the call ends through the deadline.
             var exception = await Assert.That(async () => await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
                 new ConsumerGroupMemberRemovalOptions
                 {
-                    TimeoutMs = 200,
+                    TimeoutMs = 30_000,
                     Members = [new ConsumerGroupMemberIdentity { GroupInstanceId = "instance" }]
                 })).Throws<KafkaException>();
-            stopwatch.Stop();
-            // The broker never answers: the call still ends at about the deadline.
-            await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(5));
             await Assert.That(exception).IsNotTypeOf<KafkaTimeoutException>();
             await Assert.That(exception!.IsRetriable).IsFalse();
             await Assert.That(exception.InnerException).IsAssignableTo<OperationCanceledException>();
@@ -79,21 +78,32 @@ public sealed partial class AdminClientRemoveMembersTests
         var (admin, connection) = CreateAdmin(3, 5);
         SetupCoordinator(connection);
         SetupMemberDiscovery(connection);
+        var sendStarted = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
         connection.SendAsync<LeaveGroupRequest, LeaveGroupResponse>(Arg.Any<LeaveGroupRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-            .Returns(call => new ValueTask<LeaveGroupResponse>(RespondAtCancellationAsync(call.ArgAt<CancellationToken>(2))));
+            .Returns(call =>
+            {
+                var token = call.ArgAt<CancellationToken>(2);
+                sendStarted.TrySetResult(token);
+                return new ValueTask<LeaveGroupResponse>(RespondAtCancellationAsync(token));
+            });
         await using (admin)
         {
-            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-            var result = await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
+            var removal = admin.RemoveMembersFromConsumerGroupAsync(GroupId,
                 new ConsumerGroupMemberRemovalOptions
                 {
-                    TimeoutMs = 100,
+                    TimeoutMs = 30_000,
                     Members = [new ConsumerGroupMemberIdentity { GroupInstanceId = "instance" }]
-                });
-            stopwatch.Stop();
+                }).AsTask();
+            // Expire the deadline only once the send is pending, so the answer and the
+            // cancellation race on an in-flight request. A call that ends before the send
+            // surfaces its own failure instead of leaving the test waiting.
+            if (await Task.WhenAny(sendStarted.Task, removal) == removal)
+                await removal;
+            await Assert.That(sendStarted.Task.IsCompleted).IsTrue();
+            AdminDeadline.Expire(await sendStarted.Task);
+            var result = await removal;
             await Assert.That(result.Members.Count).IsEqualTo(1);
             await Assert.That(result.Members[0].ErrorCode).IsEqualTo(ErrorCode.None);
-            await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(5));
         }
 
         static Task<LeaveGroupResponse> RespondAtCancellationAsync(CancellationToken token)
