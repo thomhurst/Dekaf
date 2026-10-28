@@ -3539,6 +3539,109 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
 
     [Test]
     [Timeout(120_000)]
+    public async Task SendLoop_BlockedBucket_KeepsRetryAheadOfNewerRetryOfItsPartition(
+        CancellationToken cancellationToken)
+    {
+        // #3798: a retry coalesced into a bucket whose connection is saturated goes back to
+        // carry-over. It must keep its retry state, so the partition's older retry is sent
+        // before the newer one when the connection frees up.
+        var responses = Enumerable.Range(0, 5)
+            .Select(_ => new TaskCompletionSource<ProduceResponse>())
+            .ToArray();
+        var (pool, connection) = CreateMockConnection(
+            new Queue<TaskCompletionSource<ProduceResponse>>(responses));
+        connection.CaptureProduceRequests = true;
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(
+            maxInFlight: 5,
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            connectionsPerBroker: 2,
+            enableAdaptiveConnections: false,
+            batchSize: 100);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var blockedBucketRequeues = 0;
+        var requeuesAfterSecondFailure = 0;
+        ReadyBatch? second = null;
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, _) => { },
+            onBlockedBucketRequeued: () =>
+            {
+                Interlocked.Increment(ref blockedBucketRequeues);
+                // Runs on the send loop, which records the failure, so this read is current.
+                // A pass after the second failure holds both retries of the partition.
+                if (Volatile.Read(ref second) is { RetryFailureCount: > 0 })
+                    Interlocked.Increment(ref requeuesAfterSecondFailure);
+            });
+
+        object[] SentBatches(int request)
+        {
+            lock (connection.CapturedProduceRequests)
+                return connection.CapturedProduceRequests[request].RecordBatches.ToArray();
+        }
+
+        Task WaitForAsync(Func<bool> condition, string step) =>
+            TestWait.UntilAsync(
+                condition,
+                TimeSpan.FromSeconds(30),
+                () => $"{step}: requests={connection.CapturedProduceRequestCount}, " +
+                    $"blockedRequeues={Volatile.Read(ref blockedBucketRequeues)}, " +
+                    $"requeuesAfterSecondFailure={Volatile.Read(ref requeuesAfterSecondFailure)}",
+                cancellationToken,
+                pollInterval: TimeSpan.FromMilliseconds(1));
+
+        try
+        {
+            // Partitions 0 and 2 share connection 0.
+            var first = CreateTestBatch(valueTaskSourcePool, "test-topic", 0, dataSize: 10);
+            second = CreateTestBatch(valueTaskSourcePool, "test-topic", 0, dataSize: 10);
+            var firstRecords = first.RecordBatch;
+            var secondRecords = second.RecordBatch;
+            sender.Enqueue(first);
+            await WaitForAsync(() => connection.CapturedProduceRequestCount == 1, "first request");
+            sender.Enqueue(second);
+            await WaitForAsync(() => connection.CapturedProduceRequestCount == 2, "second request");
+
+            // Fill connection 0's in-flight byte budget.
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 2, dataSize: 5_000));
+            await WaitForAsync(() => connection.CapturedProduceRequestCount == 3, "saturating request");
+
+            responses[0].SetResult(CreateErrorResponse("test-topic", 0, ErrorCode.NotEnoughReplicas));
+            await WaitForAsync(() => Volatile.Read(ref blockedBucketRequeues) >= 1, "first retry blocked");
+            responses[1].SetResult(CreateErrorResponse("test-topic", 0, ErrorCode.NotEnoughReplicas));
+            await WaitForAsync(
+                () => Volatile.Read(ref requeuesAfterSecondFailure) >= 1, "both retries blocked");
+
+            responses[2].SetResult(CreateSuccessResponse("test-topic", 2, baseOffset: 300));
+            // Idempotent retries pipeline, so the second retry may already be written.
+            await WaitForAsync(() => connection.CapturedProduceRequestCount >= 4, "first retry sent");
+            var firstRetry = SentBatches(3);
+            responses[3].SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 100));
+            await WaitForAsync(() => connection.CapturedProduceRequestCount == 5, "second retry sent");
+            var secondRetry = SentBatches(4);
+            responses[4].SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 101));
+
+            await Assert.That(firstRetry.Length).IsEqualTo(1);
+            await Assert.That(ReferenceEquals(firstRetry[0], firstRecords)).IsTrue();
+            await Assert.That(secondRetry.Length).IsEqualTo(1);
+            await Assert.That(ReferenceEquals(secondRetry[0], secondRecords)).IsTrue();
+        }
+        finally
+        {
+            foreach (var response in responses)
+                response.TrySetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 0));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
     public async Task SendLoop_StaleAfterWrite_ByteAccountingSkipsNulledBatch(
         CancellationToken cancellationToken)
     {

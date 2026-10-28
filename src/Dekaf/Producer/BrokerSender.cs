@@ -435,11 +435,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Pre-allocated bucket for grouping coalesced batches by connection affinity.
     /// Single-threaded: only accessed by the send loop.
     /// </summary>
-    private struct ConnectionBucket
+    internal struct ConnectionBucket
     {
         public ReadyBatch[] Batches;
         public int[] Generations;
         public int Count;
+
+        // Set when the bucket sends in this pass. Its retries are finalized only then.
+        public bool Dispatch;
 
         public void Clear()
         {
@@ -2063,10 +2066,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             }
                         }
 
-                        // Finalize retry batches now that we know they will actually be sent
-                        // (epoch bump check passed). Clear IsRetry and unmute partitions.
-                        FinalizeCoalescedRetries(coalescedBatches, coalescedCount, carryOver);
-
                         // The abort fence at the write commit point. A transaction abort that
                         // closed the accumulator after this pass's carry-over check (for example
                         // during the enrollment step above) must not get a new request it would
@@ -2075,6 +2074,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // transactional producer only.
                         if (_options.TransactionalId is not null && _accumulator.TransactionalAppendsClosed)
                         {
+                            // Clear the retry mutes of these batches, as a send would.
+                            FinalizeCoalescedRetries(coalescedBatches, coalescedCount, carryOver);
                             FailCoalescedForTransactionAbort(
                                 coalescedBatches, coalescedGenerations, ref coalescedCount);
                             continue;
@@ -2086,6 +2087,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         if (_connectionCount == 1)
                         {
                             // === Single-connection fast path (no grouping overhead) ===
+                            // Every coalesced batch is sent now (the epoch bump check passed),
+                            // so clear IsRetry and unmute partitions.
+                            FinalizeCoalescedRetries(coalescedBatches, coalescedCount, carryOver);
                             var batchesToSend = ArrayPool<ReadyBatch>.Shared.Rent(coalescedCount);
                             var countToSend = 0;
                             for (var i = 0; i < coalescedCount; i++)
@@ -2193,16 +2197,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 if (connectionBuckets[c].HasBatches) remainingBuckets++;
                             }
 
-                            // Send on connections with in-flight capacity first.
+                            MarkDispatchableBuckets(connectionBuckets, carryOver);
+
                             // Fire all eligible connection sends concurrently so TCP
                             // FlushAsync waits overlap instead of serializing.
                             var pendingSendCount = 0;
                             for (var c = 0; c < _connectionCount; c++)
                             {
-                                if (!connectionBuckets[c].HasBatches) continue;
-                                if (_pendingResponsesByConnection[c].Count >= _maxInFlight) continue;
-                                if (Interlocked.Read(ref _pendingResponseBytesByConnection[c])
-                                    >= _maxInFlightBytesPerConnection) continue;
+                                if (!connectionBuckets[c].Dispatch) continue;
+                                connectionBuckets[c].Dispatch = false;
 
                                 ResetBucketTimeout(ref bucketTimeoutCts[c], cancellationToken);
                                 parallelSends[pendingSendCount++] = SendConnectionBucketAsync(c, connectionBuckets,
@@ -3020,6 +3023,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// when the batch will actually be sent. If called during CoalesceBatch instead,
     /// an epoch bump check that moves batches back to carry-over would lose the retry
     /// state — causing the batch to be treated as a normal batch and sent out of order.
+    /// The multi-connection path calls it per dispatched connection bucket for the same
+    /// reason: a bucket blocked on a saturated connection goes back to carry-over (#3798).
     /// </summary>
     private void FinalizeCoalescedRetries(
         ReadyBatch[] batches,
@@ -3035,6 +3040,27 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 if (!carryOver.HasRetry(batch.TopicPartition))
                     UnmutePartition(batch.TopicPartition);
             }
+        }
+    }
+
+    /// <summary>
+    /// Marks the connection buckets that send in this pass, those whose connection has
+    /// in-flight capacity, and finalizes the retries of those buckets only. A bucket blocked on
+    /// a saturated connection goes back to carry-over with its retry state, so AddFirst keeps
+    /// each retry ahead of newer retries of its partition (#3798). Every dispatched bucket is
+    /// finalized before the first send of the wave starts. Send loop only; one check per
+    /// connection and one per dispatched batch.
+    /// </summary>
+    internal void MarkDispatchableBuckets(ConnectionBucket[] connectionBuckets, PartitionCarryOver carryOver)
+    {
+        for (var c = 0; c < _connectionCount; c++)
+        {
+            ref var bucket = ref connectionBuckets[c];
+            bucket.Dispatch = bucket.HasBatches
+                && _pendingResponsesByConnection[c].Count < _maxInFlight
+                && Interlocked.Read(ref _pendingResponseBytesByConnection[c]) < _maxInFlightBytesPerConnection;
+            if (bucket.Dispatch)
+                FinalizeCoalescedRetries(bucket.Batches, bucket.Count, carryOver);
         }
     }
 
