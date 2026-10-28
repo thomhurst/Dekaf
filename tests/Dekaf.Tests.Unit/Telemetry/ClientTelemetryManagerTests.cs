@@ -102,6 +102,134 @@ public sealed partial class ClientTelemetryManagerTests
     }
 
     [Test]
+    public async Task BackgroundLoop_RefetchesSubscriptionOnUnsupportedCompressionType()
+    {
+        await using var context = new TelemetryTestContext();
+        var clientInstanceId = Guid.Parse("33333333-4444-3333-3333-333333333333");
+        context.Connection.Enqueue(Subscription(
+            clientInstanceId,
+            subscriptionId: 1,
+            pushIntervalMs: 10,
+            acceptedCompressionTypes: [1]));
+        context.Connection.Enqueue(new PushTelemetryResponse { ErrorCode = ErrorCode.UnsupportedCompressionType });
+        context.Connection.Enqueue(Subscription(
+            clientInstanceId,
+            subscriptionId: 2,
+            pushIntervalMs: 10,
+            acceptedCompressionTypes: [0]));
+        context.Connection.Enqueue(new PushTelemetryResponse { ErrorCode = ErrorCode.None });
+
+        await context.Manager.StartAsync();
+
+        var pushes = await context.Connection.WaitForRequestsAsync<PushTelemetryRequest>(
+            count: 2,
+            timeout: TimeSpan.FromSeconds(2));
+        var subscriptions = context.Connection.RequestsOfType<GetTelemetrySubscriptionsRequest>();
+
+        await Assert.That(subscriptions.Count).IsEqualTo(2);
+        await Assert.That(subscriptions[1].ClientInstanceId).IsEqualTo(clientInstanceId);
+        await Assert.That(pushes[0].CompressionType).IsEqualTo((sbyte)1);
+        await Assert.That(pushes[1].SubscriptionId).IsEqualTo(2);
+        await Assert.That(pushes[1].CompressionType).IsEqualTo((sbyte)0);
+        await Assert.That(context.Manager.IsDisabled).IsFalse();
+    }
+
+    [Test]
+    public async Task StartAsync_TransientSubscriptionFailure_RetriesUntilSubscribedAndPushes()
+    {
+        await using var context = new TelemetryTestContext(subscriptionRetryBackoff: TimeSpan.FromMilliseconds(10));
+        var clientInstanceId = Guid.Parse("33333333-5555-3333-3333-333333333333");
+        context.Connection.Enqueue(new GetTelemetrySubscriptionsResponse { ErrorCode = ErrorCode.BrokerNotAvailable });
+        context.Connection.Enqueue(new GetTelemetrySubscriptionsResponse { ErrorCode = ErrorCode.CoordinatorLoadInProgress });
+        context.Connection.Enqueue(Subscription(clientInstanceId, subscriptionId: 3, pushIntervalMs: 10));
+        context.Connection.Enqueue(new PushTelemetryResponse { ErrorCode = ErrorCode.None });
+
+        await context.Manager.StartAsync();
+
+        await Assert.That(context.Manager.IsStarted).IsTrue();
+        await Assert.That(context.Manager.IsDisabled).IsFalse();
+
+        var pushes = await context.Connection.WaitForRequestsAsync<PushTelemetryRequest>(
+            count: 1,
+            timeout: TimeSpan.FromSeconds(2));
+
+        await Assert.That(context.Connection.RequestsOfType<GetTelemetrySubscriptionsRequest>().Count).IsEqualTo(3);
+        await Assert.That(pushes[0].ClientInstanceId).IsEqualTo(clientInstanceId);
+        await Assert.That(pushes[0].SubscriptionId).IsEqualTo(3);
+        await Assert.That(context.Manager.ClientInstanceId).IsEqualTo(clientInstanceId);
+    }
+
+    [Test]
+    public async Task BackgroundLoop_FailedRefresh_RetriesWithoutPushingStaleSubscription()
+    {
+        await using var context = new TelemetryTestContext(subscriptionRetryBackoff: TimeSpan.FromMilliseconds(10));
+        var clientInstanceId = Guid.Parse("33333333-6666-3333-3333-333333333333");
+        context.Connection.Enqueue(Subscription(clientInstanceId, subscriptionId: 1, pushIntervalMs: 10));
+        context.Connection.Enqueue(new PushTelemetryResponse { ErrorCode = ErrorCode.UnknownSubscriptionId });
+        context.Connection.Enqueue(new GetTelemetrySubscriptionsResponse { ErrorCode = ErrorCode.BrokerNotAvailable });
+        context.Connection.Enqueue(Subscription(clientInstanceId, subscriptionId: 2, pushIntervalMs: 10));
+        context.Connection.Enqueue(new PushTelemetryResponse { ErrorCode = ErrorCode.None });
+
+        await context.Manager.StartAsync();
+
+        var pushes = await context.Connection.WaitForRequestsAsync<PushTelemetryRequest>(
+            count: 2,
+            timeout: TimeSpan.FromSeconds(2));
+        var subscriptions = context.Connection.RequestsOfType<GetTelemetrySubscriptionsRequest>();
+
+        await Assert.That(subscriptions.Count).IsEqualTo(3);
+        await Assert.That(subscriptions[1].ClientInstanceId).IsEqualTo(clientInstanceId);
+        await Assert.That(subscriptions[2].ClientInstanceId).IsEqualTo(clientInstanceId);
+        await Assert.That(pushes[0].SubscriptionId).IsEqualTo(1);
+        await Assert.That(pushes[1].SubscriptionId).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ComputeStaggeredIntervalMs_StaysWithinHalfToOneAndAHalfIntervals()
+    {
+        for (var i = 0; i < 1000; i++)
+        {
+            var intervalMs = ClientTelemetryManager.ComputeStaggeredIntervalMs(1000);
+            await Assert.That(intervalMs).IsBetween(500, 1500);
+        }
+    }
+
+    [Test]
+    [Arguments(1, 1000d)]
+    [Arguments(2, 2000d)]
+    [Arguments(3, 4000d)]
+    [Arguments(5, 16000d)]
+    [Arguments(6, 30000d)]
+    [Arguments(1000, 30000d)]
+    public async Task ComputeSubscriptionRetryDelay_DoublesUpToTheMaximumWithTwentyPercentJitter(
+        int failedAttempts,
+        double expectedMs)
+    {
+        for (var i = 0; i < 1000; i++)
+        {
+            var delay = ClientTelemetryManager.ComputeSubscriptionRetryDelay(
+                failedAttempts,
+                TimeSpan.FromSeconds(1),
+                TimeSpan.FromSeconds(30));
+            await Assert.That(delay.TotalMilliseconds).IsBetween(expectedMs * 0.8, expectedMs * 1.2);
+        }
+    }
+
+    [Test]
+    [MethodDataSource(nameof(FatalPushErrors))]
+    public async Task StartAsync_FatalSubscriptionError_DisablesTelemetry(ErrorCode errorCode)
+    {
+        await using var context = new TelemetryTestContext(subscriptionRetryBackoff: TimeSpan.FromMilliseconds(10));
+        context.Connection.Enqueue(new GetTelemetrySubscriptionsResponse { ErrorCode = errorCode });
+
+        await context.Manager.StartAsync();
+
+        await Assert.That(context.Manager.IsDisabled).IsTrue();
+        await Assert.That(context.Manager.IsStarted).IsFalse();
+        await Assert.That(context.Connection.RequestsOfType<GetTelemetrySubscriptionsRequest>().Count).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task StopAsync_SendsTerminatingPush()
     {
         await using var context = new TelemetryTestContext();
@@ -442,7 +570,8 @@ public sealed partial class ClientTelemetryManagerTests
             ClientTelemetryMetricCollector? metricCollector = null,
             CompressionCodecRegistry? compressionCodecs = null,
             IClientTelemetryPayloadProvider? payloadProvider = null,
-            ShareConsumerOptions? shareConsumerOptions = null)
+            ShareConsumerOptions? shareConsumerOptions = null,
+            TimeSpan? subscriptionRetryBackoff = null)
         {
             _pool = new TestConnectionPool();
             _metadataManager = new MetadataManager(_pool, ["localhost:9092"]);
@@ -471,7 +600,10 @@ public sealed partial class ClientTelemetryManagerTests
                     _metadataManager,
                     metricCollector: metricCollector,
                     compressionCodecs: compressionCodecs,
-                    payloadProvider: payloadProvider);
+                    payloadProvider: payloadProvider)
+                {
+                    SubscriptionRetryBackoff = subscriptionRetryBackoff ?? TimeSpan.FromSeconds(1)
+                };
             }
             else
             {

@@ -41,6 +41,8 @@ internal sealed class EmptyClientTelemetryPayloadProvider : IClientTelemetryPayl
 internal sealed partial class ClientTelemetryManager : IAsyncDisposable
 {
     private static readonly TimeSpan DefaultStopTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan DefaultSubscriptionRetryBackoff = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan DefaultSubscriptionRetryMaxBackoff = TimeSpan.FromSeconds(30);
 
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
@@ -82,6 +84,12 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
     internal bool IsDisabled => Volatile.Read(ref _disabled) != 0;
     internal bool IsStarted => Volatile.Read(ref _started) != 0;
 
+    // A subscription request that fails transiently (no broker in metadata yet, a connection
+    // reset, a retriable error code) is retried by the loop with exponential backoff, so a broker
+    // restarting while the client starts does not leave telemetry off for the client's lifetime.
+    internal TimeSpan SubscriptionRetryBackoff { get; init; } = DefaultSubscriptionRetryBackoff;
+    internal TimeSpan SubscriptionRetryMaxBackoff { get; init; } = DefaultSubscriptionRetryMaxBackoff;
+
     public async ValueTask StartAsync(CancellationToken cancellationToken = default)
     {
         if (Volatile.Read(ref _disposed) != 0 ||
@@ -103,11 +111,9 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
                 return;
             }
 
+            // A null subscription that did not disable telemetry is transient: the loop starts anyway
+            // and keeps requesting one with backoff.
             var subscription = await TryFetchSubscriptionAsync(Guid.Empty, cancellationToken).ConfigureAwait(false);
-            if (subscription is null)
-            {
-                return;
-            }
 
             if (Volatile.Read(ref _disposed) != 0 ||
                 Volatile.Read(ref _stopRequested) != 0 ||
@@ -116,8 +122,11 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
                 return;
             }
 
-            _metricCollector?.Subscribe(subscription.RequestedMetrics);
-            Volatile.Write(ref _subscription, subscription);
+            if (subscription is not null)
+            {
+                ApplySubscription(subscription);
+            }
+
             var loopCts = new CancellationTokenSource();
             _loopCts = loopCts;
             Volatile.Write(ref _started, 1);
@@ -226,16 +235,52 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
     {
         try
         {
+            var subscription = Volatile.Read(ref _subscription);
             var lastPushTimestamp = Stopwatch.GetTimestamp();
+            var hasPushed = false;
+            var needsSubscription = subscription is null;
+            // StartAsync already made one attempt when it left the subscription unset.
+            var failedSubscriptionAttempts = needsSubscription ? 1 : 0;
+
             while (!cancellationToken.IsCancellationRequested && Volatile.Read(ref _disabled) == 0)
             {
-                var subscription = Volatile.Read(ref _subscription);
-                if (subscription is null)
+                if (needsSubscription)
                 {
-                    return;
+                    if (failedSubscriptionAttempts > 0)
+                    {
+                        await Task.Delay(GetSubscriptionRetryDelay(failedSubscriptionAttempts), cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+
+                    var fetched = await TryFetchSubscriptionAsync(
+                        subscription?.ClientInstanceId ?? Guid.Empty,
+                        cancellationToken).ConfigureAwait(false);
+
+                    if (fetched is null)
+                    {
+                        failedSubscriptionAttempts++;
+                        continue;
+                    }
+
+                    ApplySubscription(fetched);
+                    subscription = fetched;
+                    failedSubscriptionAttempts = 0;
+                    needsSubscription = false;
+
+                    if (!hasPushed)
+                    {
+                        lastPushTimestamp = Stopwatch.GetTimestamp();
+                    }
                 }
 
-                await WaitForPushIntervalAsync(lastPushTimestamp, subscription.PushIntervalMs, cancellationToken)
+                // KIP-714 staggers the first push across 0.5x to 1.5x of the interval so that a fleet
+                // started together does not push in lockstep. Later pushes wait the full interval,
+                // which the broker enforces since the previous accepted push.
+                var pushIntervalMs = hasPushed
+                    ? subscription!.PushIntervalMs
+                    : ComputeStaggeredIntervalMs(subscription!.PushIntervalMs);
+
+                await WaitForPushIntervalAsync(lastPushTimestamp, pushIntervalMs, cancellationToken)
                     .ConfigureAwait(false);
 
                 var errorCode = await PushTelemetryAsync(
@@ -243,19 +288,11 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
                     terminating: false,
                     cancellationToken).ConfigureAwait(false);
                 lastPushTimestamp = Stopwatch.GetTimestamp();
+                hasPushed = true;
 
-                if (errorCode == ErrorCode.UnknownSubscriptionId)
-                {
-                    var refreshed = await TryFetchSubscriptionAsync(
-                        subscription.ClientInstanceId,
-                        cancellationToken).ConfigureAwait(false);
-
-                    if (refreshed is not null)
-                    {
-                        _metricCollector?.Subscribe(refreshed.RequestedMetrics);
-                        Volatile.Write(ref _subscription, refreshed);
-                    }
-                }
+                // Both errors mean the subscription is stale: the broker dropped it, or it no longer
+                // accepts the compression type the subscription selected. Fetch a new one at once.
+                needsSubscription = errorCode is ErrorCode.UnknownSubscriptionId or ErrorCode.UnsupportedCompressionType;
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -266,6 +303,30 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         {
             LogTelemetryLoopFailed(ex);
         }
+    }
+
+    private void ApplySubscription(ClientTelemetrySubscription subscription)
+    {
+        _metricCollector?.Subscribe(subscription.RequestedMetrics);
+        Volatile.Write(ref _subscription, subscription);
+    }
+
+    private TimeSpan GetSubscriptionRetryDelay(int failedAttempts) =>
+        ComputeSubscriptionRetryDelay(failedAttempts, SubscriptionRetryBackoff, SubscriptionRetryMaxBackoff);
+
+    internal static TimeSpan ComputeSubscriptionRetryDelay(int failedAttempts, TimeSpan backoff, TimeSpan maxBackoff)
+    {
+        var baseMs = backoff.TotalMilliseconds;
+        var maxMs = Math.Max(baseMs, maxBackoff.TotalMilliseconds);
+        var delayMs = Math.Min(maxMs, baseMs * Math.Pow(2, Math.Min(failedAttempts - 1, 30)));
+        // Jitter by +/-20% so clients that lost the same broker do not retry in lockstep.
+        return TimeSpan.FromMilliseconds(delayMs * (0.8 + Random.Shared.NextDouble() * 0.4));
+    }
+
+    internal static int ComputeStaggeredIntervalMs(int pushIntervalMs)
+    {
+        var intervalMs = Math.Max(1, pushIntervalMs);
+        return (int)Math.Min(int.MaxValue, intervalMs * (0.5 + Random.Shared.NextDouble()));
     }
 
     // The broker throttles a push that arrives before the push interval has elapsed on its
@@ -300,7 +361,8 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
             var leasedConnection = await GetTelemetryConnectionAsync(cancellationToken).ConfigureAwait(false);
             if (leasedConnection is null)
             {
-                Disable();
+                // Metadata lists no broker yet; the loop retries once it does.
+                LogSubscriptionRejected(ErrorCode.BrokerNotAvailable);
                 return null;
             }
 
@@ -338,6 +400,11 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
             if (response.ErrorCode != ErrorCode.None)
             {
                 LogSubscriptionRejected(response.ErrorCode);
+                if (IsFatalTelemetryError(response.ErrorCode))
+                {
+                    Disable();
+                }
+
                 return null;
             }
 
@@ -438,13 +505,14 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
             {
                 Disable();
             }
-            else if (IsFatalPushError(response.ErrorCode))
+            else if (IsFatalTelemetryError(response.ErrorCode))
             {
                 LogPushRejected(response.ErrorCode);
                 Disable();
             }
             else if (response.ErrorCode != ErrorCode.None &&
-                     response.ErrorCode != ErrorCode.UnknownSubscriptionId)
+                     response.ErrorCode != ErrorCode.UnknownSubscriptionId &&
+                     response.ErrorCode != ErrorCode.UnsupportedCompressionType)
             {
                 LogPushRejected(response.ErrorCode);
             }
@@ -481,7 +549,9 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
             apiVersion,
             cancellationToken);
 
-    private static bool IsFatalPushError(ErrorCode errorCode) =>
+    // Java ClientTelemetryUtils.maybeFetchErrorIntervalMs: these errors turn telemetry off on
+    // either response, because retrying the same request cannot succeed.
+    private static bool IsFatalTelemetryError(ErrorCode errorCode) =>
         errorCode == ErrorCode.InvalidRequest ||
         errorCode == ErrorCode.InvalidRecord;
 
