@@ -1571,17 +1571,27 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         _shutdownCancellation.Cancel();
     }
 
-    private ValueTask StopLaneAsync(
+    private async ValueTask StopLaneAsync(
         PartitionLane<TKey, TValue> lane,
         PartitionStopReason reason,
         bool commitProcessed,
         CancellationToken cancellationToken)
-        => FinishLaneStopAsync(
-            lane,
+    {
+        var exception = await WaitLaneStopAsync(
             reason,
             BeginLaneStop(lane, reason, cancellationToken),
-            commitProcessed,
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            if (commitProcessed)
+                await CommitStoppedLaneAsync(lane, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            FailOnLaneStopException(exception);
+        }
+    }
 
     private PartitionStopPolicy GetStopPolicy(PartitionStopReason reason)
         => reason is PartitionStopReason.Failure or PartitionStopReason.Lost
@@ -1595,31 +1605,21 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         => lane.StopAsync(GetStopPolicy(reason), _options.StopTimeout,
             reason == PartitionStopReason.Shutdown ? cancellationToken : CancellationToken.None);
 
-    private async ValueTask FinishLaneStopAsync(
-        PartitionLane<TKey, TValue> lane,
+    private async ValueTask<Exception?> WaitLaneStopAsync(
         PartitionStopReason reason,
         ValueTask<Exception?> stopping,
-        bool commitProcessed,
         CancellationToken cancellationToken)
-    {
-        var policy = GetStopPolicy(reason);
-        var exception = policy == PartitionStopPolicy.Drain && !stopping.IsCompleted
+        => GetStopPolicy(reason) == PartitionStopPolicy.Drain && !stopping.IsCompleted
             ? await DrainHandlerCommitsAsync(stopping.AsTask(), cancellationToken).ConfigureAwait(false)
             : await stopping.ConfigureAwait(false);
 
-        try
+    private void FailOnLaneStopException(Exception? exception)
+    {
+        if (exception is not null
+            && (_options.ErrorPolicy == PartitionWorkerErrorPolicy.StopConsumer || exception is TimeoutException))
         {
-            if (commitProcessed)
-                await CommitStoppedLaneAsync(lane, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            if (exception is not null
-                && (_options.ErrorPolicy == PartitionWorkerErrorPolicy.StopConsumer || exception is TimeoutException))
-            {
-                CaptureFailure(exception);
-                _shutdownCancellation.Cancel();
-            }
+            CaptureFailure(exception);
+            _shutdownCancellation.Cancel();
         }
     }
 
@@ -1688,18 +1688,20 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             }
         }
 
-        // Each lane is finished and committed even when an earlier one fails: the revocation
-        // callback releases every revoked partition when this returns, so none may still run.
-        var commitProcessed = reason == PartitionStopReason.Revoke && ShouldCommitOnPartitionStop();
+        // Every lane is waited for even when an earlier one fails: the revocation callback
+        // releases every revoked partition when this returns, so none may still run. The
+        // runtime commit comes after the last lane, because the runtime serves a draining
+        // lane's handler commits only while it waits for a lane, not while it commits.
+        var laneExceptions = new Exception?[partitions.Length];
         Exception? failure = null;
         for (var i = 0; i < lanes.Length; i++)
         {
-            if (lanes[i] is not { } lane)
+            if (lanes[i] is null)
                 continue;
 
             try
             {
-                await FinishLaneStopAsync(lane, reason, stopping[i], commitProcessed, cancellationToken)
+                laneExceptions[i] = await WaitLaneStopAsync(reason, stopping[i], cancellationToken)
                     .ConfigureAwait(false);
             }
             catch (Exception exception)
@@ -1707,6 +1709,19 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                 failure ??= exception;
             }
         }
+
+        try
+        {
+            if (reason == PartitionStopReason.Revoke && ShouldCommitOnPartitionStop())
+                await CommitRevokedLanesAsync(lanes, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            failure ??= exception;
+        }
+
+        for (var i = 0; i < laneExceptions.Length; i++)
+            FailOnLaneStopException(laneExceptions[i]);
 
         if (failure is not null)
             ExceptionDispatchInfo.Throw(failure);
@@ -1827,9 +1842,53 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                 (pending ??= []).Add((lane, offset));
         }
 
+        if (pending is not null)
+            await CommitPendingOffsetsAsync(pending, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Commits the revoked lanes' completed offsets in one request. The coordinator sends no
+    /// heartbeat until the revocation callback returns, so the commit is bounded by
+    /// <see cref="PartitionedProcessingOptions.StopTimeout"/>, not by the consumer's API timeout.
+    /// </summary>
+    private async ValueTask CommitRevokedLanesAsync(
+        PartitionLane<TKey, TValue>?[] lanes,
+        CancellationToken cancellationToken)
+    {
+        List<(PartitionLane<TKey, TValue> Lane, TopicPartitionOffset Offset)>? pending = null;
+        foreach (var lane in lanes)
+        {
+            if (lane is not null && lane.GetUncommittedOffset() is { } offset)
+                (pending ??= []).Add((lane, offset));
+        }
+
         if (pending is null)
             return;
 
+        if (_options.StopTimeout == Timeout.InfiniteTimeSpan)
+        {
+            await CommitPendingOffsetsAsync(pending, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        using var commitCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        commitCancellation.CancelAfter(_options.StopTimeout);
+        try
+        {
+            await CommitPendingOffsetsAsync(pending, commitCancellation.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // Holding the callback longer risks the member's session. The next owner starts
+            // from the last committed offset and processes these records again.
+            LogRevokeCommitTimedOut(pending.Count);
+        }
+    }
+
+    private async ValueTask CommitPendingOffsetsAsync(
+        List<(PartitionLane<TKey, TValue> Lane, TopicPartitionOffset Offset)> pending,
+        CancellationToken cancellationToken)
+    {
         var offsets = new TopicPartitionOffset[pending.Count];
         for (var i = 0; i < offsets.Length; i++)
             offsets[i] = pending[i].Offset;
@@ -1958,6 +2017,13 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             "Partition processor for {Topic}-{Partition} failed under StopPartition; pausing partition.",
             partition.Topic,
             partition.Partition);
+    }
+
+    private void LogRevokeCommitTimedOut(int partitionCount)
+    {
+        _logger.LogWarning(
+            "Partitioned consumer commit for {PartitionCount} revoked partitions did not finish within StopTimeout; releasing them uncommitted, so their next owner processes the completed records again.",
+            partitionCount);
     }
 
     private void LogRuntimeCommitRejected(GroupException exception)
