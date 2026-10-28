@@ -277,9 +277,9 @@ public sealed class TransactionOffsetCommitTests
             transactionVersion: 2,
             txnOffsetCommitMaxVersion: 5,
             commitOutcomes: outcomes,
-            maxBlockMs: 2000,
+            maxBlockMs: 60_000,
             transactionClock: transactionClock,
-            commitFailureAdvanceMs: 1000);
+            commitFailureAdvanceMs: 30_000);
 
         var exception = await Assert.That(() => harness.Producer.SendOffsetsToTransactionInternalAsync(
                 [new TopicPartitionOffset("orders", 0, 42)],
@@ -324,9 +324,9 @@ public sealed class TransactionOffsetCommitTests
                 new IOException("group coordinator connection lost"),
                 new IOException("group coordinator connection lost")
             ]),
-            maxBlockMs: 2000,
+            maxBlockMs: 60_000,
             transactionClock: transactionClock,
-            transportFailureAdvanceMs: 1000);
+            transportFailureAdvanceMs: 30_000);
 
         var exception = await Assert.That(() => harness.Producer.SendOffsetsToTransactionInternalAsync(
                 [new TopicPartitionOffset("orders", 0, 42)],
@@ -474,7 +474,9 @@ public sealed class TransactionOffsetCommitTests
         int emptyCoordinatorResponsesBeforeSuccess = 0,
         bool startWithEmptyBrokerMetadata = false,
         int retryBackoffMs = 0,
-        int maxBlockMs = 1000,
+        // Far beyond any scheduling delay: the budget's cancellation token runs on real time, so
+        // deadline tests spend it on the fake clock instead of waiting it out.
+        int maxBlockMs = 60_000,
         FakeTransactionClock? transactionClock = null,
         int commitFailureAdvanceMs = 0,
         Queue<Exception>? findCoordinatorFailures = null,
