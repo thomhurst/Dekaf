@@ -517,6 +517,7 @@ public class ShareConsumerPollBenchmarks
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
         var coordinator = typeof(KafkaShareConsumer<int, int>).GetField("_coordinator", flags)!.GetValue(consumer)!;
         typeof(ShareConsumerCoordinator).GetField("_memberId", flags)!.SetValue(coordinator, "member-1");
+        typeof(ShareConsumerCoordinator).GetField("_coordinatorId", flags)!.SetValue(coordinator, 1);
         // Absent before Unsubscribe left the group; the gate also runs this source on that baseline.
         typeof(ShareConsumerCoordinator).GetField("_leftGroup", flags)?.SetValue(coordinator, false);
         typeof(ShareConsumerCoordinator).GetField("_state", flags)!.SetValue(coordinator, CoordinatorState.Stable);

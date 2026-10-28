@@ -114,7 +114,8 @@ public sealed partial class ShareConsumerRenewalTests
         await Assert.That(await next).IsTrue();
         await Assert.That(connection.ShareFetchRequest!.ShareSessionEpoch).IsEqualTo(0);
         // Unsubscribe left the group after the final acknowledgement; the poll rejoined at epoch 0.
-        await Assert.That(connection.ShareGroupHeartbeatRequests[0].MemberEpoch).IsEqualTo(0);
+        await Assert.That(connection.ShareGroupHeartbeatRequests[0].MemberEpoch).IsEqualTo(-1);
+        await Assert.That(connection.ShareGroupHeartbeatRequests[1].MemberEpoch).IsEqualTo(0);
     }
 
     [Test]

@@ -1092,10 +1092,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             _state = CoordinatorState.Unjoined;
             await StopHeartbeatAsync().ConfigureAwait(false);
 
-            // An unknown coordinator leaves nobody to tell; the broker expires the member.
-            var coordinatorId = _coordinatorId;
-            if (coordinatorId >= 0)
-                await SendLeaveGroupHeartbeatAsync(coordinatorId, memberId, cancellationToken).ConfigureAwait(false);
+            await SendLeaveGroupHeartbeatAsync(memberId, cancellationToken).ConfigureAwait(false);
 
             ResetMemberState();
             _leftGroup = true;
@@ -1107,14 +1104,18 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     }
 
     private async ValueTask SendLeaveGroupHeartbeatAsync(
-        int coordinatorId,
         string memberId,
         CancellationToken cancellationToken)
     {
         try
         {
+            // A transient heartbeat failure can invalidate the coordinator while the broker
+            // still holds this membership. Rediscover it before attempting the best-effort leave.
+            if (_coordinatorId < 0)
+                await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+
             using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
-                coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
+                _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
                 .ConfigureAwait(false);
             var connection = connectionLease.Connection;
 

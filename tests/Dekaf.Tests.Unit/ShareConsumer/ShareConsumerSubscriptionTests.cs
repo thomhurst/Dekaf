@@ -76,12 +76,16 @@ public sealed class ShareConsumerSubscriptionTests
     }
 
     [Test]
-    public async Task Unsubscribe_LeavesGroup_AndResubscribeRejoinsAtEpochZero()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Unsubscribe_LeavesGroup_AndResubscribeRejoinsAtEpochZero(bool unknownCoordinator)
     {
         await using var fixture = new Fixture();
         fixture.Consumer.Subscribe("first");
         await fixture.Heartbeat();
         var memberId = fixture.Coordinator.MemberId;
+        if (unknownCoordinator)
+            fixture.MarkCoordinatorUnknown();
         fixture.Consumer.Unsubscribe();
         await fixture.WaitForPendingRelease();
         await Assert.That(fixture.Requests[^1].MemberEpoch).IsEqualTo(-1);
@@ -89,6 +93,7 @@ public sealed class ShareConsumerSubscriptionTests
         await Assert.That(fixture.Coordinator.MemberEpoch).IsEqualTo(0);
         await Assert.That(fixture.Coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
         await Assert.That(fixture.Coordinator.MemberId).IsEqualTo(memberId);
+        await Assert.That(fixture.CoordinatorLookups).IsEqualTo(unknownCoordinator ? 1 : 0);
         fixture.Consumer.Subscribe("first");
         await fixture.Heartbeat();
         await Assert.That(fixture.Requests[^1].MemberEpoch).IsEqualTo(0);
@@ -222,6 +227,7 @@ public sealed class ShareConsumerSubscriptionTests
         public ShareConsumerCoordinator Coordinator { get; }
         public List<ShareGroupHeartbeatRequest> Requests { get; } = [];
         public int FetchRequests { get; private set; }
+        public int CoordinatorLookups { get; private set; }
         public Func<ShareGroupHeartbeatRequest, ValueTask<ShareGroupHeartbeatResponse>> Response { get; set; }
             = _ => new(Success());
 
@@ -246,12 +252,16 @@ public sealed class ShareConsumerSubscriptionTests
                 });
             connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
                 Arg.Any<FindCoordinatorRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-                .Returns(new FindCoordinatorResponse
+                .Returns(_ =>
                 {
-                    Coordinators = [new Coordinator
+                    CoordinatorLookups++;
+                    return new FindCoordinatorResponse
                     {
-                        Key = options.GroupId, NodeId = 1, Host = "localhost", Port = 9092
-                    }]
+                        Coordinators = [new Coordinator
+                        {
+                            Key = options.GroupId, NodeId = 1, Host = "localhost", Port = 9092
+                        }]
+                    };
                 });
             var pool = Substitute.For<IConnectionPool>();
             pool.GetConnectionAsync(1, Arg.Any<CancellationToken>()).Returns(connection);
@@ -293,6 +303,7 @@ public sealed class ShareConsumerSubscriptionTests
             typeof(KafkaShareConsumer<string, string>).GetField("_initialized", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .SetValue(Consumer, true);
         }
+        public void MarkCoordinatorUnknown() => Set("_coordinatorId", -1);
         public void ResetMemberEpoch() => Set("_memberEpoch", 0);
         public Task? HeartbeatTask => (Task?)typeof(ShareConsumerCoordinator)
             .GetField("_heartbeatTask", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(Coordinator);
