@@ -1156,9 +1156,19 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 Component = SerializationComponent.Value,
                 Headers = headers
             };
-            valuePrepare = _valuePreparationAdmission is { } admission
-                ? admission.PrepareForSerializationAsync(value, context, cancellationToken)
-                : AwaitPreparationAsync(_valuePreparer.PrepareAsync(value, context, cancellationToken));
+            try
+            {
+                valuePrepare = _valuePreparationAdmission is { } admission
+                    ? admission.PrepareForSerializationAsync(value, context, cancellationToken)
+                    : AwaitPreparationAsync(_valuePreparer.PrepareAsync(value, context, cancellationToken));
+            }
+            catch (Exception ex) when (!keyPrepare.IsCompletedSuccessfully)
+            {
+                // Key preparation is already in flight (or faulted). Rethrowing here would abandon it
+                // and leave its failure unobserved, so carry the value fault into AwaitBothAsync.
+                valuePrepare = new ValueTask<SerializerPreparationAdmission>(
+                    Task.FromException<SerializerPreparationAdmission>(ex));
+            }
         }
 
         if (keyPrepare.IsCompletedSuccessfully && valuePrepare.IsCompletedSuccessfully)

@@ -221,6 +221,70 @@ public class ProducerAsyncPreparerTests
         await Assert.That(source.GetResultCount).IsEqualTo(1);
     }
 
+    // --- A synchronously throwing value preparer must not abandon key preparation that is already
+    //     in flight (regression: the sync throw bypassed AwaitBothAsync, leaving the key unobserved). ---
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ProduceAsync_ValuePreparerThrowsSynchronouslyWhileKeyPending_AwaitsKeyPreparer(bool admission)
+    {
+        var keyGate = new TaskCompletionSource<SerializerPreparationAdmission>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        ISerializer<string> keySerializer = admission
+            ? new GatedAdmissionSerializer(() => new ValueTask<SerializerPreparationAdmission>(keyGate.Task))
+            : new PreparingSerializer(_ => new ValueTask(keyGate.Task));
+        var valueSerializer = new PreparingSerializer(
+            _ => throw new InvalidOperationException("value schema failed"));
+
+        await using var producer = CreateProducer(keySerializer, valueSerializer);
+        await ReadyProducerAsync(producer);
+
+        var (started, stopped, listener) = ListenForActivities();
+        using var _ = listener;
+        var produce = producer.ProduceAsync(NewMessage()).AsTask();
+
+        // The value fault must wait for the in-flight key preparation instead of surfacing at once.
+        await Assert.That(produce.IsCompleted).IsFalse();
+
+        keyGate.SetException(new InvalidOperationException("key schema failed"));
+
+        await Assert.That(async () => await produce).Throws<InvalidOperationException>();
+        await Assert.That(producer.RecordAccumulator.BufferedBytes).IsEqualTo(0L);
+
+        await Assert.That(started.Count).IsGreaterThan(0);
+        await Assert.That(stopped.Count).IsEqualTo(started.Count);
+        await Assert.That(started.First().Status).IsEqualTo(ActivityStatusCode.Error);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ProduceAsync_ValuePreparerThrowsSynchronouslyAfterKeyFaulted_ObservesBothFaults(bool admission)
+    {
+        var keyFault = Task.FromException<SerializerPreparationAdmission>(
+            new InvalidOperationException("key schema failed"));
+        ISerializer<string> keySerializer = admission
+            ? new GatedAdmissionSerializer(() => new ValueTask<SerializerPreparationAdmission>(keyFault))
+            : new PreparingSerializer(_ => new ValueTask(keyFault));
+        var valueSerializer = new PreparingSerializer(
+            _ => throw new InvalidOperationException("value schema failed"));
+
+        await using var producer = CreateProducer(keySerializer, valueSerializer);
+        await ReadyProducerAsync(producer);
+
+        var (started, stopped, listener) = ListenForActivities();
+        using var _ = listener;
+
+        await Assert.That(async () => await producer.ProduceAsync(NewMessage()))
+            .Throws<InvalidOperationException>();
+        await Assert.That(producer.RecordAccumulator.BufferedBytes).IsEqualTo(0L);
+
+        await Assert.That(started.Count).IsGreaterThan(0);
+        await Assert.That(stopped.Count).IsEqualTo(started.Count);
+        await Assert.That(started.First().Status).IsEqualTo(ActivityStatusCode.Error);
+    }
+
     // --- Cancellation during preparation is "pre-append": it throws and nothing is buffered. ---
 
     [Test]
@@ -551,6 +615,42 @@ public class ProducerAsyncPreparerTests
     }
 
     private sealed class ObservedSerializationException : Exception;
+
+    // An admission serializer whose preparation result is supplied by the test, so key admission can
+    // be left pending or faulted while value preparation throws.
+    private sealed class GatedAdmissionSerializer(Func<ValueTask<SerializerPreparationAdmission>> prepare) :
+        ISerializer<string>,
+        IAsyncSerializerPreparationAdmission<string>
+    {
+        public ValueTask PrepareAsync(
+            string value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Producer must request an operation admission.");
+
+        public ValueTask<SerializerPreparationAdmission> PrepareForSerializationAsync(
+            string value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) => prepare();
+
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+            => Serializers.String.Serialize(value, ref destination, context);
+
+        public void SerializePrepared<TWriter>(
+            string value,
+            ref TWriter destination,
+            SerializationContext context,
+            in SerializerPreparationAdmission admission)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+            => Serializers.String.Serialize(value, ref destination, context);
+    }
 
     private sealed class AdmittedPreparingSerializer :
         ISerializer<string>,
