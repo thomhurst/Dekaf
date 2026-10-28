@@ -355,7 +355,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     // threads accumulated caches over time, depleting the pool and driving Gen2 GC pressure.
     private const int MaxPooledCaches = 16;
     private static readonly Reservoir.ObjectPool<SerializationCache, SerializationCachePolicy>
-        s_cachePool = new(default, MaxPooledCaches, threadLocalFastPath: false);
+        s_cachePool = new(default, MaxPooledCaches);
 
     /// <summary>
     /// Holds scratch buffer state for a single RecordBatch serialization/deserialization operation.
