@@ -3286,7 +3286,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     }
                     // Otherwise the position initializes lazily: from the group's committed
                     // offset when there is one, else by auto.offset.reset
-
                 }
 
                 PublishAssignmentSnapshot();
@@ -11894,24 +11893,35 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         foreach (var partition in partitions)
         {
+            long offset;
+            var leaderEpoch = -1;
             if (committedOffsets is not null
                 && committedOffsets.TryGetValue(partition, out var committedOffset)
                 && committedOffset.Offset >= 0)
             {
-                SetPosition(partition, committedOffset.Offset, dirty: false);
-                if (committedOffset.LeaderEpoch >= 0)
-                    SetLastConsumedLeaderEpoch(partition, committedOffset.LeaderEpoch);
-                else
-                    ClearLastConsumedLeaderEpoch(partition);
-                SetFetchPosition(partition, committedOffset.Offset);
-                _ = TryCacheCommittedOffset(partition, committedOffset.Offset, cacheGeneration);
-                continue;
+                offset = committedOffset.Offset;
+                leaderEpoch = committedOffset.LeaderEpoch;
+                _ = TryCacheCommittedOffset(partition, offset, cacheGeneration);
+            }
+            else
+            {
+                offset = await GetResetOffsetAsync(partition, cancellationToken).ConfigureAwait(false);
             }
 
-            var offset = await GetResetOffsetAsync(partition, cancellationToken).ConfigureAwait(false);
-            SetPosition(partition, offset, dirty: false);
-            ClearLastConsumedLeaderEpoch(partition);
-            SetFetchPosition(partition, offset);
+            // Seek does not take the assignment lock, so it can position the partition while the
+            // lookups above await. Apply under Seek's lock, and let an explicit position win.
+            lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+            {
+                if (_fetchPositions.ContainsKey(partition))
+                    continue;
+
+                SetPosition(partition, offset, dirty: false);
+                if (leaderEpoch >= 0)
+                    SetLastConsumedLeaderEpoch(partition, leaderEpoch);
+                else
+                    ClearLastConsumedLeaderEpoch(partition);
+                SetFetchPosition(partition, offset);
+            }
         }
     }
 

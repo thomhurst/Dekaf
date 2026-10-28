@@ -497,6 +497,57 @@ public sealed partial class ConsumerRackAwarenessTests
         await Assert.That(await InvokeGroupPartitionsByBrokerAsync(consumer)).ContainsKey(seek ? 1 : 2);
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ManualAssignmentInitialization_SeekDuringOffsetLookupWins(bool seek)
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        var lookupStarted = NewFetchSignal();
+        var lookup = new TaskCompletionSource<ListOffsetsResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                Arg.Any<ListOffsetsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                lookupStarted.TrySetResult();
+                return new ValueTask<ListOffsetsResponse>(lookup.Task);
+            });
+        pool.GetConnectionByIndexAsync(1, Arg.Any<int>(), Arg.Any<CancellationToken>()).Returns(new ValueTask<IKafkaConnection>(connection));
+        await using var metadata = CreateMetadataManager(pool);
+        metadata.SetApiVersion(ApiKey.ListOffsets, ListOffsetsRequest.LowestSupportedVersion, ListOffsetsRequest.HighestSupportedVersion);
+        await using var consumer = CreateConsumer(pool, metadata, "rack-a", AutoOffsetReset.ByDuration);
+        consumer.Assign(Partition);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var initialize = ((ValueTask)typeof(KafkaConsumer<string, string>)
+            .GetMethod("InitializeManualAssignmentPositionsAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(consumer, [new List<TopicPartition> { Partition }, CancellationToken.None])!).AsTask();
+        try
+        {
+            // Seek does not take the assignment lock that initialization holds.
+            await lookupStarted.Task.WaitAsync(timeout.Token);
+            if (seek)
+                consumer.Seek(new TopicPartitionOffset(Topic, 0, 99));
+        }
+        finally
+        {
+            lookup.TrySetResult(new ListOffsetsResponse
+            {
+                Topics =
+                [
+                    new ListOffsetsResponseTopic
+                    {
+                        Name = Topic,
+                        Partitions = [new ListOffsetsResponsePartition { PartitionIndex = 0, ErrorCode = ErrorCode.None, Offset = 10 }]
+                    }
+                ]
+            });
+            await initialize.WaitAsync(timeout.Token);
+        }
+        await Assert.That(GetFetchPosition(consumer)).IsEqualTo(seek ? 99 : 10);
+        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(seek ? 99 : 10);
+    }
+
     private static TaskCompletionSource NewFetchSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     [Test]
