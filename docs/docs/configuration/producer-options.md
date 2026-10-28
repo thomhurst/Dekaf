@@ -300,7 +300,7 @@ Number of TCP connections to each broker:
 .WithConnectionsPerBroker(3)  // 3 parallel connections per broker
 ```
 
-Default: 1. Must be 1 for idempotent producers (partition affinity requires a fixed connection).
+Default: 1. Idempotent producers can use more than one connection: partition affinity keeps each partition on one connection, so sequence order is preserved. Transactional producers must use 1, because transaction coordinator requests need a single connection per broker; `Build()` throws when `WithTransactionalId` is combined with a value greater than 1.
 
 ### WithConnectionsMaxIdle
 
@@ -354,19 +354,21 @@ Setting a callback enables TLS for the connection.
 Configure adaptive connection scaling. When sustained buffer backpressure is detected, the producer automatically adds connections per broker to increase drain throughput:
 
 ```csharp
-// Use defaults (max 10 connections per broker)
+// Use defaults (max 3 connections per broker)
 .WithAdaptiveConnections()
 
 // Custom maximum
 .WithAdaptiveConnections(maxConnections: 5)
 ```
 
-Adaptive scaling is **enabled by default** for non-idempotent producers. It monitors three signals before scaling up:
-- **Pressure delta**: at least 100 buffer-full events since the last check
-- **Utilization**: buffer is over 80% full
-- **Cooldown**: at least 30 seconds since the last scale-up
+Adaptive scaling is **enabled by default** for idempotent and acknowledged non-idempotent producers. Idempotent producers keep each partition on one connection (partition affinity), so sequence order is preserved as connections are added. Scaling is disabled for transactional producers, because transaction coordinator requests need a single connection per broker, and for `Acks.None`, because no broker acknowledgement marks a safe point to move partitions between connections.
 
-Connections are only scaled up, never down. Connections added during a traffic spike persist for the lifetime of the producer. Idempotent producers ignore this setting.
+The producer scales up only under sustained pressure, and only after a cooldown since the last scale change. Any one of these pressure signals is enough:
+- **Send-loop pressure**: the send loop keeps reaching its in-flight request limit or leaving ready batches for the next pass
+- **Blocked admissions**: produce calls keep waiting on the per-broker unacked-byte admission budget
+- **Buffer pressure**: enough new buffer-full events while the buffer is mostly full
+
+Connections also scale down. When buffer and in-flight utilization stay low for a sustained period, the producer drains and removes connections it added. The thresholds are internal tuning values in `BrokerSender` and can change between releases.
 
 ### WithoutAdaptiveConnections
 
@@ -467,7 +469,7 @@ Enable logging:
 | `WithConnectionTimeout` | 30000ms | Socket connection setup timeout |
 | `WithConnectionTimeoutMax` | Same as initial | Maximum adaptive connection setup timeout |
 | `WithTcpKeepAlive` | enabled | TCP keepalive; 2m idle, 30s interval, 3 retries |
-| `WithAdaptiveConnections` | enabled (max 10) | Auto-scale connections under load |
+| `WithAdaptiveConnections` | enabled (max 3) | Auto-scale connections under load |
 | `WithoutAdaptiveConnections` | - | Disable adaptive scaling |
 | `WithBufferMemory` | auto-tuned | Max buffer for unsent messages |
 | `WithBufferMemoryAllocationStrategy` | Full | Full arena or pooled incremental chunks |

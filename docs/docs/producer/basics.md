@@ -168,7 +168,7 @@ With idempotence enabled:
 
 `MaxInFlightRequestsPerConnection` controls how many produce requests can be outstanding on one broker connection. Idempotent and transactional producers are capped at 5, which is the Kafka protocol limit for sequence tracking.
 
-When idempotence is disabled, Dekaf defaults to 100 in-flight requests per connection so fire-and-forget and `Acks.Leader` workloads can keep the broker pipeline full across partitions. Because non-idempotent batches have no sequence numbers, Dekaf keeps at most one batch per partition in flight while still sending different partitions concurrently. This preserves per-partition order, though retries may still produce duplicates.
+When idempotence is disabled, Dekaf defaults to 100 in-flight requests per connection so fire-and-forget and `Acks.Leader` workloads can keep the broker pipeline full across partitions. Each partition stays on one connection, and Kafka processes healthy requests on a connection in order, so Dekaf also pipelines several batches of the same partition. Non-idempotent batches have no sequence numbers, though: if an earlier request fails after a later one was written, the retry lands after the later records and reorders the partition, and retries can also produce duplicates. Enable idempotence, or set `MaxInFlightRequestsPerConnection = 1`, when you need retry-safe per-partition order.
 
 ## Error Handling
 
