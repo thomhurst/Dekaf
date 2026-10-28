@@ -17,8 +17,8 @@ public sealed class AdminClientTelemetryTests
     private static readonly FieldInfo TelemetryManagerField = typeof(AdminClient)
         .GetField("_telemetryManager", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
-    private static readonly FieldInfo TelemetryDisabledField = typeof(ClientTelemetryManager)
-        .GetField("_disabled", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo TelemetryStartedField = typeof(ClientTelemetryManager)
+        .GetField("_started", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
     [Test]
     public async Task EnsureInitializedAsync_AttemptsTelemetryStartOnlyOnceAfterFailure()
@@ -40,13 +40,15 @@ public sealed class AdminClientTelemetryTests
 
         var telemetryManager = (ClientTelemetryManager)TelemetryManagerField.GetValue(client)!;
 
-        await InvokeEnsureInitializedAsync(client);
-        await Assert.That(telemetryManager.IsDisabled).IsTrue();
-
-        TelemetryDisabledField.SetValue(telemetryManager, 0);
-
+        // No broker is known yet, which is transient: telemetry stays enabled and its loop retries.
         await InvokeEnsureInitializedAsync(client);
         await Assert.That(telemetryManager.IsDisabled).IsFalse();
+        await Assert.That(telemetryManager.IsStarted).IsTrue();
+
+        TelemetryStartedField.SetValue(telemetryManager, 0);
+
+        await InvokeEnsureInitializedAsync(client);
+        await Assert.That(telemetryManager.IsStarted).IsFalse();
     }
 
     private static async ValueTask InvokeEnsureInitializedAsync(AdminClient client)
