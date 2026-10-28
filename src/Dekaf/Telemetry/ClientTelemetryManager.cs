@@ -311,10 +311,13 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         Volatile.Write(ref _subscription, subscription);
     }
 
-    private TimeSpan GetSubscriptionRetryDelay(int failedAttempts)
+    private TimeSpan GetSubscriptionRetryDelay(int failedAttempts) =>
+        ComputeSubscriptionRetryDelay(failedAttempts, SubscriptionRetryBackoff, SubscriptionRetryMaxBackoff);
+
+    internal static TimeSpan ComputeSubscriptionRetryDelay(int failedAttempts, TimeSpan backoff, TimeSpan maxBackoff)
     {
-        var baseMs = SubscriptionRetryBackoff.TotalMilliseconds;
-        var maxMs = Math.Max(baseMs, SubscriptionRetryMaxBackoff.TotalMilliseconds);
+        var baseMs = backoff.TotalMilliseconds;
+        var maxMs = Math.Max(baseMs, maxBackoff.TotalMilliseconds);
         var delayMs = Math.Min(maxMs, baseMs * Math.Pow(2, Math.Min(failedAttempts - 1, 30)));
         // Jitter by +/-20% so clients that lost the same broker do not retry in lockstep.
         return TimeSpan.FromMilliseconds(delayMs * (0.8 + Random.Shared.NextDouble() * 0.4));
@@ -397,6 +400,11 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
             if (response.ErrorCode != ErrorCode.None)
             {
                 LogSubscriptionRejected(response.ErrorCode);
+                if (IsFatalTelemetryError(response.ErrorCode))
+                {
+                    Disable();
+                }
+
                 return null;
             }
 
@@ -497,7 +505,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
             {
                 Disable();
             }
-            else if (IsFatalPushError(response.ErrorCode))
+            else if (IsFatalTelemetryError(response.ErrorCode))
             {
                 LogPushRejected(response.ErrorCode);
                 Disable();
@@ -541,7 +549,9 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
             apiVersion,
             cancellationToken);
 
-    private static bool IsFatalPushError(ErrorCode errorCode) =>
+    // Java ClientTelemetryUtils.maybeFetchErrorIntervalMs: these errors turn telemetry off on
+    // either response, because retrying the same request cannot succeed.
+    private static bool IsFatalTelemetryError(ErrorCode errorCode) =>
         errorCode == ErrorCode.InvalidRequest ||
         errorCode == ErrorCode.InvalidRecord;
 

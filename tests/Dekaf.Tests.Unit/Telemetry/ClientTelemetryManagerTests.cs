@@ -195,6 +195,41 @@ public sealed partial class ClientTelemetryManagerTests
     }
 
     [Test]
+    [Arguments(1, 1000d)]
+    [Arguments(2, 2000d)]
+    [Arguments(3, 4000d)]
+    [Arguments(5, 16000d)]
+    [Arguments(6, 30000d)]
+    [Arguments(1000, 30000d)]
+    public async Task ComputeSubscriptionRetryDelay_DoublesUpToTheMaximumWithTwentyPercentJitter(
+        int failedAttempts,
+        double expectedMs)
+    {
+        for (var i = 0; i < 1000; i++)
+        {
+            var delay = ClientTelemetryManager.ComputeSubscriptionRetryDelay(
+                failedAttempts,
+                TimeSpan.FromSeconds(1),
+                TimeSpan.FromSeconds(30));
+            await Assert.That(delay.TotalMilliseconds).IsBetween(expectedMs * 0.8, expectedMs * 1.2);
+        }
+    }
+
+    [Test]
+    [MethodDataSource(nameof(FatalPushErrors))]
+    public async Task StartAsync_FatalSubscriptionError_DisablesTelemetry(ErrorCode errorCode)
+    {
+        await using var context = new TelemetryTestContext(subscriptionRetryBackoff: TimeSpan.FromMilliseconds(10));
+        context.Connection.Enqueue(new GetTelemetrySubscriptionsResponse { ErrorCode = errorCode });
+
+        await context.Manager.StartAsync();
+
+        await Assert.That(context.Manager.IsDisabled).IsTrue();
+        await Assert.That(context.Manager.IsStarted).IsFalse();
+        await Assert.That(context.Connection.RequestsOfType<GetTelemetrySubscriptionsRequest>().Count).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task StopAsync_SendsTerminatingPush()
     {
         await using var context = new TelemetryTestContext();
