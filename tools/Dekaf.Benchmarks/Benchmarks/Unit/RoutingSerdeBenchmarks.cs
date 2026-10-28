@@ -34,6 +34,8 @@ public class RoutingSerdeBenchmarks
     private IDeserializer<Event> _decoratedHeaderDeserializer = null!;
     private TopicRoutingSerializer<Event> _topicSerializer = null!;
     private TypeRoutingSerializer<Event> _typeSerializer = null!;
+    private IAsyncSerializerPreparationAdmission<Event> _topicSerializerAdmission = null!;
+    private IAsyncSerializerPreparationAdmission<Event> _preparedTopicSerializer = null!;
     private SerializationContext _context;
     private SerializationContext _callerOwnedContext;
     private Header[] _headers = null!;
@@ -94,8 +96,14 @@ public class RoutingSerdeBenchmarks
         _typeSerializer = new TypeRoutingSerializer<Event>()
             .Register(_serializer)
             .Freeze();
+        _topicSerializerAdmission = _topicSerializer;
+        _preparedTopicSerializer = new TopicRoutingSerializer<Event>()
+            .Register("events", new PreparedEventSerializer())
+            .Freeze();
 
         SerializeDirect();
+        PrepareAndSerializeByTopic();
+        PrepareAndSerializePreparedByTopic();
     }
 
     [Benchmark(Baseline = true)]
@@ -182,6 +190,28 @@ public class RoutingSerdeBenchmarks
         return _buffer.WrittenCount;
     }
 
+    // Mirrors the producer's per-message sequence: prepare (completed synchronously), then serialize.
+    [Benchmark]
+    public int PrepareAndSerializeByTopic() => PrepareAndSerialize(_topicSerializerAdmission);
+
+    [Benchmark]
+    public int PrepareAndSerializePreparedByTopic() => PrepareAndSerialize(_preparedTopicSerializer);
+
+    private int PrepareAndSerialize(IAsyncSerializerPreparationAdmission<Event> serializer)
+    {
+        var preparation = serializer.PrepareForSerializationAsync(Payload, _context);
+        if (!preparation.IsCompletedSuccessfully)
+            throw new InvalidOperationException("Warm preparation did not complete synchronously.");
+
+        var admission = preparation.Result;
+        _buffer.Clear();
+        if (admission.IsPrepared)
+            serializer.SerializePrepared(Payload, ref _buffer, _context, in admission);
+        else
+            ((ISerializer<Event>)serializer).Serialize(Payload, ref _buffer, _context);
+        return _buffer.WrittenCount;
+    }
+
     public sealed class Event;
 
     internal sealed class EventDeserializer : IDeserializer<Event>
@@ -222,6 +252,22 @@ public class RoutingSerdeBenchmarks
             SerializationContext context,
             CancellationToken cancellationToken = default) =>
             ValueTask.CompletedTask;
+    }
+
+    private sealed class PreparedEventSerializer : ISerializer<Event>, IAsyncSerializerPreparer<Event>
+    {
+        public ValueTask PrepareAsync(
+            Event value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.CompletedTask;
+
+        public void Serialize<TWriter>(Event value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>, allows ref struct
+        {
+            destination.GetSpan(1)[0] = 1;
+            destination.Advance(1);
+        }
     }
 
     private sealed class EventSerializer : ISerializer<Event>

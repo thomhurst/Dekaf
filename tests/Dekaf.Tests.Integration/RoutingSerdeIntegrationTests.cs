@@ -109,6 +109,49 @@ public sealed class RoutingSerdeIntegrationTests(KafkaWithSchemaRegistryContaine
         await Assert.That(((V2Event)events[1]).Category).IsEqualTo("priority");
     }
 
+    [Test]
+    public async Task TopicRouter_PreparesAsyncSubjectStrategyWithoutWarmup(CancellationToken cancellationToken)
+    {
+        var topic = await testInfra.CreateTestTopicAsync();
+        var subject = $"routed-{topic}";
+        using var registry = new SchemaRegistryClient(new SchemaRegistryConfig { Url = testInfra.RegistryUrl });
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            registry,
+            new AvroSerializerConfig { AsyncSubjectNameStrategy = new YieldingSubjectNameStrategy(subject) });
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(registry);
+        var router = new TopicRoutingSerializer<GenericRecord>()
+            .Register(topic, serializer)
+            .Freeze();
+
+        await using (var producer = await Kafka.CreateProducer<string, GenericRecord>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithClientId("routing-prepare-producer")
+            .WithValueSerializer(router)
+            .BuildAsync(cancellationToken))
+        {
+            await producer.ProduceAsync(topic, "key", CreateRecord(EventV1Schema, 7, "seven"), cancellationToken);
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, GenericRecord>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithClientId("routing-prepare-consumer")
+            .WithGroupId($"routing-prepare-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithValueDeserializer(deserializer)
+            .BuildAsync(cancellationToken);
+        consumer.Subscribe(topic);
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await foreach (var message in consumer.ConsumeAsync(timeout.Token))
+        {
+            await Assert.That((long)message.Value["id"]!).IsEqualTo(7L);
+            await Assert.That(await registry.GetAllSubjectsAsync(cancellationToken)).Contains(subject);
+            return;
+        }
+
+        Assert.Fail("No routed Schema Registry record was consumed.");
+    }
+
     private static GenericRecord CreateRecord(
         string schemaJson,
         long id,
@@ -144,6 +187,26 @@ public sealed class RoutingSerdeIntegrationTests(KafkaWithSchemaRegistryContaine
     private abstract record RoutedEvent(long Id, string Key);
     private sealed record V1Event(long Id, string Key) : RoutedEvent(Id, Key);
     private sealed record V2Event(long Id, string Category, string Key) : RoutedEvent(Id, Key);
+
+    // Completes asynchronously until warmed, so serialization fails unless the producer prepares the route.
+    private sealed class YieldingSubjectNameStrategy(string subject) : IAsyncSubjectNameStrategy
+    {
+        private volatile bool _resolved;
+
+        public ValueTask<string> GetSubjectNameAsync(
+            string topic,
+            string? recordType,
+            bool isKey,
+            CancellationToken cancellationToken = default) =>
+            _resolved ? new(subject) : ResolveAsync();
+
+        private async ValueTask<string> ResolveAsync()
+        {
+            await Task.Yield();
+            _resolved = true;
+            return subject;
+        }
+    }
 
     private sealed class AvroRouteDeserializer<TEvent>(
         AvroSchemaRegistryDeserializer<GenericRecord> inner,

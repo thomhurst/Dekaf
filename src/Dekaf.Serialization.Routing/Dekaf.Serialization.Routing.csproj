@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Dekaf\Dekaf.csproj" />
+    <InternalsVisibleTo Include="Dekaf.Tests.Unit" />
   </ItemGroup>
 
 </Project>

@@ -26,6 +26,7 @@
     <InternalsVisibleTo Include="Dekaf.Outbox" />
     <InternalsVisibleTo Include="Dekaf.Testing" />
     <InternalsVisibleTo Include="Dekaf.SchemaRegistry" />
+    <InternalsVisibleTo Include="Dekaf.Serialization.Routing" />
     <InternalsVisibleTo Include="Dekaf.SchemaRegistry.Avro" />
     <InternalsVisibleTo Include="Dekaf.SchemaRegistry.Protobuf" />
   </ItemGroup>

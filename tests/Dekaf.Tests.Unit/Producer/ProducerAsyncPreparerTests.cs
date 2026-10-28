@@ -10,6 +10,7 @@ using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
+using Dekaf.Serialization.Routing;
 
 namespace Dekaf.Tests.Unit.Producer;
 
@@ -314,6 +315,50 @@ public class ProducerAsyncPreparerTests
         await Assert.That(valueSerializer.SerializePreparedCount).IsEqualTo(1);
         await Assert.That(valueSerializer.SerializeCount).IsEqualTo(0);
         await Assert.That(valueSerializer.ObservedSchemaId).IsEqualTo(17);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ProduceAsync_RoutedSerializerUsesChildPreparationAdmission(bool routeByType)
+    {
+        var valueSerializer = new AdmittedPreparingSerializer();
+        ISerializer<string> router = routeByType
+            ? new TypeRoutingSerializer<string>().Register(valueSerializer).Freeze()
+            : new TopicRoutingSerializer<string>().Register(Topic, valueSerializer).Freeze();
+        await using var producer = CreateProducer(Serializers.String, router);
+        await ReadyProducerAsync(producer);
+        SeedProducerMetadata(producer);
+
+        await Assert.That(async () => await producer.ProduceAsync(NewMessage()))
+            .Throws<AdmittedSerializationException>();
+
+        await Assert.That(valueSerializer.PrepareForSerializationCount).IsEqualTo(1);
+        await Assert.That(valueSerializer.SerializePreparedCount).IsEqualTo(1);
+        await Assert.That(valueSerializer.SerializeCount).IsEqualTo(0);
+        await Assert.That(valueSerializer.ObservedSchemaId).IsEqualTo(17);
+    }
+
+    [Test]
+    public async Task ProduceAsync_RoutedSerializerCancelledDuringPreparation_ThrowsAndDoesNotAppend()
+    {
+        using var cts = new CancellationTokenSource();
+        var valueSerializer = new PreparingSerializer(ct => new ValueTask(Task.Delay(Timeout.Infinite, ct)));
+        var router = new TopicRoutingSerializer<string>()
+            .Register(Topic, valueSerializer)
+            .Freeze();
+
+        await using var producer = CreateProducer(Serializers.String, router);
+        await ReadyProducerAsync(producer);
+
+        var produce = producer.ProduceAsync(NewMessage(), cts.Token).AsTask();
+        await Task.Yield();
+        await Assert.That(produce.IsCompleted).IsFalse();
+
+        cts.Cancel();
+
+        await Assert.That(async () => await produce).Throws<OperationCanceledException>();
+        await Assert.That(producer.RecordAccumulator.BufferedBytes).IsEqualTo(0L);
     }
 
     private static ProducerMessage<string, string> NewMessage() =>

@@ -7,7 +7,11 @@ namespace Dekaf.Serialization.Routing;
 /// Routes serialization by the destination topic.
 /// </summary>
 /// <typeparam name="TBase">The common reference type accepted by every route.</typeparam>
-public sealed class TopicRoutingSerializer<TBase> : ISerializer<TBase>, IRecordHeaderSerializer
+public sealed class TopicRoutingSerializer<TBase> :
+    ISerializer<TBase>,
+    IRecordHeaderSerializer,
+    IAsyncSerializerPreparationAdmission<TBase>,
+    ISerializerPreparationRequirement
     where TBase : class
 {
     private readonly FrozenRouteTable<string, SerializerRoute<TBase>> _routes = new(StringComparer.Ordinal);
@@ -16,6 +20,8 @@ public sealed class TopicRoutingSerializer<TBase> : ISerializer<TBase>, IRecordH
     public bool IsFrozen => _routes.IsFrozen;
 
     bool IRecordHeaderSerializer.ProducesRecordHeaders => _routes.ProducesRecordHeaders;
+
+    bool ISerializerPreparationRequirement.RequiresPreparation => _routes.RequiresSerializerPreparation;
 
     /// <summary>Registers one topic route.</summary>
     public TopicRoutingSerializer<TBase> Register<TDerived>(string topic, ISerializer<TDerived> serializer)
@@ -61,6 +67,40 @@ public sealed class TopicRoutingSerializer<TBase> : ISerializer<TBase>, IRecordH
         throw MissingRoute("topic", context.Topic, context);
     }
 
+    /// <inheritdoc />
+    public ValueTask PrepareAsync(
+        TBase value,
+        SerializationContext context,
+        CancellationToken cancellationToken = default) =>
+        _routes.RequiresSerializerPreparation && value is not null &&
+        _routes.TryGetRoute(context.Topic, out var route)
+            ? route.PrepareAsync(value, context, cancellationToken)
+            : default;
+
+    ValueTask<SerializerPreparationAdmission> IAsyncSerializerPreparationAdmission<TBase>.PrepareForSerializationAsync(
+        TBase value,
+        SerializationContext context,
+        CancellationToken cancellationToken) =>
+        _routes.RequiresSerializerPreparation && value is not null &&
+        _routes.TryGetRoute(context.Topic, out var route)
+            ? route.PrepareForSerializationAsync(value, context, cancellationToken)
+            : default;
+
+    void IAsyncSerializerPreparationAdmission<TBase>.SerializePrepared<TWriter>(
+        TBase value,
+        ref TWriter destination,
+        SerializationContext context,
+        in SerializerPreparationAdmission admission)
+    {
+        if (value is not null && _routes.TryGetRoute(context.Topic, out var route))
+        {
+            route.SerializePrepared(value, ref destination, context, in admission);
+            return;
+        }
+
+        Serialize(value!, ref destination, context);
+    }
+
     private static SerializationException MissingRoute(
         string routeKind,
         string routeValue,
@@ -76,7 +116,11 @@ public sealed class TopicRoutingSerializer<TBase> : ISerializer<TBase>, IRecordH
 /// Routes serialization by the value's exact runtime type.
 /// </summary>
 /// <typeparam name="TBase">The common reference type accepted by every route.</typeparam>
-public sealed class TypeRoutingSerializer<TBase> : ISerializer<TBase>, IRecordHeaderSerializer
+public sealed class TypeRoutingSerializer<TBase> :
+    ISerializer<TBase>,
+    IRecordHeaderSerializer,
+    IAsyncSerializerPreparationAdmission<TBase>,
+    ISerializerPreparationRequirement
     where TBase : class
 {
     private readonly FrozenRouteTable<Type, SerializerRoute<TBase>> _routes = new();
@@ -85,6 +129,8 @@ public sealed class TypeRoutingSerializer<TBase> : ISerializer<TBase>, IRecordHe
     public bool IsFrozen => _routes.IsFrozen;
 
     bool IRecordHeaderSerializer.ProducesRecordHeaders => _routes.ProducesRecordHeaders;
+
+    bool ISerializerPreparationRequirement.RequiresPreparation => _routes.RequiresSerializerPreparation;
 
     /// <summary>Registers one exact runtime-type route.</summary>
     public TypeRoutingSerializer<TBase> Register<TDerived>(ISerializer<TDerived> serializer)
@@ -139,12 +185,69 @@ public sealed class TypeRoutingSerializer<TBase> : ISerializer<TBase>, IRecordHe
             Component = context.Component
         };
     }
+
+    /// <inheritdoc />
+    public ValueTask PrepareAsync(
+        TBase value,
+        SerializationContext context,
+        CancellationToken cancellationToken = default) =>
+        _routes.RequiresSerializerPreparation && value is not null &&
+        _routes.TryGetRoute(value.GetType(), out var route)
+            ? route.PrepareAsync(value, context, cancellationToken)
+            : default;
+
+    ValueTask<SerializerPreparationAdmission> IAsyncSerializerPreparationAdmission<TBase>.PrepareForSerializationAsync(
+        TBase value,
+        SerializationContext context,
+        CancellationToken cancellationToken) =>
+        _routes.RequiresSerializerPreparation && value is not null &&
+        _routes.TryGetRoute(value.GetType(), out var route)
+            ? route.PrepareForSerializationAsync(value, context, cancellationToken)
+            : default;
+
+    void IAsyncSerializerPreparationAdmission<TBase>.SerializePrepared<TWriter>(
+        TBase value,
+        ref TWriter destination,
+        SerializationContext context,
+        in SerializerPreparationAdmission admission)
+    {
+        if (value is not null && _routes.TryGetRoute(value.GetType(), out var route))
+        {
+            route.SerializePrepared(value, ref destination, context, in admission);
+            return;
+        }
+
+        Serialize(value!, ref destination, context);
+    }
 }
 
-internal abstract class SerializerRoute<TBase> : IRecordHeaderSerializer
+internal abstract class SerializerRoute<TBase> : IRecordHeaderSerializer, ISerializerPreparationRequirement
     where TBase : class
 {
     public abstract bool ProducesRecordHeaders { get; }
+
+    public abstract bool RequiresPreparation { get; }
+
+    internal abstract ValueTask PrepareAsync(
+        TBase value,
+        SerializationContext context,
+        CancellationToken cancellationToken);
+
+    internal abstract ValueTask<SerializerPreparationAdmission> PrepareForSerializationAsync(
+        TBase value,
+        SerializationContext context,
+        CancellationToken cancellationToken);
+
+    internal abstract void SerializePrepared<TWriter>(
+        TBase value,
+        ref TWriter destination,
+        SerializationContext context,
+        in SerializerPreparationAdmission admission)
+        where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+        , allows ref struct
+#endif
+        ;
 
     internal abstract void Serialize<TWriter>(
         TBase value,
@@ -162,8 +265,69 @@ internal sealed class SerializerRoute<TBase, TDerived>(ISerializer<TDerived> ser
     where TBase : class
     where TDerived : class, TBase
 {
+    private readonly IAsyncSerializerPreparer<TDerived>? _preparer = serializer as IAsyncSerializerPreparer<TDerived>;
+    private readonly IAsyncSerializerPreparationAdmission<TDerived>? _admission =
+        serializer as IAsyncSerializerPreparationAdmission<TDerived>;
+
     public override bool ProducesRecordHeaders =>
         serializer is IRecordHeaderSerializer { ProducesRecordHeaders: true };
+
+    // Nested routers report whether any of their own routes prepare; other preparers always do.
+    public override bool RequiresPreparation =>
+        _preparer is not null &&
+        serializer is not ISerializerPreparationRequirement { RequiresPreparation: false };
+
+    // A value of the wrong type is rejected by the following serialization call.
+    internal override ValueTask PrepareAsync(
+        TBase value,
+        SerializationContext context,
+        CancellationToken cancellationToken) =>
+        _preparer is not null && value is TDerived typedValue
+            ? _preparer.PrepareAsync(typedValue, context, cancellationToken)
+            : default;
+
+    internal override ValueTask<SerializerPreparationAdmission> PrepareForSerializationAsync(
+        TBase value,
+        SerializationContext context,
+        CancellationToken cancellationToken)
+    {
+        if (_preparer is null || value is not TDerived typedValue)
+            return default;
+
+        return _admission is not null
+            ? _admission.PrepareForSerializationAsync(typedValue, context, cancellationToken)
+            : AwaitPreparationAsync(_preparer.PrepareAsync(typedValue, context, cancellationToken));
+
+        static ValueTask<SerializerPreparationAdmission> AwaitPreparationAsync(ValueTask preparation)
+        {
+            if (preparation.IsCompletedSuccessfully)
+                return default;
+
+            return AwaitAsync(preparation);
+
+            static async ValueTask<SerializerPreparationAdmission> AwaitAsync(ValueTask pending)
+            {
+                await pending.ConfigureAwait(false);
+                return default;
+            }
+        }
+    }
+
+    // Routes are frozen, so the admission always comes from this route's serializer.
+    internal override void SerializePrepared<TWriter>(
+        TBase value,
+        ref TWriter destination,
+        SerializationContext context,
+        in SerializerPreparationAdmission admission)
+    {
+        if (_admission is not null && admission.IsPrepared && value is TDerived typedValue)
+        {
+            _admission.SerializePrepared(typedValue, ref destination, context, in admission);
+            return;
+        }
+
+        Serialize(value, ref destination, context);
+    }
 
     internal override void Serialize<TWriter>(
         TBase value,
@@ -182,4 +346,10 @@ internal sealed class SerializerRoute<TBase, TDerived>(ISerializer<TDerived> ser
 
         serializer.Serialize(typedValue, ref destination, context);
     }
+}
+
+/// <summary>Reports whether a serializer route needs the producer's asynchronous preparation step.</summary>
+internal interface ISerializerPreparationRequirement
+{
+    bool RequiresPreparation { get; }
 }
