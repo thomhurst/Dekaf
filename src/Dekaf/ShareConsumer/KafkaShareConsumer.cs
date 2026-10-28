@@ -397,6 +397,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
             if (_detachedFetch is not null || (_pendingFetches is null && _bufferedRecordCount == 0))
             {
+                if (_detachedFetch is null)
+                    await RefreshMetadataForPartitionErrorsAsync(cancellationToken).ConfigureAwait(false);
                 ShareMetrics?.BeginPollWait();
                 var detached = TakeDetachedFetch();
                 List<Task<ShareFetchBrokerResult>> fetchTasks;
@@ -589,7 +591,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
         // Group assigned partitions by leader broker
         var partitionsByBroker = GroupPartitionsByLeader(assignment,
-            _batchAcknowledgements is null ? TakePollPartitionGroups(assignment.Count) : null);
+            _batchAcknowledgements is null ? TakePollPartitionGroups(assignment.Count) : null,
+            GetPartitionFetchErrors(assignment));
 
         // Send fetch requests to all brokers concurrently. Session epochs are per-broker
         // and independent, so parallelism is safe. This avoids waiting for each broker's
@@ -719,6 +722,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             _sessionManager.IncrementEpoch(brokerId);
             if (version >= 1)
                 Volatile.Write(ref _acquisitionLockTimeoutMs, response.AcquisitionLockTimeoutMs);
+            HandlePartitionFetchErrors(brokerId, response);
 
             var acknowledgementFailures = GetAcknowledgementFailures(response, sentAcks);
             if (acknowledgementFailures is not null)
@@ -1485,6 +1489,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                         acknowledgementErrors);
                 }
 
+                ApplyAcknowledgeLeaderHints(response);
                 SplitAcknowledgements(
                     pendingAcknowledgements,
                     acknowledgementFailures,
@@ -1615,6 +1620,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     {
         try
         {
+            _partitionMetadataRefreshRequested = false;
             await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (InvalidOperationException ex) when (
@@ -1649,12 +1655,18 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     /// Groups assigned partitions by their leader broker.
     /// </summary>
     private Dictionary<int, List<TopicPartition>> GroupPartitionsByLeader(
-        TopicPartitionSet assignment, Dictionary<int, List<TopicPartition>>? reusable = null)
+        TopicPartitionSet assignment, Dictionary<int, List<TopicPartition>>? reusable = null,
+        Dictionary<TopicPartition, PartitionFetchError>? fetchErrors = null)
     {
         var result = reusable ?? new Dictionary<int, List<TopicPartition>>();
+        // Partitions backing off after a fetch error are skipped until their retry time.
+        var now = fetchErrors is null ? 0 : System.Diagnostics.Stopwatch.GetTimestamp();
 
         foreach (var tp in assignment)
         {
+            if (fetchErrors is not null && IsPartitionFetchSuspended(fetchErrors, tp, now))
+                continue;
+
             var leaderNode = _metadataManager.Metadata.GetPartitionLeader(tp.Topic, tp.Partition);
             if (leaderNode is null)
                 continue;
@@ -2359,6 +2371,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
     // INVALID_RECORD_STATE rejects a partition's acknowledgements because the broker no longer
     // holds those acquisitions for this member, for example after an acquisition lock expired.
+    // A leadership move or a deleted topic loses them too (IsAcquisitionLostError).
     // Resending them can never succeed and would fail every later acknowledgement for the
     // partition, so drop them and let the broker redeliver the records. The failure is still reported.
     // Batch consumption tracks pending outcomes in its own index and keeps requeueing them.
@@ -2397,7 +2410,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
         static bool IsStaleAcquisition(Dictionary<TopicPartition, TException> errors, TopicPartition topicPartition)
             => errors.TryGetValue(topicPartition, out var error)
-               && error is KafkaException { ErrorCode: ErrorCode.InvalidRecordState };
+               && error is KafkaException { ErrorCode: { } errorCode }
+               && IsAcquisitionLostError(errorCode);
     }
 
     // A dropped acknowledgement never reaches ApplySuccessfulAcknowledgements, which would
@@ -2447,7 +2461,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 var error = KafkaException.FromErrorCode(
                     partition.AcknowledgeErrorCode,
                     $"Inline ShareFetch acknowledgement failed for partition " +
-                    $"{partition.PartitionIndex}: {partition.AcknowledgeErrorMessage}");
+                    $"{partition.PartitionIndex}: {partition.AcknowledgeErrorMessage}" +
+                    LeaderChangeAcknowledgementHint(partition.AcknowledgeErrorCode));
                 var topicInfo = _metadataManager.Metadata.GetTopic(topic.TopicId);
                 if (topicInfo is null)
                     return AcknowledgementFailures.ForAll(acknowledgements.Keys, error);
@@ -2479,7 +2494,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 var error = KafkaException.FromErrorCode(
                     partition.ErrorCode,
                     $"ShareAcknowledge failed for partition {partition.PartitionIndex}: " +
-                    partition.ErrorMessage);
+                    partition.ErrorMessage + LeaderChangeAcknowledgementHint(partition.ErrorCode));
                 var topicInfo = _metadataManager.Metadata.GetTopic(topic.TopicId);
                 if (topicInfo is null)
                     return AcknowledgementFailures.ForAll(acknowledgements.Keys, error);
@@ -2533,9 +2548,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         terminal = null;
         foreach (var (topicPartition, batches) in acknowledgements)
         {
+            // A moved or deleted partition's acquisitions are gone; resending to any broker fails.
             var canRetry = retryRetriableFailures
                            && failures.Errors[topicPartition].ErrorCode is { } errorCode
-                           && errorCode.IsRetriable();
+                           && errorCode.IsRetriable()
+                           && !IsAcquisitionLostError(errorCode);
             if (canRetry)
             {
                 retriable ??= [];
@@ -3152,9 +3169,6 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "ShareFetch top-level error: {ErrorCode} - {ErrorMessage}")]
     private partial void LogFetchTopLevelError(ErrorCode errorCode, string? errorMessage);
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "ShareFetch partition error: {Topic}-{Partition}: {ErrorCode}")]
-    private partial void LogPartitionFetchError(string topic, int partition, ErrorCode errorCode);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "ShareAcknowledge request failed for broker {BrokerId}")]
     private partial void LogAcknowledgeRequestFailed(int brokerId, Exception exception);

@@ -46,6 +46,9 @@ public class ShareConsumerPollBenchmarks
     internal bool RenewalMode { get; set; }
     internal int ReplayChunkSize { get; set; }
     internal ShareAcquisitionShape AcquisitionShape { get; set; }
+    // Adds a partition-level NOT_LEADER_OR_FOLLOWER for an unassigned partition to every response,
+    // as a broker's share session reports a partition the consumer no longer fetches from it.
+    internal bool StalePartitionError { get; set; }
     // A cancellable token that is never cancelled, as hosted loops and per-iteration timeouts pass.
     internal CancellationToken PollCancellationToken { get; set; }
 
@@ -76,13 +79,28 @@ public class ShareConsumerPollBenchmarks
             Responses = [new ShareFetchResponseTopic
             {
                 TopicId = TopicId,
-                Partitions = [new ShareFetchResponsePartition
-                {
-                    PartitionIndex = 0,
-                    CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
-                    RecordBytes = bytes.WrittenMemory,
-                    AcquiredRecords = acquired
-                }]
+                Partitions =
+                [
+                    new ShareFetchResponsePartition
+                    {
+                        PartitionIndex = 0,
+                        CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
+                        RecordBytes = bytes.WrittenMemory,
+                        AcquiredRecords = acquired
+                    },
+                    .. StalePartitionError
+                        ? new[]
+                        {
+                            new ShareFetchResponsePartition
+                            {
+                                PartitionIndex = 1,
+                                ErrorCode = ErrorCode.NotLeaderOrFollower,
+                                CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
+                                AcquiredRecords = []
+                            }
+                        }
+                        : []
+                ]
             }],
             NodeEndpoints = []
         };

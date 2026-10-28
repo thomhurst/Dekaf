@@ -239,7 +239,7 @@ public sealed partial class ShareConsumerRenewalTests
         {
             ShareAcknowledgeResponses = new Queue<ShareAcknowledgeResponse>(
             [
-                CreateAcknowledgeResponse((0, ErrorCode.None), (1, ErrorCode.NotLeaderOrFollower)),
+                CreateAcknowledgeResponse((0, ErrorCode.None), (1, ErrorCode.RequestTimedOut)),
                 CreateAcknowledgeResponse((1, ErrorCode.None))
             ]),
             OnSend = () =>
@@ -636,7 +636,7 @@ public sealed partial class ShareConsumerRenewalTests
             [
                 CreateAcknowledgeResponse(
                     (0, ErrorCode.None),
-                    (1, ErrorCode.NotLeaderOrFollower)),
+                    (1, ErrorCode.RequestTimedOut)),
                 CreateAcknowledgeResponse((1, ErrorCode.None))
             ])
         };
@@ -693,7 +693,7 @@ public sealed partial class ShareConsumerRenewalTests
         {
             ShareAcknowledgeResponses = new Queue<ShareAcknowledgeResponse>(
             [
-                CreateAcknowledgeResponse((0, ErrorCode.NotLeaderOrFollower)),
+                CreateAcknowledgeResponse((0, ErrorCode.RequestTimedOut)),
                 CreateAcknowledgeResponse((0, ErrorCode.None))
             ])
         };
@@ -797,7 +797,7 @@ public sealed partial class ShareConsumerRenewalTests
         {
             ShareAcknowledgeResponse = CreateAcknowledgeResponse(
                 (0, ErrorCode.None),
-                (1, ErrorCode.NotLeaderOrFollower)),
+                (1, ErrorCode.RequestTimedOut)),
             OnSend = cancellation.Cancel
         };
         await using var fixture = CreateFixture(

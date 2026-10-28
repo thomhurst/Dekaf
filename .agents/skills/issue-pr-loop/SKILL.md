@@ -144,6 +144,8 @@ Redis is authoritative: never steal locks based on PIDs/files/inactivity or add 
 
 After claiming an issue, create branch/worktree `issue-<N>-<short-desc>` from freshly fetched `origin/main`. For PR fixes, create a detached worktree from `origin/main`, then run `gh pr checkout <N>` with that worktree as `workdir`. PR directories use `pr-<N>-<description>`; never rename or reuse them for another PR. A separate local review/rebase branch must retain the same `pr-<N>` identity.
 
+Never use `git stash` in a worktree. Every worktree of a repository shares one stash list, so a concurrent worker's push or pop changes what `stash@{0}` names, and `git stash pop` can apply another worker's changes. To set changes aside, commit them on the item's branch, or compare against a detached worktree of the base.
+
 Set every mutating tool call's `workdir` explicitly; shell directory changes do not persist. Before the first edit and after checkout changes, compare `git rev-parse --show-toplevel` with the intended worktree's resolved absolute path and inspect `git status --short --branch`. Abort on a mismatch.
 
 Use repository scripts for merged-worktree cleanup; `[gone]` or ancestry alone is insufficient. Preserve dirty, locked, open-PR, harness-managed, and locally divergent worktrees. Inspect untracked source before cleanup: scripts may clear build artifacts. Manually remove abandoned worktrees only after verifying repository/path, ownership, and absence of valuable unpublished work. Do not enable stale/scratch cleanup during surveys.

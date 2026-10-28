@@ -123,9 +123,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                 AdvancePendingPartition();
                 continue;
             }
-            if (partition.ErrorCode != ErrorCode.None)
-                LogPartitionFetchError(topicInfo.Name, partition.PartitionIndex, partition.ErrorCode);
-            else if (!partition.RecordBytes.IsEmpty && partition.AcquiredRecords.Count != 0)
+            // CompletePollFetch already handled partition errors once per response.
+            if (partition.ErrorCode == ErrorCode.None && !partition.RecordBytes.IsEmpty && partition.AcquiredRecords.Count != 0)
             {
                 var firstOwner = _polledBatchOwners.Count;
                 var rawBytesBeforeParsing = _rawBuffer?.WrittenCount ?? 0;
