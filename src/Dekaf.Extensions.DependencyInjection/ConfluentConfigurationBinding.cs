@@ -502,9 +502,16 @@ internal static class ConfluentConfigurationBinding
         throw UnsupportedValue(key, raw);
     }
 
-    private static string NormalizeEnumValue(string value) =>
-        value.Replace("-", string.Empty, StringComparison.Ordinal)
-            .Replace("_", string.Empty, StringComparison.Ordinal);
+    // Separators are stripped from names only. A numeric value keeps its sign, so Acks "-1"
+    // stays All instead of becoming "1" (Leader); undefined numbers still fail Enum.IsDefined.
+    private static string NormalizeEnumValue(string value)
+    {
+        var trimmed = value.AsSpan().TrimStart();
+        return trimmed.Length > 0 && char.IsLetter(trimmed[0])
+            ? value.Replace("-", string.Empty, StringComparison.Ordinal)
+                .Replace("_", string.Empty, StringComparison.Ordinal)
+            : value;
+    }
 
     private static void ValidateProducerProperties(IConfiguration configuration)
     {

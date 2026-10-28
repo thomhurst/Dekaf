@@ -712,6 +712,71 @@ public class DependencyInjectionTests
     }
 
     [Test]
+    [Arguments("-1", Acks.All)]
+    [Arguments(" -1", Acks.All)]
+    [Arguments("0", Acks.None)]
+    [Arguments("1", Acks.Leader)]
+    [Arguments("All", Acks.All)]
+    [Arguments("leader", Acks.Leader)]
+    public async Task AddProducerFromConfluentConfig_TranslatesAcks(string configuredValue, Acks expected)
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:Acks"] = configuredValue,
+            ["Config:EnableIdempotence"] = "false"
+        });
+
+        services.AddDekaf(builder => builder.AddProducerFromConfluentConfig<string, string>(
+            configuration.GetSection("Config")));
+
+        await using var provider = services.BuildServiceProvider();
+        var options = GetProducerOptions(provider.GetRequiredService<IKafkaProducer<string, string>>());
+        await Assert.That(options.Acks).IsEqualTo(expected);
+    }
+
+    [Test]
+    [Arguments("-2")]
+    [Arguments("-5")]
+    [Arguments("--1")]
+    [Arguments("1-")]
+    public async Task AddProducerFromConfluentConfig_InvalidNumericAcks_FailsFast(string configuredValue)
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:Acks"] = configuredValue
+        });
+
+        await Assert.That(() => services.AddDekaf(builder =>
+                builder.AddProducerFromConfluentConfig<string, string>(configuration.GetSection("Config"))))
+            .Throws<NotSupportedException>()
+            .WithMessageContaining("Acks");
+    }
+
+    [Test]
+    public async Task AddProducerFromConfluentConfig_NumericAcksAllowsFluentOverride()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:Acks"] = "-1",
+            ["Config:EnableIdempotence"] = "false"
+        });
+
+        services.AddDekaf(builder => builder.AddProducerFromConfluentConfig<string, string>(
+            configuration.GetSection("Config"),
+            (_, producer) => producer.WithAcks(Acks.Leader)));
+
+        await using var provider = services.BuildServiceProvider();
+        var options = GetProducerOptions(provider.GetRequiredService<IKafkaProducer<string, string>>());
+        await Assert.That(options.Acks).IsEqualTo(Acks.Leader);
+    }
+
+    [Test]
     public async Task AddProducerFromConfluentConfig_TransactionalIdEnablesIdempotenceByDefault()
     {
         var services = new ServiceCollection();
@@ -753,6 +818,7 @@ public class DependencyInjectionTests
     [Test]
     [Arguments("fnv1a", PartitionerType.Fnv1A)]
     [Arguments("fnv1a_random", PartitionerType.Fnv1ARandom)]
+    [Arguments("fnv1a-random", PartitionerType.Fnv1ARandom)]
     public async Task AddProducerFromConfluentConfig_TranslatesFnvPartitioners(
         string configuredValue,
         PartitionerType expected)
