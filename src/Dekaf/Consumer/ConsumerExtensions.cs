@@ -146,8 +146,27 @@ public static class ConsumerExtensions
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>An async enumerable of batches.</returns>
     /// <remarks>
+    /// <para>
+    /// This operator requests up to <paramref name="batchSize"/> records from
+    /// <paramref name="source"/> before it yields the batch. Over <c>ConsumeAsync</c> with the
+    /// default <see cref="OffsetStoreTiming.AfterProcessing"/> timing, each request proves the
+    /// record before it, so the buffered records are proven, and can be committed by the
+    /// automatic commit loop or the close commit, before the batch handler runs. A batch whose
+    /// handler fails is then not redelivered.
+    /// </para>
+    /// <para>
+    /// To keep at-least-once delivery for batches, use
+    /// <see cref="IKafkaConsumer{TKey, TValue}.ConsumeBatchAsync(CancellationToken)"/>, which
+    /// proves a batch only when the next batch is requested. Alternatively, disable
+    /// <see cref="ConsumerOptions.EnableAutoOffsetStore"/> and call
+    /// <see cref="IKafkaConsumer{TKey, TValue}.StoreOffset(ConsumeResult{TKey, TValue})"/> for
+    /// each record after the batch succeeds, or use <see cref="OffsetCommitMode.Manual"/> and
+    /// commit after the batch succeeds.
+    /// </para>
+    /// <para>
     /// This method allocates a new List for each batch. This is acceptable for consumer-side
     /// processing which is not in the zero-allocation hot path (protocol serialization).
+    /// </para>
     /// </remarks>
     public static async IAsyncEnumerable<IReadOnlyList<ConsumeResult<TKey, TValue>>> Batch<TKey, TValue>(
         this IAsyncEnumerable<ConsumeResult<TKey, TValue>> source,

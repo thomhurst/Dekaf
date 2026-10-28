@@ -140,6 +140,23 @@ Shutting down by cancelling the consume token does *not* have this caveat — ca
 observed while waiting for the next record, after the previous one was proven.
 :::
 
+:::warning Buffering operators prove records before you process them
+The proof signal is the request for the next record, so any operator that reads ahead of your
+code proves the records it buffers. `ConsumeAsync(ct).Batch(n)` requests up to `n` records
+before it yields the batch, so the first `n - 1` records are proven before your batch handler
+runs. If the handler throws, or the process dies while it runs, the auto-commit loop or the
+close commit can commit those records although they were never processed.
+
+For batch processing, use one of these patterns instead:
+
+- `ConsumeBatchAsync`. Requesting the next batch proves only the records you enumerated from
+  the current one, so a failing batch is redelivered.
+- `.Batch(n)` with `WithAutoOffsetStore(false)`, then `StoreOffset` for each record after the
+  whole batch succeeds.
+- `.Batch(n)` with `WithOffsetCommitMode(OffsetCommitMode.Manual)`, then `CommitAsync()` after
+  the whole batch succeeds. In manual mode nothing is committed unless you call `CommitAsync`.
+:::
+
 ### Explicit Acknowledgment (strict at-least-once)
 
 Auto-commit stays on, but nothing is staged automatically: only offsets you explicitly store
