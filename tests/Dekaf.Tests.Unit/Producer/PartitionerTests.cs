@@ -314,6 +314,75 @@ public class DefaultPartitionerTests
         await Assert.That(second).IsEqualTo(1);
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task StickySwitch_NeverSelectsLeaderlessPartition(bool rackAwarePartitioning)
+    {
+        var partitioner = new DefaultPartitioner(
+            stickyBatchSize: 1,
+            adaptivePartitioning: false,
+            availabilityTimeoutMs: 0,
+            ignoreKeys: false,
+            rackAwarePartitioning,
+            clientRack: "rack-a");
+        var uniform = (IUniformStickyPartitioner)partitioner;
+        // No leader in the client rack, so rack-aware selection falls back to the global set.
+        uniform.SetRackLocalPartitionsProvider(static (_, _, _) => []);
+        uniform.SetAvailablePartitionsProvider(static (_, _) => [1, 3]);
+
+        var selected = new HashSet<int>();
+        for (var i = 0; i < 20; i++)
+        {
+            var partition = partitioner.Partition(Topic, ReadOnlySpan<byte>.Empty, keyIsNull: true, partitionCount: 5);
+            selected.Add(partition);
+            uniform.OnRecordAppended(Topic, partition, bytes: 1, partitionCount: 5);
+        }
+
+        await Assert.That(selected).IsEquivalentTo([1, 3]);
+    }
+
+    [Test]
+    [Arguments(0L)]
+    [Arguments(4096L)]
+    public async Task StickySwitch_Adaptive_NeverSelectsLeaderlessPartition(long queuedBytesOnLeaders)
+    {
+        // With queued bytes on the leaders, the empty leaderless partitions would win the
+        // adaptive weighting if they were candidates.
+        var partitioner = new DefaultPartitioner(stickyBatchSize: 1, adaptivePartitioning: true);
+        var uniform = (IUniformStickyPartitioner)partitioner;
+        uniform.SetPartitionQueueByteProvider((_, partition) => partition is 0 or 2 ? queuedBytesOnLeaders : 0);
+        uniform.SetAvailablePartitionsProvider(static (_, _) => [0, 2]);
+
+        var selected = new HashSet<int>();
+        for (var i = 0; i < 20; i++)
+        {
+            var partition = partitioner.Partition(Topic, ReadOnlySpan<byte>.Empty, keyIsNull: true, partitionCount: 4);
+            selected.Add(partition);
+            uniform.OnRecordAppended(Topic, partition, bytes: 1, partitionCount: 4);
+        }
+
+        await Assert.That(selected).IsEquivalentTo([0, 2]);
+    }
+
+    [Test]
+    public async Task StickySwitch_SingleLeaderPartition_StaysOnIt()
+    {
+        var partitioner = new StickyPartitioner(stickyBatchSize: 1);
+        var uniform = (IUniformStickyPartitioner)partitioner;
+        uniform.SetAvailablePartitionsProvider(static (_, _) => [2]);
+
+        var selected = new HashSet<int>();
+        for (var i = 0; i < 5; i++)
+        {
+            var partition = partitioner.Partition(Topic, ReadOnlySpan<byte>.Empty, keyIsNull: true, partitionCount: 3);
+            selected.Add(partition);
+            uniform.OnRecordAppended(Topic, partition, bytes: 1, partitionCount: 3);
+        }
+
+        await Assert.That(selected).IsEquivalentTo([2]);
+    }
+
     private static DefaultPartitioner CreateRackAwarePartitioner(
         int stickyBatchSize = int.MaxValue,
         bool adaptivePartitioning = false,

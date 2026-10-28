@@ -576,6 +576,121 @@ public sealed class ClusterMetadataTests
         await Assert.That(metadata.GetPartitionsForRack("rack-topic", "rack-b", 3)).IsEquivalentTo([0, 2]);
     }
 
+    [Test]
+    public async Task GetAvailablePartitions_ExcludesPartitionsWithoutKnownLeader()
+    {
+        var metadata = new ClusterMetadata();
+        metadata.Update(CreateLeaderResponse(1, -1, 9, 1));
+
+        await Assert.That(metadata.GetAvailablePartitions("leader-topic", 4)).IsEquivalentTo([0, 3]);
+        await Assert.That(metadata.GetAvailablePartitions("leader-topic", 3)).IsEmpty();
+        await Assert.That(metadata.GetAvailablePartitions("unknown-topic", 4)).IsEmpty();
+    }
+
+    [Test]
+    public async Task GetAvailablePartitions_IgnoresOutOfRangePartitionIndex()
+    {
+        var metadata = new ClusterMetadata();
+        var partitions = CreateLeaderPartitions(1, 1);
+        partitions[1] = new PartitionMetadata
+        {
+            ErrorCode = ErrorCode.None,
+            PartitionIndex = 5,
+            LeaderId = 1,
+            ReplicaNodes = [1],
+            IsrNodes = [1]
+        };
+        metadata.Update(CreateLeaderResponse(partitions));
+
+        await Assert.That(metadata.GetAvailablePartitions("leader-topic", 2)).IsEquivalentTo([0]);
+        await Assert.That(metadata.GetPartitionsForRack("leader-topic", "rack-a", 2)).IsEquivalentTo([0]);
+    }
+
+    [Test]
+    public async Task GetAvailablePartitions_AllOrNoLeaders_ReturnsEmpty()
+    {
+        var metadata = new ClusterMetadata();
+        metadata.Update(CreateLeaderResponse(1, 1));
+        await Assert.That(metadata.GetAvailablePartitions("leader-topic", 2)).IsEmpty();
+
+        metadata.Update(CreateLeaderResponse(-1, -1));
+        await Assert.That(metadata.GetAvailablePartitions("leader-topic", 2)).IsEmpty();
+    }
+
+    [Test]
+    public async Task GetAvailablePartitions_LeaderUpdateRefreshesIndex()
+    {
+        var metadata = new ClusterMetadata();
+        metadata.Update(CreateLeaderResponse(1, -1, 1));
+        await Assert.That(metadata.GetAvailablePartitions("leader-topic", 3)).IsEquivalentTo([0, 2]);
+
+        await Assert.That(metadata.TryUpdatePartitionLeader("leader-topic", 1, leaderId: 1, leaderEpoch: 1, leaderEndpoint: null)).IsTrue();
+
+        await Assert.That(metadata.GetAvailablePartitions("leader-topic", 3)).IsEmpty();
+    }
+
+    [Test]
+    public async Task LeaderIndex_IsBuiltLazilyOncePerSnapshot()
+    {
+        var metadata = new ClusterMetadata();
+        metadata.Update(CreateLeaderResponse(1, -1));
+        var snapshot = metadata.CaptureSnapshot();
+
+        await Assert.That(snapshot.HasLeaderIndexCacheForTest).IsFalse();
+
+        var first = snapshot.GetLeaderIndex("leader-topic");
+        var second = snapshot.GetLeaderIndex("leader-topic");
+
+        await Assert.That(snapshot.HasLeaderIndexCacheForTest).IsTrue();
+        await Assert.That(first).IsNotNull();
+        await Assert.That(second).IsSameReferenceAs(first);
+        await Assert.That(first!.IsPartitionsByRackBuiltForTest).IsFalse();
+
+        var partitionsByRack = first.PartitionsByRack;
+
+        await Assert.That(first.IsPartitionsByRackBuiltForTest).IsTrue();
+        await Assert.That(first.PartitionsByRack).IsSameReferenceAs(partitionsByRack);
+        await Assert.That(snapshot.GetLeaderIndex("unknown-topic")).IsNull();
+    }
+
+    private static MetadataResponse CreateLeaderResponse(params int[] leaderIds)
+        => CreateLeaderResponse(CreateLeaderPartitions(leaderIds));
+
+    private static PartitionMetadata[] CreateLeaderPartitions(params int[] leaderIds)
+    {
+        var partitions = new PartitionMetadata[leaderIds.Length];
+        for (var i = 0; i < leaderIds.Length; i++)
+        {
+            partitions[i] = new PartitionMetadata
+            {
+                ErrorCode = ErrorCode.None,
+                PartitionIndex = i,
+                LeaderId = leaderIds[i],
+                ReplicaNodes = [1],
+                IsrNodes = [1]
+            };
+        }
+
+        return partitions;
+    }
+
+    private static MetadataResponse CreateLeaderResponse(PartitionMetadata[] partitions)
+    {
+        return new MetadataResponse
+        {
+            Brokers = [new BrokerMetadata { NodeId = 1, Host = "broker1", Port = 9092, Rack = "rack-a" }],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None,
+                    Name = "leader-topic",
+                    Partitions = partitions
+                }
+            ]
+        };
+    }
+
     #endregion
 
     #region Update Replaces Previous State

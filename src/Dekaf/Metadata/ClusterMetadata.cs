@@ -1,15 +1,115 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 
 namespace Dekaf.Metadata;
 
-internal sealed class RackPartitionIndex(
-    int partitionCount,
-    Dictionary<string, int[]> partitionsByRack)
+/// <summary>
+/// Per-topic leader view used by the built-in sticky partitioners. It is built lazily, once per
+/// metadata snapshot and topic, the first time a producer rotates its sticky partition, so
+/// consumers, admin clients and snapshot rebuilds never pay for it.
+/// </summary>
+internal sealed class TopicLeaderIndex
 {
-    public int PartitionCount { get; } = partitionCount;
-    public Dictionary<string, int[]> PartitionsByRack { get; } = partitionsByRack;
+    private readonly TopicInfo _topic;
+    private readonly IReadOnlyDictionary<int, BrokerNode> _brokers;
+    private Dictionary<string, int[]>? _partitionsByRack;
+
+    public TopicLeaderIndex(TopicInfo topic, IReadOnlyDictionary<int, BrokerNode> brokers)
+    {
+        _topic = topic;
+        _brokers = brokers;
+        PartitionCount = topic.PartitionCount;
+        AvailablePartitions = BuildAvailablePartitions(topic, brokers);
+    }
+
+    public int PartitionCount { get; }
+
+    /// <summary>
+    /// Partitions whose leader is a known broker, matching Java's
+    /// <c>Cluster.availablePartitionsForTopic</c>. Empty when every partition, or no partition,
+    /// has a leader: in both cases the caller chooses from all partitions.
+    /// </summary>
+    public int[] AvailablePartitions { get; }
+
+    /// <summary>
+    /// Leader rack to partition indices. Built on first use, so only rack-aware producers pay for it.
+    /// </summary>
+    public Dictionary<string, int[]> PartitionsByRack
+        => Volatile.Read(ref _partitionsByRack) ?? InitializePartitionsByRack();
+
+    internal bool IsPartitionsByRackBuiltForTest => Volatile.Read(ref _partitionsByRack) is not null;
+
+    private Dictionary<string, int[]> InitializePartitionsByRack()
+    {
+        var built = BuildPartitionsByRack(_topic, _brokers);
+        return Interlocked.CompareExchange(ref _partitionsByRack, built, null) ?? built;
+    }
+
+    private static int[] BuildAvailablePartitions(TopicInfo topic, IReadOnlyDictionary<int, BrokerNode> brokers)
+    {
+        var partitions = topic.Partitions;
+        var availableCount = 0;
+        for (var i = 0; i < partitions.Count; i++)
+        {
+            if (HasKnownLeader(partitions[i], partitions.Count, brokers))
+                availableCount++;
+        }
+
+        if (availableCount == 0 || availableCount == partitions.Count)
+            return [];
+
+        var available = new int[availableCount];
+        var index = 0;
+        for (var i = 0; i < partitions.Count; i++)
+        {
+            if (HasKnownLeader(partitions[i], partitions.Count, brokers))
+                available[index++] = partitions[i].PartitionIndex;
+        }
+
+        return available;
+    }
+
+    // Partitioners index per-partition state by partition number, so an index outside
+    // [0, PartitionCount) from malformed metadata is never a candidate.
+    private static bool HasKnownLeader(
+        PartitionInfo partition,
+        int partitionCount,
+        IReadOnlyDictionary<int, BrokerNode> brokers)
+        => (uint)partition.PartitionIndex < (uint)partitionCount && brokers.ContainsKey(partition.LeaderId);
+
+    private static Dictionary<string, int[]> BuildPartitionsByRack(
+        TopicInfo topic,
+        IReadOnlyDictionary<int, BrokerNode> brokers)
+    {
+        var builders = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+        var partitions = topic.Partitions;
+        for (var i = 0; i < partitions.Count; i++)
+        {
+            var partition = partitions[i];
+            if ((uint)partition.PartitionIndex >= (uint)partitions.Count
+                || !brokers.TryGetValue(partition.LeaderId, out var leader))
+            {
+                continue;
+            }
+
+            var rack = leader.Rack;
+            if (rack is not { Length: > 0 })
+                continue;
+
+            if (!builders.TryGetValue(rack, out var rackPartitions))
+                builders[rack] = rackPartitions = [];
+
+            rackPartitions.Add(partition.PartitionIndex);
+        }
+
+        var partitionsByRack = new Dictionary<string, int[]>(builders.Count, StringComparer.Ordinal);
+        foreach (var (rack, rackPartitions) in builders)
+            partitionsByRack[rack] = rackPartitions.ToArray();
+
+        return partitionsByRack;
+    }
 }
 
 /// <summary>
@@ -45,12 +145,9 @@ internal sealed class ClusterMetadataSnapshot
     /// </summary>
     public IReadOnlyDictionary<string, PartitionInfo?[]> PartitionsByTopicIndex { get; }
 
-    /// <summary>
-    /// Topic name → leader rack → partition indices.
-    /// Built with the metadata snapshot so rack-aware partitioning never scans topic
-    /// partitions on the producer append path.
-    /// </summary>
-    public Dictionary<string, RackPartitionIndex> PartitionsByTopicRack { get; }
+    // Topic name → leader index. Created on the first sticky-partition rotation against this
+    // snapshot; snapshots that no producer partitions against never allocate it.
+    private ConcurrentDictionary<string, TopicLeaderIndex>? _leaderIndexByTopic;
 
     public ClusterMetadataSnapshot(
         string? clusterId,
@@ -68,7 +165,28 @@ internal sealed class ClusterMetadataSnapshot
         TopicsById = topicsById;
         PartitionsByBroker = BuildPartitionsByBroker(topics);
         PartitionsByTopicIndex = BuildPartitionsByTopicIndex(topics);
-        PartitionsByTopicRack = BuildPartitionsByTopicRack(brokers, topics);
+    }
+
+    /// <summary>
+    /// Gets the leader index for a topic, building it on first use for this snapshot.
+    /// </summary>
+    public TopicLeaderIndex? GetLeaderIndex(string topicName)
+    {
+        var cache = Volatile.Read(ref _leaderIndexByTopic) ?? InitializeLeaderIndexCache();
+        if (cache.TryGetValue(topicName, out var index))
+            return index;
+
+        return Topics.TryGetValue(topicName, out var topic)
+            ? cache.GetOrAdd(topicName, new TopicLeaderIndex(topic, Brokers))
+            : null;
+    }
+
+    internal bool HasLeaderIndexCacheForTest => Volatile.Read(ref _leaderIndexByTopic) is not null;
+
+    private ConcurrentDictionary<string, TopicLeaderIndex> InitializeLeaderIndexCache()
+    {
+        var created = new ConcurrentDictionary<string, TopicLeaderIndex>(StringComparer.Ordinal);
+        return Interlocked.CompareExchange(ref _leaderIndexByTopic, created, null) ?? created;
     }
 
     private static Dictionary<int, IReadOnlyList<TopicPartition>> BuildPartitionsByBroker(
@@ -119,41 +237,6 @@ internal sealed class ClusterMetadataSnapshot
             }
 
             result[topic.Name] = partitionsByIndex;
-        }
-
-        return result;
-    }
-
-    private static Dictionary<string, RackPartitionIndex> BuildPartitionsByTopicRack(
-        Dictionary<int, BrokerNode> brokers,
-        Dictionary<string, TopicInfo> topics)
-    {
-        var result = new Dictionary<string, RackPartitionIndex>(topics.Count);
-        foreach (var topic in topics.Values)
-        {
-            var builders = new Dictionary<string, List<int>>(StringComparer.Ordinal);
-            foreach (var partition in topic.Partitions)
-            {
-                if (!brokers.TryGetValue(partition.LeaderId, out var leader))
-                {
-                    continue;
-                }
-
-                var rack = leader.Rack;
-                if (rack is not { Length: > 0 })
-                    continue;
-
-                if (!builders.TryGetValue(rack, out var partitions))
-                    builders[rack] = partitions = [];
-
-                partitions.Add(partition.PartitionIndex);
-            }
-
-            var partitionsByRack = new Dictionary<string, int[]>(builders.Count, StringComparer.Ordinal);
-            foreach (var (rack, partitions) in builders)
-                partitionsByRack[rack] = partitions.ToArray();
-
-            result[topic.Name] = new RackPartitionIndex(topic.PartitionCount, partitionsByRack);
         }
 
         return result;
@@ -245,15 +328,27 @@ public sealed class ClusterMetadata
     /// <summary>
     /// Gets the immutable partition-index cache for leaders in a rack.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal int[] GetPartitionsForRack(string topicName, string rack, int partitionCount)
     {
-        var snapshot = _snapshot;
-        return snapshot.PartitionsByTopicRack.TryGetValue(topicName, out var rackIndex)
-            && rackIndex.PartitionCount == partitionCount
-            && rackIndex.PartitionsByRack.TryGetValue(rack, out var partitions)
+        var leaderIndex = _snapshot.GetLeaderIndex(topicName);
+        return leaderIndex is not null
+            && leaderIndex.PartitionCount == partitionCount
+            && leaderIndex.PartitionsByRack.TryGetValue(rack, out var partitions)
                 ? partitions
                 : Array.Empty<int>();
+    }
+
+    /// <summary>
+    /// Gets the partitions that have a leader. Returns an empty array when every partition, or
+    /// no partition, has a leader, or when the cached partition count differs; callers then
+    /// choose from all partitions.
+    /// </summary>
+    internal int[] GetAvailablePartitions(string topicName, int partitionCount)
+    {
+        var leaderIndex = _snapshot.GetLeaderIndex(topicName);
+        return leaderIndex is not null && leaderIndex.PartitionCount == partitionCount
+            ? leaderIndex.AvailablePartitions
+            : Array.Empty<int>();
     }
 
     /// <summary>

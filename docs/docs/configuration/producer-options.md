@@ -224,6 +224,8 @@ Control how messages are assigned to partitions:
 
 The built-in default and sticky partitioners use KIP-794 behavior for sticky records: they stay on a partition until at least `BatchSize` bytes have been produced to it. Adaptive partitioning is enabled by default and weights new sticky choices away from partitions with queued batches. Set `.WithAdaptivePartitioning(false)` for uniform switching, `.WithPartitionerAvailabilityTimeout(...)` to exclude backed-up partitions after a timeout, or `.WithPartitionerIgnoreKeys()` to use sticky partitioning even when records have keys. KIP-1123 rack-aware partitioning is opt-in with `.WithClientRack("rack-a").WithRackAwarePartitioning()`. It prefers local partition leaders and falls back to all leaders when none are usable; uneven rack placement can therefore produce an uneven partition distribution.
 
+Sticky records are records with a null key, or any key when `.WithPartitionerIgnoreKeys()` is set. Like librdkafka, the built-in default and sticky partitioners also treat an **empty (zero-length) key** as keyless, so those records are sticky and rack-steered instead of hashed. The Java client hashes every non-null key with murmur2, including an empty one; if you migrate from Java and rely on empty keys mapping to one fixed partition, use a non-empty key or `PartitionerType.Murmur2Random`, which hashes every non-null key, including an empty one, as Java does. When a sticky partitioner switches partitions, it chooses only partitions that currently have a leader, and uses all partitions only when none of them has one.
+
 ## Transactions
 
 ### WithTransactionalId
