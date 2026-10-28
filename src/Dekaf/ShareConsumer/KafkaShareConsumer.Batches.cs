@@ -239,9 +239,18 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                                         ref gapRangeIndex, batch.Storage, nextGapOffset);
                                 }
                                 // Offsets past a record cut short may hold data records, so no
-                                // later acquired offset of this partition is a gap.
+                                // later acquired offset of this partition is a gap. Offsets
+                                // below the cut batch were walked; an empty batch has not
+                                // queued them yet.
                                 if (batch.Storage.TruncatedRecords)
+                                {
+                                    if (batch.Count == 0 && nextGapOffset < batch.Storage.BaseOffset)
+                                    {
+                                        TrackAcquiredGaps(topicPartition, partition.AcquiredRecords,
+                                            ref gapRangeIndex, nextGapOffset, batch.Storage.BaseOffset - 1);
+                                    }
                                     nextGapOffset = long.MaxValue;
+                                }
                                 if (batch.Count == 0)
                                     continue;
                                 acknowledgements.Register(batch);

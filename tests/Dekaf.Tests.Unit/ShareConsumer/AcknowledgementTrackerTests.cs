@@ -142,6 +142,57 @@ public class AcknowledgementTrackerTests
     }
 
     [Test]
+    public async Task ExplicitAcknowledgements_AroundManyGaps_FlushOrderedDispositions()
+    {
+        var tracker = new AcknowledgementTracker();
+        var partition = new TopicPartition("topic", 0);
+        // Markers split the delivered offsets into one range per producer batch. Explicit
+        // outcomes land inside those ranges, inside a gap, and outside every range.
+        const int Batches = 64;
+        for (var batch = 0; batch < Batches; batch++)
+            tracker.TrackGapRecords(partition, batch * 5 + 4, batch * 5 + 4);
+        tracker.TrackGapRecords(partition, 1_000, 1_000_000);
+        for (var batch = 0; batch < Batches; batch++)
+            for (var record = 0; record < 4; record++)
+                tracker.TrackDeliveredRecords(partition, batch * 5 + record, batch * 5 + record);
+        for (var offset = 0L; offset < Batches * 5; offset++)
+        {
+            if (offset % 5 != 4)
+                tracker.Acknowledge(partition, offset, offset % 3 == 0 ? AcknowledgeType.Reject : AcknowledgeType.Accept);
+        }
+        tracker.Acknowledge(partition, 500_000, AcknowledgeType.Release, requireTracked: false);
+        tracker.Acknowledge(partition, 2_000_000, AcknowledgeType.Release, requireTracked: false);
+        tracker.Acknowledge(partition, 2_000_001, AcknowledgeType.Reject, requireTracked: false);
+
+        var batches = tracker.Flush()[partition];
+
+        var types = new Dictionary<long, byte>();
+        var previousLast = long.MinValue;
+        foreach (var batch in batches)
+        {
+            await Assert.That(batch.FirstOffset).IsGreaterThan(previousLast);
+            previousLast = batch.LastOffset;
+            if (batch.FirstOffset >= 1_000 && batch.LastOffset < 2_000_000)
+                continue;
+            for (var offset = batch.FirstOffset; offset <= batch.LastOffset; offset++)
+                types.Add(offset, batch.GetAcknowledgeType(checked((int)(offset - batch.FirstOffset))));
+        }
+        for (var offset = 0L; offset < Batches * 5; offset++)
+        {
+            var expected = offset % 5 == 4 ? AcknowledgeType.Gap
+                : offset % 3 == 0 ? AcknowledgeType.Reject : AcknowledgeType.Accept;
+            await Assert.That(types[offset]).IsEqualTo((byte)expected);
+        }
+        await Assert.That(types[2_000_000]).IsEqualTo((byte)AcknowledgeType.Release);
+        await Assert.That(types[2_000_001]).IsEqualTo((byte)AcknowledgeType.Reject);
+
+        var hole = batches.Single(static batch => batch.FirstOffset == 1_000);
+        await Assert.That(hole.LastOffset).IsEqualTo(1_000_000);
+        await Assert.That(hole.GetAcknowledgeType(499_000)).IsEqualTo((byte)AcknowledgeType.Release);
+        await Assert.That(hole.GetAcknowledgeType(0)).IsEqualTo((byte)AcknowledgeType.Gap);
+    }
+
+    [Test]
     public async Task FlushForPoll_DoesNotReuseAnOutstandingSnapshot()
     {
         var tracker = new AcknowledgementTracker();

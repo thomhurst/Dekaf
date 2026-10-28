@@ -26,8 +26,15 @@ public sealed partial class ShareConsumerRenewalTests
         // The broker cut the batch holding offsets 5-6 at the response byte limit.
         TruncatedBatch,
         // The batch at offset 4 is complete, but its second record (offset 5) is cut short.
-        TruncatedRecord
+        TruncatedRecord,
+        // The batch at offset 4 is complete, but its only record is cut short, so the batch
+        // delivers nothing. The marker at offset 3 below it is still a gap.
+        TruncatedFirstRecord
     }
+
+    // Offset 4 is cut short with TruncatedFirstRecord, so only offsets 0 and 2 are delivered.
+    private static long[] DeliveredOffsets(GapResponseTail tail)
+        => tail == GapResponseTail.TruncatedFirstRecord ? [0, 2] : GapResponseDataOffsets;
 
     [Test]
     [Arguments(false, ShareAcknowledgementMode.Implicit, GapResponseTail.None)]
@@ -70,6 +77,7 @@ public sealed partial class ShareConsumerRenewalTests
     [Arguments(ShareAcknowledgementMode.Explicit, GapResponseTail.None)]
     [Arguments(ShareAcknowledgementMode.Implicit, GapResponseTail.TruncatedBatch)]
     [Arguments(ShareAcknowledgementMode.Implicit, GapResponseTail.TruncatedRecord)]
+    [Arguments(ShareAcknowledgementMode.Implicit, GapResponseTail.TruncatedFirstRecord)]
     public async Task PollBatches_ControlRecordsAndAcquiredGaps_AreNotDeliveredAndAcknowledgedAsGaps(
         ShareAcknowledgementMode mode, GapResponseTail tail)
     {
@@ -83,8 +91,9 @@ public sealed partial class ShareConsumerRenewalTests
         fixture.Consumer.Subscribe("topic");
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await using var poll = fixture.Consumer.PollBatchesAsync(stop.Token).GetAsyncEnumerator();
+        var expectedDelivered = DeliveredOffsets(tail);
         var delivered = new List<long>();
-        while (delivered.Count < GapResponseDataOffsets.Length)
+        while (delivered.Count < expectedDelivered.Length)
         {
             await Assert.That(await poll.MoveNextAsync()).IsTrue();
             foreach (var record in poll.Current)
@@ -101,13 +110,13 @@ public sealed partial class ShareConsumerRenewalTests
         await Assert.That(next.MoveNext()).IsTrue();
         await Assert.That(next.Current.Offset).IsEqualTo(100L);
 
-        await Assert.That(delivered).IsEquivalentTo(GapResponseDataOffsets);
+        await Assert.That(delivered).IsEquivalentTo(expectedDelivered);
         await Assert.That(connection.ShareFetchRequests.Count).IsEqualTo(2);
         var sent = connection.ShareFetchRequests[1].Topics[0].Partitions[0].AcknowledgementBatches!;
         var types = ExpandFlushedTypes(sent.Select(static batch =>
             new AcknowledgementBatchData(batch.FirstOffset, batch.LastOffset, batch.AcknowledgeTypes.ToArray())).ToList());
         await AssertGapTypes(types, mode == ShareAcknowledgementMode.Implicit ? AcknowledgeType.Accept : null,
-            tail == GapResponseTail.None ? GapResponseGaps : TruncatedResponseGaps);
+            tail == GapResponseTail.None ? GapResponseGaps : TruncatedResponseGaps, expectedDelivered);
     }
 
     [Test]
@@ -169,14 +178,14 @@ public sealed partial class ShareConsumerRenewalTests
     }
 
     private static async Task AssertGapTypes(Dictionary<long, byte> types, AcknowledgeType? deliveredType,
-        (long First, long Last)[] gaps)
+        (long First, long Last)[] gaps, long[]? deliveredOffsets = null)
     {
         var expected = new Dictionary<long, byte>();
         foreach (var (first, last) in gaps)
             for (var offset = first; offset <= last; offset++)
                 expected[offset] = (byte)AcknowledgeType.Gap;
         if (deliveredType is { } type)
-            foreach (var offset in GapResponseDataOffsets)
+            foreach (var offset in deliveredOffsets ?? GapResponseDataOffsets)
                 expected[offset] = (byte)type;
         await Assert.That(types).IsEquivalentTo(expected);
     }
@@ -253,10 +262,10 @@ public sealed partial class ShareConsumerRenewalTests
             data.Write(buffer);
         }
         var recordBytes = buffer.WrittenMemory;
-        if (tail == GapResponseTail.TruncatedRecord)
+        if (tail is GapResponseTail.TruncatedRecord or GapResponseTail.TruncatedFirstRecord)
         {
             // Cut the last record's value short and shrink the batch length to match, so the
-            // envelope is complete but the declared second record is not.
+            // envelope is complete but the declared last record is not.
             const int cut = 3;
             var bytes = buffer.WrittenSpan[..^cut].ToArray();
             var lengthField = bytes.AsSpan(dataStart + sizeof(long), sizeof(int));
