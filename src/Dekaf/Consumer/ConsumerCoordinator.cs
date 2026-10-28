@@ -2209,6 +2209,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(configuredTimeout);
         var operationToken = timeout.Token;
+        // The deadline can fire inside a later request pass rather than the unstable-offset wait,
+        // so the timeout falls back to the unstable error the fetch was still waiting out.
+        GroupException? unstableCause = null;
 
         try
         {
@@ -2219,245 +2222,254 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             var fetchLockHeld = true;
             try
             {
-                return await RetryHelper.WithRetryAsync(async () =>
+                for (var unstableAttempts = 1; ; unstableAttempts++)
                 {
-                    if (_coordinatorId < 0)
-                        await FindCoordinatorAsync(operationToken).ConfigureAwait(false);
-
-                    var coordinatorId = _coordinatorId;
-                    if (coordinatorId < 0)
-                    {
-                        throw new Errors.GroupException(
-                            ErrorCode.CoordinatorNotAvailable,
-                            "Coordinator was invalidated during offset fetch discovery")
-                        {
-                            GroupId = _options.GroupId
-                        };
-                    }
-
-                    using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
-                        coordinatorId,
-                        _getCoordinationConnectionIndex(),
-                        operationToken)
-                        .ConfigureAwait(false);
-                    var connection = connectionLease.Connection;
-
-                    var offsetFetchVersion = _metadataManager.GetNegotiatedApiVersion(
-                        connection,
-                        ApiKey.OffsetFetch,
-                        OffsetFetchRequest.LowestSupportedVersion,
-                        OffsetFetchRequest.HighestSupportedVersion);
-
-                    // Group partitions by topic using pooled dictionary to avoid allocations
-                    // Clear existing Lists before clearing the dictionary to reuse List instances
-                    foreach (var list in _fetchTopicGroups.Values)
-                    {
-                        list.Clear();
-                    }
-
-                    foreach (var partition in partitions)
-                    {
-                        if (!_fetchTopicGroups.TryGetValue(partition.Topic, out var indexes))
-                        {
-                            indexes = [];
-                            _fetchTopicGroups[partition.Topic] = indexes;
-                        }
-                        indexes.Add(partition.Partition);
-                    }
-
-                    RemoveEmptyTopicGroups(_fetchTopicGroups);
-
-                    OffsetTopicIdRequestMap? topicIdMap = offsetFetchVersion >= OffsetFetchRequest.TopicIdVersion
-                        ? new OffsetTopicIdRequestMap(_metadataManager.Metadata, _fetchTopicGroups.Count)
-                        : null;
-                    var topicPartitions = new List<OffsetFetchRequestTopic>(_fetchTopicGroups.Count);
-                    foreach (var kvp in _fetchTopicGroups)
-                    {
-                        topicPartitions.Add(new OffsetFetchRequestTopic
-                        {
-                            Name = kvp.Key,
-                            TopicId = topicIdMap?.AddTopic(kvp.Key, "OffsetFetch") ?? Guid.Empty,
-                            PartitionIndexes = kvp.Value
-                        });
-                    }
-
-                    // A fence or rejoin changes the member id, epoch and join state version
-                    // together under the state lock; snapshot them the same way, so a fence this
-                    // request reports is applied to the membership it was sent under.
-                    string? memberId;
-                    int memberEpoch;
-                    int joinStateVersion;
-                    await _lock.WaitAsync(operationToken).ConfigureAwait(false);
                     try
                     {
-                        // A member that is leaving (the owner unsubscribed or switched to manual
-                        // assignment) fetches as a non-member: the broker may already have
-                        // removed it, and its manual partitions need no membership.
-                        var leaving = Volatile.Read(ref _leaveRequested) != 0;
-                        memberId = leaving ? null : _memberId;
-                        memberEpoch = leaving ? -1 : _generationId;
-                        joinStateVersion = _joinStateVersion;
-                    }
-                    finally
-                    {
-                        _lock.Release();
-                    }
-
-                    var request = new OffsetFetchRequest
-                    {
-                        GroupId = _options.GroupId!,
-                        Topics = topicPartitions,
-                        Groups =
-                        [
-                            new OffsetFetchRequestGroup
+                        return await RetryHelper.WithRetryAsync(async () =>
                         {
-                            GroupId = _options.GroupId!,
-                            MemberId = memberId,
-                            MemberEpoch = memberEpoch,
-                            Topics = topicPartitions
-                        }
-                        ]
-                    };
+                            if (_coordinatorId < 0)
+                                await FindCoordinatorAsync(operationToken).ConfigureAwait(false);
 
-                    var response = await connection.SendWithClientTelemetryAsync<OffsetFetchRequest, OffsetFetchResponse>(
-                        request,
-                        offsetFetchVersion, TelemetryMetricCollector,
-                        operationToken).ConfigureAwait(false);
-
-                    var responseSnapshot = topicIdMap?.CaptureResponseSnapshot();
-
-                    // Check top-level error (v6-v7)
-                    if (response.ErrorCode != ErrorCode.None)
-                    {
-                        throw new GroupException(response.ErrorCode,
-                            $"OffsetFetch failed: {response.ErrorCode}")
-                        {
-                            GroupId = _options.GroupId
-                        };
-                    }
-
-                    var result = new Dictionary<TopicPartition, TopicPartitionOffset>();
-
-                    // v6-v7: Topics field
-                    if (response.Topics is not null)
-                    {
-                        foreach (var topic in response.Topics)
-                        {
-                            foreach (var partition in topic.Partitions)
+                            var coordinatorId = _coordinatorId;
+                            if (coordinatorId < 0)
                             {
-                                if (partition.ErrorCode != ErrorCode.None)
-                                {
-                                    throw new GroupException(partition.ErrorCode,
-                                        $"OffsetFetch failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
-                                    {
-                                        GroupId = _options.GroupId
-                                    };
-                                }
-
-                                if (partition.CommittedOffset >= 0)
-                                {
-                                    result[new TopicPartition(topic.Name, partition.PartitionIndex)] =
-                                        new TopicPartitionOffset(
-                                            topic.Name,
-                                            partition.PartitionIndex,
-                                            partition.CommittedOffset,
-                                            partition.CommittedLeaderEpoch)
-                                        {
-                                            Metadata = partition.Metadata
-                                        };
-                                }
-                            }
-                        }
-                    }
-
-                    // v8+: Groups field
-                    if (response.Groups is not null)
-                    {
-                        foreach (var group in response.Groups)
-                        {
-                            if (group.ErrorCode != ErrorCode.None)
-                            {
-                                var isRetriable = await HandleOffsetFetchMembershipErrorAsync(
-                                        group.ErrorCode,
-                                        joinStateVersion).ConfigureAwait(false)
-                                    || group.ErrorCode.IsRetriable();
-                                throw new GroupException(
-                                    group.ErrorCode,
-                                    $"OffsetFetch failed for group: {group.ErrorCode}",
-                                    isRetriable)
+                                throw new Errors.GroupException(
+                                    ErrorCode.CoordinatorNotAvailable,
+                                    "Coordinator was invalidated during offset fetch discovery")
                                 {
                                     GroupId = _options.GroupId
                                 };
                             }
 
-                            foreach (var topic in group.Topics)
+                            using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
+                                coordinatorId,
+                                _getCoordinationConnectionIndex(),
+                                operationToken)
+                                .ConfigureAwait(false);
+                            var connection = connectionLease.Connection;
+
+                            var offsetFetchVersion = _metadataManager.GetNegotiatedApiVersion(
+                                connection,
+                                ApiKey.OffsetFetch,
+                                OffsetFetchRequest.LowestSupportedVersion,
+                                OffsetFetchRequest.HighestSupportedVersion);
+
+                            // Group partitions by topic using pooled dictionary to avoid allocations
+                            // Clear existing Lists before clearing the dictionary to reuse List instances
+                            foreach (var list in _fetchTopicGroups.Values)
                             {
-                                var topicName = topicIdMap is null
-                                    ? topic.Name
-                                    : topicIdMap.MatchResponseTopic(
-                                        topic.TopicId,
-                                        responseSnapshot!,
-                                        "OffsetFetch",
-                                        responseMismatchIsRetriable: true);
-                                foreach (var partition in topic.Partitions)
+                                list.Clear();
+                            }
+
+                            foreach (var partition in partitions)
+                            {
+                                if (!_fetchTopicGroups.TryGetValue(partition.Topic, out var indexes))
                                 {
-                                    if (partition.ErrorCode != ErrorCode.None)
+                                    indexes = [];
+                                    _fetchTopicGroups[partition.Topic] = indexes;
+                                }
+                                indexes.Add(partition.Partition);
+                            }
+
+                            RemoveEmptyTopicGroups(_fetchTopicGroups);
+
+                            OffsetTopicIdRequestMap? topicIdMap = offsetFetchVersion >= OffsetFetchRequest.TopicIdVersion
+                                ? new OffsetTopicIdRequestMap(_metadataManager.Metadata, _fetchTopicGroups.Count)
+                                : null;
+                            var topicPartitions = new List<OffsetFetchRequestTopic>(_fetchTopicGroups.Count);
+                            foreach (var kvp in _fetchTopicGroups)
+                            {
+                                topicPartitions.Add(new OffsetFetchRequestTopic
+                                {
+                                    Name = kvp.Key,
+                                    TopicId = topicIdMap?.AddTopic(kvp.Key, "OffsetFetch") ?? Guid.Empty,
+                                    PartitionIndexes = kvp.Value
+                                });
+                            }
+
+                            // A fence or rejoin changes the member id, epoch and join state version
+                            // together under the state lock; snapshot them the same way, so a fence this
+                            // request reports is applied to the membership it was sent under.
+                            string? memberId;
+                            int memberEpoch;
+                            int joinStateVersion;
+                            await _lock.WaitAsync(operationToken).ConfigureAwait(false);
+                            try
+                            {
+                                // A member that is leaving (the owner unsubscribed or switched to manual
+                                // assignment) fetches as a non-member: the broker may already have
+                                // removed it, and its manual partitions need no membership.
+                                var leaving = Volatile.Read(ref _leaveRequested) != 0;
+                                memberId = leaving ? null : _memberId;
+                                memberEpoch = leaving ? -1 : _generationId;
+                                joinStateVersion = _joinStateVersion;
+                            }
+                            finally
+                            {
+                                _lock.Release();
+                            }
+
+                            var request = new OffsetFetchRequest
+                            {
+                                GroupId = _options.GroupId!,
+                                Topics = topicPartitions,
+                                // KIP-447: offsets that a pending transaction committed are answered
+                                // with UNSTABLE_OFFSET_COMMIT instead of the last stable offset (v7+).
+                                RequireStable = true,
+                                Groups =
+                                [
+                                    new OffsetFetchRequestGroup
+                                {
+                                    GroupId = _options.GroupId!,
+                                    MemberId = memberId,
+                                    MemberEpoch = memberEpoch,
+                                    Topics = topicPartitions
+                                }
+                                ]
+                            };
+
+                            var response = await connection.SendWithClientTelemetryAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                                request,
+                                offsetFetchVersion, TelemetryMetricCollector,
+                                operationToken).ConfigureAwait(false);
+
+                            var responseSnapshot = topicIdMap?.CaptureResponseSnapshot();
+
+                            // Check top-level error (v6-v7)
+                            if (response.ErrorCode != ErrorCode.None)
+                            {
+                                throw new GroupException(response.ErrorCode,
+                                    $"OffsetFetch failed: {response.ErrorCode}")
+                                {
+                                    GroupId = _options.GroupId
+                                };
+                            }
+
+                            var result = new Dictionary<TopicPartition, TopicPartitionOffset>();
+
+                            // v6-v7: Topics field
+                            if (response.Topics is not null)
+                            {
+                                foreach (var topic in response.Topics)
+                                {
+                                    foreach (var partition in topic.Partitions)
                                     {
-                                        throw new GroupException(partition.ErrorCode,
-                                            $"OffsetFetch failed for {topicName}-{partition.PartitionIndex}: {partition.ErrorCode}")
+                                        if (partition.ErrorCode != ErrorCode.None)
+                                            throw CreatePartitionFetchException(topic.Name, partition);
+
+                                        if (partition.CommittedOffset >= 0)
+                                        {
+                                            result[new TopicPartition(topic.Name, partition.PartitionIndex)] =
+                                                new TopicPartitionOffset(
+                                                    topic.Name,
+                                                    partition.PartitionIndex,
+                                                    partition.CommittedOffset,
+                                                    partition.CommittedLeaderEpoch)
+                                                {
+                                                    Metadata = partition.Metadata
+                                                };
+                                        }
+                                    }
+                                }
+                            }
+
+                            // v8+: Groups field
+                            if (response.Groups is not null)
+                            {
+                                foreach (var group in response.Groups)
+                                {
+                                    if (group.ErrorCode != ErrorCode.None)
+                                    {
+                                        var isRetriable = await HandleOffsetFetchMembershipErrorAsync(
+                                                group.ErrorCode,
+                                                joinStateVersion).ConfigureAwait(false)
+                                            || group.ErrorCode.IsRetriable();
+                                        throw new GroupException(
+                                            group.ErrorCode,
+                                            $"OffsetFetch failed for group: {group.ErrorCode}",
+                                            isRetriable)
                                         {
                                             GroupId = _options.GroupId
                                         };
                                     }
 
-                                    if (partition.CommittedOffset >= 0)
+                                    foreach (var topic in group.Topics)
                                     {
-                                        result[new TopicPartition(topicName, partition.PartitionIndex)] =
-                                            new TopicPartitionOffset(
-                                                topicName,
-                                                partition.PartitionIndex,
-                                                partition.CommittedOffset,
-                                                partition.CommittedLeaderEpoch)
+                                        var topicName = topicIdMap is null
+                                            ? topic.Name
+                                            : topicIdMap.MatchResponseTopic(
+                                                topic.TopicId,
+                                                responseSnapshot!,
+                                                "OffsetFetch",
+                                                responseMismatchIsRetriable: true);
+                                        foreach (var partition in topic.Partitions)
+                                        {
+                                            if (partition.ErrorCode != ErrorCode.None)
+                                                throw CreatePartitionFetchException(topicName, partition);
+
+                                            if (partition.CommittedOffset >= 0)
                                             {
-                                                Metadata = partition.Metadata
-                                            };
+                                                result[new TopicPartition(topicName, partition.PartitionIndex)] =
+                                                    new TopicPartitionOffset(
+                                                        topicName,
+                                                        partition.PartitionIndex,
+                                                        partition.CommittedOffset,
+                                                        partition.CommittedLeaderEpoch)
+                                                    {
+                                                        Metadata = partition.Metadata
+                                                    };
+                                            }
+                                        }
                                     }
                                 }
                             }
-                        }
-                    }
 
-                    return result;
-                },
-                _metadataManager,
-                operationToken,
-                _options.RetryBackoffMs,
-                _options.RetryBackoffMaxMs,
-                onRetry: async retryToken =>
-                {
-                    // Recovery can rejoin and deliver rebalance callbacks, and a listener may
-                    // fetch committed offsets itself (GetCommittedOffsetAsync). The fetch lock
-                    // only guards building a request, so it is not held across recovery. A
-                    // recovery that failed is retried without the lock re-acquired, so release
-                    // it only while this call holds it; the next request never runs without it.
-                    if (fetchLockHeld)
+                            return result;
+                        },
+                        _metadataManager,
+                        operationToken,
+                        _options.RetryBackoffMs,
+                        _options.RetryBackoffMaxMs,
+                        onRetry: async retryToken =>
+                        {
+                            // Recovery can rejoin and deliver rebalance callbacks, and a listener may
+                            // fetch committed offsets itself (GetCommittedOffsetAsync). The fetch lock
+                            // only guards building a request, so it is not held across recovery. A
+                            // recovery that failed is retried without the lock re-acquired, so release
+                            // it only while this call holds it; the next request never runs without it.
+                            if (fetchLockHeld)
+                            {
+                                fetchLockHeld = false;
+                                _fetchLock.Release();
+                            }
+
+                            await RecoverOffsetFetchAsync(rejoinOnMembershipLoss, retryToken).ConfigureAwait(false);
+                            await _fetchLock.WaitAsync(retryToken).ConfigureAwait(false);
+                            fetchLockHeld = true;
+                        },
+                        shouldRefreshMetadata: ShouldRefreshMetadataForGroupRetry,
+                        // Position initialization runs on the application's poll: a coordinator that
+                        // refuses connections while cluster metadata still names it is retried for the
+                        // aggregate deadline above instead of three quick attempts.
+                        deadline: new RetryDeadline(
+                            "OffsetFetch",
+                            Timeout.InfiniteTimeSpan,
+                            _isDisposed)).ConfigureAwait(false);
+                    }
+                    catch (GroupException ex) when (ex.ErrorCode == ErrorCode.UnstableOffsetCommit)
                     {
-                        fetchLockHeld = false;
-                        _fetchLock.Release();
+                        // A transaction that committed offsets has not written its markers yet
+                        // (KIP-447). It can outlive the request retry count, so the fetch waits
+                        // for stable offsets until the operation deadline, as Java's consumer does.
+                        unstableCause = ex;
+                        var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
+                            _options.RetryBackoffMs,
+                            _options.RetryBackoffMaxMs,
+                            unstableAttempts);
+                        await Task.Delay(delayMs, operationToken).ConfigureAwait(false);
                     }
-
-                    await RecoverOffsetFetchAsync(rejoinOnMembershipLoss, retryToken).ConfigureAwait(false);
-                    await _fetchLock.WaitAsync(retryToken).ConfigureAwait(false);
-                    fetchLockHeld = true;
-                },
-                shouldRefreshMetadata: ShouldRefreshMetadataForGroupRetry,
-                // Position initialization runs on the application's poll: a coordinator that
-                // refuses connections while cluster metadata still names it is retried for the
-                // aggregate deadline above instead of three quick attempts.
-                deadline: new RetryDeadline(
-                    "OffsetFetch",
-                    Timeout.InfiniteTimeSpan,
-                    _isDisposed)).ConfigureAwait(false);
+                }
             }
             finally
             {
@@ -2473,9 +2485,19 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             throw new KafkaTimeoutException(
                 $"OffsetFetch for group '{_options.GroupId}' did not complete within request timeout " +
                 $"({_options.RequestTimeoutMs}ms)",
-                ex.InnerException ?? ex);
+                ex.InnerException ?? (Exception?)unstableCause ?? ex);
         }
     }
+
+    // UNSTABLE_OFFSET_COMMIT is waited out by FetchOffsetsAsync until its deadline, so the
+    // request retry (bounded, and rediscovering the coordinator) must not consume it.
+    private GroupException CreatePartitionFetchException(string topic, OffsetFetchResponsePartition partition) =>
+        new(partition.ErrorCode,
+            $"OffsetFetch failed for {topic}-{partition.PartitionIndex}: {partition.ErrorCode}",
+            isRetriable: partition.ErrorCode != ErrorCode.UnstableOffsetCommit && partition.ErrorCode.IsRetriable())
+        {
+            GroupId = _options.GroupId
+        };
 
     private async ValueTask RecoverOffsetFetchAsync(bool rejoinOnMembershipLoss, CancellationToken cancellationToken)
     {
