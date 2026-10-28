@@ -1606,6 +1606,34 @@ public sealed class AdminClientStreamsGroupManagementTests
     }
 
     [Test]
+    public async Task DeleteStreamsGroupsAsync_ReturnsFinalRetriableBrokerErrorMessage()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                Arg.Any<DeleteGroupsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new DeleteGroupsResponse
+            {
+                Results =
+                [
+                    new DeleteGroupsResponseResult
+                    {
+                        GroupId = FirstGroup,
+                        ErrorCode = ErrorCode.CoordinatorLoadInProgress,
+                        ErrorMessage = "coordinator is still loading"
+                    }
+                ]
+            }));
+
+        var results = await admin.DeleteStreamsGroupsAsync([FirstGroup]);
+
+        await Assert.That(results[FirstGroup].ErrorCode).IsEqualTo(ErrorCode.CoordinatorLoadInProgress);
+        await Assert.That(results[FirstGroup].ErrorMessage).IsEqualTo("coordinator is still loading");
+    }
+
+    [Test]
     public async Task ListStreamsGroupOffsetsAsync_OperationTimeoutThrowsKafkaTimeoutException()
     {
         var (admin, connection) = CreateAdmin();
