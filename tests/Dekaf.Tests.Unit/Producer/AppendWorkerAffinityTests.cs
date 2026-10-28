@@ -226,6 +226,81 @@ public class AppendWorkerAffinityTests
         await producer.DisposeAsync();
     }
 
+    /// <summary>
+    /// Issue #3723: PurgeAsync(Queue) failed the append blocked on BufferMemory and the buffered
+    /// batches, but not the items still queued behind it in the append worker's channel. The purge
+    /// released the memory, so the worker then appended the next queued item and it was sent.
+    /// Every item queued before the purge must fail with Purged instead, and no batch may remain.
+    /// </summary>
+    [Test]
+    [Timeout(120_000)]
+    public async Task PurgeQueue_FailsItemsQueuedBehindABackpressuredAppendWorker(
+        CancellationToken cancellationToken)
+    {
+        await using var pool = new ValueTaskSourcePool<RecordMetadata>();
+        await using var producer = (KafkaProducer<string, string>)Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithClientId("append-worker-purge-test")
+            .WithBufferMemory(1_500)
+            .WithBatchSize(1_048_576)
+            .WithLinger(TimeSpan.FromMinutes(1))
+            .WithCloseTimeout(TimeSpan.FromMilliseconds(100))
+            .Build();
+        await producer.StopSenderLoopsForTestingAsync();
+
+        var accumulator = producer.RecordAccumulator;
+        var deques = GetPartitionDeques(accumulator);
+        var tp = new TopicPartition("test-topic", 0);
+
+        Task<RecordMetadata> Enqueue(int seed)
+        {
+            var completion = pool.Rent();
+            var task = completion.Task.AsTask();
+            accumulator.EnqueueAppend(
+                tp.Topic,
+                tp.Partition,
+                timestamp: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                key: PooledMemory.Null,
+                value: LeakGateHarness.RentPooled(1_000, seed),
+                headers: null,
+                headerCount: 0,
+                completion: completion,
+                cancellationToken: CancellationToken.None);
+            return task;
+        }
+
+        // The first record fills BufferMemory, the second waits for memory inside the worker and
+        // the third waits in the worker's channel behind it.
+        var buffered = Enqueue(seed: 1);
+        await TestWait.UntilAsync(
+            () => HasBatchForPartition(deques, tp),
+            cancellationToken,
+            TimeSpan.FromMilliseconds(1));
+        var blocked = Enqueue(seed: 2);
+        await TestWait.UntilAsync(
+            () => accumulator.PendingAppendCountForTest > 0,
+            cancellationToken,
+            TimeSpan.FromMilliseconds(1));
+        var queued = Enqueue(seed: 3);
+
+        accumulator.Purge(
+            PurgeOptions.Queue,
+            new Dekaf.Errors.ProduceException(Dekaf.Errors.ProduceErrorKind.Purged, "purged"));
+
+        foreach (var task in new[] { buffered, blocked, queued })
+        {
+            var exception = await Assert.That(async () => await task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken))
+                .Throws<Dekaf.Errors.ProduceException>();
+            await Assert.That(exception!.Kind).IsEqualTo(Dekaf.Errors.ProduceErrorKind.Purged);
+        }
+
+        await Assert.That(HasBatchForPartition(deques, tp)).IsFalse();
+        await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        // The worker completes the queued item before its finally block decrements the count.
+        await TestWait.UntilAsync(() => GetSlowPathAppendCount(deques, tp) == 0, cancellationToken,
+            TimeSpan.FromMilliseconds(1));
+    }
+
     [Test]
     [Timeout(120_000)]
     public async Task DisposeAsync_FaultsBackpressuredAppendQueueAndClearsOwnership(

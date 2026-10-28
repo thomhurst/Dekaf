@@ -27,7 +27,8 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// <see cref="AppendWorkerHandoff"/> is the backpressure handoff: records queued for the append
 /// workers (as a backpressured ProduceAsync does), then a flush that waits for the workers to
 /// append them. Each handoff counts itself in and out of its worker's sequence so the flush
-/// covers it. Expected: 0 B per handoff; the flush allocations are per flush.
+/// covers it, and carries the queue purge epoch that the worker compares before appending
+/// (#3723). Expected: 0 B per handoff; the flush allocations are per flush.
 /// </para>
 /// </remarks>
 [MemoryDiagnoser]

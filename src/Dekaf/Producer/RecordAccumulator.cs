@@ -675,6 +675,9 @@ internal readonly struct AppendWorkItem
     /// <summary>The <see cref="RecordAccumulator.TransactionalAppendGeneration"/> the produce was admitted in.</summary>
     public readonly int TransactionalGeneration;
 
+    /// <summary>The queue purge epoch the item was queued in (see <c>RecordAccumulator._queuePurgeEpoch</c>).</summary>
+    public readonly int QueuePurgeEpoch;
+
     public AppendWorkItem(
         string topic,
         int partition,
@@ -686,9 +689,11 @@ internal readonly struct AppendWorkItem
         int headerCount,
         PooledValueTaskSource<RecordMetadata> completion,
         int transactionalGeneration,
+        int queuePurgeEpoch,
         CancellationToken cancellationToken)
     {
         TransactionalGeneration = transactionalGeneration;
+        QueuePurgeEpoch = queuePurgeEpoch;
         Topic = topic;
         Partition = partition;
         PartitionCount = partitionCount;
@@ -1599,6 +1604,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     // See TransactionalAppendGeneration.
     private int _transactionalAppendGeneration;
+
+    // Advanced by every PurgeOptions.Queue purge, after it publishes its exception. An append
+    // worker item stamped with an older epoch was queued before the purge and is failed with
+    // that exception instead of appended (#3723).
+    private int _queuePurgeEpoch;
+    private Exception? _queuePurgeException;
 
     /// <summary>
     /// Passed in place of a captured <see cref="TransactionalAppendGeneration"/> by a
@@ -4002,6 +4013,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     continue;
                 }
 
+                // Queued before a PurgeOptions.Queue purge: the purge drops records buffered
+                // locally, and this one sat in the channel where the purge's scan cannot reach.
+                if (workItem.QueuePurgeEpoch != Volatile.Read(ref _queuePurgeEpoch))
+                {
+                    CleanupWorkItemResources(in workItem);
+                    PooledCompletionSource.TrySetException(
+                        workItem.Completion,
+                        Volatile.Read(ref _queuePurgeException)!);
+                    continue;
+                }
+
                 BeforeAppendWorkerAppendForTest?.Invoke();
                 appendStarted = true;
                 var appendTask = AppendAsync(
@@ -4102,7 +4124,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var workerIndex = (int)((uint)partition % (uint)_appendWorkerCount);
         var workItem = new AppendWorkItem(topic, partition, partitionCount, timestamp, key, value,
             headers, headerCount, completion,
-            transactionalGeneration ?? NoTransactionalGeneration, cancellationToken);
+            transactionalGeneration ?? NoTransactionalGeneration, Volatile.Read(ref _queuePurgeEpoch),
+            cancellationToken);
 
         IncrementSlowPathAppendCount(topic, partition);
         // Counted before the write: a flush that reads this sequence after this call returned
@@ -8761,6 +8784,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     private int PurgeQueuedBatches(Exception exception, Action<ReadyBatch>? onPurgingBatch)
     {
+        // Fails the items already queued to append workers when a worker dequeues them; they are
+        // not counted here. The exception is published before the epoch, so a worker that reads
+        // the new epoch reads this exception or a later purge's.
+        Volatile.Write(ref _queuePurgeException, exception);
+        Interlocked.Increment(ref _queuePurgeEpoch);
+
         var purgedCount = FailPendingAppendsForPurge(exception);
         List<PartitionBatch>? currentBatches = null;
         List<ReadyBatch>? readyBatches = null;
