@@ -3373,13 +3373,49 @@ public sealed partial class AdminClient :
             ? LeaseAnyBrokerConnectionAsync(cancellationToken)
             : LeaseControllerAsync(apiKey, cancellationToken);
 
+    /// <summary>
+    /// Groups config resources by the node that must answer them. On broker bootstrap a broker only answers
+    /// <c>Broker(id)</c> and <c>BrokerLogger(id)</c> for its own node ID, so those go to node <c>id</c>; every
+    /// other resource goes to any broker (key -1). Controller bootstrap keeps one group routed by
+    /// <see cref="LeaseConfigEndpointAsync"/>.
+    /// </summary>
+    private Dictionary<int, List<ConfigResource>> GroupConfigResourcesByEndpoint(IEnumerable<ConfigResource> resources)
+    {
+        var groups = new Dictionary<int, List<ConfigResource>>();
+        foreach (var resource in resources)
+        {
+            var endpoint = -1;
+            if (_controllerMetadataManager is null &&
+                (resource.Type == ConfigResourceType.BrokerLogger ||
+                 (resource.Type == ConfigResourceType.Broker && resource.Name.Length != 0)) &&
+                !int.TryParse(resource.Name, System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out endpoint))
+            {
+                throw new ArgumentException(
+                    $"{resource.Type} resource '{resource.Name}' must identify a broker node ID.",
+                    nameof(resources));
+            }
+
+            if (!groups.TryGetValue(endpoint, out var group))
+                groups.Add(endpoint, group = []);
+            group.Add(resource);
+        }
+
+        return groups;
+    }
+
     private async ValueTask<KafkaConnectionLease> LeaseConfigEndpointAsync(
+        int endpoint,
         IEnumerable<ConfigResource> resources,
         Protocol.ApiKey apiKey,
         CancellationToken cancellationToken)
     {
         if (_controllerMetadataManager is null)
-            return await LeaseAnyBrokerConnectionAsync(cancellationToken).ConfigureAwait(false);
+        {
+            return endpoint < 0
+                ? await LeaseAnyBrokerConnectionAsync(cancellationToken).ConfigureAwait(false)
+                : await _connectionPool.LeaseConnectionAsync(endpoint, cancellationToken).ConfigureAwait(false);
+        }
 
         ControllerMetadataManager.EnsureSupported(apiKey);
         int? requestedControllerId = null;
@@ -3695,80 +3731,91 @@ public sealed partial class AdminClient :
     {
         var opts = options ?? new DescribeConfigsOptions();
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
-        var resourceList = resources.ToList();
+        var groups = GroupConfigResourcesByEndpoint(resources);
 
         return await WithRetryAsync<IReadOnlyDictionary<ConfigResource, IReadOnlyList<ConfigEntry>>>(async attemptToken =>
         {
             await EnsureInitializedAsync(attemptToken, nameof(DescribeConfigsAsync)).ConfigureAwait(false);
-            using var connectionLease = await LeaseConfigEndpointAsync(
-                resourceList,
-                Protocol.ApiKey.DescribeConfigs,
-                attemptToken).ConfigureAwait(false);
-
-            var connection = connectionLease.Connection;
-
-            var request = new DescribeConfigsRequest
-            {
-                Resources = resourceList.Select(r => new DescribeConfigsResource
-                {
-                    ResourceType = (sbyte)r.Type,
-                    ResourceName = r.Name,
-                    ConfigurationKeys = null // Fetch all configs
-                }).ToList(),
-                IncludeSynonyms = opts.IncludeSynonyms,
-                IncludeDocumentation = opts.IncludeDocumentation
-            };
-
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                connection,
-                Protocol.ApiKey.DescribeConfigs,
-                DescribeConfigsRequest.LowestSupportedVersion,
-                DescribeConfigsRequest.HighestSupportedVersion);
-
-            var response = await connection.SendAsync<DescribeConfigsRequest, DescribeConfigsResponse>(
-                request,
-                apiVersion,
-                attemptToken).ConfigureAwait(false);
-
             var result = new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>>();
-
-            foreach (var resourceResult in response.Results)
-            {
-                if (resourceResult.ErrorCode != Protocol.ErrorCode.None)
-                {
-                    throw new KafkaException(resourceResult.ErrorCode,
-                        $"Failed to describe configs for {(ConfigResourceType)resourceResult.ResourceType}:{resourceResult.ResourceName}: " +
-                        $"{resourceResult.ErrorMessage ?? resourceResult.ErrorCode.ToString()}");
-                }
-
-                var configResource = new ConfigResource
-                {
-                    Type = (ConfigResourceType)resourceResult.ResourceType,
-                    Name = resourceResult.ResourceName
-                };
-
-                var entries = resourceResult.Configs.Select(c => new ConfigEntry
-                {
-                    Name = c.Name,
-                    Value = c.Value,
-                    IsReadOnly = c.ReadOnly,
-                    IsDefault = c.ConfigSource == (sbyte)ConfigSource.DefaultConfig || c.IsDefault,
-                    IsSensitive = c.IsSensitive,
-                    Source = (ConfigSource)c.ConfigSource,
-                    Synonyms = c.Synonyms?.Select(s => new ConfigSynonym
-                    {
-                        Name = s.Name,
-                        Value = s.Value,
-                        Source = (ConfigSource)s.Source
-                    }).ToList(),
-                    Documentation = c.Documentation
-                }).ToList();
-
-                result[configResource] = entries;
-            }
+            foreach (var group in groups)
+                await DescribeConfigsOnEndpointAsync(group.Key, group.Value, opts, result, attemptToken).ConfigureAwait(false);
 
             return result;
         }, cancellationToken, opts.TimeoutMs).ConfigureAwait(false);
+    }
+
+    private async ValueTask DescribeConfigsOnEndpointAsync(
+        int endpoint,
+        List<ConfigResource> resourceList,
+        DescribeConfigsOptions opts,
+        Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>> result,
+        CancellationToken attemptToken)
+    {
+        using var connectionLease = await LeaseConfigEndpointAsync(
+            endpoint,
+            resourceList,
+            Protocol.ApiKey.DescribeConfigs,
+            attemptToken).ConfigureAwait(false);
+
+        var connection = connectionLease.Connection;
+
+        var request = new DescribeConfigsRequest
+        {
+            Resources = resourceList.Select(r => new DescribeConfigsResource
+            {
+                ResourceType = (sbyte)r.Type,
+                ResourceName = r.Name,
+                ConfigurationKeys = null // Fetch all configs
+            }).ToList(),
+            IncludeSynonyms = opts.IncludeSynonyms,
+            IncludeDocumentation = opts.IncludeDocumentation
+        };
+
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            connection,
+            Protocol.ApiKey.DescribeConfigs,
+            DescribeConfigsRequest.LowestSupportedVersion,
+            DescribeConfigsRequest.HighestSupportedVersion);
+
+        var response = await connection.SendAsync<DescribeConfigsRequest, DescribeConfigsResponse>(
+            request,
+            apiVersion,
+            attemptToken).ConfigureAwait(false);
+
+        foreach (var resourceResult in response.Results)
+        {
+            if (resourceResult.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw new KafkaException(resourceResult.ErrorCode,
+                    $"Failed to describe configs for {(ConfigResourceType)resourceResult.ResourceType}:{resourceResult.ResourceName}: " +
+                    $"{resourceResult.ErrorMessage ?? resourceResult.ErrorCode.ToString()}");
+            }
+
+            var configResource = new ConfigResource
+            {
+                Type = (ConfigResourceType)resourceResult.ResourceType,
+                Name = resourceResult.ResourceName
+            };
+
+            var entries = resourceResult.Configs.Select(c => new ConfigEntry
+            {
+                Name = c.Name,
+                Value = c.Value,
+                IsReadOnly = c.ReadOnly,
+                IsDefault = c.ConfigSource == (sbyte)ConfigSource.DefaultConfig || c.IsDefault,
+                IsSensitive = c.IsSensitive,
+                Source = (ConfigSource)c.ConfigSource,
+                Synonyms = c.Synonyms?.Select(s => new ConfigSynonym
+                {
+                    Name = s.Name,
+                    Value = s.Value,
+                    Source = (ConfigSource)s.Source
+                }).ToList(),
+                Documentation = c.Documentation
+            }).ToList();
+
+            result[configResource] = entries;
+        }
     }
 
     public async ValueTask AlterConfigsAsync(
@@ -3780,54 +3827,68 @@ public sealed partial class AdminClient :
         ArgumentOutOfRangeException.ThrowIfNegative(timeoutMs);
 
         var opts = options ?? new AlterConfigsOptions();
+        var groups = GroupConfigResourcesByEndpoint(configs.Keys);
 
+        // Replaying every endpoint after a failure is safe: a replacement is idempotent.
         await WithRetryAsync(async attemptToken =>
         {
             await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
-            using var connectionLease = await LeaseConfigEndpointAsync(
-                configs.Keys,
-                Protocol.ApiKey.AlterConfigs,
-                attemptToken).ConfigureAwait(false);
-
-            var connection = connectionLease.Connection;
-
-            var request = new AlterConfigsRequest
-            {
-                Resources = configs.Select(kvp => new AlterConfigsResource
-                {
-                    ResourceType = (sbyte)kvp.Key.Type,
-                    ResourceName = kvp.Key.Name,
-                    Configs = kvp.Value.Select(e => new AlterableConfig
-                    {
-                        Name = e.Name,
-                        Value = e.Value
-                    }).ToList()
-                }).ToList(),
-                ValidateOnly = opts.ValidateOnly
-            };
-
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                connection,
-                Protocol.ApiKey.AlterConfigs,
-                AlterConfigsRequest.LowestSupportedVersion,
-                AlterConfigsRequest.HighestSupportedVersion);
-
-            var response = await connection.SendAsync<AlterConfigsRequest, AlterConfigsResponse>(
-                request,
-                apiVersion,
-                attemptToken).ConfigureAwait(false);
-
-            // Check for errors
-            foreach (var resourceResponse in response.Responses)
-            {
-                if (resourceResponse.ErrorCode != Protocol.ErrorCode.None)
-                {
-                    throw KafkaException.FromErrorCode(resourceResponse.ErrorCode,
-                        $"Failed to alter configs for {(ConfigResourceType)resourceResponse.ResourceType}:{resourceResponse.ResourceName}: " +
-                        $"{resourceResponse.ErrorMessage ?? resourceResponse.ErrorCode.ToString()}");
-                }
-            }
+            foreach (var group in groups)
+                await AlterConfigsOnEndpointAsync(group.Key, group.Value, configs, opts, attemptToken).ConfigureAwait(false);
         }, cancellationToken, timeoutMs).ConfigureAwait(false);
+    }
+
+    private async ValueTask AlterConfigsOnEndpointAsync(
+        int endpoint,
+        List<ConfigResource> resources,
+        IReadOnlyDictionary<ConfigResource, IReadOnlyList<ConfigEntry>> configs,
+        AlterConfigsOptions opts,
+        CancellationToken attemptToken)
+    {
+        using var connectionLease = await LeaseConfigEndpointAsync(
+            endpoint,
+            resources,
+            Protocol.ApiKey.AlterConfigs,
+            attemptToken).ConfigureAwait(false);
+
+        var connection = connectionLease.Connection;
+
+        var request = new AlterConfigsRequest
+        {
+            Resources = resources.Select(resource => new AlterConfigsResource
+            {
+                ResourceType = (sbyte)resource.Type,
+                ResourceName = resource.Name,
+                Configs = configs[resource].Select(e => new AlterableConfig
+                {
+                    Name = e.Name,
+                    Value = e.Value
+                }).ToList()
+            }).ToList(),
+            ValidateOnly = opts.ValidateOnly
+        };
+
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            connection,
+            Protocol.ApiKey.AlterConfigs,
+            AlterConfigsRequest.LowestSupportedVersion,
+            AlterConfigsRequest.HighestSupportedVersion);
+
+        var response = await connection.SendAsync<AlterConfigsRequest, AlterConfigsResponse>(
+            request,
+            apiVersion,
+            attemptToken).ConfigureAwait(false);
+
+        // Check for errors
+        foreach (var resourceResponse in response.Responses)
+        {
+            if (resourceResponse.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw KafkaException.FromErrorCode(resourceResponse.ErrorCode,
+                    $"Failed to alter configs for {(ConfigResourceType)resourceResponse.ResourceType}:{resourceResponse.ResourceName}: " +
+                    $"{resourceResponse.ErrorMessage ?? resourceResponse.ErrorCode.ToString()}");
+            }
+        }
     }
 
     public async ValueTask IncrementalAlterConfigsAsync(
@@ -3839,58 +3900,71 @@ public sealed partial class AdminClient :
         ArgumentOutOfRangeException.ThrowIfNegative(timeoutMs);
 
         var opts = options ?? new IncrementalAlterConfigsOptions();
+        var groups = GroupConfigResourcesByEndpoint(configs.Keys);
 
-        // Replaying after a lost response is safe: SET and DELETE are idempotent, and the
-        // controller treats list values as a set, so a replayed APPEND skips values already
-        // present and a replayed SUBTRACT finds nothing more to remove.
+        // Replaying after a lost response, including endpoints that already succeeded, is safe:
+        // SET and DELETE are idempotent, and the controller treats list values as a set, so a
+        // replayed APPEND skips values already present and a replayed SUBTRACT finds nothing more to remove.
         await WithRetryAsync(async attemptToken =>
         {
             await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
-            using var connectionLease = await LeaseConfigEndpointAsync(
-                configs.Keys,
-                Protocol.ApiKey.IncrementalAlterConfigs,
-                attemptToken).ConfigureAwait(false);
-
-            var connection = connectionLease.Connection;
-
-            var request = new IncrementalAlterConfigsRequest
-            {
-                Resources = configs.Select(kvp => new IncrementalAlterConfigsResource
-                {
-                    ResourceType = (sbyte)kvp.Key.Type,
-                    ResourceName = kvp.Key.Name,
-                    Configs = kvp.Value.Select(a => new IncrementalAlterableConfig
-                    {
-                        Name = a.Name,
-                        ConfigOperation = (sbyte)a.Operation,
-                        Value = a.Value
-                    }).ToList()
-                }).ToList(),
-                ValidateOnly = opts.ValidateOnly
-            };
-
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                connection,
-                Protocol.ApiKey.IncrementalAlterConfigs,
-                IncrementalAlterConfigsRequest.LowestSupportedVersion,
-                IncrementalAlterConfigsRequest.HighestSupportedVersion);
-
-            var response = await connection.SendAsync<IncrementalAlterConfigsRequest, IncrementalAlterConfigsResponse>(
-                request,
-                apiVersion,
-                attemptToken).ConfigureAwait(false);
-
-            // Check for errors
-            foreach (var resourceResponse in response.Responses)
-            {
-                if (resourceResponse.ErrorCode != Protocol.ErrorCode.None)
-                {
-                    throw KafkaException.FromErrorCode(resourceResponse.ErrorCode,
-                        $"Failed to incrementally alter configs for {(ConfigResourceType)resourceResponse.ResourceType}:{resourceResponse.ResourceName}: " +
-                        $"{resourceResponse.ErrorMessage ?? resourceResponse.ErrorCode.ToString()}");
-                }
-            }
+            foreach (var group in groups)
+                await IncrementalAlterConfigsOnEndpointAsync(group.Key, group.Value, configs, opts, attemptToken).ConfigureAwait(false);
         }, cancellationToken, timeoutMs).ConfigureAwait(false);
+    }
+
+    private async ValueTask IncrementalAlterConfigsOnEndpointAsync(
+        int endpoint,
+        List<ConfigResource> resources,
+        IReadOnlyDictionary<ConfigResource, IReadOnlyList<ConfigAlter>> configs,
+        IncrementalAlterConfigsOptions opts,
+        CancellationToken attemptToken)
+    {
+        using var connectionLease = await LeaseConfigEndpointAsync(
+            endpoint,
+            resources,
+            Protocol.ApiKey.IncrementalAlterConfigs,
+            attemptToken).ConfigureAwait(false);
+
+        var connection = connectionLease.Connection;
+
+        var request = new IncrementalAlterConfigsRequest
+        {
+            Resources = resources.Select(resource => new IncrementalAlterConfigsResource
+            {
+                ResourceType = (sbyte)resource.Type,
+                ResourceName = resource.Name,
+                Configs = configs[resource].Select(a => new IncrementalAlterableConfig
+                {
+                    Name = a.Name,
+                    ConfigOperation = (sbyte)a.Operation,
+                    Value = a.Value
+                }).ToList()
+            }).ToList(),
+            ValidateOnly = opts.ValidateOnly
+        };
+
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            connection,
+            Protocol.ApiKey.IncrementalAlterConfigs,
+            IncrementalAlterConfigsRequest.LowestSupportedVersion,
+            IncrementalAlterConfigsRequest.HighestSupportedVersion);
+
+        var response = await connection.SendAsync<IncrementalAlterConfigsRequest, IncrementalAlterConfigsResponse>(
+            request,
+            apiVersion,
+            attemptToken).ConfigureAwait(false);
+
+        // Check for errors
+        foreach (var resourceResponse in response.Responses)
+        {
+            if (resourceResponse.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw KafkaException.FromErrorCode(resourceResponse.ErrorCode,
+                    $"Failed to incrementally alter configs for {(ConfigResourceType)resourceResponse.ResourceType}:{resourceResponse.ResourceName}: " +
+                    $"{resourceResponse.ErrorMessage ?? resourceResponse.ErrorCode.ToString()}");
+            }
+        }
     }
 
     public async ValueTask CreateAclsAsync(
