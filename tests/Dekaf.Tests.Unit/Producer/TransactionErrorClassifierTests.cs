@@ -10,9 +10,6 @@ public sealed class TransactionErrorClassifierTests
     [Arguments(ErrorCode.TransactionalIdAuthorizationFailed)]
     [Arguments(ErrorCode.TransactionCoordinatorFenced)]
     [Arguments(ErrorCode.InvalidProducerEpoch)]
-    [Arguments(ErrorCode.FencedInstanceId)]
-    [Arguments(ErrorCode.UnknownMemberId)]
-    [Arguments(ErrorCode.IllegalGeneration)]
     public async Task AlwaysFatal_ReturnsFatal_RegardlessOfTv2(ErrorCode errorCode)
     {
         var v1 = TransactionErrorClassifier.Classify(errorCode, tv2: false);
@@ -57,14 +54,51 @@ public sealed class TransactionErrorClassifierTests
         await Assert.That(result).IsEqualTo(TransactionErrorClassification.Abortable);
     }
 
+    // Java 4.4 TxnOffsetCommitHandler, plus the KIP-1050 choices documented on the classifier. The
+    // expected classification is a name because the enum is internal and the test method public.
     [Test]
-    [Arguments(ErrorCode.GroupIdNotFound)]
-    [Arguments(ErrorCode.StaleMemberEpoch)]
-    public async Task Kip1319MembershipErrors_AreAbortable(ErrorCode errorCode)
+    [Arguments(ErrorCode.CoordinatorNotAvailable, "Retriable")]
+    [Arguments(ErrorCode.NotCoordinator, "Retriable")]
+    [Arguments(ErrorCode.RequestTimedOut, "Retriable")]
+    [Arguments(ErrorCode.CoordinatorLoadInProgress, "Retriable")]
+    [Arguments(ErrorCode.UnknownTopicOrPartition, "Retriable")]
+    [Arguments(ErrorCode.UnknownTopicId, "Retriable")]
+    [Arguments(ErrorCode.GroupAuthorizationFailed, "Abortable")]
+    [Arguments(ErrorCode.FencedInstanceId, "Abortable")]
+    [Arguments(ErrorCode.TransactionAbortable, "Abortable")]
+    [Arguments(ErrorCode.UnknownMemberId, "Abortable")]
+    [Arguments(ErrorCode.IllegalGeneration, "Abortable")]
+    [Arguments(ErrorCode.GroupIdNotFound, "Abortable")]
+    [Arguments(ErrorCode.StaleMemberEpoch, "Abortable")]
+    [Arguments(ErrorCode.TransactionalIdAuthorizationFailed, "Fatal")]
+    [Arguments(ErrorCode.InvalidProducerEpoch, "Fatal")]
+    [Arguments(ErrorCode.ProducerFenced, "Fatal")]
+    [Arguments(ErrorCode.UnsupportedForMessageFormat, "Fatal")]
+    [Arguments(ErrorCode.InvalidTxnState, "Abortable")]
+    [Arguments(ErrorCode.UnknownServerError, "Abortable")]
+    [Arguments(ErrorCode.OffsetMetadataTooLarge, "Abortable")]
+    public async Task ClassifyTxnOffsetCommit_MatchesJavaHandler_RegardlessOfTv2(
+        ErrorCode errorCode,
+        string expected)
     {
-        var result = TransactionErrorClassifier.Classify(errorCode, tv2: true);
+        var classification = Enum.Parse<TransactionErrorClassification>(expected);
+        var v1 = TransactionErrorClassifier.ClassifyTxnOffsetCommit(errorCode, tv2: false);
+        var v2 = TransactionErrorClassifier.ClassifyTxnOffsetCommit(errorCode, tv2: true);
 
-        await Assert.That(result).IsEqualTo(TransactionErrorClassification.Abortable);
+        await Assert.That(v1).IsEqualTo(classification);
+        await Assert.That(v2).IsEqualTo(classification);
+    }
+
+    [Test]
+    [Arguments(ErrorCode.UnknownMemberId, true)]
+    [Arguments(ErrorCode.IllegalGeneration, true)]
+    [Arguments(ErrorCode.GroupIdNotFound, true)]
+    [Arguments(ErrorCode.StaleMemberEpoch, true)]
+    [Arguments(ErrorCode.FencedInstanceId, false)]
+    [Arguments(ErrorCode.TransactionAbortable, false)]
+    public async Task IsConsumerGroupMismatch_CoversTheKip1319Equivalents(ErrorCode errorCode, bool expected)
+    {
+        await Assert.That(TransactionErrorClassifier.IsConsumerGroupMismatch(errorCode)).IsEqualTo(expected);
     }
 
     [Test]

@@ -1,5 +1,6 @@
 namespace Dekaf.Producer;
 
+/// <summary>Ordered by severity: a response with several errors acts on the highest.</summary>
 internal enum TransactionErrorClassification
 {
     Retriable,
@@ -19,9 +20,6 @@ internal static class TransactionErrorClassifier
             Protocol.ErrorCode.TransactionalIdAuthorizationFailed => TransactionErrorClassification.Fatal,
             Protocol.ErrorCode.TransactionCoordinatorFenced => TransactionErrorClassification.Fatal,
             Protocol.ErrorCode.InvalidProducerEpoch => TransactionErrorClassification.Fatal,
-            Protocol.ErrorCode.FencedInstanceId => TransactionErrorClassification.Fatal,
-            Protocol.ErrorCode.UnknownMemberId => TransactionErrorClassification.Fatal,
-            Protocol.ErrorCode.IllegalGeneration => TransactionErrorClassification.Fatal,
 
             // In Transactions V2 (KIP-890) an unexpected producer-id mapping is fatal;
             // in V1 the transaction can still be aborted.
@@ -42,12 +40,44 @@ internal static class TransactionErrorClassifier
             // dedicated KIP-890 signal; the default below also lands here per KIP-1050.
             Protocol.ErrorCode.TransactionAbortable => TransactionErrorClassification.Abortable,
             Protocol.ErrorCode.InvalidTxnState => TransactionErrorClassification.Abortable,
-            Protocol.ErrorCode.GroupIdNotFound => TransactionErrorClassification.Abortable,
-            Protocol.ErrorCode.StaleMemberEpoch => TransactionErrorClassification.Abortable,
 
             _ => TransactionErrorClassification.Abortable
         };
     }
+
+    /// <summary>
+    /// Classifies a <c>TxnOffsetCommit</c> partition error (Java 4.4 <c>TxnOffsetCommitHandler</c>).
+    /// A consumer group mismatch (<see cref="IsConsumerGroupMismatch"/>) and a fenced static member
+    /// only break this transaction: the application aborts it and continues once the consumer has
+    /// rejoined. A coordinator timeout is retried, and the next attempt looks the group coordinator
+    /// up again. A broker that cannot store transactional offsets fails every transaction, so
+    /// <c>UnsupportedForMessageFormat</c> is fatal. Errors Java reports as unexpected and therefore
+    /// fatal (<c>InvalidTxnState</c>, <c>UnknownServerError</c>, <c>OffsetMetadataTooLarge</c>, ...)
+    /// deliberately stay abortable per KIP-1050: the transaction is lost either way, and aborting it
+    /// keeps the producer usable. Everything else follows <see cref="Classify"/>.
+    /// </summary>
+    internal static TransactionErrorClassification ClassifyTxnOffsetCommit(Protocol.ErrorCode errorCode, bool tv2) =>
+        errorCode switch
+        {
+            _ when IsConsumerGroupMismatch(errorCode) => TransactionErrorClassification.Abortable,
+            Protocol.ErrorCode.FencedInstanceId => TransactionErrorClassification.Abortable,
+            Protocol.ErrorCode.RequestTimedOut => TransactionErrorClassification.Retriable,
+            Protocol.ErrorCode.UnsupportedForMessageFormat => TransactionErrorClassification.Fatal,
+            _ => Classify(errorCode, tv2)
+        };
+
+    /// <summary>
+    /// A <c>TxnOffsetCommit</c> error that means the consumer group metadata the offsets were sent
+    /// with is no longer current, typically after a rebalance (Java <c>CommitFailedException</c>).
+    /// KIP-1319 keeps the four equivalent: before v6 the coordinator reports a stale member epoch or
+    /// a missing group as <c>IllegalGeneration</c>, from v6 as <c>StaleMemberEpoch</c> or
+    /// <c>GroupIdNotFound</c>.
+    /// </summary>
+    internal static bool IsConsumerGroupMismatch(Protocol.ErrorCode errorCode) =>
+        errorCode is Protocol.ErrorCode.UnknownMemberId
+            or Protocol.ErrorCode.IllegalGeneration
+            or Protocol.ErrorCode.GroupIdNotFound
+            or Protocol.ErrorCode.StaleMemberEpoch;
 
     /// <summary>
     /// The error code a failed batch reports to the transaction: the delivery timeout as

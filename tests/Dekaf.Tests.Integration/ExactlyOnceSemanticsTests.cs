@@ -129,6 +129,78 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : Transa
     }
 
     [Test]
+    public async Task TransactionOffsetCommit_StaleGroupMetadata_AbortsAndProducerContinues()
+    {
+        var inputTopic = await KafkaContainer.CreateTestTopicAsync();
+        var consumerGroupId = $"eos-stale-group-{Guid.NewGuid():N}";
+
+        await using var seedProducer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        await seedProducer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = inputTopic,
+            Key = "stale-key",
+            Value = "stale-value"
+        }, CancellationToken.None);
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(consumerGroupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithIsolationLevel(IsolationLevel.ReadCommitted)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+        await using var txnProducer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithTransactionalId($"eos-stale-txn-{Guid.NewGuid():N}")
+            .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await txnProducer.InitTransactionsAsync();
+        consumer.Subscribe(inputTopic);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var msg = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token)
+            ?? throw new InvalidOperationException("The seed message was not consumed.");
+        var groupMetadata = consumer.ConsumerGroupMetadata
+            ?? throw new InvalidOperationException("Consumer group metadata was unavailable after assignment.");
+        var offsets = new[] { new TopicPartitionOffset(msg.Topic, msg.Partition, msg.Offset + 1) };
+
+        // The group metadata a member holds after the group moved on without it: the coordinator
+        // rejects it as ILLEGAL_GENERATION (classic group, or a consumer group before v6) or
+        // STALE_MEMBER_EPOCH (consumer group from v6). Either way only the transaction is lost.
+        var staleGroupMetadata = new ConsumerGroupMetadata
+        {
+            GroupId = groupMetadata.GroupId,
+            GenerationId = groupMetadata.GenerationId + 1,
+            MemberId = groupMetadata.MemberId,
+            GroupInstanceId = groupMetadata.GroupInstanceId
+        };
+
+        await using (var failed = txnProducer.BeginTransaction())
+        {
+            var exception = await Assert.That(() => failed.SendOffsetsToTransactionAsync(offsets, staleGroupMetadata).AsTask())
+                .Throws<Errors.AbortableTransactionException>();
+            await Assert.That(exception!.ErrorCode is Protocol.ErrorCode.IllegalGeneration
+                or Protocol.ErrorCode.StaleMemberEpoch).IsTrue();
+            await failed.AbortAsync();
+        }
+
+        await using (var next = txnProducer.BeginTransaction())
+        {
+            await next.SendOffsetsToTransactionAsync(offsets, groupMetadata);
+            await next.CommitAsync();
+        }
+
+        var committed = await consumer.GetCommittedOffsetAsync(new TopicPartition(msg.Topic, msg.Partition), cts.Token);
+        await Assert.That(committed).IsEqualTo(msg.Offset + 1);
+    }
+
+    [Test]
     public async Task ReadCommitted_ConsistentSnapshot_NoPartialTransactions()
     {
         // Arrange: Produce multiple messages in a single transaction across the same topic.
