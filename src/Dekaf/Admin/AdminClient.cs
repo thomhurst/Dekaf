@@ -102,6 +102,8 @@ public sealed partial class AdminClient :
             MetadataClusterCheckEnabled = options.MetadataClusterCheckEnabled,
             RetryBackoffMs = options.RetryBackoffMs,
             RetryBackoffMaxMs = options.RetryBackoffMaxMs,
+            MetadataRecoveryRebootstrapTriggerMs = options.MetadataRecoveryRebootstrapTriggerMs,
+            ClientDnsLookup = options.ClientDnsLookup,
             BootstrapResolveTimeoutMs = options.BootstrapResolveTimeoutMs
         };
         _metadataManager = new MetadataManager(
@@ -6936,7 +6938,8 @@ public sealed class AdminClientOptions
 
     /// <summary>
     /// Maximum time in milliseconds spent retrying initial bootstrap DNS resolution.
-    /// Equivalent to Kafka's <c>bootstrap.resolve.timeout.ms</c>. Default is 120000.
+    /// Corresponds to Kafka's <c>bootstrap.resolve.timeout.ms</c>, but defaults to 120000 (the original
+    /// KIP-909 value) where Kafka 4.4 defaults to 0. Zero resolves once with no deadline.
     /// </summary>
     public int BootstrapResolveTimeoutMs { get; init; } = 120000;
 

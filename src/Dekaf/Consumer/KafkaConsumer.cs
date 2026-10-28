@@ -2155,7 +2155,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             MetadataClusterCheckEnabled = options.MetadataClusterCheckEnabled,
             RetryBackoffMs = options.RetryBackoffMs,
             RetryBackoffMaxMs = options.RetryBackoffMaxMs,
-            BootstrapResolveTimeoutMs = options.BootstrapResolveTimeoutMs
+            MetadataRecoveryRebootstrapTriggerMs = options.MetadataRecoveryRebootstrapTriggerMs,
+            ClientDnsLookup = options.ClientDnsLookup,
+            BootstrapResolveTimeoutMs = options.BootstrapResolveTimeoutMs,
+            DnsResolver = options.DnsResolver
         };
         var metadataManager = new MetadataManager(
             connectionPool,

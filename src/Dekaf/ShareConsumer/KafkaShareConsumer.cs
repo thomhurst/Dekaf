@@ -135,6 +135,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 MetadataClusterCheckEnabled = options.MetadataClusterCheckEnabled,
                 RetryBackoffMs = options.RetryBackoffMs,
                 RetryBackoffMaxMs = options.RetryBackoffMaxMs,
+                ClientDnsLookup = options.ClientDnsLookup,
                 BootstrapResolveTimeoutMs = options.BootstrapResolveTimeoutMs
             },
             logger: loggerFactory?.CreateLogger<MetadataManager>());

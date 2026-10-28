@@ -3319,6 +3319,38 @@ public sealed class ConnectionPoolTests
         }
     }
 
+    [Test]
+    public async Task RetireRebootstrapConnection_SharedWithKnownBroker_BrokerIdLeaseOpensFreshConnection()
+    {
+        var created = new List<TestIdleConnection>();
+        await using var pool = new ConnectionPool(
+            clientId: "rebootstrap-retire-test",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (brokerId, host, port, _, _) =>
+            {
+                var connection = new TestIdleConnection(brokerId, host, port);
+                created.Add(connection);
+                return ValueTask.FromResult<IKafkaConnection>(connection);
+            });
+        pool.RegisterBroker(7, "broker-a", 9092);
+
+        var rejected = await pool.GetConnectionAsync(7);
+        await Assert.That(await pool.GetConnectionAsync("broker-a", 9092)).IsSameReferenceAs(rejected);
+        ((TestIdleConnection)rejected).PendingRequestCount = 1;
+
+        ((IMetadataClusterIdentityPool)pool).RetireRebootstrapConnection("broker-a", 9092, rejected);
+
+        // The in-flight request keeps the retiring connection connected while it drains;
+        // broker-ID callers must not keep receiving it.
+        await Assert.That(rejected.IsConnected).IsTrue();
+        var replacement = await pool.GetConnectionAsync(7);
+        await Assert.That(replacement).IsNotSameReferenceAs(rejected);
+        await Assert.That(created.Count).IsEqualTo(2);
+
+        ((TestIdleConnection)rejected).PendingRequestCount = 0;
+    }
+
     private static OAuthBearerConfig CreateOAuthBearerConfig() => new()
     {
         TokenEndpointUrl = "https://auth.example.invalid/token",

@@ -1,9 +1,13 @@
 using System.Net;
 using System.Reflection;
+using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
+using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Serialization;
 using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Metadata;
@@ -469,6 +473,81 @@ public sealed class MetadataRecoveryStrategyTests
 
     #endregion
 
+    #region Standalone client DNS and rebootstrap options
+
+    [Test]
+    public async Task StandaloneProducer_DnsAndRebootstrapOptions_AreAppliedToMetadataManager()
+    {
+        await using var producer = new KafkaProducer<string, string>(
+            new ProducerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                ClientDnsLookup = ClientDnsLookup.ResolveCanonicalBootstrapServersOnly,
+                MetadataRecoveryRebootstrapTriggerMs = 42000
+            },
+            Serializers.String,
+            Serializers.String);
+
+        var options = GetMetadataOptions(producer);
+
+        await Assert.That(options.ClientDnsLookup).IsEqualTo(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly);
+        await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(42000);
+    }
+
+    [Test]
+    public async Task StandaloneConsumer_DnsAndRebootstrapOptions_AreAppliedToMetadataManager()
+    {
+        await using var consumer = new KafkaConsumer<string, string>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                GroupId = "consumer-group",
+                ClientDnsLookup = ClientDnsLookup.ResolveCanonicalBootstrapServersOnly,
+                MetadataRecoveryRebootstrapTriggerMs = 42000
+            },
+            Serializers.String,
+            Serializers.String);
+
+        var options = GetMetadataOptions(consumer);
+
+        await Assert.That(options.ClientDnsLookup).IsEqualTo(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly);
+        await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(42000);
+    }
+
+    [Test]
+    public async Task StandaloneAdminClient_DnsAndRebootstrapOptions_AreAppliedToMetadataManager()
+    {
+        await using var admin = new Dekaf.Admin.AdminClient(new Dekaf.Admin.AdminClientOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientDnsLookup = ClientDnsLookup.ResolveCanonicalBootstrapServersOnly,
+            MetadataRecoveryRebootstrapTriggerMs = 42000
+        });
+
+        var options = GetMetadataOptions(admin);
+
+        await Assert.That(options.ClientDnsLookup).IsEqualTo(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly);
+        await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(42000);
+    }
+
+    [Test]
+    public async Task ShareConsumerBuilder_ClientDnsLookup_IsAppliedToMetadataManager()
+    {
+        // Share consumer options have no rebootstrap trigger setting; the DNS lookup mode is
+        // the only one of the two that it exposes.
+        await using var consumer = Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("group-a")
+            .WithClientDnsLookup(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly)
+            .Build();
+
+        var options = GetMetadataOptions(consumer);
+
+        await Assert.That(options.ClientDnsLookup).IsEqualTo(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly);
+    }
+
+    #endregion
+
     #region KIP-1242 Metadata Cluster Check
 
     [Test]
@@ -831,8 +910,102 @@ public sealed class MetadataRecoveryStrategyTests
         var endpoints = await manager.ResolveBootstrapEndpointsAsync(CancellationToken.None);
 
         await Assert.That(lookup.InvocationCount).IsEqualTo(1);
-        await Assert.That(endpoints).Contains(("192.0.2.10", 9092, "broker.example"));
-        await Assert.That(endpoints).Contains(("broker.example", 9092, "broker.example"));
+        // Rebootstrap connects by hostname; the resolved address only leads its DNS order.
+        await Assert.That(endpoints.Count).IsEqualTo(1);
+        await Assert.That(endpoints[0].Host).IsEqualTo("broker.example");
+        await Assert.That(endpoints[0].Port).IsEqualTo(9092);
+        await Assert.That(endpoints[0].Address?.ToString()).IsEqualTo("192.0.2.10");
+    }
+
+    [Test]
+    [Arguments(ClientDnsLookup.UseAllDnsIps)]
+    [Arguments(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly)]
+    public async Task TryRebootstrapImmediateAsync_HostnameOnlyTlsCertificate_ConnectsByHostname(
+        ClientDnsLookup clientDnsLookup)
+    {
+        var connection = CreateMetadataConnection(new MetadataResponse
+        {
+            ClusterId = "cluster-a",
+            Brokers = [new BrokerMetadata { NodeId = 1, Host = "broker.example", Port = 9092 }],
+            Topics = []
+        });
+        var connectedHosts = new List<string>();
+        await using var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (_, host, _, _, _) =>
+            {
+                lock (connectedHosts)
+                    connectedHosts.Add(host);
+
+                // A connection's TLS target is the host it was created for. The certificate names
+                // only the hostname, so a raw-IP target fails validation, which is fatal.
+                return IPAddress.TryParse(host, out _)
+                    ? ValueTask.FromException<IKafkaConnection>(
+                        new AuthenticationException("TLS handshake failed: RemoteCertificateNameMismatch"))
+                    : ValueTask.FromResult(connection);
+            });
+        await using var manager = new MetadataManager(
+            pool,
+            ["broker.example:9092"],
+            new MetadataOptions
+            {
+                MetadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap,
+                ClientDnsLookup = clientDnsLookup,
+                DnsResolver = new ClientDnsEndpointResolver(
+                    new RecordingDnsLookup(IPAddress.Parse("192.0.2.10")))
+            });
+
+        var result = await manager.TryRebootstrapImmediateAsync(null, CancellationToken.None);
+
+        await Assert.That(result).IsTrue();
+        await Assert.That(connectedHosts).IsEquivalentTo(["broker.example"]);
+        await Assert.That(manager.Metadata.GetBrokers().Select(b => b.NodeId)).IsEquivalentTo([1]);
+    }
+
+    [Test]
+    public async Task TryRebootstrapImmediateAsync_PooledConnectionRequiresRebootstrap_OpensFreshConnectionForNextAddress()
+    {
+        // The pooled bootstrap-hostname connection keeps answering RebootstrapRequired. Leasing by
+        // hostname must not hand that same socket to the second resolved address.
+        var misrouted = CreateMetadataConnection(new MetadataResponse
+        {
+            ErrorCode = ErrorCode.RebootstrapRequired,
+            Brokers = [],
+            Topics = []
+        });
+        var healthy = CreateMetadataConnection(new MetadataResponse
+        {
+            ClusterId = "cluster-a",
+            Brokers = [new BrokerMetadata { NodeId = 1, Host = "broker.example", Port = 9092 }],
+            Topics = []
+        });
+        var created = 0;
+        var dnsResolver = new ClientDnsEndpointResolver(
+            new RecordingDnsLookup(IPAddress.Parse("192.0.2.10"), IPAddress.Parse("192.0.2.11")));
+        await using var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => ValueTask.FromResult(
+                Interlocked.Increment(ref created) == 1 ? misrouted : healthy));
+        await using var manager = new MetadataManager(
+            pool,
+            ["broker.example:9092"],
+            new MetadataOptions
+            {
+                MetadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap,
+                DnsResolver = dnsResolver
+            });
+        await pool.GetConnectionAsync("broker.example", 9092);
+
+        var result = await manager.TryRebootstrapImmediateAsync(null, CancellationToken.None);
+
+        await Assert.That(result).IsTrue();
+        await Assert.That(Volatile.Read(ref created)).IsEqualTo(2);
+        await Assert.That(await pool.GetConnectionAsync("broker.example", 9092)).IsSameReferenceAs(healthy);
+        await Assert.That(manager.Metadata.GetBrokers().Select(b => b.NodeId)).IsEquivalentTo([1]);
     }
 
     #endregion
@@ -997,14 +1170,14 @@ public sealed class MetadataRecoveryStrategyTests
         return GetField<MetadataOptions>(metadataManager, "_options");
     }
 
-    private sealed class RecordingDnsLookup(IPAddress address) : IDnsLookup
+    private sealed class RecordingDnsLookup(params IPAddress[] addresses) : IDnsLookup
     {
         public int InvocationCount { get; private set; }
 
         public ValueTask<IPAddress[]> GetHostAddressesAsync(string host, CancellationToken cancellationToken)
         {
             InvocationCount++;
-            return ValueTask.FromResult<IPAddress[]>([address]);
+            return ValueTask.FromResult(addresses);
         }
 
         public ValueTask<IPHostEntry> GetHostEntryAsync(string host, CancellationToken cancellationToken)
@@ -1013,7 +1186,7 @@ public sealed class MetadataRecoveryStrategyTests
             return ValueTask.FromResult(new IPHostEntry
             {
                 HostName = host,
-                AddressList = [address]
+                AddressList = addresses
             });
         }
     }

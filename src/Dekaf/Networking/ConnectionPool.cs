@@ -258,6 +258,23 @@ public sealed partial class ConnectionPool :
     void IMetadataClusterIdentityPool.SeedClusterApiVersionsMaxVersion(short maxVersion)
         => _metadataClusterIdentity.SeedClusterApiVersionsMaxVersion(maxVersion);
 
+    void IMetadataClusterIdentityPool.RetireRebootstrapConnection(string host, int port, IKafkaConnection connection)
+    {
+        // Exact removal: a sibling that already replaced the slot keeps its connection.
+        var endpoint = new EndpointKey(host, port);
+        if (!TryRemoveExact(_connectionsByEndpoint, endpoint, connection))
+            return;
+
+        // A broker that advertises the bootstrap hostname shares this connection; broker-ID
+        // callers must not keep leasing it while it drains.
+        var brokerId = connection.BrokerId;
+        if (brokerId >= 0)
+            TryRemoveExact(_connectionsById, brokerId, connection);
+
+        PreserveRemovedConnectionState(connection, brokerId, endpoint);
+        RetireConnection(connection);
+    }
+
     private static ConnectionOptions ConfigureSharedOAuthBearerProvider(
         ConnectionOptions options,
         out OAuthBearerTokenProvider? sharedProvider)
