@@ -150,6 +150,44 @@ public sealed class SaslReauthenticationIntegrationTests(ReauthKafkaContainer ka
     }
 
     [Test]
+    public async Task CredentialFailure_RetriesRenewalBeforeSessionExpiry(CancellationToken cancellationToken)
+    {
+        var calls = 0;
+        await using var connection = CreateConnection(_ => Interlocked.Increment(ref calls) == 2
+                ? ValueTask.FromException<SaslCredentials>(new InvalidOperationException("Secret store unavailable"))
+                : ValueTask.FromResult(ValidCredentials()),
+            automatic: true, requestTimeout: TimeSpan.FromMilliseconds(500));
+        await connection.ConnectAsync(cancellationToken);
+
+        // The timer fires at half of the 3 s session. Its credential lookup fails, and the retry
+        // inside the remaining window must renew the session without help from a manual call.
+        await TestWait.WaitForConditionAsync(() => Volatile.Read(ref calls) >= 3, TimeSpan.FromSeconds(10),
+            description: "re-authentication retried after credential failure");
+
+        // Past the original session expiry, the broker would close an unrenewed session.
+        await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
+        await ReadMetadataAsync(connection, cancellationToken);
+        await Assert.That(connection.IsConnected).IsTrue();
+    }
+
+    [Test]
+    public async Task PersistentCredentialFailure_RetiresConnectionBeforeSessionExpiry(CancellationToken cancellationToken)
+    {
+        var calls = 0;
+        await using var connection = CreateConnection(_ => Interlocked.Increment(ref calls) == 1
+                ? ValueTask.FromResult(ValidCredentials())
+                : ValueTask.FromException<SaslCredentials>(new InvalidOperationException("Secret store unavailable")),
+            automatic: true, requestTimeout: TimeSpan.FromMilliseconds(500));
+        await connection.ConnectAsync(cancellationToken);
+
+        // No requests are sent, so the broker never closes the expired session itself:
+        // only the client retiring the connection can disconnect it.
+        await TestWait.WaitForConditionAsync(() => !connection.IsConnected, TimeSpan.FromSeconds(10),
+            description: "connection retired after re-authentication retries ran out");
+        await Assert.That(Volatile.Read(ref calls)).IsGreaterThanOrEqualTo(3);
+    }
+
+    [Test]
     public async Task ConcurrentTraffic_DuringCredentialRefreshCompletesOnSameConnection(CancellationToken cancellationToken)
     {
         var calls = 0;
@@ -237,14 +275,14 @@ public sealed class SaslReauthenticationIntegrationTests(ReauthKafkaContainer ka
     }
 
     private KafkaConnection CreateConnection(Func<CancellationToken, ValueTask<SaslCredentials>> credentials,
-        bool automatic = false, ILogger<KafkaConnection>? logger = null)
+        bool automatic = false, ILogger<KafkaConnection>? logger = null, TimeSpan? requestTimeout = null)
     {
         var endpoint = BootstrapServerList.Parse(kafka.BootstrapServers);
         return new KafkaConnection(endpoint.Host, endpoint.Port, $"reauth-{Guid.NewGuid():N}", new ConnectionOptions
         {
             SaslMechanism = SaslMechanism.Plain,
             SaslCredentialProvider = credentials,
-            RequestTimeout = TimeSpan.FromSeconds(10),
+            RequestTimeout = requestTimeout ?? TimeSpan.FromSeconds(10),
             SaslReauthenticationConfig = new SaslReauthenticationConfig
             {
                 Enabled = automatic, MinSessionLifetimeMs = 0, ReauthenticationThreshold = 0.5
