@@ -25,6 +25,8 @@ public class ProtocolReaderFuzzCorpusTests
         {
             ["corrupt-varint"] = ProtocolReaderOperation.ReadUnsignedVarInt,
             ["hostile-length"] = ProtocolReaderOperation.ReadBytes,
+            ["overflow-varint-fifth-byte"] = ProtocolReaderOperation.ReadUnsignedVarInt,
+            ["overflow-varlong-tenth-byte"] = ProtocolReaderOperation.ReadVarLong,
             ["truncated-fixed"] = ProtocolReaderOperation.ReadUuid,
             ["truncated-tagged-fields"] = ProtocolReaderOperation.SkipTaggedFields,
             ["valid-fixed"] = ProtocolReaderOperation.ReadUuid,
@@ -99,6 +101,8 @@ public class ProtocolReaderFuzzCorpusTests
         await Assert.That(seeds.Select(seed => seed.Name)).IsEquivalentTo([
             "corrupt-varint",
             "hostile-length",
+            "overflow-varint-fifth-byte",
+            "overflow-varlong-tenth-byte",
             "truncated-fixed",
             "truncated-tagged-fields",
             "valid-fixed",

@@ -452,7 +452,10 @@ public ref struct KafkaProtocolReader
             var b = _span[_position++];
             result |= (uint)(b & 0x7F) << shift;
             if ((b & 0x80) == 0)
+            {
+                ThrowIfVarUIntOverflows(b, shift);
                 return result;
+            }
             shift += 7;
         }
         ThrowMalformedVarInt();
@@ -473,7 +476,10 @@ public ref struct KafkaProtocolReader
             result |= (uint)(b & 0x7F) << shift;
 
             if ((b & 0x80) == 0)
+            {
+                ThrowIfVarUIntOverflows(b, shift);
                 return result;
+            }
 
             shift += 7;
         }
@@ -534,7 +540,10 @@ public ref struct KafkaProtocolReader
             result |= (ulong)(b & 0x7F) << shift;
 
             if ((b & 0x80) == 0)
+            {
+                ThrowIfVarULongOverflows(b, shift);
                 return result;
+            }
 
             shift += 7;
         }
@@ -557,7 +566,10 @@ public ref struct KafkaProtocolReader
             result |= (ulong)(b & 0x7F) << shift;
 
             if ((b & 0x80) == 0)
+            {
+                ThrowIfVarULongOverflows(b, shift);
                 return result;
+            }
 
             shift += 7;
         }
@@ -1366,6 +1378,23 @@ public ref struct KafkaProtocolReader
     internal static void ThrowInsufficientData()
     {
         throw new InsufficientDataException();
+    }
+
+    // The fifth byte of a 32-bit varint carries only 4 payload bits and the tenth byte of a
+    // 64-bit varint only 1. The shift would silently drop any higher bits, so an out-of-range
+    // encoding must be rejected rather than decoded as a smaller value.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ThrowIfVarUIntOverflows(byte terminalByte, int shift)
+    {
+        if (shift == 28 && terminalByte > 0x0F)
+            ThrowMalformedVarInt();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ThrowIfVarULongOverflows(byte terminalByte, int shift)
+    {
+        if (shift == 63 && terminalByte > 0x01)
+            ThrowMalformedVarInt();
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
