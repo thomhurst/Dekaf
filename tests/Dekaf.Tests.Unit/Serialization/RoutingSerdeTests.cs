@@ -210,6 +210,64 @@ public sealed class RoutingSerdeTests
     }
 
     [Test]
+    public async Task SchemaIdDeserializer_ReturnsNullForTombstoneOnEveryEntryPoint()
+    {
+        // An unprepared route throws from Deserialize and reports false from TryDeserialize,
+        // so any result below proves the tombstone never reached it.
+        var child = new PreparingDeserializer<AlphaEvent>(Alpha);
+        var router = new SchemaIdRoutingDeserializer<EventBase>()
+            .Register(12, child)
+            .Freeze();
+        var context = TombstoneContext(SerializationComponent.Value);
+        var lookup = default(RecordHeaderRoutingLookup);
+        var preparer = (IAsyncDeserializerPreparer<EventBase>)router;
+        var headerPreparer = (IRecordHeaderAsyncDeserializerPreparer<EventBase>)router;
+
+        var value = router.Deserialize(ReadOnlyMemory<byte>.Empty, context);
+        var headerValue = ((IRecordHeaderDeserializer<EventBase>)router)
+            .Deserialize(ReadOnlyMemory<byte>.Empty, context, in lookup);
+        var callerOwnedValue = ((ICallerOwnedHeaderDeserializer<EventBase>)router)
+            .DeserializeCallerOwned(ReadOnlyMemory<byte>.Empty, context);
+        var prepared = preparer.TryDeserialize(ReadOnlyMemory<byte>.Empty, context, out var preparedValue);
+        var headerPrepared = headerPreparer.TryDeserialize(
+            ReadOnlyMemory<byte>.Empty,
+            context,
+            in lookup,
+            out var headerPreparedValue);
+        var prepareTask = preparer.PrepareAsync(ReadOnlyMemory<byte>.Empty, context);
+        var headerPrepareTask = headerPreparer.PrepareAsync(
+            ReadOnlyMemory<byte>.Empty,
+            context,
+            lookup,
+            CancellationToken.None);
+
+        await Assert.That(value).IsNull();
+        await Assert.That(headerValue).IsNull();
+        await Assert.That(callerOwnedValue).IsNull();
+        await Assert.That(prepared).IsTrue();
+        await Assert.That(preparedValue).IsNull();
+        await Assert.That(headerPrepared).IsTrue();
+        await Assert.That(headerPreparedValue).IsNull();
+        await Assert.That(prepareTask.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(headerPrepareTask.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(child.PrepareCount).IsEqualTo(0);
+        await Assert.That(child.HeaderPathUsed).IsFalse();
+    }
+
+    [Test]
+    public async Task SchemaIdDeserializer_RejectsNullKeyWithoutFrame()
+    {
+        var router = new SchemaIdRoutingDeserializer<EventBase>()
+            .Register(12, AlphaDeserializer)
+            .Freeze();
+
+        await Assert.That(() => router.Deserialize(
+                ReadOnlyMemory<byte>.Empty,
+                TombstoneContext(SerializationComponent.Key)))
+            .Throws<SerializationException>();
+    }
+
+    [Test]
     public async Task Routers_RequireFreezeAndRejectLaterMutation()
     {
         var router = new TopicRoutingDeserializer<EventBase>()
@@ -378,6 +436,13 @@ public sealed class RoutingSerdeTests
     {
         Topic = topic,
         Component = SerializationComponent.Value
+    };
+
+    private static SerializationContext TombstoneContext(SerializationComponent component) => new()
+    {
+        Topic = "events",
+        Component = component,
+        IsNull = true
     };
 
     private static byte[] Frame(int schemaId, params byte[] payload)

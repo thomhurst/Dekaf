@@ -172,6 +172,8 @@ public sealed class TopicRoutingDeserializer<TBase> :
 /// <remarks>
 /// The selected deserializer receives the complete framed input. Registration is mutable only
 /// before <see cref="Freeze"/>; after freezing, routing is thread-safe and allocation-free.
+/// A null value (tombstone) has no frame to route on, so it deserializes to <see langword="null"/>
+/// without reaching a route.
 /// </remarks>
 /// <typeparam name="TBase">The common reference type returned by every route.</typeparam>
 public sealed class SchemaIdRoutingDeserializer<TBase> :
@@ -230,24 +232,14 @@ public sealed class SchemaIdRoutingDeserializer<TBase> :
     /// <inheritdoc />
     public TBase Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        if (data.Length < HeaderSize || data.Span[0] != 0)
-        {
-            throw new SerializationException("Schema-ID routing requires Confluent framing.")
-            {
-                Topic = context.Topic,
-                Component = context.Component
-            };
-        }
+        if (IsTombstone(context))
+            return null!;
 
-        var schemaId = BinaryPrimitives.ReadInt32BigEndian(data.Span.Slice(1, sizeof(int)));
+        var schemaId = ReadSchemaId(data, context);
         if (_routes.TryGetRoute(schemaId, out var route))
             return route.Deserialize(data, context);
 
-        throw new SerializationException($"No schema-ID deserializer route is registered for '{schemaId}'.")
-        {
-            Topic = context.Topic,
-            Component = context.Component
-        };
+        throw MissingRoute(schemaId, context);
     }
 
     bool IAsyncDeserializerPreparationRequirement.RequiresPreparation =>
@@ -258,6 +250,12 @@ public sealed class SchemaIdRoutingDeserializer<TBase> :
         SerializationContext context,
         out TBase value)
     {
+        if (IsTombstone(context))
+        {
+            value = null!;
+            return true;
+        }
+
         var schemaId = ReadSchemaId(data, context);
         if (_routes.TryGetRoute(schemaId, out var route))
             return DeserializerPreparation.TryDeserialize(route, data, context, out value);
@@ -270,6 +268,9 @@ public sealed class SchemaIdRoutingDeserializer<TBase> :
         SerializationContext context,
         CancellationToken cancellationToken)
     {
+        if (IsTombstone(context))
+            return default;
+
         var schemaId = ReadSchemaId(data, context);
         if (_routes.TryGetRoute(schemaId, out var route))
             return DeserializerPreparation.PrepareAsync(route, data, context, cancellationToken);
@@ -282,24 +283,14 @@ public sealed class SchemaIdRoutingDeserializer<TBase> :
         SerializationContext context,
         in RecordHeaderRoutingLookup headers)
     {
-        if (data.Length < HeaderSize || data.Span[0] != 0)
-        {
-            throw new SerializationException("Schema-ID routing requires Confluent framing.")
-            {
-                Topic = context.Topic,
-                Component = context.Component
-            };
-        }
+        if (IsTombstone(context))
+            return null!;
 
-        var schemaId = BinaryPrimitives.ReadInt32BigEndian(data.Span.Slice(1, sizeof(int)));
+        var schemaId = ReadSchemaId(data, context);
         if (_routes.TryGetRoute(schemaId, out var route))
             return RecordHeaderDeserializer.DeserializeChild(route, data, context, in headers);
 
-        throw new SerializationException($"No schema-ID deserializer route is registered for '{schemaId}'.")
-        {
-            Topic = context.Topic,
-            Component = context.Component
-        };
+        throw MissingRoute(schemaId, context);
     }
 
     bool IRecordHeaderAsyncDeserializerPreparer<TBase>.TryDeserialize(
@@ -308,6 +299,12 @@ public sealed class SchemaIdRoutingDeserializer<TBase> :
         in RecordHeaderRoutingLookup headers,
         out TBase value)
     {
+        if (IsTombstone(context))
+        {
+            value = null!;
+            return true;
+        }
+
         var schemaId = ReadSchemaId(data, context);
         if (_routes.TryGetRoute(schemaId, out var route))
         {
@@ -328,6 +325,9 @@ public sealed class SchemaIdRoutingDeserializer<TBase> :
         RecordHeaderRoutingLookup headers,
         CancellationToken cancellationToken)
     {
+        if (IsTombstone(context))
+            return default;
+
         var schemaId = ReadSchemaId(data, context);
         if (_routes.TryGetRoute(schemaId, out var route))
         {
@@ -346,28 +346,23 @@ public sealed class SchemaIdRoutingDeserializer<TBase> :
         ReadOnlyMemory<byte> data,
         SerializationContext context)
     {
-        if (data.Length < HeaderSize || data.Span[0] != 0)
-        {
-            throw new SerializationException("Schema-ID routing requires Confluent framing.")
-            {
-                Topic = context.Topic,
-                Component = context.Component
-            };
-        }
+        if (IsTombstone(context))
+            return null!;
 
-        var schemaId = BinaryPrimitives.ReadInt32BigEndian(data.Span.Slice(1, sizeof(int)));
+        var schemaId = ReadSchemaId(data, context);
         if (_routes.TryGetRoute(schemaId, out var route))
             return RecordHeaderDeserializer.DeserializeCallerOwned(route, data, context);
 
-        throw new SerializationException($"No schema-ID deserializer route is registered for '{schemaId}'.")
-        {
-            Topic = context.Topic,
-            Component = context.Component
-        };
+        throw MissingRoute(schemaId, context);
     }
 
     void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names) =>
         _routes.CollectHeaderNames(names);
+
+    // A tombstone reaches value deserializers as empty data with IsNull set. It carries no
+    // Confluent frame, so it maps to null like the Schema Registry deserializers do.
+    private static bool IsTombstone(SerializationContext context) =>
+        context is { IsNull: true, Component: SerializationComponent.Value };
 
     private static int ReadSchemaId(ReadOnlyMemory<byte> data, SerializationContext context)
     {
