@@ -548,6 +548,26 @@ public sealed partial class ConsumerRackAwarenessTests
         await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(seek ? 99 : 10);
     }
 
+    [Test]
+    public async Task ManualAssignmentInitialization_SeekBeforeResetSkipsNonePolicy()
+    {
+        // A Seek that lands while the OffsetFetch awaits leaves the partition positioned when the
+        // reset branch runs; AutoOffsetReset.None must not throw for it.
+        var pool = Substitute.For<IConnectionPool>();
+        await using var metadata = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadata, "rack-a", AutoOffsetReset.None);
+        consumer.Assign(Partition);
+        consumer.Seek(new TopicPartitionOffset(Topic, 0, 99));
+
+        await ((ValueTask)typeof(KafkaConsumer<string, string>)
+            .GetMethod("InitializeManualAssignmentPositionsAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(consumer, [new List<TopicPartition> { Partition }, CancellationToken.None])!);
+
+        await Assert.That(GetFetchPosition(consumer)).IsEqualTo(99);
+        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(99);
+        await pool.DidNotReceiveWithAnyArgs().GetConnectionByIndexAsync(default, default, default);
+    }
+
     private static TaskCompletionSource NewFetchSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     [Test]

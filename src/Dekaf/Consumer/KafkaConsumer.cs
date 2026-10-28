@@ -11903,6 +11903,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 leaderEpoch = committedOffset.LeaderEpoch;
                 _ = TryCacheCommittedOffset(partition, offset, cacheGeneration);
             }
+            else if (_fetchPositions.ContainsKey(partition))
+            {
+                // A Seek during an earlier await already positioned the partition. Skip the reset
+                // policy, which throws for AutoOffsetReset.None.
+                continue;
+            }
             else
             {
                 offset = await GetResetOffsetAsync(partition, cancellationToken).ConfigureAwait(false);
