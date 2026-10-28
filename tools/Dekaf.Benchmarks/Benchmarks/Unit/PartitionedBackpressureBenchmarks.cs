@@ -95,6 +95,11 @@ public class PartitionedBackpressureBenchmarks
         Volatile.Write(ref _stopped, 1);
         _start.Set();
         _reader?.Join();
+        // A full lane makes the route record the held offset (the Ignore rewind target) before
+        // each wait and clear it once the record is queued, so a finished route holds none.
+        // Bound by reflection so this fixture still compiles against revisions without it.
+        if (_lane.GetType().GetProperty("HeldRecordOffset")?.GetValue(_lane) is not null)
+            throw new InvalidOperationException("Held record offset was not cleared");
         _lifetime.Cancel();
         (_runtime.GetType().GetField("_capacitySignal", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(_runtime) as IDisposable)?.Dispose();
         _lifetime.Dispose();

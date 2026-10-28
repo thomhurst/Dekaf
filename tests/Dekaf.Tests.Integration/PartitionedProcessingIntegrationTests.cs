@@ -109,6 +109,87 @@ public sealed class PartitionedProcessingIntegrationTests(KafkaTestContainer kaf
             .IsEqualTo(3);
     }
 
+    [Test]
+    public async Task RunPartitionedAsync_IgnoreRedeliversRecordsQueuedBehindTheFailedRecord()
+    {
+        const int recordCount = 20;
+        const long failingOffset = 2;
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        var groupId = $"partitioned-ignore-{Guid.NewGuid():N}";
+
+        await using (var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync())
+        {
+            for (var offset = 0; offset < recordCount; offset++)
+            {
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Partition = 0,
+                    Key = $"key-{offset}",
+                    Value = $"value-{offset}"
+                }, CancellationToken.None);
+            }
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        consumer.Subscribe(topic);
+
+        var attempts = 0;
+        var processed = new ConcurrentQueue<long>();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, cancellationToken) =>
+            {
+                var firstAttempt = Interlocked.Increment(ref attempts) == 1;
+                await foreach (var message in context.Messages.WithCancellation(cancellationToken))
+                {
+                    // The fetch delivers every record at once, so the failure leaves the
+                    // records after it queued in the lane.
+                    if (firstAttempt && message.Offset == failingOffset)
+                        throw new InvalidOperationException("ignored failure");
+
+                    processed.Enqueue(message.Offset);
+                    context.MarkProcessed(message);
+                    if (message.Offset == recordCount - 1)
+                        await cts.CancelAsync().ConfigureAwait(false);
+                }
+            },
+            new PartitionedProcessingOptions
+            {
+                ErrorPolicy = PartitionWorkerErrorPolicy.Ignore,
+                IgnoreRestartBackoff = TimeSpan.FromMilliseconds(10),
+                CommitPolicy = PartitionCommitPolicy.CommitCompletedOnRevoke
+            },
+            cts.Token).AsTask();
+
+        try
+        {
+            await runTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+        }
+
+        var expected = Enumerable.Range(0, recordCount)
+            .Where(static offset => offset != failingOffset)
+            .Select(static offset => (long)offset)
+            .ToArray();
+        await Assert.That(processed.ToArray()).IsEquivalentTo(expected);
+        await Assert.That(await consumer.GetCommittedOffsetAsync(new TopicPartition(topic, 0), CancellationToken.None))
+            .IsEqualTo(recordCount);
+    }
+
     private static TaskCompletionSource NewCompletionSource()
         => new(TaskCreationOptions.RunContinuationsAsynchronously);
 

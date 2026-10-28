@@ -831,6 +831,135 @@ public sealed class PartitionedConsumerRuntimeTests
     }
 
     [Test]
+    public async Task RunPartitionedAsync_IgnoreRedeliversRecordsQueuedBehindTheFailedRecord()
+    {
+        var failing = new TopicPartition("topic-a", 0);
+        var probe = new TopicPartition("topic-a", 1);
+        var consumer = new TestConsumer();
+        consumer.SetAssignment(failing, probe);
+        consumer.Enqueue(Enumerable.Range(0, 10).Select(offset => CreateResult(failing, offset)).ToArray());
+
+        var attempts = 0;
+        var failingRecordReceived = NewCompletionSource();
+        var releaseFailure = NewCompletionSource();
+        var probeProcessed = NewCompletionSource();
+        var redeliveredAll = NewCompletionSource();
+        var redelivered = new ConcurrentQueue<long>();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, cancellationToken) =>
+            {
+                if (context.TopicPartition == probe)
+                {
+                    await foreach (var message in context.Messages.WithCancellation(cancellationToken))
+                    {
+                        context.MarkProcessed(message);
+                        probeProcessed.TrySetResult();
+                    }
+
+                    return;
+                }
+
+                if (Interlocked.Increment(ref attempts) == 1)
+                {
+                    await foreach (var message in context.Messages.WithCancellation(cancellationToken))
+                    {
+                        failingRecordReceived.TrySetResult();
+                        await releaseFailure.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                        throw new InvalidOperationException($"ignored failure at offset {message.Offset}");
+                    }
+                }
+
+                await foreach (var message in context.Messages.WithCancellation(cancellationToken))
+                {
+                    redelivered.Enqueue(message.Offset);
+                    context.MarkProcessed(message);
+                    if (message.Offset == 9)
+                        redeliveredAll.TrySetResult();
+                }
+            },
+            new PartitionedProcessingOptions
+            {
+                ErrorPolicy = PartitionWorkerErrorPolicy.Ignore,
+                CommitPolicy = PartitionCommitPolicy.CommitCompletedOnRevoke
+            },
+            cts.Token).AsTask();
+
+        await failingRecordReceived.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        // The runtime routes one batch at a time, so once the probe partition's later batch is
+        // processed, offsets 1-9 are queued in the failing lane behind the record it holds.
+        consumer.Enqueue(CreateResult(probe, 0));
+        await probeProcessed.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        releaseFailure.SetResult();
+
+        await redeliveredAll.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+
+        await Assert.That(redelivered.ToArray()).IsEquivalentTo(Enumerable.Range(1, 9).Select(offset => (long)offset).ToArray());
+        await Assert.That(consumer.SeekCalls.Select(offset => (offset.Topic, offset.Partition, offset.Offset)).ToArray())
+            .IsEquivalentTo(new[] { (failing.Topic, failing.Partition, 1L) });
+        await Assert.That(consumer.CommitCalls.SelectMany(offsets => offsets)
+                .Where(offset => offset.Partition == failing.Partition)
+                .Max(offset => offset.Offset))
+            .IsEqualTo(10);
+    }
+
+    [Test]
+    public async Task RunPartitionedAsync_IgnoreSkipsOnlyRecordsTheFailedProcessorReceived()
+    {
+        // A one-record queue makes the router hold enumerated records while the lane fails, so
+        // the rewind covers both records left in the lane and records the router still holds.
+        const int recordCount = 20;
+        const long failingOffset = 2;
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.SetAssignment(partition);
+        consumer.Enqueue(Enumerable.Range(0, recordCount).Select(offset => CreateResult(partition, offset)).ToArray());
+
+        var attempts = 0;
+        var redeliveredAll = NewCompletionSource();
+        var redelivered = new ConcurrentQueue<long>();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, cancellationToken) =>
+            {
+                var firstAttempt = Interlocked.Increment(ref attempts) == 1;
+                await foreach (var message in context.Messages.WithCancellation(cancellationToken))
+                {
+                    if (firstAttempt)
+                    {
+                        if (message.Offset == failingOffset)
+                            throw new InvalidOperationException("ignored failure");
+
+                        context.MarkProcessed(message);
+                        continue;
+                    }
+
+                    redelivered.Enqueue(message.Offset);
+                    context.MarkProcessed(message);
+                    if (message.Offset == recordCount - 1)
+                        redeliveredAll.TrySetResult();
+                }
+            },
+            new PartitionedProcessingOptions
+            {
+                ErrorPolicy = PartitionWorkerErrorPolicy.Ignore,
+                MaxBufferedRecordsPerPartition = 1
+            },
+            cts.Token).AsTask();
+
+        await redeliveredAll.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+
+        await Assert.That(redelivered.ToArray())
+            .IsEquivalentTo(Enumerable.Range((int)failingOffset + 1, recordCount - (int)failingOffset - 1)
+                .Select(offset => (long)offset)
+                .ToArray());
+    }
+
+    [Test]
     public async Task RunPartitionedAsync_IgnoreBacksOffAndLogsPersistentFailures()
     {
         var partition = new TopicPartition("topic-a", 0);
@@ -1774,6 +1903,8 @@ public sealed class PartitionedConsumerRuntimeTests
     {
         private readonly object _gate = new();
         private readonly Queue<ConsumeResult<string, string>> _records = [];
+        // Every record enqueued, so Seek can redeliver records a batch already handed out.
+        private readonly List<ConsumeResult<string, string>> _log = [];
         private readonly HashSet<TopicPartition> _assignment = [];
         private readonly HashSet<TopicPartition> _paused = [];
         private readonly HashSet<string> _subscription = new(StringComparer.Ordinal);
@@ -2060,8 +2191,34 @@ public sealed class PartitionedConsumerRuntimeTests
         public long? GetPosition(TopicPartition partition)
             => null;
 
+        public List<TopicPartitionOffset> SeekCalls { get; } = [];
+
+        /// <summary>
+        /// Mirrors KafkaConsumer.Seek: drops the partition's queued records and fetches it again
+        /// from <paramref name="offset"/>.
+        /// </summary>
         public void Seek(TopicPartitionOffset offset)
         {
+            var partition = new TopicPartition(offset.Topic, offset.Partition);
+            lock (_gate)
+            {
+                SeekCalls.Add(offset);
+                var count = _records.Count;
+                for (var i = 0; i < count; i++)
+                {
+                    var queued = _records.Dequeue();
+                    if (queued.Topic != offset.Topic || queued.Partition != offset.Partition)
+                        _records.Enqueue(queued);
+                }
+
+                foreach (var logged in _log)
+                {
+                    if (new TopicPartition(logged.Topic, logged.Partition) == partition && logged.Offset >= offset.Offset)
+                        _records.Enqueue(logged);
+                }
+            }
+
+            _changed.Release();
         }
 
         public void SeekToBeginning(params TopicPartition[] partitions)
@@ -2180,7 +2337,10 @@ public sealed class PartitionedConsumerRuntimeTests
                 foreach (var partition in partitions)
                     _assignment.Add(partition);
                 foreach (var result in results)
+                {
                     _records.Enqueue(result);
+                    _log.Add(result);
+                }
             }
 
             _changed.Release(results.Length + 1);
@@ -2209,7 +2369,10 @@ public sealed class PartitionedConsumerRuntimeTests
             lock (_gate)
             {
                 foreach (var result in results)
+                {
                     _records.Enqueue(result);
+                    _log.Add(result);
+                }
             }
 
             _changed.Release(results.Length);
