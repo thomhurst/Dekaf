@@ -2154,7 +2154,7 @@ public sealed partial class AdminClient :
                     if (MayHaveAppliedDespiteError(groupResult.ErrorCode))
                         ambiguousGroups.Add(groupResult.GroupId);
                     var groupFailure = new Errors.GroupException(groupResult.ErrorCode,
-                        $"DeleteConsumerGroups failed for group '{groupResult.GroupId}': {groupResult.ErrorCode}")
+                        FormatDeleteGroupFailure("DeleteConsumerGroups", groupResult))
                     {
                         GroupId = groupResult.GroupId
                     };
@@ -5632,7 +5632,7 @@ public sealed partial class AdminClient :
                             ambiguousGroups.Add(groupResult.GroupId);
                         retryFailure ??= new Errors.GroupException(
                             errorCode,
-                            $"DeleteShareGroups failed for group '{groupResult.GroupId}': {errorCode}")
+                            FormatDeleteGroupFailure("DeleteShareGroups", groupResult))
                         {
                             GroupId = groupResult.GroupId
                         };
@@ -5648,7 +5648,8 @@ public sealed partial class AdminClient :
                     results[groupResult.GroupId] = new DeleteShareGroupResult
                     {
                         GroupId = groupResult.GroupId,
-                        ErrorCode = errorCode
+                        ErrorCode = errorCode,
+                        ErrorMessage = errorCode == Protocol.ErrorCode.None ? null : groupResult.ErrorMessage
                     };
                 }
 
@@ -6061,6 +6062,13 @@ public sealed partial class AdminClient :
     // stay unambiguous, as the existing replay contract (#1411) and its tests define.
     private static bool MayHaveAppliedDespiteError(Protocol.ErrorCode errorCode) =>
         errorCode == Protocol.ErrorCode.RequestTimedOut;
+
+    // DeleteGroups v3 (KIP-1331) carries the broker's reason, for example why GROUP_DELETION_FAILED
+    // left the group in place; older versions report the error code alone.
+    private static string FormatDeleteGroupFailure(string operation, DeleteGroupsResponseResult groupResult) =>
+        groupResult.ErrorMessage is { Length: > 0 } message
+            ? $"{operation} failed for group '{groupResult.GroupId}': {groupResult.ErrorCode}: {message}"
+            : $"{operation} failed for group '{groupResult.GroupId}': {groupResult.ErrorCode}";
 
     private static int? OperationTimeoutBudget(int operationTimeoutMs) =>
         operationTimeoutMs > 0 ? operationTimeoutMs : null;

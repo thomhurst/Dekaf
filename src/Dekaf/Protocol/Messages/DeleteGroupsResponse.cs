@@ -8,7 +8,7 @@ public sealed class DeleteGroupsResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.DeleteGroups;
     public static short LowestSupportedVersion => 2;
-    public static short HighestSupportedVersion => 2;
+    public static short HighestSupportedVersion => 3;
 
     /// <summary>
     /// The duration in milliseconds for which the request was throttled due to quota violation
@@ -57,18 +57,25 @@ public sealed class DeleteGroupsResponseResult
     /// </summary>
     public ErrorCode ErrorCode { get; init; }
 
+    /// <summary>
+    /// The broker's error message, or null if there was no error or the broker sent none (v3+).
+    /// </summary>
+    public string? ErrorMessage { get; init; }
+
     public static DeleteGroupsResponseResult Read(ref KafkaProtocolReader reader, short version)
     {
         var groupId = reader.ReadCompactString() ?? string.Empty;
 
         var errorCode = (ErrorCode)reader.ReadInt16();
+        var errorMessage = version >= 3 ? reader.ReadCompactString() : null;
 
         reader.SkipTaggedFields();
 
         return new DeleteGroupsResponseResult
         {
             GroupId = groupId,
-            ErrorCode = errorCode
+            ErrorCode = errorCode,
+            ErrorMessage = errorMessage
         };
     }
 }

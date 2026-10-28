@@ -47,6 +47,8 @@ Dekaf.Admin.DeleteStreamsGroupResult
 Dekaf.Admin.DeleteStreamsGroupResult.DeleteStreamsGroupResult() -> void
 Dekaf.Admin.DeleteStreamsGroupResult.ErrorCode.get -> Dekaf.Protocol.ErrorCode
 Dekaf.Admin.DeleteStreamsGroupResult.ErrorCode.init -> void
+Dekaf.Admin.DeleteStreamsGroupResult.ErrorMessage.get -> string?
+Dekaf.Admin.DeleteStreamsGroupResult.ErrorMessage.init -> void
 Dekaf.Admin.DeleteStreamsGroupResult.GroupId.get -> string!
 Dekaf.Admin.DeleteStreamsGroupResult.GroupId.init -> void
 Dekaf.Admin.DeleteStreamsGroupsOptions
@@ -523,6 +525,8 @@ Dekaf.Admin.DeleteShareGroupResult
 Dekaf.Admin.DeleteShareGroupResult.DeleteShareGroupResult() -> void
 Dekaf.Admin.DeleteShareGroupResult.ErrorCode.get -> Dekaf.Protocol.ErrorCode
 Dekaf.Admin.DeleteShareGroupResult.ErrorCode.init -> void
+Dekaf.Admin.DeleteShareGroupResult.ErrorMessage.get -> string?
+Dekaf.Admin.DeleteShareGroupResult.ErrorMessage.init -> void
 Dekaf.Admin.DeleteShareGroupResult.GroupId.get -> string!
 Dekaf.Admin.DeleteShareGroupResult.GroupId.init -> void
 Dekaf.Admin.AdminClientShareGroupDeletionExtensions
@@ -889,3 +893,5 @@ static Dekaf.Protocol.Messages.StreamsTopologyDescriptionData.WriteNullable(ref 
 static Dekaf.Protocol.Messages.StreamsTopologyDescriptionGlobalStoreData.Read(ref Dekaf.Protocol.KafkaProtocolReader reader) -> Dekaf.Protocol.Messages.StreamsTopologyDescriptionGlobalStoreData!
 static Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData.Read(ref Dekaf.Protocol.KafkaProtocolReader reader) -> Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData!
 static Dekaf.Protocol.Messages.StreamsTopologyDescriptionSubtopologyData.Read(ref Dekaf.Protocol.KafkaProtocolReader reader) -> Dekaf.Protocol.Messages.StreamsTopologyDescriptionSubtopologyData!
+Dekaf.Protocol.Messages.DeleteGroupsResponseResult.ErrorMessage.get -> string?
+Dekaf.Protocol.Messages.DeleteGroupsResponseResult.ErrorMessage.init -> void

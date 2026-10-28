@@ -379,7 +379,7 @@ foreach (var (groupId, result) in results)
 }
 ```
 
-The operation uses the group coordinator and Kafka's `DeleteGroups` API, matching Kafka 4.3's `deleteShareGroups` implementation. Active groups normally return `NonEmptyGroup`; close their consumers before deletion.
+The operation uses the group coordinator and Kafka's `DeleteGroups` API, matching Kafka 4.3's `deleteShareGroups` implementation. Active groups normally return `NonEmptyGroup`; close their consumers before deletion. On Kafka 4.4+ (DeleteGroups v3, KIP-1331), `DeleteShareGroupResult.ErrorMessage` carries the broker's reason for a failed deletion, for example with the non-retriable `GroupDeletionFailed`, which means the group was not deleted.
 
 Per-group results cover terminal error codes only. If a request keeps failing with a retriable error, the call throws after retries are exhausted and returns no results. Duplicate group IDs raise `ArgumentException` before any request is sent. Dekaf's built-in and in-memory admin clients expose deletion through `IShareGroupDeletionAdminClient`; the `IAdminClient` extension preserves the same call syntax for binary compatibility.
 

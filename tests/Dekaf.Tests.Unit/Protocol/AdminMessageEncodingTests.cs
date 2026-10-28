@@ -653,6 +653,61 @@ public class AdminMessageEncodingTests
     }
 
     [Test]
+    public async Task DeleteGroupsRequest_V3_BodyMatchesV2()
+    {
+        var request = new DeleteGroupsRequest { GroupsNames = ["grp-a", "grp-b"] };
+        var v2 = new ArrayBufferWriter<byte>();
+        var v2Writer = new KafkaProtocolWriter(v2);
+        request.Write(ref v2Writer, version: 2);
+        var v3 = new ArrayBufferWriter<byte>();
+        var v3Writer = new KafkaProtocolWriter(v3);
+        request.Write(ref v3Writer, version: 3);
+
+        await Assert.That(v3.WrittenSpan.SequenceEqual(v2.WrittenSpan)).IsTrue();
+    }
+
+    [Test]
+    public async Task DeleteGroupsResponse_V3_DecodesNullAndNonNullErrorMessages()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt32(0);
+        writer.WriteUnsignedVarInt(3);
+        writer.WriteCompactString("grp-ok");
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteCompactNullableString(null);
+        writer.WriteEmptyTaggedFields();
+        writer.WriteCompactString("grp-kept");
+        writer.WriteInt16((short)ErrorCode.GroupDeletionFailed);
+        writer.WriteCompactNullableString("plugin failed");
+        writer.WriteEmptyTaggedFields();
+        writer.WriteEmptyTaggedFields();
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (DeleteGroupsResponse)DeleteGroupsResponse.Read(ref reader, version: 3);
+
+        await Assert.That(reader.Consumed).IsEqualTo((long)buffer.WrittenCount);
+        await Assert.That(response.Results[0].GroupId).IsEqualTo("grp-ok");
+        await Assert.That(response.Results[0].ErrorMessage).IsNull();
+        await Assert.That(response.Results[1].ErrorCode).IsEqualTo(ErrorCode.GroupDeletionFailed);
+        await Assert.That(response.Results[1].ErrorMessage).IsEqualTo("plugin failed");
+    }
+
+    [Test]
+    public async Task DeleteGroupsResponse_V2_HasNoErrorMessageField()
+    {
+        // v2 ends each result after the error code; reading it as v3 would consume the tagged-field byte.
+        byte[] data = [0, 0, 0, 0, 0x02, 0x06, .. "grp-x"u8, 0x00, 0x86, 0x00, 0x00];
+
+        var reader = new KafkaProtocolReader(data);
+        var response = (DeleteGroupsResponse)DeleteGroupsResponse.Read(ref reader, version: 2);
+
+        await Assert.That(reader.Consumed).IsEqualTo((long)data.Length);
+        await Assert.That(response.Results[0].ErrorCode).IsEqualTo(ErrorCode.GroupDeletionFailed);
+        await Assert.That(response.Results[0].ErrorMessage).IsNull();
+    }
+
+    [Test]
     public async Task DeleteRecordsRequest_V2_Flexible_EncodedCorrectly()
     {
         var buffer = new ArrayBufferWriter<byte>();

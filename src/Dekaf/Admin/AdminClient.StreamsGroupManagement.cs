@@ -912,7 +912,7 @@ public sealed partial class AdminClient
         var results = new Dictionary<string, DeleteStreamsGroupResult>(groupIds.Count, StringComparer.Ordinal);
         var ambiguousGroups = new HashSet<string>(StringComparer.Ordinal);
         var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
-        var retryErrors = new Dictionary<string, Protocol.ErrorCode>(groupIds.Count, StringComparer.Ordinal);
+        var retryErrors = new Dictionary<string, DeleteStreamsGroupResult>(groupIds.Count, StringComparer.Ordinal);
 
         try
         {
@@ -945,7 +945,7 @@ public sealed partial class AdminClient
                         RetryHelper.IsRetriableRequestFailure(exception) &&
                         !cancellationToken.IsCancellationRequested)
                     {
-                        retryErrors[groupId] = GetRetryErrorCode(exception);
+                        retryErrors[groupId] = DeleteGroupResult(groupId, GetRetryErrorCode(exception));
                         retryFailure ??= exception;
                         continue;
                     }
@@ -994,10 +994,13 @@ public sealed partial class AdminClient
                                 if (MayHaveAppliedDespiteError(errorCode))
                                     ambiguousGroups.Add(groupResult.GroupId);
 
-                                retryErrors[groupResult.GroupId] = errorCode;
+                                retryErrors[groupResult.GroupId] = DeleteGroupResult(
+                                    groupResult.GroupId,
+                                    errorCode,
+                                    groupResult.ErrorMessage);
                                 retryFailure ??= new Errors.GroupException(
                                     errorCode,
-                                    $"DeleteStreamsGroups failed for group '{groupResult.GroupId}': {errorCode}",
+                                    FormatDeleteGroupFailure("DeleteStreamsGroups", groupResult),
                                     isRetriable: true)
                                 {
                                     GroupId = groupResult.GroupId
@@ -1011,7 +1014,10 @@ public sealed partial class AdminClient
                                 errorCode = Protocol.ErrorCode.None;
                             }
 
-                            results[groupResult.GroupId] = DeleteGroupResult(groupResult.GroupId, errorCode);
+                            results[groupResult.GroupId] = DeleteGroupResult(
+                                groupResult.GroupId,
+                                errorCode,
+                                errorCode == Protocol.ErrorCode.None ? null : groupResult.ErrorMessage);
                         }
                     }
                     catch (Exception exception) when (
@@ -1022,7 +1028,7 @@ public sealed partial class AdminClient
                             ambiguousGroups.UnionWith(coordinatorGroups);
                         var errorCode = GetRetryErrorCode(exception);
                         foreach (var groupId in coordinatorGroups)
-                            retryErrors[groupId] = errorCode;
+                            retryErrors[groupId] = DeleteGroupResult(groupId, errorCode);
                         retryFailure ??= exception;
                     }
                 }
@@ -1037,8 +1043,8 @@ public sealed partial class AdminClient
             RetryHelper.IsRetriableRequestFailure(exception) &&
             !cancellationToken.IsCancellationRequested)
         {
-            foreach (var (groupId, errorCode) in retryErrors)
-                results.TryAdd(groupId, DeleteGroupResult(groupId, errorCode));
+            foreach (var (groupId, result) in retryErrors)
+                results.TryAdd(groupId, result);
 
             return CompleteDeleteGroupResults(groupIds, results);
         }
@@ -1262,10 +1268,12 @@ public sealed partial class AdminClient
 
     private static DeleteStreamsGroupResult DeleteGroupResult(
         string groupId,
-        Protocol.ErrorCode errorCode) => new()
+        Protocol.ErrorCode errorCode,
+        string? errorMessage = null) => new()
     {
         GroupId = groupId,
-        ErrorCode = errorCode
+        ErrorCode = errorCode,
+        ErrorMessage = errorMessage
     };
 
     private static Protocol.ErrorCode GetRetryErrorCode(Exception exception) =>

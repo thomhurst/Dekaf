@@ -1,0 +1,28 @@
+﻿Response: Dekaf.Protocol.Messages.DeleteGroupsResponse
+API key: DeleteGroups (42)
+Version: 3
+Header version: 1
+Body length: 80 bytes
+
+0000: 00 00 00 0B 03 0E 64 65  6C 65 74 65 64 2D 67 72 |......deleted-gr|
+0010: 6F 75 70 00 00 00 00 0B  6B 65 70 74 2D 67 72 6F |oup.....kept-gro|
+0020: 75 70 00 86 2A 74 6F 70  6F 6C 6F 67 79 20 64 65 |up..*topology de|
+0030: 73 63 72 69 70 74 69 6F  6E 20 63 6F 75 6C 64 20 |scription could |
+0040: 6E 6F 74 20 62 65 20 64  65 6C 65 74 65 64 00 00 |not be deleted..|
+
+Decoded:
+{
+  "Results": [
+    {
+      "ErrorCode": "None",
+      "ErrorMessage": null,
+      "GroupId": "deleted-group"
+    },
+    {
+      "ErrorCode": "GroupDeletionFailed",
+      "ErrorMessage": "topology description could not be deleted",
+      "GroupId": "kept-group"
+    }
+  ],
+  "ThrottleTimeMs": 11
+}

@@ -43,6 +43,12 @@ public sealed class DeleteShareGroupResult
 {
     public required string GroupId { get; init; }
     public Protocol.ErrorCode ErrorCode { get; init; }
+
+    /// <summary>
+    /// The broker's error message for this group, or null when the broker sent none. Brokers send one from
+    /// DeleteGroups v3 (Kafka 4.4+), for example with <see cref="Protocol.ErrorCode.GroupDeletionFailed"/>.
+    /// </summary>
+    public string? ErrorMessage { get; init; }
 }
 
 /// <summary>

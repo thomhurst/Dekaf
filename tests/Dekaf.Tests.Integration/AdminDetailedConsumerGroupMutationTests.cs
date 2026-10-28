@@ -68,4 +68,27 @@ public class AdminDetailedConsumerGroupMutationTests(KafkaTestContainer kafka) :
             await admin.DeleteConsumerGroupsDetailedAsync([group]);
         }
     }
+
+    [Test]
+    [SupportsKafka(440)]
+    public async Task DeleteGroups_V3_DeletesGroupsAndReportsPerGroupErrors()
+    {
+        // Kafka 4.4 negotiates DeleteGroups v3, whose results carry a per-group ErrorMessage (KIP-1331).
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        var detailedGroup = $"delete-v3-{Guid.NewGuid():N}";
+        var simpleGroup = $"delete-v3-{Guid.NewGuid():N}";
+        var missingGroup = $"missing-{Guid.NewGuid():N}";
+        await using var admin = new AdminClientBuilder().WithBootstrapServers(KafkaContainer.BootstrapServers).Build();
+        await admin.AlterConsumerGroupOffsetsDetailedAsync(detailedGroup, [new(topic, 0, 7)]);
+        await admin.AlterConsumerGroupOffsetsDetailedAsync(simpleGroup, [new(topic, 0, 7)]);
+
+        var results = await admin.DeleteConsumerGroupsDetailedAsync([detailedGroup, missingGroup]);
+        await admin.DeleteConsumerGroupsAsync([simpleGroup]);
+
+        await Assert.That(results[detailedGroup].IsSuccess).IsTrue();
+        await Assert.That(results[detailedGroup].ErrorMessage).IsNull();
+        await Assert.That(results[missingGroup].ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
+        var remaining = await admin.ListConsumerGroupsAsync();
+        await Assert.That(remaining.Any(group => group.GroupId == detailedGroup || group.GroupId == simpleGroup)).IsFalse();
+    }
 }

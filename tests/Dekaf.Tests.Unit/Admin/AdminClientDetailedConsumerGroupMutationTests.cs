@@ -543,6 +543,33 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
     }
 
     [Test]
+    public async Task DeleteGroupsErrorMessage_ReachesDetailedResult()
+    {
+        var (admin, connection) = CreateAdmin();
+        await using var owned = admin;
+        UseSeparateGroupCoordinators(connection);
+        connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(Arg.Any<DeleteGroupsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(call => ValueTask.FromResult(new DeleteGroupsResponse
+            {
+                Results = call.Arg<DeleteGroupsRequest>().GroupsNames
+                    .Select(static group => new DeleteGroupsResponseResult
+                    {
+                        GroupId = group,
+                        ErrorCode = group == "bad" ? ErrorCode.GroupDeletionFailed : ErrorCode.None,
+                        ErrorMessage = group == "bad" ? "plugin failed" : null
+                    })
+                    .ToArray()
+            }));
+
+        var results = await admin.DeleteConsumerGroupsDetailedAsync(["good", "bad"]);
+
+        await Assert.That(results["good"].IsSuccess).IsTrue();
+        await Assert.That(results["bad"].ErrorCode).IsEqualTo(ErrorCode.GroupDeletionFailed);
+        await Assert.That(results["bad"].ErrorMessage).IsEqualTo("plugin failed");
+        await Assert.That(results["bad"].Outcome).IsEqualTo(AdminMutationOutcome.Failed);
+    }
+
+    [Test]
     public async Task DeadlineDuringSend_IsUnknownAndDoesNotResetForNextGroup()
     {
         var (admin, connection) = CreateAdmin();
@@ -555,7 +582,9 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
                 sent++;
                 return BlockUntilCanceled(call.Arg<CancellationToken>());
             });
-        var results = await Invoke(admin, "groups", timeoutMs: 100);
+        // The send blocks until the deadline cancels it. A 100 ms deadline could expire during
+        // coordinator discovery under load, before any send.
+        var results = await Invoke(admin, "groups", timeoutMs: 2000);
         await Assert.That(sent).IsEqualTo(1);
         await Assert.That(results["good"].Outcome).IsEqualTo(AdminMutationOutcome.Unknown);
         await Assert.That(results["good"].Exception).IsTypeOf<KafkaTimeoutException>();

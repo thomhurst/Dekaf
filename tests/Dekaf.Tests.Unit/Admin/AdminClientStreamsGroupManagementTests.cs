@@ -1424,6 +1424,36 @@ public sealed class AdminClientStreamsGroupManagementTests
     }
 
     [Test]
+    public async Task DeleteStreamsGroupsAsync_SurfacesBrokerErrorMessagePerGroup()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                Arg.Any<DeleteGroupsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new DeleteGroupsResponse
+            {
+                Results =
+                [
+                    DeletedGroup(FirstGroup, ErrorCode.None),
+                    new DeleteGroupsResponseResult
+                    {
+                        GroupId = SecondGroup,
+                        ErrorCode = ErrorCode.GroupDeletionFailed,
+                        ErrorMessage = "topology description could not be deleted"
+                    }
+                ]
+            }));
+
+        var results = await admin.DeleteStreamsGroupsAsync([FirstGroup, SecondGroup]);
+
+        await Assert.That(results[FirstGroup].ErrorMessage).IsNull();
+        await Assert.That(results[SecondGroup].ErrorCode).IsEqualTo(ErrorCode.GroupDeletionFailed);
+        await Assert.That(results[SecondGroup].ErrorMessage).IsEqualTo("topology description could not be deleted");
+    }
+
+    [Test]
     public async Task DeleteStreamsGroupsAsync_RetriesTransientAndMissingGroups()
     {
         var (admin, connection) = CreateAdmin();
@@ -1573,6 +1603,34 @@ public sealed class AdminClientStreamsGroupManagementTests
             Arg.Any<DeleteGroupsRequest>(),
             2,
             Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task DeleteStreamsGroupsAsync_ReturnsFinalRetriableBrokerErrorMessage()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                Arg.Any<DeleteGroupsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new DeleteGroupsResponse
+            {
+                Results =
+                [
+                    new DeleteGroupsResponseResult
+                    {
+                        GroupId = FirstGroup,
+                        ErrorCode = ErrorCode.CoordinatorLoadInProgress,
+                        ErrorMessage = "coordinator is still loading"
+                    }
+                ]
+            }));
+
+        var results = await admin.DeleteStreamsGroupsAsync([FirstGroup]);
+
+        await Assert.That(results[FirstGroup].ErrorCode).IsEqualTo(ErrorCode.CoordinatorLoadInProgress);
+        await Assert.That(results[FirstGroup].ErrorMessage).IsEqualTo("coordinator is still loading");
     }
 
     [Test]
