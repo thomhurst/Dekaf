@@ -264,10 +264,12 @@ internal sealed class TestCertificateGenerator : IDisposable
         RandomNumberGenerator.Fill(serialNumber);
         serialNumber[0] &= 0x7F; // Ensure positive serial number
 
+        // Outlives the default two-year leaf it signs (CertificateRequest.Create rejects a leaf
+        // that expires after its issuer) and stays inside the five-year root.
         using var cert = request.Create(
             CaCertificate,
             DateTimeOffset.UtcNow.AddMinutes(-5),
-            DateTimeOffset.UtcNow.AddYears(2),
+            DateTimeOffset.UtcNow.AddYears(3),
             serialNumber);
         using var certWithKey = cert.CopyWithPrivateKey(rsa);
 
