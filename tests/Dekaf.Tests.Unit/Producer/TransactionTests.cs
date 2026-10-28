@@ -1594,6 +1594,52 @@ public sealed class TransactionTests
     }
 
     [Test]
+    public async Task TransactionPartitionEnrollment_UnknownTopicError_HoldsBatchesUntilCoordinatorAddsPartition(
+        CancellationToken cancellationToken)
+    {
+        // Drives the delivery path's enrollment rather than the request method: the held batches
+        // are released only when the enrollment waiter fires, so it must not fire until the
+        // coordinator has actually added the partition.
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            transactionFeatureVersion: 1,
+            enableTwoPhaseCommit: false);
+        var batch = CreateEnrollmentBatch("new-topic", 0);
+        var enrollmentCompleted = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releasedBeforeRetry = false;
+        harness.AddPartitionsError = (requestNumber, _) =>
+        {
+            if (requestNumber == 1)
+                return ErrorCode.UnknownTopicOrPartition;
+
+            releasedBeforeRetry |= enrollmentCompleted.Task.IsCompleted;
+            return ErrorCode.None;
+        };
+
+        var pending = harness.Producer.TryEnsurePartitionsInTransaction(
+            [batch],
+            1,
+            enrollmentCompleted.SetResult,
+            [],
+            []);
+        await Assert.That(pending.IsEnrolled).IsFalse();
+        await Assert.That(await enrollmentCompleted.Task.WaitAsync(cancellationToken)).IsNull();
+
+        await Assert.That(releasedBeforeRetry).IsFalse();
+        await Assert.That(harness.AddPartitionsRequests).IsEqualTo(2);
+        await Assert.That(harness.Producer._partitionsInTransaction).Contains(batch.TopicPartition);
+        await Assert.That(harness.Producer.TryEnsurePartitionsInTransaction(
+            [batch],
+            1,
+            static _ => { },
+            [],
+            []).IsEnrolled).IsTrue();
+    }
+
+    [Test]
     public async Task AddPartitionsToTransactionAsync_RetriableErrorBesideOperationNotAttempted_Retries()
     {
         await using var harness = BuildPreparedCompletionHarness(
