@@ -426,6 +426,9 @@ public sealed class ShareConsumerNetworkFaultTests(ShareFaultKafkaContainer kafk
                         if (delivered.Count >= count)
                             return;
                     }
+
+                    // PollAsync ends without throwing once its token is cancelled.
+                    timeout.Token.ThrowIfCancellationRequested();
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
