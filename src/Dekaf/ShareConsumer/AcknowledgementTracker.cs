@@ -327,15 +327,16 @@ internal sealed class AcknowledgementTracker
         private readonly List<AckRange> _ranges = [];
         // Gaps are kept apart from delivery ranges. The parser queues them ahead of the
         // records it later delivers, so mixing them would turn every delivered record's
-        // append into an ordered insert.
-        private readonly List<AckRange> _gaps = [];
+        // append into an ordered insert. Allocated on the first gap: most partitions
+        // never see a control record or a compacted offset.
+        private List<AckRange>? _gaps;
         private Dictionary<long, AcknowledgeType>? _explicitAcks;
         internal PartitionAcknowledgements? Next;
 
         internal void Reset()
         {
             _ranges.Clear();
-            _gaps.Clear();
+            _gaps?.Clear();
             // Explicit dictionaries can be large and need not follow a pooled state to
             // another partition. Retain only the range scratch storage between flushes.
             _explicitAcks = null;
@@ -378,6 +379,12 @@ internal sealed class AcknowledgementTracker
         internal void TrackRangeAroundGaps(long firstOffset, long lastOffset, AcknowledgeType type)
         {
             // Release paths are cold. Gap ranges are ordered and disjoint.
+            if (_gaps is null)
+            {
+                TrackRange(firstOffset, lastOffset, type);
+                return;
+            }
+
             var next = firstOffset;
             foreach (var gap in _gaps)
             {
@@ -402,28 +409,29 @@ internal sealed class AcknowledgementTracker
             if (_ranges.Count != 0 && _ranges[^1].LastOffset >= incoming.FirstOffset)
                 RemoveFromRanges(incoming);
 
+            var gaps = _gaps ??= [];
             // The parser walks offsets upwards, so gaps normally append.
-            if (_gaps.Count == 0 || incoming.FirstOffset > _gaps[^1].LastOffset)
+            if (gaps.Count == 0 || incoming.FirstOffset > gaps[^1].LastOffset)
             {
-                if (_gaps.Count != 0 && _gaps[^1].LastOffset + 1 == incoming.FirstOffset)
-                    _gaps[^1] = Merge(_gaps[^1], incoming);
+                if (gaps.Count != 0 && gaps[^1].LastOffset + 1 == incoming.FirstOffset)
+                    gaps[^1] = Merge(gaps[^1], incoming);
                 else
-                    _gaps.Add(incoming);
+                    gaps.Add(incoming);
                 return;
             }
 
             // Re-queued gaps after a failed commit can arrive out of order; merge every
             // range they touch.
             var index = 0;
-            while (index < _gaps.Count && EndsBeforeWithGap(_gaps[index].LastOffset, incoming.FirstOffset))
+            while (index < gaps.Count && EndsBeforeWithGap(gaps[index].LastOffset, incoming.FirstOffset))
                 index++;
-            while (index < _gaps.Count && TouchesOrOverlaps(_gaps[index], incoming))
+            while (index < gaps.Count && TouchesOrOverlaps(gaps[index], incoming))
             {
-                incoming = Merge(_gaps[index], incoming);
-                _gaps.RemoveAt(index);
+                incoming = Merge(gaps[index], incoming);
+                gaps.RemoveAt(index);
             }
 
-            _gaps.Insert(index, incoming);
+            gaps.Insert(index, incoming);
         }
 
         private void RemoveFromRanges(AckRange removed)
@@ -527,7 +535,7 @@ internal sealed class AcknowledgementTracker
             if (_explicitAcks is not null && _explicitAcks.ContainsKey(offset))
                 return true;
 
-            return IndexOf(_ranges, offset) >= 0 || IndexOf(_gaps, offset) >= 0;
+            return IndexOf(_ranges, offset) >= 0 || (_gaps is not null && IndexOf(_gaps, offset) >= 0);
         }
 
         // Delivery and gap ranges are each ordered and disjoint, so a lookup is a binary search.
@@ -558,7 +566,7 @@ internal sealed class AcknowledgementTracker
 
         internal List<AcknowledgementBatchData> BuildBatches(AcknowledgeType implicitDisposition, List<AcknowledgementBatchData>? scratch = null)
         {
-            var batches = scratch ?? new List<AcknowledgementBatchData>(_ranges.Count + _gaps.Count);
+            var batches = scratch ?? new List<AcknowledgementBatchData>(_ranges.Count + (_gaps?.Count ?? 0));
 
             // Explicit outcomes are sorted once. Each range then reads only the outcomes
             // inside it, so a flush is O((N + R + G) log N) rather than O(N x (R + G)) when
@@ -577,11 +585,14 @@ internal sealed class AcknowledgementTracker
                 batches.Add(BuildRangeBatch(range, implicitDisposition, explicitAcks, applied));
             // A gap range can span a large compacted hole, so it stays single-type unless an
             // explicit outcome falls inside it.
-            foreach (var gap in _gaps)
+            if (_gaps is not null)
             {
-                batches.Add(explicitAcks is null || !HasExplicitAckIn(explicitAcks, gap)
-                    ? new(gap.FirstOffset, gap.LastOffset, AcknowledgementBatchData.GapTypes)
-                    : BuildRangeBatch(gap, implicitDisposition, explicitAcks, applied));
+                foreach (var gap in _gaps)
+                {
+                    batches.Add(explicitAcks is null || !HasExplicitAckIn(explicitAcks, gap)
+                        ? new(gap.FirstOffset, gap.LastOffset, AcknowledgementBatchData.GapTypes)
+                        : BuildRangeBatch(gap, implicitDisposition, explicitAcks, applied));
+                }
             }
 
             if (explicitAcks is not null)
