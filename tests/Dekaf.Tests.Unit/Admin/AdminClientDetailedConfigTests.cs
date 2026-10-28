@@ -89,6 +89,111 @@ public sealed class AdminClientDetailedConfigTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task PlainAlterConfigs_SendBrokerAndLoggerResourcesToTheirNode(bool incremental)
+    {
+        var (admin, connections) = CreateAdmin();
+        await using var client = admin;
+        var observed = new Dictionary<int, ConfigResource[]>();
+        foreach (var pair in connections)
+            Setup(pair.Value, incremental, resources => { observed.Add(pair.Key, resources); return Success(resources); });
+        var topic = ConfigResource.Topic("orders");
+        var cluster = ConfigResource.ClusterBroker();
+        var broker = ConfigResource.Broker(2);
+        var logger = ConfigResource.BrokerLogger(2);
+        var other = ConfigResource.BrokerLogger(3);
+        var input = Input(topic, cluster, broker, logger, other);
+        if (incremental)
+            await admin.IncrementalAlterConfigsAsync(input);
+        else
+            await admin.AlterConfigsAsync(Replacement(input));
+        await Assert.That(observed[1]).IsEquivalentTo([topic, cluster]);
+        await Assert.That(observed[2]).IsEquivalentTo([broker, logger]);
+        await Assert.That(observed[3]).IsEquivalentTo([other]);
+    }
+
+    [Test]
+    public async Task DescribeConfigs_SendsBrokerAndLoggerResourcesToTheirNodeAndMergesResults()
+    {
+        var (admin, connections) = CreateAdmin();
+        await using var client = admin;
+        var observed = new Dictionary<int, ConfigResource[]>();
+        foreach (var pair in connections)
+        {
+            pair.Value.SendAsync<DescribeConfigsRequest, DescribeConfigsResponse>(Arg.Any<DescribeConfigsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+                .Returns(call =>
+                {
+                    var resources = call.Arg<DescribeConfigsRequest>().Resources.Select(static item => new ConfigResource
+                        { Type = (ConfigResourceType)item.ResourceType, Name = item.ResourceName }).ToArray();
+                    observed.Add(pair.Key, resources);
+                    return ValueTask.FromResult(new DescribeConfigsResponse { Results = resources.Select(resource => new DescribeConfigsResult
+                    {
+                        ResourceType = (sbyte)resource.Type, ResourceName = resource.Name,
+                        Configs = [new() { Name = "node", Value = pair.Key.ToString(System.Globalization.CultureInfo.InvariantCulture) }]
+                    }).ToArray() });
+                });
+        }
+        var topic = ConfigResource.Topic("orders");
+        var cluster = ConfigResource.ClusterBroker();
+        var broker = ConfigResource.Broker(2);
+        var logger = ConfigResource.BrokerLogger(3);
+        var result = await admin.DescribeConfigsAsync([topic, cluster, broker, logger]);
+        await Assert.That(observed[1]).IsEquivalentTo([topic, cluster]);
+        await Assert.That(observed[2]).IsEquivalentTo([broker]);
+        await Assert.That(observed[3]).IsEquivalentTo([logger]);
+        await Assert.That(result.Count).IsEqualTo(4);
+        await Assert.That(result[topic][0].Value).IsEqualTo("1");
+        await Assert.That(result[broker][0].Value).IsEqualTo("2");
+        await Assert.That(result[logger][0].Value).IsEqualTo("3");
+    }
+
+    [Test]
+    public async Task DescribeConfigs_RetryReplaysEveryNodeWithinOneBudgetAndReturnsAllResults()
+    {
+        var (admin, connections) = CreateAdmin();
+        await using var client = admin;
+        var calls = new List<(int Node, CancellationToken Token)>();
+        foreach (var pair in connections)
+        {
+            pair.Value.SendAsync<DescribeConfigsRequest, DescribeConfigsResponse>(Arg.Any<DescribeConfigsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+                .Returns(call =>
+                {
+                    calls.Add((pair.Key, call.Arg<CancellationToken>()));
+                    var failOnce = pair.Key == 2 && calls.Count(static item => item.Node == 2) == 1;
+                    return ValueTask.FromResult(new DescribeConfigsResponse { Results = call.Arg<DescribeConfigsRequest>().Resources.Select(item => new DescribeConfigsResult
+                    {
+                        ResourceType = item.ResourceType, ResourceName = item.ResourceName,
+                        ErrorCode = failOnce ? ErrorCode.NotController : ErrorCode.None,
+                        Configs = [new() { Name = "node", Value = pair.Key.ToString(System.Globalization.CultureInfo.InvariantCulture) }]
+                    }).ToArray() });
+                });
+        }
+        var topic = ConfigResource.Topic("orders");
+        var broker = ConfigResource.Broker(2);
+        var logger = ConfigResource.BrokerLogger(3);
+        var result = await admin.DescribeConfigsAsync([topic, broker, logger], new DescribeConfigsOptions { TimeoutMs = 30_000 });
+        await Assert.That(calls.Select(static item => item.Node).Order().ToArray()).IsEquivalentTo([1, 1, 2, 2, 3]);
+        await Assert.That(calls.Select(static item => item.Token).Distinct().Count()).IsEqualTo(1);
+        await Assert.That(calls[0].Token.CanBeCanceled).IsTrue();
+        await Assert.That(result.Count).IsEqualTo(3);
+        await Assert.That(result[topic][0].Value).IsEqualTo("1");
+        await Assert.That(result[broker][0].Value).IsEqualTo("2");
+        await Assert.That(result[logger][0].Value).IsEqualTo("3");
+    }
+
+    [Test]
+    public async Task PlainConfigApis_RejectNonNumericBrokerNamesBeforeDispatch()
+    {
+        var (admin, connections) = CreateAdmin();
+        await using var client = admin;
+        var invalid = new ConfigResource { Type = ConfigResourceType.BrokerLogger, Name = "not-a-node" };
+        await Assert.ThrowsAsync<ArgumentException>(() => admin.DescribeConfigsAsync([invalid]).AsTask());
+        await Assert.ThrowsAsync<ArgumentException>(() => admin.IncrementalAlterConfigsAsync(Input(invalid)).AsTask());
+        foreach (var connection in connections.Values) await Assert.That(connection.ReceivedCalls()).IsEmpty();
+    }
+
+    [Test]
     [Arguments(false, ErrorCode.NotController)]
     [Arguments(true, ErrorCode.NotController)]
     [Arguments(false, ErrorCode.ThrottlingQuotaExceeded)]
@@ -355,6 +460,7 @@ public sealed class AdminClientDetailedConfigTests
         manager.Metadata.Update(metadata);
         manager.SetApiVersion(ApiKey.Metadata, 9, 13);
         manager.SetApiVersion(ApiKey.AlterConfigs, 0, 2);
+        manager.SetApiVersion(ApiKey.DescribeConfigs, 0, 4);
         manager.SetApiVersion(ApiKey.IncrementalAlterConfigs, 0, 1);
         foreach (var connection in connections.Values)
             connection.SendAsync<MetadataRequest, MetadataResponse>(Arg.Any<MetadataRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>()).Returns(ValueTask.FromResult(metadata));
