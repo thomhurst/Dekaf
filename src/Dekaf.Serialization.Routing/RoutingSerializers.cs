@@ -301,7 +301,11 @@ internal sealed class SerializerRoute<TBase, TDerived>(ISerializer<TDerived> ser
         static ValueTask<SerializerPreparationAdmission> AwaitPreparationAsync(ValueTask preparation)
         {
             if (preparation.IsCompletedSuccessfully)
+            {
+                // Consume the result so a source-backed ValueTask can recycle its source.
+                preparation.GetAwaiter().GetResult();
                 return default;
+            }
 
             return AwaitAsync(preparation);
 

@@ -254,20 +254,41 @@ public class RoutingSerdeBenchmarks
             ValueTask.CompletedTask;
     }
 
-    private sealed class PreparedEventSerializer : ISerializer<Event>, IAsyncSerializerPreparer<Event>
+    // Returns a non-default admission, so the router takes the SerializePrepared path that a
+    // Schema Registry serializer uses.
+    private sealed class PreparedEventSerializer :
+        ISerializer<Event>,
+        IAsyncSerializerPreparationAdmission<Event>
     {
+        private static readonly SerializerPreparationAdmission Admission =
+            new("events-value", schemaId: 1, schema: new object());
+
         public ValueTask PrepareAsync(
             Event value,
             SerializationContext context,
             CancellationToken cancellationToken = default) =>
             ValueTask.CompletedTask;
 
-        public void Serialize<TWriter>(Event value, ref TWriter destination, SerializationContext context)
+        public ValueTask<SerializerPreparationAdmission> PrepareForSerializationAsync(
+            Event value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            new(Admission);
+
+        public void SerializePrepared<TWriter>(
+            Event value,
+            ref TWriter destination,
+            SerializationContext context,
+            in SerializerPreparationAdmission admission)
             where TWriter : IBufferWriter<byte>, allows ref struct
         {
-            destination.GetSpan(1)[0] = 1;
+            destination.GetSpan(1)[0] = (byte)admission.SchemaId;
             destination.Advance(1);
         }
+
+        public void Serialize<TWriter>(Event value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>, allows ref struct =>
+            throw new InvalidOperationException("Prepared route serialized without its admission.");
     }
 
     private sealed class EventSerializer : ISerializer<Event>

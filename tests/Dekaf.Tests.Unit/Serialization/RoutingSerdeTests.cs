@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Threading.Tasks.Sources;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.SchemaRegistry;
@@ -462,6 +463,22 @@ public sealed class RoutingSerdeTests
     }
 
     [Test]
+    public async Task TopicSerializer_ConsumesCompletedSourceBackedPreparation()
+    {
+        var alpha = new SourceBackedPreparingSerializer<AlphaEvent>();
+        var router = new TopicRoutingSerializer<EventBase>()
+            .Register("alpha", alpha)
+            .Freeze();
+        IAsyncSerializerPreparationAdmission<EventBase> admission = router;
+
+        var preparation = admission.PrepareForSerializationAsync(Alpha, Context("alpha"));
+
+        await Assert.That(preparation.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(preparation.Result.IsPrepared).IsFalse();
+        await Assert.That(alpha.GetResultCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task TypeSerializer_PropagatesCancellationDuringColdPreparation()
     {
         var alpha = new BlockingPreparingSerializer<AlphaEvent>();
@@ -707,6 +724,42 @@ public sealed class RoutingSerdeTests
             , allows ref struct
 #endif
             => throw new InvalidOperationException("Serializer was not prepared.");
+    }
+
+    // Completes synchronously through an IValueTaskSource, which must be consumed to be recycled.
+    private sealed class SourceBackedPreparingSerializer<T> :
+        ISerializer<T>,
+        IAsyncSerializerPreparer<T>,
+        IValueTaskSource
+    {
+        public int GetResultCount { get; private set; }
+
+        public ValueTask PrepareAsync(
+            T value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            new(this, token: 0);
+
+        public ValueTaskSourceStatus GetStatus(short token) => ValueTaskSourceStatus.Succeeded;
+
+        public void GetResult(short token) => GetResultCount++;
+
+        public void OnCompleted(
+            Action<object?> continuation,
+            object? state,
+            short token,
+            ValueTaskSourceOnCompletedFlags flags) =>
+            continuation(state);
+
+        public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            destination.GetSpan(1)[0] = 1;
+            destination.Advance(1);
+        }
     }
 
     private sealed class AdmittedSerializer<T>(int schemaId) :
