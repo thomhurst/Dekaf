@@ -97,6 +97,7 @@ internal sealed class TestKafkaConnection :
     public IPipelinedResponseSource<ProduceResponse>? PipelinedResponseSource { get; set; }
     public Func<ValueTask>? SendProduceFireAndForgetWithCallerTimeout { get; set; }
     public Func<Type, object>? SendResponse { get; set; }
+    public Func<int>? ActiveOperationCountProvider { get; set; }
 
     public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
         TRequest request,
@@ -171,7 +172,7 @@ internal sealed class TestKafkaConnection :
         }
     }
 
-    int IRetirableKafkaConnection.ActiveOperationCount => 0;
+    int IRetirableKafkaConnection.ActiveOperationCount => ActiveOperationCountProvider?.Invoke() ?? 0;
 
     bool IRetirableKafkaConnection.TryAcquireLease()
     {
