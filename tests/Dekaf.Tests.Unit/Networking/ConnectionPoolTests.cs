@@ -2439,18 +2439,22 @@ public sealed class ConnectionPoolTests
             await Assert.That(attempts).IsEqualTo(1);
 
             // The backoff hook never releases on its own, so only the overall deadline can end
-            // the second attempt. That deadline can also expire before the attempt reaches the
-            // backoff; either way the attempt must time out without another factory call.
-            Func<Task> secondAttempt = () => pool.GetConnectionAsync("broker-a", 9092).AsTask();
-            var secondFailure = await Assert.That(secondAttempt).Throws<KafkaException>();
-
-            await Assert.That(secondFailure!.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
-            await Assert.That(attempts).IsEqualTo(1);
-            if (observedBackoff.Task.IsCompleted)
+            // a later attempt. That deadline can also expire before the attempt reaches the
+            // backoff, so retry until one attempt has entered the hook. Every attempt must time
+            // out without another factory call. The hook signals on entry, before its attempt can
+            // complete, so the attempt that ends the loop is the one that reached the backoff.
+            KafkaException? backoffFailure = null;
+            while (!observedBackoff.Task.IsCompleted)
             {
-                await Assert.That(secondFailure.Message).Contains("Connection operation timeout after 20ms");
-                await Assert.That(await observedBackoff.Task).IsEqualTo(TimeSpan.FromMilliseconds(80));
+                Func<Task> laterAttempt = () => pool.GetConnectionAsync("broker-a", 9092).AsTask();
+                backoffFailure = await Assert.That(laterAttempt).Throws<KafkaException>();
+
+                await Assert.That(backoffFailure!.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
+                await Assert.That(attempts).IsEqualTo(1);
             }
+
+            await Assert.That(backoffFailure!.Message).Contains("Connection operation timeout after 20ms");
+            await Assert.That(await observedBackoff.Task).IsEqualTo(TimeSpan.FromMilliseconds(80));
         }
         finally
         {
