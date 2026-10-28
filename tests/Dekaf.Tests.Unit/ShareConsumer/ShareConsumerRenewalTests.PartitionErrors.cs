@@ -375,6 +375,104 @@ public sealed partial class ShareConsumerRenewalTests
         await Assert.That(outcomes!.Single().Succeeded).IsTrue();
     }
 
+    [Test]
+    public async Task Commit_AcknowledgementErrorForRecreatedTopic_IsReported()
+    {
+        // The topic is deleted and recreated while the acknowledgement is in flight. Metadata names
+        // the new topic ID by the time the response for the old one arrives.
+        ShareAcknowledgementCommitResult[]? outcomes = null;
+        Fixture? fixture = null;
+        var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 2)
+        {
+            ShareAcknowledgeResponse = CreateAcknowledgeResponse((0, ErrorCode.UnknownTopicId)),
+            OnSend = () => fixture!.MetadataManager.Metadata.Update(RecreatedTopicMetadata())
+        };
+        await using var created = CreateFixture(connection,
+            acknowledgementCommitCallback: results => outcomes = results.ToArray());
+        fixture = created;
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 40));
+
+        await Assert.That(async () => await fixture.Consumer.CommitAsync()).Throws<KafkaException>();
+
+        await Assert.That(connection.ShareAcknowledgeRequests).HasSingleItem();
+        await Assert.That(HasPendingAcknowledgements(fixture.Consumer)).IsFalse();
+        await Assert.That(((KafkaException)outcomes!.Single().Exception!).ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
+    }
+
+    [Test]
+    public async Task Poll_InlineAcknowledgementErrorForRecreatedTopic_IsReported()
+    {
+        using var cancellation = new CancellationTokenSource();
+        ShareAcknowledgementCommitResult[]? outcomes = null;
+        Fixture? fixture = null;
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
+        {
+            ShareFetchResponse = new ShareFetchResponse
+            {
+                ErrorCode = ErrorCode.None,
+                Responses =
+                [
+                    new ShareFetchResponseTopic
+                    {
+                        TopicId = TopicId,
+                        Partitions =
+                        [
+                            new ShareFetchResponsePartition
+                            {
+                                PartitionIndex = 0,
+                                AcknowledgeErrorCode = ErrorCode.UnknownTopicId,
+                                CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
+                                AcquiredRecords = []
+                            }
+                        ]
+                    }
+                ],
+                NodeEndpoints = []
+            },
+            OnSend = () =>
+            {
+                fixture!.MetadataManager.Metadata.Update(RecreatedTopicMetadata());
+                cancellation.Cancel();
+            }
+        };
+        await using var created = CreateFixture(connection,
+            acknowledgementCommitCallback: results => outcomes = results.ToArray());
+        fixture = created;
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Subscribe("topic");
+        EstablishSessions(fixture.Consumer, 1);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 40));
+
+        await using var poll = fixture.Consumer.PollAsync(cancellation.Token).GetAsyncEnumerator();
+        await poll.MoveNextAsync();
+
+        await Assert.That(HasPendingAcknowledgements(fixture.Consumer)).IsFalse();
+        await Assert.That(((KafkaException)outcomes!.Single().Exception!).ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
+    }
+
+    private static MetadataResponse RecreatedTopicMetadata() => new()
+    {
+        Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
+        Topics =
+        [
+            new TopicMetadata
+            {
+                ErrorCode = ErrorCode.None,
+                Name = "topic",
+                TopicId = Guid.NewGuid(),
+                Partitions =
+                [
+                    new PartitionMetadata
+                    {
+                        ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1,
+                        ReplicaNodes = [1], IsrNodes = [1]
+                    }
+                ]
+            }
+        ]
+    };
+
     private static ShareFetchResponse CreatePartitionErrorResponse(
         params (int Partition, ErrorCode ErrorCode, int LeaderId, int LeaderEpoch)[] partitions)
         => new()

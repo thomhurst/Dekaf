@@ -730,7 +730,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 Volatile.Write(ref _acquisitionLockTimeoutMs, response.AcquisitionLockTimeoutMs);
             HandlePartitionFetchErrors(brokerId, response);
 
-            var acknowledgementFailures = GetAcknowledgementFailures(response, sentAcks);
+            var acknowledgementFailures = GetAcknowledgementFailures(response, sentAcks, fetchResult.SentTopics);
             if (acknowledgementFailures is not null)
             {
                 SplitAcknowledgements(
@@ -1202,7 +1202,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     BatchSize = isRenewAck ? 0 : maxRecords,
                     ShareAcquireMode = (sbyte)_options.ShareAcquireMode,
                     IsRenewAck = isRenewAck,
-                    Topics = BuildShareFetchTopics(partitions, brokerAcks, version)
+                    Topics = BuildShareFetchTopics(partitions, brokerAcks, version, out var sentTopics)
                 };
                 requestContext = PrepareFetchTelemetry(brokerId, request, requestContext);
                 ShareFetchResponse response;
@@ -1244,7 +1244,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
                 return new ShareFetchBrokerResult(brokerId, version, response, brokerAcks, null, null)
                 {
-                    ReceivedTimestamp = receivedTimestamp
+                    ReceivedTimestamp = receivedTimestamp,
+                    SentTopics = sentTopics
                 };
             }
             catch (OperationCanceledException) when (_hostedRequestCancellationToken.CanBeCanceled
@@ -1362,7 +1363,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 MaxBytes = 0,
                 MaxRecords = version >= 1 ? 1 : 0,
                 ShareAcquireMode = (sbyte)_options.ShareAcquireMode,
-                Topics = BuildShareFetchTopics(partitions, pendingAcks: null, version)
+                Topics = BuildShareFetchTopics(partitions, pendingAcks: null, version, out _)
             };
             var requestContext = PrepareSessionCloseTelemetry(brokerId);
             telemetryPrepared = requestContext is not null;
@@ -1403,7 +1404,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             var responseReceived = false;
             try
             {
-                var topics = BuildShareAcknowledgeTopics(pendingAcknowledgements);
+                var topics = BuildShareAcknowledgeTopics(pendingAcknowledgements, out var sentTopics);
                 var isRenewAck = ContainsRenewAcknowledgement(pendingAcknowledgements);
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken)
                     .ConfigureAwait(false);
@@ -1483,7 +1484,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
                 var acknowledgementFailures = GetAcknowledgementFailures(
                     response,
-                    pendingAcknowledgements);
+                    pendingAcknowledgements,
+                    sentTopics);
                 if (acknowledgementFailures is null)
                 {
                     RecordRenewalReceipt(pendingAcknowledgements, receivedTimestamp);
@@ -2238,9 +2240,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     private List<ShareFetchRequestTopic> BuildShareFetchTopics(
         List<TopicPartition> partitions,
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? pendingAcks,
-        short version)
+        short version,
+        out Dictionary<string, (Guid TopicId, List<ShareFetchRequestPartition> Partitions)> topicMap)
     {
-        var topicMap = new Dictionary<string, (Guid TopicId, List<ShareFetchRequestPartition> Partitions)>();
+        topicMap = new Dictionary<string, (Guid TopicId, List<ShareFetchRequestPartition> Partitions)>();
         string? currentTopic = null;
         List<ShareFetchRequestPartition>? currentPartitions = null;
 
@@ -2448,11 +2451,12 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             _ackTracker.RequeueAcks(acknowledgements);
     }
 
-    private AcknowledgementFailures? GetAcknowledgementFailures(
+    private static AcknowledgementFailures? GetAcknowledgementFailures(
         ShareFetchResponse response,
-        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? acknowledgements)
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? acknowledgements,
+        Dictionary<string, (Guid TopicId, List<ShareFetchRequestPartition> Partitions)>? sentTopics)
     {
-        if (acknowledgements is null || acknowledgements.Count == 0)
+        if (acknowledgements is null || acknowledgements.Count == 0 || sentTopics is null)
             return null;
 
         Dictionary<TopicPartition, KafkaException>? errors = null;
@@ -2468,14 +2472,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     $"Inline ShareFetch acknowledgement failed for partition " +
                     $"{partition.PartitionIndex}: {partition.AcknowledgeErrorMessage}" +
                     LeaderChangeAcknowledgementHint(partition.AcknowledgeErrorCode));
-                var topicInfo = _metadataManager.Metadata.GetTopic(topic.TopicId);
-                if (topicInfo is null)
-                {
-                    AddUnknownTopicAcknowledgementFailure(acknowledgements, partition.PartitionIndex, error, ref errors);
+                var topicName = FindSentTopicName(sentTopics, topic.TopicId);
+                if (topicName is null)
                     continue;
-                }
 
-                var topicPartition = new TopicPartition(topicInfo.Name, partition.PartitionIndex);
+                var topicPartition = new TopicPartition(topicName, partition.PartitionIndex);
                 if (!acknowledgements.ContainsKey(topicPartition))
                     continue;
 
@@ -2487,9 +2488,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         return errors is null ? null : new AcknowledgementFailures(errors);
     }
 
-    private AcknowledgementFailures? GetAcknowledgementFailures(
+    private static AcknowledgementFailures? GetAcknowledgementFailures(
         ShareAcknowledgeResponse response,
-        Dictionary<TopicPartition, List<AcknowledgementBatchData>> acknowledgements)
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>> acknowledgements,
+        Dictionary<string, (Guid TopicId, List<ShareAcknowledgePartition> Partitions)> sentTopics)
     {
         Dictionary<TopicPartition, KafkaException>? errors = null;
         foreach (var topic in response.Responses)
@@ -2503,14 +2505,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     partition.ErrorCode,
                     $"ShareAcknowledge failed for partition {partition.PartitionIndex}: " +
                     partition.ErrorMessage + LeaderChangeAcknowledgementHint(partition.ErrorCode));
-                var topicInfo = _metadataManager.Metadata.GetTopic(topic.TopicId);
-                if (topicInfo is null)
-                {
-                    AddUnknownTopicAcknowledgementFailure(acknowledgements, partition.PartitionIndex, error, ref errors);
+                var topicName = FindSentTopicName(sentTopics, topic.TopicId);
+                if (topicName is null)
                     continue;
-                }
 
-                var topicPartition = new TopicPartition(topicInfo.Name, partition.PartitionIndex);
+                var topicPartition = new TopicPartition(topicName, partition.PartitionIndex);
                 if (!acknowledgements.ContainsKey(topicPartition))
                     continue;
 
@@ -2522,24 +2521,21 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         return errors is null ? null : new AcknowledgementFailures(errors);
     }
 
-    // The share session can keep reporting a topic after metadata has removed it, so an error for an
-    // unknown topic ID belongs only to acknowledgements whose topic metadata no longer knows either.
-    // Applying it to a known topic's acknowledgement would drop that acknowledgement as acquisition lost.
-    private void AddUnknownTopicAcknowledgementFailure(
-        Dictionary<TopicPartition, List<AcknowledgementBatchData>> acknowledgements,
-        int partitionIndex,
-        KafkaException error,
-        ref Dictionary<TopicPartition, KafkaException>? errors)
+    // Resolve a response topic against the ID the request carried, not current metadata. Metadata can
+    // already name a recreated topic with a new ID, or have dropped a deleted one, while the response
+    // still reports the old ID. A topic the request did not carry, such as one the share session keeps
+    // reporting, has no acknowledgement in this request. Runs only for error partitions.
+    private static string? FindSentTopicName<TPartition>(
+        Dictionary<string, (Guid TopicId, List<TPartition> Partitions)> sentTopics,
+        Guid topicId)
     {
-        var metadata = _metadataManager.Metadata;
-        foreach (var topicPartition in acknowledgements.Keys)
+        foreach (var (topicName, (sentTopicId, _)) in sentTopics)
         {
-            if (topicPartition.Partition == partitionIndex && metadata.GetTopic(topicPartition.Topic) is null)
-            {
-                errors ??= [];
-                errors.TryAdd(topicPartition, error);
-            }
+            if (sentTopicId == topicId)
+                return topicName;
         }
+
+        return null;
     }
 
     private static void SplitAcknowledgements(
@@ -2986,9 +2982,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     /// Builds ShareAcknowledge request topics from grouped acknowledgement data.
     /// </summary>
     private List<ShareAcknowledgeTopic> BuildShareAcknowledgeTopics(
-        Dictionary<TopicPartition, List<AcknowledgementBatchData>> acks)
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>> acks,
+        out Dictionary<string, (Guid TopicId, List<ShareAcknowledgePartition> Partitions)> topicMap)
     {
-        var topicMap = new Dictionary<string, (Guid TopicId, List<ShareAcknowledgePartition> Partitions)>();
+        topicMap = new Dictionary<string, (Guid TopicId, List<ShareAcknowledgePartition> Partitions)>();
 
         foreach (var (tp, batches) in acks)
         {
@@ -3168,6 +3165,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         // Capture before awaiting other brokers or preparing deserializers. Every record in
         // this response shares the same local receipt time, including records buffered for yield.
         public long ReceivedTimestamp { get; init; }
+
+        // The request's topic name to ID map, so acknowledgement errors resolve against the sent IDs.
+        public Dictionary<string, (Guid TopicId, List<ShareFetchRequestPartition> Partitions)>? SentTopics { get; init; }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
