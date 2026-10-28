@@ -3562,12 +3562,21 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
         var blockedBucketRequeues = 0;
+        var requeuesAfterSecondFailure = 0;
+        ReadyBatch? second = null;
         var sender = CreateSender(
             pool,
             options,
             accumulator,
             (_, _, _, _, _) => { },
-            onBlockedBucketRequeued: () => Interlocked.Increment(ref blockedBucketRequeues));
+            onBlockedBucketRequeued: () =>
+            {
+                Interlocked.Increment(ref blockedBucketRequeues);
+                // Runs on the send loop, which records the failure, so this read is current.
+                // A pass after the second failure holds both retries of the partition.
+                if (Volatile.Read(ref second) is { RetryFailureCount: > 0 })
+                    Interlocked.Increment(ref requeuesAfterSecondFailure);
+            });
 
         object[] SentBatches(int request)
         {
@@ -3580,7 +3589,8 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
                 condition,
                 TimeSpan.FromSeconds(30),
                 () => $"{step}: requests={connection.CapturedProduceRequestCount}, " +
-                    $"blockedRequeues={Volatile.Read(ref blockedBucketRequeues)}",
+                    $"blockedRequeues={Volatile.Read(ref blockedBucketRequeues)}, " +
+                    $"requeuesAfterSecondFailure={Volatile.Read(ref requeuesAfterSecondFailure)}",
                 cancellationToken,
                 pollInterval: TimeSpan.FromMilliseconds(1));
 
@@ -3588,7 +3598,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         {
             // Partitions 0 and 2 share connection 0.
             var first = CreateTestBatch(valueTaskSourcePool, "test-topic", 0, dataSize: 10);
-            var second = CreateTestBatch(valueTaskSourcePool, "test-topic", 0, dataSize: 10);
+            second = CreateTestBatch(valueTaskSourcePool, "test-topic", 0, dataSize: 10);
             var firstRecords = first.RecordBatch;
             var secondRecords = second.RecordBatch;
             sender.Enqueue(first);
@@ -3603,7 +3613,8 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             responses[0].SetResult(CreateErrorResponse("test-topic", 0, ErrorCode.NotEnoughReplicas));
             await WaitForAsync(() => Volatile.Read(ref blockedBucketRequeues) >= 1, "first retry blocked");
             responses[1].SetResult(CreateErrorResponse("test-topic", 0, ErrorCode.NotEnoughReplicas));
-            await WaitForAsync(() => Volatile.Read(ref blockedBucketRequeues) >= 2, "second retry blocked");
+            await WaitForAsync(
+                () => Volatile.Read(ref requeuesAfterSecondFailure) >= 1, "both retries blocked");
 
             responses[2].SetResult(CreateSuccessResponse("test-topic", 2, baseOffset: 300));
             // Idempotent retries pipeline, so the second retry may already be written.
