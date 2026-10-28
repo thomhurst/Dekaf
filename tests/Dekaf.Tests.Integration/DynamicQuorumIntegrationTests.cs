@@ -10,9 +10,61 @@ using TUnit.Core.Interfaces;
 namespace Dekaf.Tests.Integration;
 
 [Category("Admin")]
+[NotInParallel(nameof(DynamicQuorumKafkaContainer))]
 [ClassDataSource<DynamicQuorumKafkaContainer>(Shared = SharedType.PerTestSession)]
 public sealed class DynamicQuorumIntegrationTests(DynamicQuorumKafkaContainer kafka)
 {
+    // KIP-1312 controller unregistration (API key 94) ships in Kafka 4.4.0.
+    private static bool SupportsControllerUnregistration =>
+        KafkaContainerDefault.SupportsVersion(KafkaContainerDefault.ImageTag, 440);
+
+    [Test]
+    public async Task UnregisterController_RemovesRegistrationWithoutChangingVoters(CancellationToken cancellationToken)
+    {
+        Skip.Unless(SupportsControllerUnregistration, $"Controller unregistration requires Kafka 4.4+, not {KafkaContainerDefault.ImageTag}.");
+        await using var admin = new AdminClientBuilder().WithBootstrapControllers(kafka.BootstrapControllers).Build();
+        await TestWait.WaitForConditionAsync(
+            async () => await admin.DescribeClusterAsync(new DescribeClusterOptions(), cancellationToken),
+            cluster => cluster.Nodes.Any(node => node.NodeId == 2),
+            description: "second controller registers");
+        var votersBefore = (await admin.DescribeMetadataQuorumAsync(cancellationToken)).CurrentVoters
+            .Select(replica => replica.ReplicaId).ToArray();
+
+        await admin.UnregisterControllerAsync(2, cancellationToken: cancellationToken);
+
+        // Unregistration leaves the Raft voter set alone.
+        var votersAfter = (await admin.DescribeMetadataQuorumAsync(cancellationToken)).CurrentVoters
+            .Select(replica => replica.ReplicaId);
+        await Assert.That(votersAfter).IsEquivalentTo(votersBefore);
+        // A running controller registers again once it sees its registration removed.
+        await TestWait.WaitForConditionAsync(
+            async () => await admin.DescribeClusterAsync(new DescribeClusterOptions(), cancellationToken),
+            cluster => cluster.Nodes.Any(node => node.NodeId == 2),
+            description: "running controller registers again");
+    }
+
+    [Test]
+    public async Task UnregisterController_UnknownId_ThrowsControllerIdNotRegistered(CancellationToken cancellationToken)
+    {
+        Skip.Unless(SupportsControllerUnregistration, $"Controller unregistration requires Kafka 4.4+, not {KafkaContainerDefault.ImageTag}.");
+        await using var admin = new AdminClientBuilder().WithBootstrapControllers(kafka.BootstrapControllers).Build();
+
+        var exception = await Assert.That(async () => await admin.UnregisterControllerAsync(99, cancellationToken: cancellationToken))
+            .Throws<KafkaException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.ControllerIdNotRegistered);
+    }
+
+    [Test]
+    public async Task UnregisterController_BeforeKafka44_ThrowsBrokerVersionException(CancellationToken cancellationToken)
+    {
+        Skip.When(SupportsControllerUnregistration, $"Kafka {KafkaContainerDefault.ImageTag} supports controller unregistration.");
+        await using var admin = new AdminClientBuilder().WithBootstrapControllers(kafka.BootstrapControllers).Build();
+
+        await Assert.That(async () => await admin.UnregisterControllerAsync(2, cancellationToken: cancellationToken))
+            .Throws<BrokerVersionException>();
+    }
+
     [Test]
     public async Task AddAndRemoveVoter_ChangesRealControllerMembership(CancellationToken cancellationToken)
     {

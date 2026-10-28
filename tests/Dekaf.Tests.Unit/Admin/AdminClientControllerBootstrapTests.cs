@@ -495,6 +495,57 @@ public sealed class AdminClientControllerBootstrapTests
     }
 
     [Test]
+    public async Task UnregisterControllerAsync_RoutesToActiveController()
+    {
+        await using var context = new ControllerAdminContext();
+        context.ActiveController.SendAsync<UnregisterControllerRequest, UnregisterControllerResponse>(
+                Arg.Any<UnregisterControllerRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new UnregisterControllerResponse { ErrorCode = ErrorCode.None }));
+
+        await context.Client.UnregisterControllerAsync(3);
+
+        await context.ActiveController.Received(1).SendAsync<UnregisterControllerRequest, UnregisterControllerResponse>(
+            Arg.Is<UnregisterControllerRequest>(request => request.ControllerId == 3),
+            0,
+            Arg.Any<CancellationToken>());
+        await context.OtherController.DidNotReceiveWithAnyArgs()
+            .SendAsync<UnregisterControllerRequest, UnregisterControllerResponse>(default!, default, default);
+        await context.BootstrapController.DidNotReceiveWithAnyArgs()
+            .SendAsync<UnregisterControllerRequest, UnregisterControllerResponse>(default!, default, default);
+    }
+
+    [Test]
+    public async Task UnregisterControllerAsync_NotController_RefreshesLeaderAndRetriesOnNewController()
+    {
+        await using var context = new ControllerAdminContext();
+        context.EnqueueDiscovery(CreateDiscoveryResponse(activeControllerId: 1));
+        context.ActiveController.SendAsync<UnregisterControllerRequest, UnregisterControllerResponse>(
+                Arg.Any<UnregisterControllerRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new UnregisterControllerResponse { ErrorCode = ErrorCode.NotController }));
+        context.OtherController.SendAsync<UnregisterControllerRequest, UnregisterControllerResponse>(
+                Arg.Any<UnregisterControllerRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new UnregisterControllerResponse { ErrorCode = ErrorCode.None }));
+
+        await context.Client.UnregisterControllerAsync(3);
+
+        await Assert.That(context.DiscoveryRequests).IsGreaterThanOrEqualTo(2);
+        await context.ActiveController.Received(1).SendAsync<UnregisterControllerRequest, UnregisterControllerResponse>(
+            Arg.Any<UnregisterControllerRequest>(),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+        await context.OtherController.Received(1).SendAsync<UnregisterControllerRequest, UnregisterControllerResponse>(
+            Arg.Any<UnregisterControllerRequest>(),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task DescribeMetadataQuorumAsync_TransportFailuresBeyondRetryCount_SucceedsWithinApiTimeout()
     {
         await using var context = new ControllerAdminContext();
@@ -675,6 +726,7 @@ public sealed class AdminClientControllerBootstrapTests
             _metadataManager.SetApiVersion(ApiKey.DescribeConfigs, 4, 4);
             _metadataManager.SetApiVersion(ApiKey.AlterConfigs, 0, 2);
             _metadataManager.SetApiVersion(ApiKey.IncrementalAlterConfigs, 0, 1);
+            _metadataManager.SetApiVersion(ApiKey.UnregisterController, 0, 0);
             Client = new AdminClient(
                 new AdminClientOptions
                 {

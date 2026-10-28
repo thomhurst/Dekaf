@@ -91,5 +91,6 @@ public enum ApiKey : short
     StreamsGroupDescribe = 89,
     DescribeShareGroupOffsets = 90,
     AlterShareGroupOffsets = 91,
-    DeleteShareGroupOffsets = 92
+    DeleteShareGroupOffsets = 92,
+    UnregisterController = 94
 }

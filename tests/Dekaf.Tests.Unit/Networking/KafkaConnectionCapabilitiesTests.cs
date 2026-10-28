@@ -20,6 +20,21 @@ public class KafkaConnectionCapabilitiesTests
     }
 
     [Test]
+    public async Task Create_RetainsEveryDefinedApiKey()
+    {
+        var apiKeys = Enum.GetValues<ApiKey>();
+        var capabilities = CreateCapabilities(apiKeys.Select(static apiKey => new ApiVersion(apiKey, 0, 1)).ToArray());
+
+        foreach (var apiKey in apiKeys)
+        {
+            await Assert.That(capabilities.TryNegotiateVersion(apiKey, 0, 1, out var version))
+                .IsTrue()
+                .Because($"{apiKey} ({(int)apiKey}) must fit in the capability table");
+            await Assert.That(version).IsEqualTo((short)1);
+        }
+    }
+
+    [Test]
     public async Task NegotiateVersion_WhenApiIsAbsent_ThrowsBeforeWrite()
     {
         var capabilities = CreateCapabilities(new ApiVersion(ApiKey.Metadata, 9, 13));

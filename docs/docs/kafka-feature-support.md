@@ -81,6 +81,7 @@ the full maintained API surface.
 | [KIP-516][kip516] topic IDs in Admin operations | Complete: describe and delete by ID | `Metadata` v10+ for description; `DeleteTopics` v6 for deletion | [Topic identifiers](admin/topic-identifiers.md) | Configured CI: [Admin topic-ID tests][unit/Admin/AdminClientTopicIdTests.cs]. No outstanding issue tracked. |
 | [KIP-1043][kip1043] group administration | Complete: group-type listing and classic group description | `ListGroups` v4 for state filters, v5 for type filters; classic description uses `DescribeGroups` | [Group listing](admin/group-listing.md) | Configured CI: [listing tests][unit/Admin/AdminClientGroupListingTests.cs], [classic description tests][unit/Admin/AdminClientClassicGroupDescriptionTests.cs]. Does not add classic consumer participation. |
 | [KIP-584][kip584] feature administration | Complete: inspect finalized features and request feature updates | `ApiVersions` v3+ feature fields and `UpdateFeatures` v0+; requested level must be supported by destination | [Node features](admin/node-features.md), [Admin API][src/Admin/IAdminClient.cs] | Configured CI: [feature tests][unit/Admin/AdminClientFeatureTests.cs]. Broker upgrade policy remains an operator responsibility. |
+| [KIP-1312][kip1312] controller unregistration | Complete: remove a KRaft controller registration without changing Raft voters | `UnregisterController` v0 (Kafka 4.4+) and finalized `metadata.version` 4.4-IV2+; `ALTER` on the cluster | [Controller unregistration](admin/controller-unregistration.md), [capability][src/Admin/IControllerRegistrationAdminClient.cs] | Configured CI: [admin tests][unit/Admin/AdminClientControllerUnregistrationTests.cs], [quorum integration tests][integration/DynamicQuorumIntegrationTests.cs] on Kafka 4.4.0; the release matrix verifies the pre-4.4 failure. |
 | [KIP-1071][kip1071] Streams membership | Partial / experimental for complete lifecycle: join, assignments, leave/rejoin, fencing, task offsets and static membership implemented; topology updates for a joined member await broker support | `StreamsGroupHeartbeat` v0-v1 (v1 on Kafka 4.4+: 64-bit `AcceptableRecoveryLagOffsets` and `StreamsGroupStatusCode.MissingClientTags`); Dekaf requires Kafka 4.2+. Task offsets and static membership need Kafka 4.4, because 4.3.1 rejects them. Kafka 4.4.0 rejects topology updates with "Topology updates are not supported yet" | [Membership interface][src/Streams/IStreamsGroupMember.cs], [Streams administration](admin/streams-group-management.md) | Configured CI: [membership tests][integration/StreamsGroupMemberIntegrationTests.cs] on Kafka 4.4.0; the topology-update test skips until a broker supports it ([#3625][issue3625]). Source: [unit tests][unit/Streams/StreamsGroupMemberTests.cs]. Complete lifecycle: [#2958][issue2958], parent [#2766][issue2766]. |
 | Streams processing runtime (distinct from [KIP-1071][kip1071]) | Deferred: no topology DSL, state stores, changelog restoration or processing runtime | Not applicable until runtime scope is reopened | [Membership scope][src/Streams/IStreamsGroupMember.cs] | Source: [in-memory membership tests][unit/Testing/InMemoryStreamsGroupMemberTests.cs] cover membership only, not a runtime. Existing decision tracker [#2748][issue2748]. |
 
@@ -116,6 +117,7 @@ SHA, runtime, broker image and relevant results; skipped cases remain unverified
 
 [ci]: https://github.com/thomhurst/Dekaf/blob/main/.github/workflows/ci.yml
 [integration/ClientTelemetryReceiverIntegrationTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Integration/ClientTelemetryReceiverIntegrationTests.cs
+[integration/DynamicQuorumIntegrationTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Integration/DynamicQuorumIntegrationTests.cs
 [integration/ConsumerGroupTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Integration/ConsumerGroupTests.cs
 [integration/ConsumerLeaderFailoverIntegrationTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Integration/ConsumerLeaderFailoverIntegrationTests.cs
 [integration/ConsumerLogTruncationIntegrationTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Integration/ConsumerLogTruncationIntegrationTests.cs
@@ -141,6 +143,7 @@ SHA, runtime, broker image and relevant results; skipped cases remain unverified
 [issue3625]: https://github.com/thomhurst/Dekaf/issues/3625
 [kip1043]: https://cwiki.apache.org/confluence/pages/viewpage.action?pageId=305171038
 [kip1071]: https://cwiki.apache.org/confluence/pages/viewpage.action?pageId=311627992
+[kip1312]: https://cwiki.apache.org/confluence/spaces/KAFKA/pages/406623954/KIP-1312+Support+unregistering+controllers
 [kip12]: https://cwiki.apache.org/confluence/pages/viewpage.action?pageId=51809888
 [kip227]: https://cwiki.apache.org/confluence/pages/viewpage.action?pageId=74687799
 [kip255]: https://cwiki.apache.org/confluence/pages/viewpage.action?pageId=75968876
@@ -158,6 +161,7 @@ SHA, runtime, broker image and relevant results; skipped cases remain unverified
 [kip951]: https://cwiki.apache.org/confluence/display/KAFKA/KIP-951%3A+Leader+discovery+optimizations+for+the+client
 [kip98]: https://cwiki.apache.org/confluence/pages/viewpage.action?pageId=66854913
 [performance]: https://github.com/thomhurst/Dekaf/blob/main/.github/workflows/performance-gate.yml
+[src/Admin/IControllerRegistrationAdminClient.cs]: https://github.com/thomhurst/Dekaf/blob/main/src/Dekaf/Admin/IControllerRegistrationAdminClient.cs
 [src/Admin/IAdminClient.cs]: https://github.com/thomhurst/Dekaf/blob/main/src/Dekaf/Admin/IAdminClient.cs
 [src/Consumer/ConsumerCoordinator.cs]: https://github.com/thomhurst/Dekaf/blob/main/src/Dekaf/Consumer/ConsumerCoordinator.cs
 [src/Consumer/FetchSessionHandler.cs]: https://github.com/thomhurst/Dekaf/blob/main/src/Dekaf/Consumer/FetchSessionHandler.cs
@@ -176,6 +180,7 @@ SHA, runtime, broker image and relevant results; skipped cases remain unverified
 [src/Telemetry/ClientTelemetryPayloadProvider.cs]: https://github.com/thomhurst/Dekaf/blob/main/src/Dekaf/Telemetry/ClientTelemetryPayloadProvider.cs
 [src/Telemetry/StandardClientTelemetryMetrics.cs]: https://github.com/thomhurst/Dekaf/blob/main/src/Dekaf/Telemetry/StandardClientTelemetryMetrics.cs
 [stress]: https://github.com/thomhurst/Dekaf/blob/main/.github/workflows/stress-tests.yml
+[unit/Admin/AdminClientControllerUnregistrationTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Unit/Admin/AdminClientControllerUnregistrationTests.cs
 [unit/Admin/AdminClientClassicGroupDescriptionTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Unit/Admin/AdminClientClassicGroupDescriptionTests.cs
 [unit/Admin/AdminClientFeatureTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Unit/Admin/AdminClientFeatureTests.cs
 [unit/Admin/AdminClientGroupListingTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Unit/Admin/AdminClientGroupListingTests.cs
