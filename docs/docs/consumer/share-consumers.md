@@ -184,7 +184,7 @@ await foreach (var record in reader.ConsumeAsync(cancellationToken))
 
 The dead-letter write is not atomic with the share-state write. A record can occasionally
 produce more than one dead-letter record, so make dead-letter processing idempotent, for
-example by keying on topic, partition, and offset.
+example by keying on group, topic, partition, and offset.
 
 ### Broker support
 
@@ -496,7 +496,7 @@ The in-memory share consumer follows the same provisional-delivery shutdown rule
 
 `Dekaf.Testing` provides `InMemoryShareConsumer<TKey, TValue>` for broker-free unit tests, and `AddDekafInMemory()` swaps DI registrations for in-memory doubles. See [Testing](../testing).
 
-Set `InMemoryShareConsumerOptions.DeadLetterQueueTopic` (and optionally `DeadLetterQueueCopyRecord`) to model the broker dead-letter queue: each rejected record is written to that topic with the context headers above. The in-memory cluster has no delivery limit, so only rejects are dead-lettered.
+Set `InMemoryShareConsumerOptions.DeadLetterQueueTopic` (and optionally `DeadLetterQueueCopyRecord`) to model the broker dead-letter queue: each rejected record is written to that topic with the context headers above. As on the broker, the topic must already exist with `errors.deadletterqueue.group.enable=true`; otherwise the record is archived and nothing is written. The in-memory cluster has no delivery limit, so only rejects are dead-lettered.
 
 ## Hosted polling retries
 

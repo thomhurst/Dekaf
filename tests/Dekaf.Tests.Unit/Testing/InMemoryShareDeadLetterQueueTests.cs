@@ -9,6 +9,9 @@ namespace Dekaf.Tests.Unit.Testing;
 
 public sealed class InMemoryShareDeadLetterQueueTests
 {
+    private static readonly Dictionary<string, string> EnabledDeadLetterTopic =
+        new() { ["errors.deadletterqueue.group.enable"] = "true" };
+
     [Test]
     [Arguments(false)]
     [Arguments(true)]
@@ -16,7 +19,7 @@ public sealed class InMemoryShareDeadLetterQueueTests
     {
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic("orders");
-        cluster.CreateTopic("dlq.orders");
+        cluster.CreateTopic("dlq.orders", configs: EnabledDeadLetterTopic);
         var producer = new InMemoryProducer<string, string>(cluster);
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -92,6 +95,56 @@ public sealed class InMemoryShareDeadLetterQueueTests
         await consumer.CommitAsync();
 
         await Assert.That(cluster.ListTopics().Single()).IsEqualTo("orders");
+    }
+
+    [Test]
+    public async Task MissingDeadLetterTopic_IsNotAutoCreated()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync("orders", "key", "value");
+        await using var consumer = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions
+        {
+            GroupId = "workers", DeadLetterQueueTopic = "dlq.orders"
+        });
+        consumer.Subscribe("orders");
+
+        await foreach (var record in consumer.PollAsync())
+        {
+            consumer.Acknowledge(record, AcknowledgeType.Reject);
+            break;
+        }
+        await consumer.CommitAsync();
+
+        await Assert.That(cluster.ListTopics().Single()).IsEqualTo("orders");
+    }
+
+    [Test]
+    [Arguments(null)]
+    [Arguments("false")]
+    public async Task DeadLetterTopicWithoutGroupEnable_ReceivesNoRecords(string? enabled)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders");
+        cluster.CreateTopic("dlq.orders", configs: enabled is null
+            ? null
+            : new Dictionary<string, string> { ["errors.deadletterqueue.group.enable"] = enabled });
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync("orders", "key", "value");
+        await using var consumer = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions
+        {
+            GroupId = "workers", DeadLetterQueueTopic = "dlq.orders"
+        });
+        consumer.Subscribe("orders");
+
+        await foreach (var record in consumer.PollAsync())
+        {
+            consumer.Acknowledge(record, AcknowledgeType.Reject);
+            break;
+        }
+        await consumer.CommitAsync();
+
+        await Assert.That(cluster.ReadRecords("dlq.orders")).IsEmpty();
     }
 
     [Test]

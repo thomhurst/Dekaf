@@ -1,6 +1,7 @@
 using System.Globalization;
 using Dekaf.Consumer.DeadLetter;
 using Dekaf.Serialization;
+using Dekaf.ShareConsumer;
 
 namespace Dekaf.Testing;
 
@@ -8,7 +9,8 @@ public sealed partial class InMemoryKafkaCluster
 {
     /// <summary>
     /// Writes the dead-letter record that a KIP-1191 broker writes for a rejected share record.
-    /// Like the broker, a missing topic does not fail the acknowledgement; the record is skipped.
+    /// Like the broker, a topic that is missing or lacks <c>errors.deadletterqueue.group.enable=true</c>
+    /// does not fail the acknowledgement; the record is archived without a dead-letter record.
     /// </summary>
     internal void AppendShareDeadLetterRecord(
         string deadLetterTopic,
@@ -29,10 +31,13 @@ public sealed partial class InMemoryKafkaCluster
         TaskCompletionSource signal;
         lock (_gate)
         {
-            if (!_topics.ContainsKey(deadLetterTopic) && !_options.AutoCreateTopics)
+            if (!_topics.TryGetValue(deadLetterTopic, out var state)
+                || !state.Configs.TryGetValue(ShareDeadLetterQueueConfiguration.TopicEnableConfig, out var enabled)
+                || !string.Equals(enabled, "true", StringComparison.OrdinalIgnoreCase))
+            {
                 return;
+            }
 
-            var state = GetOrAutoCreateTopic(deadLetterTopic);
             var key = copyRecord ? source.Key : [];
             var value = copyRecord ? source.Value : [];
             AppendRecordUnderLock(

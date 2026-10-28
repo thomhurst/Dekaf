@@ -6,6 +6,9 @@ internal static class ShareDeadLetterQueueConfiguration
     internal const string TopicNameConfig = "errors.deadletterqueue.topic.name";
     internal const string CopyRecordConfig = "errors.deadletterqueue.copy.record.enable";
 
+    /// <summary>Topic config that a dead-letter topic needs before the broker writes to it.</summary>
+    internal const string TopicEnableConfig = "errors.deadletterqueue.group.enable";
+
     private const int MaxTopicNameLength = 249;
 
     internal static void Validate(ShareConsumerOptions options)
