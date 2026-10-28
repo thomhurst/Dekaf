@@ -726,8 +726,8 @@ internal readonly struct AppendWorkItem
 /// </remarks>
 internal sealed class BatchArena
 {
-    // Reservoir-backed pool eliminates ConcurrentQueue node allocations. This pool disables
-    // Reservoir's thread-local tier so its capacity remains a hard POH-retention bound.
+    // Reservoir-backed pool eliminates ConcurrentQueue node allocations. Its capacity is a
+    // hard POH-retention bound.
     // It starts small; each RecordAccumulator raises it to its memory-bounded pool size.
     private static readonly BatchArenaPool s_pool = new(InitialPoolSize);
     // Memory tradeoff: pooling arenas retains POH memory for the pool's lifetime.
@@ -1138,10 +1138,9 @@ internal sealed class BatchArena
         return new ProduceException(ProduceErrorKind.ArenaAllocationFailed, message, innerException);
     }
 
-    // Append threads rent arenas that sender cleanup can return. Shared storage also
-    // keeps MaxPoolSize as the hard bound on retained POH buffers.
+    // MaxPoolSize is the hard bound on retained POH buffers.
     private sealed class BatchArenaPool(int maxPoolSize)
-        : ObjectPool<BatchArena>(maxPoolSize, threadLocalFastPath: false)
+        : ObjectPool<BatchArena>(maxPoolSize)
     {
         protected override BatchArena Create()
         {
@@ -9790,9 +9789,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 /// </summary>
 /// <remarks>
 /// Pooled batches keep no arena (they rent one in Reset), but they keep their completion array
-/// (up to 128KB), so the pool disables Reservoir's thread-local tier: that tier keeps one extra
-/// item per returning thread outside <see cref="ObjectPool{T}.MaxPoolSize"/>, so retention grows
-/// with the thread-pool size instead of staying within the memory-bounded pool size.
+/// (up to 128KB), so retention stays within the memory-bounded
+/// <see cref="ObjectPool{T}.MaxPoolSize"/>.
 /// </remarks>
 internal sealed class PartitionBatchPool
 {
@@ -9986,12 +9984,10 @@ internal sealed class PartitionBatchPool
 
     /// <summary>
     /// Storage for pooled batches. Private, so only <see cref="PartitionBatchPool"/>'s
-    /// accounted members can put batches into it. Reservoir's thread-local tier is disabled: it
-    /// keeps one extra item per returning thread outside MaxPoolSize, so retention would grow
-    /// with the thread-pool size instead of staying within the memory-bounded pool size.
+    /// accounted members can put batches into it.
     /// </summary>
     private sealed class BatchStorage(PartitionBatchPool owner, int maxPoolSize)
-        : ObjectPool<PartitionBatch>(maxPoolSize, threadLocalFastPath: false)
+        : ObjectPool<PartitionBatch>(maxPoolSize)
     {
         protected override PartitionBatch Create() => owner.CreateBatch();
 
@@ -11547,7 +11543,7 @@ internal sealed class BatchArrayReuseQueue
         _retentionLimit = maxSize;
         _pool = new Reservoir.ObjectPool<
             PooledValueTaskSource<RecordMetadata>[],
-            CompletionSourceArrayPolicy>(new CompletionSourceArrayPolicy(this), maxSize, threadLocalFastPath: false);
+            CompletionSourceArrayPolicy>(new CompletionSourceArrayPolicy(this), maxSize);
     }
 
     /// <summary>Arrays currently queued for reuse.</summary>

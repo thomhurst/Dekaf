@@ -233,7 +233,7 @@ internal sealed class BinaryPartitionMessageKeyComparer<TKey> : IEqualityCompare
         internal int SampledLanes = -1;
     }
 
-    private sealed class CollisionStatePool() : ObjectPool<CollisionState>(maxPoolSize: 64, threadLocalFastPath: false)
+    private sealed class CollisionStatePool() : ObjectPool<CollisionState>(maxPoolSize: 64)
     {
         internal static readonly CollisionStatePool Instance = new();
         protected override CollisionState Create() => new();

@@ -6,13 +6,12 @@ namespace Dekaf.Producer;
 /// <summary>
 /// Thread-safe object pool backed by Reservoir.
 /// Provides pre-warming, retained-count diagnostics, dynamic shared-capacity ratcheting,
-/// a thread-local fast path, and miss tracking for Dekaf's pooled producer and protocol objects.
+/// and miss tracking for Dekaf's pooled producer and protocol objects.
 /// </summary>
 /// <remarks>
 /// Subclasses implement <see cref="Create"/> to produce new items and <see cref="Reset"/>
 /// to prepare returned items for reuse. Reservoir supplies fixed-capacity, zero-allocation
-/// shared storage specialized for small and large pools. By default, each participating thread
-/// may retain one additional item for faster same-thread reuse.
+/// shared storage specialized for small and large pools.
 /// </remarks>
 /// <typeparam name="T">Pooled reference type.</typeparam>
 internal abstract class ObjectPool<T> where T : class
@@ -21,7 +20,6 @@ internal abstract class ObjectPool<T> where T : class
     private PoolState _poolState;
     private PoolState? _retiredPool;
     private readonly Lock _resizeLock = new();
-    private readonly bool _threadLocalFastPath;
     private int _maxPoolSize;
     private int _retainedCount;
     private long _misses;
@@ -34,19 +32,17 @@ internal abstract class ObjectPool<T> where T : class
     /// Reservoir remains the sole authority for retention decisions.
     /// </summary>
     /// <remarks>
-    /// Includes both shared and thread-local retained items. Concurrent rents, returns, and pool
-    /// replacement can make this value transiently inaccurate. Do not use it as a correctness
-    /// gate or expect pre-warming during concurrent use to reach an exact retained count.
+    /// Concurrent rents, returns, and pool replacement can make this value transiently
+    /// inaccurate. Do not use it as a correctness gate or expect pre-warming during concurrent use to reach an exact retained count.
     /// </remarks>
     public int ApproximateCount => Volatile.Read(ref _retainedCount);
 
     /// <summary>Number of empty-pool rents that created an item.</summary>
     public long Misses => Volatile.Read(ref _misses);
 
-    protected ObjectPool(int maxPoolSize, bool threadLocalFastPath = true)
+    protected ObjectPool(int maxPoolSize)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxPoolSize);
-        _threadLocalFastPath = threadLocalFastPath;
         _maxPoolSize = maxPoolSize;
         _poolState = CreatePool(maxPoolSize);
         _pool = _poolState.Pool;
@@ -70,7 +66,7 @@ internal abstract class ObjectPool<T> where T : class
         return item;
     }
 
-    /// <summary>Returns an item, discarding it when thread-local and shared capacity are full.</summary>
+    /// <summary>Returns an item, discarding it when the pool is full.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Return(T item)
     {
@@ -157,8 +153,7 @@ internal abstract class ObjectPool<T> where T : class
         var state = new PoolState(this);
         state.Pool = new Reservoir.ObjectPool<T, PoolPolicy>(
             new PoolPolicy(state),
-            capacity,
-            _threadLocalFastPath);
+            capacity);
         return state;
     }
 

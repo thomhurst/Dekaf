@@ -15,8 +15,7 @@ public class ObjectPoolTests
         public bool WasDestroyed { get; set; }
     }
 
-    private sealed class TestPool(int maxPoolSize, bool threadLocalFastPath = true)
-        : ObjectPool<TestItem>(maxPoolSize, threadLocalFastPath)
+    private sealed class TestPool(int maxPoolSize) : ObjectPool<TestItem>(maxPoolSize)
     {
         private int _nextId;
 
@@ -91,7 +90,7 @@ public class ObjectPoolTests
     }
 
     [Test]
-    public async Task Return_RetainsOneThreadLocalItemBeyondSharedCapacity()
+    public async Task Return_WhenPoolFull_DiscardsResetItem()
     {
         var pool = new TestPool(2);
         var item1 = pool.Rent();
@@ -101,27 +100,9 @@ public class ObjectPoolTests
         pool.Return(item2);
         pool.Return(item3);
 
-        var retainedCount = pool.ApproximateCount;
-
-        await Assert.That(retainedCount).IsEqualTo(3);
-        await Assert.That(item1.WasDestroyed).IsFalse();
-        await Assert.That(item2.WasDestroyed).IsFalse();
-        await Assert.That(item3.WasDestroyed).IsFalse();
-    }
-
-    [Test]
-    public async Task Return_WhenStrictPoolFull_DiscardsResetItem()
-    {
-        var pool = new TestPool(2, threadLocalFastPath: false);
-        var item1 = pool.Rent();
-        var item2 = pool.Rent();
-        var item3 = pool.Rent();
-        pool.Return(item1);
-        pool.Return(item2);
-        pool.Return(item3);
-
         await Assert.That(pool.ApproximateCount).IsEqualTo(2);
         await Assert.That(item3.WasReset).IsTrue();
+        await Assert.That(item3.WasDestroyed).IsTrue();
         var rented = pool.Rent();
         await Assert.That(rented).IsNotSameReferenceAs(item3);
     }

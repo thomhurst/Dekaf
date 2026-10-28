@@ -5306,9 +5306,9 @@ internal readonly struct PooledResponseBuffer : IDisposable
 internal sealed class PooledResponseMemory : IPooledMemory
 {
     // This private fixed-capacity pool needs neither retained-count diagnostics nor
-    // capacity ratcheting. Use Reservoir directly, preserving the thread-local path.
+    // capacity ratcheting, so it uses Reservoir directly.
     private static readonly Reservoir.ObjectPool<PooledResponseMemory, MemoryPoolPolicy> s_pool =
-        new(new MemoryPoolPolicy(), 256, threadLocalFastPath: true);
+        new(new MemoryPoolPolicy(), 256);
 
     private byte[]? _buffer;
     private NativeResponseBuffer? _nativeBuffer;
@@ -5449,12 +5449,9 @@ internal sealed class PendingRequestPool
     public PendingRequestPool(int maxPoolSize)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxPoolSize);
-        // Requests are rented before asynchronous I/O and returned by response or
-        // failure continuations that commonly run on another thread.
         _pool = new Reservoir.ObjectPool<PooledPendingRequest, PoolPolicy>(
             new PoolPolicy(this),
-            maxPoolSize,
-            threadLocalFastPath: false);
+            maxPoolSize);
     }
 
     public int ApproximateCount => Volatile.Read(ref _poolCount);
