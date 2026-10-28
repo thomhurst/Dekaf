@@ -124,9 +124,9 @@ An `IStreamsGroupMember` publishes the description when you set
 `StreamsGroupTopology.Description`. Use the same model that describe returns:
 
 ```csharp
-await member.JoinAsync(new StreamsGroupMemberUpdate
+await member.JoinAsync(new Dekaf.Streams.StreamsGroupMemberUpdate
 {
-    Topology = new StreamsGroupTopology
+    Topology = new Dekaf.Streams.StreamsGroupTopology
     {
         Epoch = 0,
         Subtopologies = subtopologies,
@@ -152,8 +152,10 @@ delayed while the update is in flight.
   the heartbeat rejoins the group.
 - Other errors, such as `STREAMS_TOPOLOGY_DESCRIPTION_UPDATE_FAILED`, end
   the attempt. The coordinator asks again on a later heartbeat.
-- A new topology, losing membership, closing the member, or disposing it
-  cancels an in-flight update and waits for it to finish.
+- A new topology or losing membership cancels an in-flight update without
+  waiting for it to finish.
+- Closing the member or disposing it cancels an in-flight update and waits
+  for it to finish.
 
 Without a description, the member never publishes.
 `StreamsGroupHeartbeatResult.TopologyDescriptionRequired` still reports the

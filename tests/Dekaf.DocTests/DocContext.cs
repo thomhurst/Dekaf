@@ -39,6 +39,10 @@ public static class DocContext
     public static readonly IKafkaConsumer<string, string> consumer = null!;
     public static readonly IKafkaShareConsumer<string, string> shareConsumer = null!;
     public static readonly IAdminClient admin = null!;
+    public static readonly Dekaf.Streams.IStreamsGroupMember member = null!;
+    public static readonly IReadOnlyList<Dekaf.Streams.StreamsGroupSubtopology> subtopologies = [];
+    public static readonly IReadOnlyList<StreamsGroupTopologyDescriptionSubtopology> describedSubtopologies = [];
+    public static readonly string processId = "process-1";
     public static readonly ISchemaRegistryClient schemaRegistry = null!;
     public static readonly ISchemaRegistryClient registry = null!;
     public static readonly HttpClient httpClient = new();

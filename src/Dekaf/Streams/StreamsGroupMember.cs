@@ -7,10 +7,12 @@ using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Retry;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Dekaf.Streams;
 
-internal sealed class StreamsGroupMember : IStreamsGroupMember
+internal sealed partial class StreamsGroupMember : IStreamsGroupMember
 {
     private const int CommandCapacity = 64;
 
@@ -24,6 +26,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
     private readonly StreamsGroupMemberOptions _options;
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
+    private readonly ILogger _logger;
     private readonly Channel<MemberCommand> _commands = Channel.CreateBounded<MemberCommand>(
         new BoundedChannelOptions(CommandCapacity)
         {
@@ -79,7 +82,8 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         IConnectionPool connectionPool,
         MetadataManager metadataManager,
         int retryBackoffMs = 100,
-        int retryBackoffMaxMs = 1_000)
+        int retryBackoffMaxMs = 1_000,
+        ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(connectionPool);
@@ -96,6 +100,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         _options = options;
         _connectionPool = connectionPool;
         _metadataManager = metadataManager;
+        _logger = logger ?? NullLogger<StreamsGroupMember>.Instance;
         ExponentialRetryBackoff.Validate(retryBackoffMs, retryBackoffMaxMs);
         _retryBackoffMs = retryBackoffMs;
         _retryBackoffMaxMs = retryBackoffMaxMs;
@@ -625,6 +630,12 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         publication.Cancellation.Dispose();
     }
 
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Coordinator rejected the topology description for group {GroupId} at topology epoch {TopologyEpoch} with {ErrorCode}: {ErrorMessage}. Publication stops until the coordinator requests it again")]
+    private partial void LogTopologyDescriptionRejected(string groupId, int topologyEpoch, ErrorCode errorCode, string? errorMessage);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Publishing the topology description for group {GroupId} at topology epoch {TopologyEpoch} failed. Publication stops until the coordinator requests it again")]
+    private partial void LogTopologyDescriptionPublicationFailed(Exception exception, string groupId, int topologyEpoch);
+
     // Never faults: a failed publication ends, and the coordinator requests the description again on a
     // later heartbeat. A publication that replaces a cancelled one waits for it and disposes it.
     private async Task PublishTopologyDescriptionAsync(
@@ -679,6 +690,11 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                         coordinatorId = -1;
                         break;
                     case var errorCode when !errorCode.IsRetriable():
+                        LogTopologyDescriptionRejected(
+                            _options.GroupId,
+                            request.TopologyEpoch,
+                            errorCode,
+                            response.ErrorMessage);
                         return;
                 }
             }
@@ -692,8 +708,9 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             {
                 coordinatorId = -1;
             }
-            catch (Exception)
+            catch (Exception exception)
             {
+                LogTopologyDescriptionPublicationFailed(exception, _options.GroupId, request.TopologyEpoch);
                 return;
             }
 

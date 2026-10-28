@@ -7,6 +7,7 @@ using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Streams;
+using Microsoft.Extensions.Logging;
 using NSubstitute;
 using StreamsGroupGlobalStore = Dekaf.Admin.StreamsGroupGlobalStore;
 using StreamsGroupTopologyDescription = Dekaf.Admin.StreamsGroupTopologyDescription;
@@ -1939,15 +1940,23 @@ public sealed class StreamsGroupMemberTests
         var connection = new ScriptedConnection();
         connection.EnqueueHeartbeat(RequiresDescription(Success(epoch: 1)));
         connection.EnqueueHeartbeat(RequiresDescription(Success(epoch: 1)));
-        connection.EnqueuePublication(PublicationResponse(errorCode));
+        connection.EnqueuePublication(new StreamsGroupTopologyDescriptionUpdateResponse
+        {
+            ErrorCode = errorCode,
+            ErrorMessage = "description rejected"
+        });
         connection.EnqueuePublication(PublicationResponse(ErrorCode.None));
-        await using var fixture = CreateFixture(connection);
+        var logger = new CapturingLogger();
+        await using var fixture = CreateFixture(connection, logger: logger);
         await fixture.Member.JoinAsync(CreateInitialUpdate(topologyEpoch: 0, CreateDescription()));
 
         await GetPublicationTask(fixture.Member)!;
 
         await Assert.That(connection.PublicationAttemptCount).IsEqualTo(1);
         await Assert.That(fixture.Member.Snapshot.IsJoined).IsTrue();
+        var warning = logger.Messages.Single(entry => entry.Level == LogLevel.Warning).Message;
+        await Assert.That(warning).Contains(errorCode.ToString());
+        await Assert.That(warning).Contains("description rejected");
 
         await Assert.That(fixture.Member.QueueHeartbeatForTesting()).IsTrue();
         await connection.SecondHeartbeatCompleted.Task;
@@ -2023,7 +2032,8 @@ public sealed class StreamsGroupMemberTests
     private static Fixture CreateFixture(
         ScriptedConnection connection,
         string? instanceId = null,
-        short? brokerHeartbeatMaxVersion = null)
+        short? brokerHeartbeatMaxVersion = null,
+        ILogger? logger = null)
     {
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
@@ -2056,7 +2066,8 @@ public sealed class StreamsGroupMemberTests
             pool,
             metadataManager,
             retryBackoffMs: 0,
-            retryBackoffMaxMs: 0);
+            retryBackoffMaxMs: 0,
+            logger: logger);
         member.MarkInitializedForTesting();
         return new Fixture(member, metadataManager);
     }
