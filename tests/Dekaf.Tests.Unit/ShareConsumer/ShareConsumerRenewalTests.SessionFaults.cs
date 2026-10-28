@@ -1,6 +1,7 @@
 using System.Reflection;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Serialization;
 using Dekaf.ShareConsumer;
 
 namespace Dekaf.Tests.Unit.ShareConsumer;
@@ -196,6 +197,94 @@ public sealed partial class ShareConsumerRenewalTests
             new List<TopicPartition> { partition }, acknowledgements, CancellationToken.None)!;
 
         await Assert.That(connection.ShareFetchRequests).IsEmpty();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Poll_BufferedRecordsAfterASessionReset_HoldAcknowledgementsForTheFetchThatReopensIt(
+        bool sessionNotFound)
+    {
+        // A poll with buffered records drains acknowledgements with a ShareAcknowledge. Once that
+        // request resets the session, a ShareAcknowledge cannot reopen it, so later polls must keep
+        // delivering the buffered records and leave the acknowledgements for the fetch after them.
+        using var cancellation = new CancellationTokenSource();
+        var outcomes = new List<(long[] Offsets, Exception? Error)>();
+        var fetches = 0;
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2, includeShareAcknowledge: true)
+        {
+            ShareFetchHandler = (request, _) =>
+            {
+                if (++fetches == 1)
+                    return new(CreateFetchResponse(0, 100, 3));
+                if (fetches >= 3)
+                    cancellation.Cancel();
+                return new(new ShareFetchResponse { ErrorCode = ErrorCode.None, Responses = [], NodeEndpoints = [] });
+            },
+            ShareAcknowledgeHandler = (request, _) =>
+            {
+                if (request.ShareSessionEpoch == 0)
+                {
+                    return new(new ShareAcknowledgeResponse
+                    {
+                        ErrorCode = ErrorCode.InvalidShareSessionEpoch, Responses = [], NodeEndpoints = []
+                    });
+                }
+                if (sessionNotFound)
+                {
+                    return new(new ShareAcknowledgeResponse
+                    {
+                        ErrorCode = ErrorCode.ShareSessionNotFound, Responses = [], NodeEndpoints = []
+                    });
+                }
+                return ValueTask.FromException<ShareAcknowledgeResponse>(
+                    new IOException("Connection reset before the response arrived."));
+            }
+        };
+        await using var fixture = CreateFixture(connection, ShareAcknowledgementMode.Implicit,
+            maxPollRecords: 1,
+            acknowledgementCommitCallback: results => CaptureOutcomes(results, outcomes),
+            valueDeserializer: Serializers.String,
+            retryBackoffMs: 1);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Subscribe("topic");
+        await using (var first = fixture.Consumer.PollAsync(cancellation.Token).GetAsyncEnumerator(CancellationToken.None))
+            await Assert.That(await first.MoveNextAsync()).IsTrue();
+
+        await using (var failed = fixture.Consumer.PollAsync(cancellation.Token).GetAsyncEnumerator(CancellationToken.None))
+            await Assert.That(async () => await failed.MoveNextAsync()).Throws<Dekaf.Errors.KafkaException>();
+
+        await Assert.That(connection.ShareAcknowledgeRequests).HasSingleItem();
+        await Assert.That(GetSessionEpoch(fixture.Consumer, 1)).IsEqualTo(0);
+        var delivered = new List<long>();
+        await using (var next = fixture.Consumer.PollAsync(cancellation.Token).GetAsyncEnumerator(CancellationToken.None))
+        {
+            try
+            {
+                while (await next.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30), CancellationToken.None))
+                    delivered.Add(next.Current.Offset);
+            }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+            {
+            }
+        }
+
+        await Assert.That(delivered).IsEquivalentTo([101L, 102L]);
+        await Assert.That(connection.ShareAcknowledgeRequests).HasSingleItem();
+        await Assert.That(connection.ShareAcknowledgeRequests[0].ShareSessionEpoch).IsEqualTo(1);
+        await Assert.That(connection.ShareFetchRequests.Count).IsEqualTo(3);
+        await Assert.That(connection.ShareFetchRequests[1].ShareSessionEpoch).IsEqualTo(0);
+        await Assert.That(AcknowledgedOffsets(connection.ShareFetchRequests[1])).IsEmpty();
+        await Assert.That(connection.ShareFetchRequests[2].ShareSessionEpoch).IsEqualTo(1);
+        await Assert.That(AcknowledgedOffsets(connection.ShareFetchRequests[2])).IsEquivalentTo([100L, 101L, 102L]);
+        // The failed request reports its outcome once; the held acknowledgements report theirs
+        // only when the fetch after the new session carries them.
+        await Assert.That(outcomes.Count).IsEqualTo(2);
+        await Assert.That(outcomes[0].Offsets).IsEquivalentTo([100L]);
+        await Assert.That(outcomes[0].Error).IsNotNull();
+        await Assert.That(outcomes[1].Offsets).IsEquivalentTo([100L, 101L, 102L]);
+        await Assert.That(outcomes[1].Error).IsNull();
+        await Assert.That(HasPendingAcknowledgements(fixture.Consumer)).IsFalse();
     }
 
     private static async Task DrainPollAsync(

@@ -49,6 +49,9 @@ public class ShareConsumerPollBenchmarks
     // Adds a partition-level NOT_LEADER_OR_FOLLOWER for an unassigned partition to every response,
     // as a broker's share session reports a partition the consumer no longer fetches from it.
     internal bool StalePartitionError { get; set; }
+    // Below the fetched record count, compatibility polls buffer the remainder and drain their
+    // acknowledgements with a ShareAcknowledge before each later window.
+    internal int CompatibilityMaxPollRecords { get; set; }
     // A cancellable token that is never cancelled, as hosted loops and per-iteration timeouts pass.
     internal CancellationToken PollCancellationToken { get; set; }
 
@@ -121,7 +124,7 @@ public class ShareConsumerPollBenchmarks
             }]
         };
         _metadata.Metadata.Update(_connection.MetadataResponse);
-        _compatibility = CreateConsumer(pool);
+        _compatibility = CreateConsumer(pool, CompatibilityMaxPollRecords);
         _borrowed = CreateConsumer(pool, ReplayChunkSize);
         _records = _compatibility.PollAsync(PollCancellationToken).GetAsyncEnumerator();
         _batches = _borrowed.PollBatchesAsync(PollCancellationToken).GetAsyncEnumerator();
@@ -133,6 +136,9 @@ public class ShareConsumerPollBenchmarks
             : RenewalMode ? await PollBorrowedRenewalCycle() : await PollBorrowedBatch();
         if (await PollCompatibilityBatch() != expected || borrowedChecksum != expected)
             throw new InvalidOperationException("Polling changed the acquired records.");
+        if (CompatibilityMaxPollRecords != 0 && CompatibilityMaxPollRecords < _acquiredRecordCount
+            && _connection.AcknowledgeRequests == 0)
+            throw new InvalidOperationException("Buffered polling must drain acknowledgements with a ShareAcknowledge.");
     }
 
     [Benchmark]

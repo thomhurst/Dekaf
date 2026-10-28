@@ -149,7 +149,7 @@ public sealed partial class ShareConsumerRenewalTests
         return kind switch
         {
             TelemetryRequestKind.StandaloneAcknowledgements => (Task)InvokePrivate(
-                consumer, "SendAcknowledgeAsync", 1, acknowledgements, false, cancellationToken, false, false)!,
+                consumer, "SendAcknowledgeAsync", 1, acknowledgements, false, cancellationToken, false)!,
             TelemetryRequestKind.SessionClose => (Task)InvokePrivate(
                 consumer, "CloseSessionForBrokerAsync", 1, new List<TopicPartition> { partition }, cancellationToken)!,
             _ => (Task)InvokePrivate(consumer, "SendShareFetchForPartitionsAsync", 1,

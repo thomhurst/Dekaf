@@ -374,7 +374,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     ShareMetrics?.BeginPollWait();
                     try
                     {
-                        await CommitCoreAsync(cancellationToken, releaseImplicit: false).ConfigureAwait(false);
+                        await CommitCoreAsync(cancellationToken, holdWithoutSession: true).ConfigureAwait(false);
                     }
                     finally
                     {
@@ -486,7 +486,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 ShareMetrics?.BeginPollWait();
                 try
                 {
-                    await CommitCoreAsync(cancellationToken, releaseImplicit: false, reportPartitionErrors: true)
+                    await CommitCoreAsync(cancellationToken, holdWithoutSession: true, reportPartitionErrors: true)
                         .ConfigureAwait(false);
                 }
                 finally
@@ -794,19 +794,21 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         ThrowIfDisposed();
         ThrowIfNotInitialized();
 
-        await CommitCoreAsync(cancellationToken, deferWithoutSession: true).ConfigureAwait(false);
+        await CommitCoreAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    // deferWithoutSession: a commit outside the poll loop leaves acknowledgements for a reset
-    // session pending for the ShareFetch that reopens it. The poll loop's own commits keep
-    // sending, because they run before that fetch and would otherwise wait for it forever.
+    // A ShareAcknowledge cannot open a share session, so acknowledgements for a broker whose
+    // session was reset always stay pending for the ShareFetch that reopens it. CommitAsync and
+    // close report them as failed. holdWithoutSession: the poll loop's commits hold them without
+    // an outcome instead, as the fetch does, so the poll keeps delivering buffered records and
+    // reaches the ShareFetch that reopens the session. A later request reports their outcome.
     // reportPartitionErrors: like acknowledgements carried by a ShareFetch, the drain that runs while
     // records stay buffered reports partition-level failures through the commit callback only. One
     // failed partition, such as one of a deleted topic, must not stop delivery of the buffered records.
     private async ValueTask CommitCoreAsync(
         CancellationToken cancellationToken,
         bool releaseImplicit = false,
-        bool deferWithoutSession = false,
+        bool holdWithoutSession = false,
         bool reportPartitionErrors = false)
     {
         // A detached fetch can still advance the session epochs these requests carry, and may
@@ -826,10 +828,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         var tasks = new List<Task<AcknowledgeBrokerResult>>(acksByBroker.Count);
         foreach (var (brokerId, acknowledgements) in acksByBroker)
         {
+            if (holdWithoutSession && HoldWithoutSession(brokerId, pendingAcks, acknowledgements))
+                continue;
             tasks.Add(SendAcknowledgeForCommitAsync(
                 brokerId,
                 acknowledgements,
-                deferWithoutSession,
                 cancellationToken));
         }
 
@@ -837,7 +840,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         // recovery allocates additional state only when a leader is unresolved.
         var results = await (unresolvedAcknowledgements is null
             ? Task.WhenAll(tasks)
-            : RefreshUnresolvedAcknowledgementsAsync(tasks, unresolvedAcknowledgements, deferWithoutSession, cancellationToken))
+            : RefreshUnresolvedAcknowledgementsAsync(tasks, pendingAcks, unresolvedAcknowledgements, holdWithoutSession, cancellationToken))
             .ConfigureAwait(false);
 
         // Re-queue failed partitions so they can be retried on the next commit
@@ -897,8 +900,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
     private async Task<AcknowledgeBrokerResult[]> RefreshUnresolvedAcknowledgementsAsync(
         List<Task<AcknowledgeBrokerResult>> tasks,
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>> pendingAcks,
         Dictionary<TopicPartition, List<AcknowledgementBatchData>> unresolved,
-        bool deferWithoutSession,
+        bool holdWithoutSession,
         CancellationToken cancellationToken)
     {
         // Observe every existing request before another acknowledgement can use the
@@ -927,14 +931,29 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 unresolved.Add(partition, batches);
         }
         foreach (var (brokerId, acknowledgements) in resolved)
-            tasks.Add(SendAcknowledgeForCommitAsync(brokerId, acknowledgements, deferWithoutSession, cancellationToken));
+        {
+            if (holdWithoutSession && HoldWithoutSession(brokerId, pendingAcks, acknowledgements))
+                continue;
+            tasks.Add(SendAcknowledgeForCommitAsync(brokerId, acknowledgements, cancellationToken));
+        }
         return await Task.WhenAll(tasks).ConfigureAwait(false);
+    }
+
+    private bool HoldWithoutSession(
+        int brokerId,
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>> pendingAcks,
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>> acknowledgements)
+    {
+        if (_sessionManager.GetSessionEpoch(brokerId) != 0 || !_sessionManager.HadSession(brokerId))
+            return false;
+
+        DeferAcknowledgements(pendingAcks, acknowledgements);
+        return true;
     }
 
     private async Task<AcknowledgeBrokerResult> SendAcknowledgeForCommitAsync(
         int brokerId,
         Dictionary<TopicPartition, List<AcknowledgementBatchData>> acknowledgements,
-        bool deferWithoutSession,
         CancellationToken cancellationToken)
     {
         try
@@ -943,8 +962,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     brokerId,
                     acknowledgements,
                     retryRetriableFailures: true,
-                    cancellationToken: cancellationToken,
-                    deferWithoutSession: deferWithoutSession)
+                    cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -974,7 +992,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         {
             try
             {
-                await CommitCoreAsync(cancellationToken, releaseImplicit: true, deferWithoutSession: true).ConfigureAwait(false);
+                await CommitCoreAsync(cancellationToken, releaseImplicit: true).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -1409,8 +1427,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         Dictionary<TopicPartition, List<AcknowledgementBatchData>> topicAcks,
         bool retryRetriableFailures,
         CancellationToken cancellationToken,
-        bool closeSession = false,
-        bool deferWithoutSession = false)
+        bool closeSession = false)
     {
         var requestContext = GetHostedRequestContext(brokerId);
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? successfulAcknowledgements = null;
@@ -1439,12 +1456,12 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
                 // Read the epoch once: another request can reset the session while this one waits.
                 var sessionEpoch = closeSession ? ShareSessionManager.CloseEpoch : _sessionManager.GetSessionEpoch(brokerId);
-                if (deferWithoutSession && sessionEpoch == 0 && _sessionManager.HadSession(brokerId))
+                if (sessionEpoch == 0 && _sessionManager.HadSession(brokerId))
                 {
                     // The session these acknowledgements were acquired in is gone, for example
-                    // after a transport failure or an expired membership. A ShareAcknowledge cannot
-                    // open a new one: the broker rejects epoch 0 with INVALID_REQUEST. Keep them
-                    // pending for the ShareFetch that opens the next session.
+                    // after a transport failure, an expired membership, or a session error on an
+                    // earlier attempt. A ShareAcknowledge cannot open a new one: the broker rejects
+                    // epoch 0. Keep them pending for the ShareFetch that opens the next session.
                     var noSession = CreateNoShareSessionException(brokerId);
                     MergeAcknowledgements(ref failedAcknowledgements, pendingAcknowledgements);
                     CollectAcknowledgementErrors(ref acknowledgementErrors, pendingAcknowledgements, noSession);
