@@ -20,6 +20,7 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
     private readonly ArrayBufferWriter<byte> _destination = new(256);
     private ProtobufSchemaRegistrySerializer<StringValue> _serializer = null!;
     private ProtobufSchemaRegistrySerializer<StringValue> _headerSerializer = null!;
+    private ProtobufSchemaRegistrySerializer<StringValue> _latestSerializer = null!;
     private ProtobufSchemaRegistrySerializer<ValidationEnvelope> _validatedSerializer = null!;
     private ProtobufSchemaRegistrySerializer<ValidationEnvelope> _validationBaselineSerializer = null!;
     private StringValue _value = null!;
@@ -34,6 +35,9 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
         _headerSerializer = new ProtobufSchemaRegistrySerializer<StringValue>(
             new BenchmarkSchemaRegistryClient(),
             new ProtobufSerializerConfig { SchemaIdStrategy = SchemaIdSerializerStrategy.Header });
+        _latestSerializer = new ProtobufSchemaRegistrySerializer<StringValue>(
+            new BenchmarkSchemaRegistryClient(),
+            new ProtobufSerializerConfig { AutoRegisterSchemas = false, UseLatestVersion = true });
         _validatedSerializer = new ProtobufSchemaRegistrySerializer<ValidationEnvelope>(
             new BenchmarkSchemaRegistryClient(),
             new ProtobufSerializerConfig
@@ -64,6 +68,8 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
         _headerSerializer.Serialize(_value, ref destination, _headerContext);
         _headerContext.Headers!.Clear();
         destination.Clear();
+        _latestSerializer.Serialize(_value, ref destination, _context);
+        destination.Clear();
         _validatedSerializer.Serialize(_validatedValue, ref destination, _context);
         destination.Clear();
         _validationBaselineSerializer.Serialize(_validatedValue, ref destination, _context);
@@ -75,6 +81,7 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
     {
         await _serializer.DisposeAsync().ConfigureAwait(false);
         await _headerSerializer.DisposeAsync().ConfigureAwait(false);
+        await _latestSerializer.DisposeAsync().ConfigureAwait(false);
         await _validatedSerializer.DisposeAsync().ConfigureAwait(false);
         await _validationBaselineSerializer.DisposeAsync().ConfigureAwait(false);
     }
@@ -94,6 +101,14 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
         _headerContext.Headers!.Clear();
         var destination = _destination;
         _headerSerializer.Serialize(_value, ref destination, _headerContext);
+    }
+
+    [Benchmark]
+    public void SerializeCachedLatestVersion()
+    {
+        _destination.Clear();
+        var destination = _destination;
+        _latestSerializer.Serialize(_value, ref destination, _context);
     }
 
     [Benchmark]
@@ -139,6 +154,12 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
 
     private sealed class BenchmarkSchemaRegistryClient : ISchemaRegistryClient
     {
+        private static readonly Schema LatestSchema = new()
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = StringValue.Descriptor.File.SerializedData.ToBase64()
+        };
+
         public Task<int> RegisterSchemaAsync(
             string subject,
             Schema schema,
@@ -150,7 +171,13 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
         public Task<RegisteredSchema> GetSchemaBySubjectAsync(
             string subject,
             string version = "latest",
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default) => Task.FromResult(new RegisteredSchema
+            {
+                Id = 1,
+                Subject = subject,
+                Version = 1,
+                Schema = LatestSchema
+            });
 
         public Task<RegisteredSchema> LookupSchemaAsync(
             string subject,

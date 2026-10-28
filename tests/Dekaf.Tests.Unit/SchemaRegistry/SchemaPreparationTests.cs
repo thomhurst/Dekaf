@@ -327,7 +327,7 @@ public sealed class SchemaPreparationTests
         var registeredSchema = new Schema
         {
             SchemaType = SchemaType.Protobuf,
-            SchemaString = "registered-protobuf-schema"
+            SchemaString = TestMessage.Descriptor.File.SerializedData.ToBase64()
         };
         var schemaId = await registry.RegisterSchemaAsync("orders-value", registeredSchema);
         await using var serializer = new ProtobufSchemaRegistrySerializer<TestMessage>(
