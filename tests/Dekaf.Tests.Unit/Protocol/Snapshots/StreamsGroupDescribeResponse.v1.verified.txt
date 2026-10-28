@@ -1,0 +1,117 @@
+﻿Response: Dekaf.Protocol.Messages.StreamsGroupDescribeResponse
+API key: StreamsGroupDescribe (89)
+Version: 1
+Header version: 1
+Body length: 369 bytes
+
+0000: 00 00 00 11 02 00 00 00  0D 77 69 72 65 2D 73 74 |.........wire-st|
+0010: 72 65 61 6D 73 07 53 74  61 62 6C 65 00 00 00 03 |reams.Stable....|
+0020: 00 00 00 02 FF 01 00 00  00 08 01 02 02 30 04 1A |.............0..|
+0030: 4B 53 54 52 45 41 4D 2D  53 4F 55 52 43 45 2D 30 |KSTREAM-SOURCE-0|
+0040: 30 30 30 30 30 30 30 30  30 01 02 0B 77 69 72 65 |000000000...wire|
+0050: 2D 69 6E 70 75 74 00 01  02 1D 4B 53 54 52 45 41 |-input....KSTREA|
+0060: 4D 2D 41 47 47 52 45 47  41 54 45 2D 30 30 30 30 |M-AGGREGATE-0000|
+0070: 30 30 30 30 30 31 00 1D  4B 53 54 52 45 41 4D 2D |000001..KSTREAM-|
+0080: 41 47 47 52 45 47 41 54  45 2D 30 30 30 30 30 30 |AGGREGATE-000000|
+0090: 30 30 30 31 02 01 00 02  0B 77 69 72 65 2D 73 74 |0001.....wire-st|
+00A0: 6F 72 65 02 18 4B 53 54  52 45 41 4D 2D 53 49 4E |ore..KSTREAM-SIN|
+00B0: 4B 2D 30 30 30 30 30 30  30 30 30 32 00 18 4B 53 |K-0000000002..KS|
+00C0: 54 52 45 41 4D 2D 53 49  4E 4B 2D 30 30 30 30 30 |TREAM-SINK-00000|
+00D0: 30 30 30 30 32 03 01 0C  77 69 72 65 2D 6F 75 74 |00002...wire-out|
+00E0: 70 75 74 01 01 00 00 02  1A 4B 53 54 52 45 41 4D |put......KSTREAM|
+00F0: 2D 53 4F 55 52 43 45 2D  30 30 30 30 30 30 30 30 |-SOURCE-00000000|
+0100: 30 33 01 02 0C 77 69 72  65 2D 67 6C 6F 62 61 6C |03...wire-global|
+0110: 00 01 02 19 4B 54 41 42  4C 45 2D 53 4F 55 52 43 |....KTABLE-SOURC|
+0120: 45 2D 30 30 30 30 30 30  30 30 30 34 00 19 4B 54 |E-0000000004..KT|
+0130: 41 42 4C 45 2D 53 4F 55  52 43 45 2D 30 30 30 30 |ABLE-SOURCE-0000|
+0140: 30 30 30 30 30 34 02 01  00 02 12 77 69 72 65 2D |000004.....wire-|
+0150: 67 6C 6F 62 61 6C 2D 73  74 6F 72 65 01 00 00 00 |global-store....|
+0160: 03 0E 77 69 72 65 2D 61  73 73 69 67 6E 6F 72 00 |..wire-assignor.|
+0170: 00                                               |.|
+
+Decoded:
+{
+  "Groups": [
+    {
+      "AssignmentEpoch": 2,
+      "AssignorName": "wire-assignor",
+      "AuthorizedOperations": 8,
+      "ErrorCode": "None",
+      "ErrorMessage": null,
+      "GroupEpoch": 3,
+      "GroupId": "wire-streams",
+      "GroupState": "Stable",
+      "Members": [],
+      "Topology": null,
+      "TopologyDescription": {
+        "GlobalStores": [
+          {
+            "Processor": {
+              "Name": "KTABLE-SOURCE-0000000004",
+              "NodeType": 2,
+              "SinkTopic": null,
+              "SourceTopics": [],
+              "Stores": [
+                "wire-global-store"
+              ],
+              "Successors": []
+            },
+            "Source": {
+              "Name": "KSTREAM-SOURCE-0000000003",
+              "NodeType": 1,
+              "SinkTopic": null,
+              "SourceTopics": [
+                "wire-global"
+              ],
+              "Stores": [],
+              "Successors": [
+                "KTABLE-SOURCE-0000000004"
+              ]
+            }
+          }
+        ],
+        "Subtopologies": [
+          {
+            "Nodes": [
+              {
+                "Name": "KSTREAM-SOURCE-0000000000",
+                "NodeType": 1,
+                "SinkTopic": null,
+                "SourceTopics": [
+                  "wire-input"
+                ],
+                "Stores": [],
+                "Successors": [
+                  "KSTREAM-AGGREGATE-0000000001"
+                ]
+              },
+              {
+                "Name": "KSTREAM-AGGREGATE-0000000001",
+                "NodeType": 2,
+                "SinkTopic": null,
+                "SourceTopics": [],
+                "Stores": [
+                  "wire-store"
+                ],
+                "Successors": [
+                  "KSTREAM-SINK-0000000002"
+                ]
+              },
+              {
+                "Name": "KSTREAM-SINK-0000000002",
+                "NodeType": 3,
+                "SinkTopic": "wire-output",
+                "SourceTopics": [],
+                "Stores": [],
+                "Successors": []
+              }
+            ],
+            "SubtopologyId": "0"
+          }
+        ]
+      },
+      "TopologyDescriptionStatus": 3
+    }
+  ],
+  "ThrottleTimeMs": 17
+}

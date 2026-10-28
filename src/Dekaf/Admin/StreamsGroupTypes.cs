@@ -12,6 +12,96 @@ public sealed class StreamsGroupDescription
     public StreamsGroupTopology? Topology { get; init; }
     public required IReadOnlyList<StreamsGroupMemberDescription> Members { get; init; }
     public int AuthorizedOperations { get; init; } = int.MinValue;
+
+    /// <summary>
+    /// The full processing-graph description (KIP-1331). Non-null only when
+    /// <see cref="TopologyDescriptionStatus"/> is <see cref="StreamsGroupTopologyDescriptionStatus.Available"/>.
+    /// </summary>
+    public StreamsGroupTopologyDescription? TopologyDescription { get; init; }
+
+    /// <summary>
+    /// Whether the topology description was requested and could be retrieved. This status is independent of
+    /// the group's describe error: a group with <see cref="StreamsGroupTopologyDescriptionStatus.Error"/> is
+    /// still described.
+    /// </summary>
+    public StreamsGroupTopologyDescriptionStatus TopologyDescriptionStatus { get; init; }
+}
+
+/// <summary>
+/// Status of a Streams group's topology description (KIP-1331).
+/// </summary>
+public enum StreamsGroupTopologyDescriptionStatus : sbyte
+{
+    /// <summary>The description was not requested, or the broker predates StreamsGroupDescribe v1.</summary>
+    NotRequested = 0,
+
+    /// <summary>The broker has no description recorded for the group.</summary>
+    NotStored = 1,
+
+    /// <summary>The broker failed to fetch the description; see the broker logs.</summary>
+    Error = 2,
+
+    /// <summary>The description is available in <see cref="StreamsGroupDescription.TopologyDescription"/>.</summary>
+    Available = 3
+}
+
+/// <summary>
+/// Full Streams processing graph published by the application (KIP-1331).
+/// </summary>
+public sealed class StreamsGroupTopologyDescription
+{
+    public required IReadOnlyList<StreamsGroupTopologyDescriptionSubtopology> Subtopologies { get; init; }
+    public required IReadOnlyList<StreamsGroupGlobalStore> GlobalStores { get; init; }
+}
+
+/// <summary>
+/// Subtopology in a Streams topology description.
+/// </summary>
+public sealed class StreamsGroupTopologyDescriptionSubtopology
+{
+    public required string SubtopologyId { get; init; }
+    public required IReadOnlyList<StreamsGroupTopologyNode> Nodes { get; init; }
+}
+
+/// <summary>
+/// Type of a node in a Streams topology description.
+/// </summary>
+public enum StreamsGroupTopologyNodeType : sbyte
+{
+    Source = 1,
+    Processor = 2,
+    Sink = 3
+}
+
+/// <summary>
+/// Processing node in a Streams topology description. Edges are directed from a node to its
+/// <see cref="Successors"/>.
+/// </summary>
+public sealed class StreamsGroupTopologyNode
+{
+    public required string Name { get; init; }
+    public StreamsGroupTopologyNodeType NodeType { get; init; }
+
+    /// <summary>Topics read by a source node; empty when dynamically determined or for other node types.</summary>
+    public required IReadOnlyList<string> SourceTopics { get; init; }
+
+    /// <summary>Topic written by a sink node; null when dynamically determined or for other node types.</summary>
+    public string? SinkTopic { get; init; }
+
+    /// <summary>State stores accessed by a processor node.</summary>
+    public required IReadOnlyList<string> Stores { get; init; }
+
+    /// <summary>Names of the nodes this node forwards records to.</summary>
+    public required IReadOnlyList<string> Successors { get; init; }
+}
+
+/// <summary>
+/// Global state store in a Streams topology description.
+/// </summary>
+public sealed class StreamsGroupGlobalStore
+{
+    public required StreamsGroupTopologyNode Source { get; init; }
+    public required StreamsGroupTopologyNode Processor { get; init; }
 }
 
 /// <summary>

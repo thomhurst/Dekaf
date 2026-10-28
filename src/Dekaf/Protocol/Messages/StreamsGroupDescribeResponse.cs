@@ -2,7 +2,8 @@ namespace Dekaf.Protocol.Messages;
 
 /// <summary>
 /// StreamsGroupDescribe response (API key 89).
-/// Contains the descriptions of streams groups (KIP-1071).
+/// Contains the descriptions of streams groups (KIP-1071). Version 1 adds the topology description,
+/// its status (KIP-1331) and the assignor name (KIP-1357).
 /// </summary>
 public sealed class StreamsGroupDescribeResponse : IKafkaResponse
 {
@@ -17,7 +18,7 @@ public sealed class StreamsGroupDescribeResponse : IKafkaResponse
 
     public static ApiKey ApiKey => ApiKey.StreamsGroupDescribe;
     public static short LowestSupportedVersion => 0;
-    public static short HighestSupportedVersion => 0;
+    public static short HighestSupportedVersion => 1;
 
     /// <summary>
     /// The duration in milliseconds for which the request was throttled due to quota violation
@@ -35,7 +36,8 @@ public sealed class StreamsGroupDescribeResponse : IKafkaResponse
         writer.WriteInt32(ThrottleTimeMs);
         writer.WriteCompactArray(
             Groups,
-            static (ref KafkaProtocolWriter w, StreamsGroupDescribeGroup group) => group.Write(ref w));
+            static (ref KafkaProtocolWriter w, StreamsGroupDescribeGroup group, short v) => group.Write(ref w, v),
+            version);
         writer.WriteEmptyTaggedFields();
     }
 
@@ -44,7 +46,8 @@ public sealed class StreamsGroupDescribeResponse : IKafkaResponse
         var throttleTimeMs = reader.ReadInt32();
 
         var groups = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => StreamsGroupDescribeGroup.Read(ref r),
+            static (ref KafkaProtocolReader r, short v) => StreamsGroupDescribeGroup.Read(ref r, v),
+            version,
             minElementSize: 20,
             maxCount: MaxGroupCount);
 
@@ -73,7 +76,24 @@ public sealed class StreamsGroupDescribeGroup
     public required IReadOnlyList<StreamsGroupDescribeMember> Members { get; init; }
     public int AuthorizedOperations { get; init; } = int.MinValue;
 
-    public void Write(ref KafkaProtocolWriter writer)
+    /// <summary>
+    /// The full topology description (v1+). Non-null only when <see cref="TopologyDescriptionStatus"/> is 3 (available).
+    /// </summary>
+    public StreamsTopologyDescriptionData? TopologyDescription { get; init; }
+
+    /// <summary>
+    /// The topology description status (v1+): 0 = not requested, 1 = not stored, 2 = error, 3 = available.
+    /// </summary>
+    public sbyte TopologyDescriptionStatus { get; init; }
+
+    /// <summary>
+    /// The task assignor for the next assignment computation (v1+), or null on a describe error.
+    /// </summary>
+    public string? AssignorName { get; init; }
+
+    public void Write(ref KafkaProtocolWriter writer) => Write(ref writer, 0);
+
+    public void Write(ref KafkaProtocolWriter writer, short version)
     {
         writer.WriteInt16((short)ErrorCode);
         writer.WriteCompactNullableString(ErrorMessage);
@@ -86,10 +106,19 @@ public sealed class StreamsGroupDescribeGroup
             Members,
             static (ref KafkaProtocolWriter w, StreamsGroupDescribeMember member) => member.Write(ref w));
         writer.WriteInt32(AuthorizedOperations);
+        if (version >= 1)
+        {
+            StreamsTopologyDescriptionData.WriteNullable(ref writer, TopologyDescription);
+            writer.WriteInt8(TopologyDescriptionStatus);
+            writer.WriteCompactNullableString(AssignorName);
+        }
+
         writer.WriteEmptyTaggedFields();
     }
 
-    public static StreamsGroupDescribeGroup Read(ref KafkaProtocolReader reader)
+    public static StreamsGroupDescribeGroup Read(ref KafkaProtocolReader reader) => Read(ref reader, 0);
+
+    public static StreamsGroupDescribeGroup Read(ref KafkaProtocolReader reader, short version)
     {
         var errorCode = (ErrorCode)reader.ReadInt16();
         var errorMessage = reader.ReadCompactString();
@@ -103,6 +132,15 @@ public sealed class StreamsGroupDescribeGroup
             minElementSize: 28,
             maxCount: StreamsGroupDescribeResponse.MaxMemberCount);
         var authorizedOperations = reader.ReadInt32();
+        StreamsTopologyDescriptionData? topologyDescription = null;
+        sbyte topologyDescriptionStatus = 0;
+        string? assignorName = null;
+        if (version >= 1)
+        {
+            topologyDescription = StreamsTopologyDescriptionData.ReadNullable(ref reader);
+            topologyDescriptionStatus = reader.ReadInt8();
+            assignorName = reader.ReadCompactString();
+        }
 
         reader.SkipTaggedFields();
 
@@ -116,7 +154,10 @@ public sealed class StreamsGroupDescribeGroup
             AssignmentEpoch = assignmentEpoch,
             Topology = topology,
             Members = members,
-            AuthorizedOperations = authorizedOperations
+            AuthorizedOperations = authorizedOperations,
+            TopologyDescription = topologyDescription,
+            TopologyDescriptionStatus = topologyDescriptionStatus,
+            AssignorName = assignorName
         };
     }
 }

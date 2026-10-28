@@ -14,6 +14,7 @@ public sealed partial class InMemoryAdminClient :
     IReplicaLogDirAdminClient,
     ITopicIdAdminClient,
     IStreamsGroupManagementAdminClient,
+    IStreamsGroupDescriptionAdminClient,
     ITransactionRemediationAdminClient,
     IShareGroupDeletionAdminClient
 {
@@ -1364,8 +1365,18 @@ public sealed partial class InMemoryAdminClient :
         return result;
     }
 
+    public ValueTask<IReadOnlyDictionary<string, StreamsGroupDescription>> DescribeStreamsGroupsAsync(
+        IEnumerable<string> groupIds,
+        CancellationToken cancellationToken = default) =>
+        DescribeStreamsGroupsAsync(groupIds, options: null, cancellationToken);
+
+    /// <summary>
+    /// Describes streams groups. The in-memory cluster stores no topology descriptions, so a requested
+    /// description reports <see cref="StreamsGroupTopologyDescriptionStatus.NotStored"/>.
+    /// </summary>
     public async ValueTask<IReadOnlyDictionary<string, StreamsGroupDescription>> DescribeStreamsGroupsAsync(
         IEnumerable<string> groupIds,
+        DescribeStreamsGroupsOptions? options,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(groupIds);
@@ -1378,13 +1389,17 @@ public sealed partial class InMemoryAdminClient :
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < groups.Length; index++)
             await ApplyAdminFaultAsync(cancellationToken, groupId: groups[index]).ConfigureAwait(false);
+        var topologyDescriptionStatus = options?.IncludeTopologyDescription == true
+            ? StreamsGroupTopologyDescriptionStatus.NotStored
+            : StreamsGroupTopologyDescriptionStatus.NotRequested;
         var result = groups.ToDictionary(
             groupId => groupId,
             groupId => new StreamsGroupDescription
             {
                 GroupId = groupId,
                 GroupState = "Stable",
-                Members = []
+                Members = [],
+                TopologyDescriptionStatus = topologyDescriptionStatus
             },
             StringComparer.Ordinal);
 

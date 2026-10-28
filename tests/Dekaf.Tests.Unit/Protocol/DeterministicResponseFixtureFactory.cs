@@ -60,6 +60,7 @@ internal static class DeterministicResponseFixtureFactory
             ["ProduceResponse.v8"] = EncodeLegacyProduceResponse(version: 8),
             ["ProduceResponse.v12"] = Encode(WriteProduceResponseV12),
             ["ProduceResponse.v13"] = Encode(WriteProduceResponseV13),
+            ["StreamsGroupDescribeResponse.v1"] = Encode(WriteStreamsGroupDescribeResponseV1),
             ["StreamsGroupHeartbeatResponse.v0"] = EncodeStreamsGroupHeartbeatResponse(version: 0),
             ["StreamsGroupHeartbeatResponse.v1"] = EncodeStreamsGroupHeartbeatResponse(version: 1),
             ["UpdateFeaturesResponse.v0"] = EncodeUpdateFeaturesResponse(version: 0),
@@ -110,6 +111,69 @@ internal static class DeterministicResponseFixtureFactory
         WriteEmptyTaggedFields(ref writer);
         WriteEmptyTaggedFields(ref writer);
         return buffer.WrittenSpan.ToArray();
+    }
+
+    // One described group whose v1 topology description covers every node type, a null sink
+    // topic and a global store, followed by the status and assignor fields.
+    private static void WriteStreamsGroupDescribeResponseV1(ref KafkaProtocolWriter writer)
+    {
+        writer.WriteInt32(17);
+        WriteCompactArrayLength(ref writer, 1);
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteCompactNullableString(null);
+        writer.WriteCompactString("wire-streams");
+        writer.WriteCompactString("Stable");
+        writer.WriteInt32(3);
+        writer.WriteInt32(2);
+        writer.WriteInt8(-1);
+        WriteCompactArrayLength(ref writer, 0);
+        writer.WriteInt32(8);
+
+        writer.WriteInt8(1);
+        WriteCompactArrayLength(ref writer, 1);
+        writer.WriteCompactString("0");
+        WriteCompactArrayLength(ref writer, 3);
+        WriteStreamsTopologyNode(ref writer, "KSTREAM-SOURCE-0000000000", 1, ["wire-input"], null, [], ["KSTREAM-AGGREGATE-0000000001"]);
+        WriteStreamsTopologyNode(ref writer, "KSTREAM-AGGREGATE-0000000001", 2, [], null, ["wire-store"], ["KSTREAM-SINK-0000000002"]);
+        WriteStreamsTopologyNode(ref writer, "KSTREAM-SINK-0000000002", 3, [], "wire-output", [], []);
+        WriteEmptyTaggedFields(ref writer);
+        WriteCompactArrayLength(ref writer, 1);
+        WriteStreamsTopologyNode(ref writer, "KSTREAM-SOURCE-0000000003", 1, ["wire-global"], null, [], ["KTABLE-SOURCE-0000000004"]);
+        WriteStreamsTopologyNode(ref writer, "KTABLE-SOURCE-0000000004", 2, [], null, ["wire-global-store"], []);
+        WriteEmptyTaggedFields(ref writer);
+        WriteEmptyTaggedFields(ref writer);
+
+        writer.WriteInt8(3);
+        writer.WriteCompactNullableString("wire-assignor");
+        WriteEmptyTaggedFields(ref writer);
+        WriteEmptyTaggedFields(ref writer);
+    }
+
+    private static void WriteStreamsTopologyNode(
+        ref KafkaProtocolWriter writer,
+        string name,
+        sbyte nodeType,
+        IReadOnlyList<string> sourceTopics,
+        string? sinkTopic,
+        IReadOnlyList<string> stores,
+        IReadOnlyList<string> successors)
+    {
+        writer.WriteCompactString(name);
+        writer.WriteInt8(nodeType);
+        WriteCompactStrings(ref writer, sourceTopics);
+        writer.WriteCompactNullableString(sinkTopic);
+        WriteCompactStrings(ref writer, stores);
+        WriteCompactStrings(ref writer, successors);
+        WriteEmptyTaggedFields(ref writer);
+    }
+
+    private static void WriteCompactStrings(ref KafkaProtocolWriter writer, IReadOnlyList<string> values)
+    {
+        WriteCompactArrayLength(ref writer, values.Count);
+        for (var i = 0; i < values.Count; i++)
+        {
+            writer.WriteCompactString(values[i]);
+        }
     }
 
     private static void WriteStreamsTaskIds(

@@ -783,3 +783,109 @@ static Dekaf.Protocol.Messages.UnregisterControllerResponse.ApiKey.get -> Dekaf.
 static Dekaf.Protocol.Messages.UnregisterControllerResponse.HighestSupportedVersion.get -> short
 static Dekaf.Protocol.Messages.UnregisterControllerResponse.LowestSupportedVersion.get -> short
 static Dekaf.Protocol.Messages.UnregisterControllerResponse.Read(ref Dekaf.Protocol.KafkaProtocolReader reader, short version) -> Dekaf.Protocol.IKafkaResponse!
+Dekaf.Admin.AdminClient.DescribeStreamsGroupsAsync(System.Collections.Generic.IEnumerable<string!>! groupIds, Dekaf.Admin.DescribeStreamsGroupsOptions? options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.StreamsGroupDescription!>!>
+Dekaf.Admin.AdminClientStreamsGroupDescriptionExtensions
+Dekaf.Admin.DescribeStreamsGroupsOptions
+Dekaf.Admin.DescribeStreamsGroupsOptions.DescribeStreamsGroupsOptions() -> void
+Dekaf.Admin.DescribeStreamsGroupsOptions.IncludeTopologyDescription.get -> bool
+Dekaf.Admin.DescribeStreamsGroupsOptions.IncludeTopologyDescription.init -> void
+Dekaf.Admin.IStreamsGroupDescriptionAdminClient
+Dekaf.Admin.IStreamsGroupDescriptionAdminClient.DescribeStreamsGroupsAsync(System.Collections.Generic.IEnumerable<string!>! groupIds, Dekaf.Admin.DescribeStreamsGroupsOptions? options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.StreamsGroupDescription!>!>
+Dekaf.Admin.StreamsGroupDescription.TopologyDescription.get -> Dekaf.Admin.StreamsGroupTopologyDescription?
+Dekaf.Admin.StreamsGroupDescription.TopologyDescription.init -> void
+Dekaf.Admin.StreamsGroupDescription.TopologyDescriptionStatus.get -> Dekaf.Admin.StreamsGroupTopologyDescriptionStatus
+Dekaf.Admin.StreamsGroupDescription.TopologyDescriptionStatus.init -> void
+Dekaf.Admin.StreamsGroupGlobalStore
+Dekaf.Admin.StreamsGroupGlobalStore.Processor.get -> Dekaf.Admin.StreamsGroupTopologyNode!
+Dekaf.Admin.StreamsGroupGlobalStore.Processor.init -> void
+Dekaf.Admin.StreamsGroupGlobalStore.Source.get -> Dekaf.Admin.StreamsGroupTopologyNode!
+Dekaf.Admin.StreamsGroupGlobalStore.Source.init -> void
+Dekaf.Admin.StreamsGroupGlobalStore.StreamsGroupGlobalStore() -> void
+Dekaf.Admin.StreamsGroupTopologyDescription
+Dekaf.Admin.StreamsGroupTopologyDescription.GlobalStores.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Admin.StreamsGroupGlobalStore!>!
+Dekaf.Admin.StreamsGroupTopologyDescription.GlobalStores.init -> void
+Dekaf.Admin.StreamsGroupTopologyDescription.StreamsGroupTopologyDescription() -> void
+Dekaf.Admin.StreamsGroupTopologyDescription.Subtopologies.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Admin.StreamsGroupTopologyDescriptionSubtopology!>!
+Dekaf.Admin.StreamsGroupTopologyDescription.Subtopologies.init -> void
+Dekaf.Admin.StreamsGroupTopologyDescriptionStatus
+Dekaf.Admin.StreamsGroupTopologyDescriptionStatus.Available = 3 -> Dekaf.Admin.StreamsGroupTopologyDescriptionStatus
+Dekaf.Admin.StreamsGroupTopologyDescriptionStatus.Error = 2 -> Dekaf.Admin.StreamsGroupTopologyDescriptionStatus
+Dekaf.Admin.StreamsGroupTopologyDescriptionStatus.NotRequested = 0 -> Dekaf.Admin.StreamsGroupTopologyDescriptionStatus
+Dekaf.Admin.StreamsGroupTopologyDescriptionStatus.NotStored = 1 -> Dekaf.Admin.StreamsGroupTopologyDescriptionStatus
+Dekaf.Admin.StreamsGroupTopologyDescriptionSubtopology
+Dekaf.Admin.StreamsGroupTopologyDescriptionSubtopology.Nodes.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Admin.StreamsGroupTopologyNode!>!
+Dekaf.Admin.StreamsGroupTopologyDescriptionSubtopology.Nodes.init -> void
+Dekaf.Admin.StreamsGroupTopologyDescriptionSubtopology.StreamsGroupTopologyDescriptionSubtopology() -> void
+Dekaf.Admin.StreamsGroupTopologyDescriptionSubtopology.SubtopologyId.get -> string!
+Dekaf.Admin.StreamsGroupTopologyDescriptionSubtopology.SubtopologyId.init -> void
+Dekaf.Admin.StreamsGroupTopologyNode
+Dekaf.Admin.StreamsGroupTopologyNode.Name.get -> string!
+Dekaf.Admin.StreamsGroupTopologyNode.Name.init -> void
+Dekaf.Admin.StreamsGroupTopologyNode.NodeType.get -> Dekaf.Admin.StreamsGroupTopologyNodeType
+Dekaf.Admin.StreamsGroupTopologyNode.NodeType.init -> void
+Dekaf.Admin.StreamsGroupTopologyNode.SinkTopic.get -> string?
+Dekaf.Admin.StreamsGroupTopologyNode.SinkTopic.init -> void
+Dekaf.Admin.StreamsGroupTopologyNode.SourceTopics.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Dekaf.Admin.StreamsGroupTopologyNode.SourceTopics.init -> void
+Dekaf.Admin.StreamsGroupTopologyNode.Stores.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Dekaf.Admin.StreamsGroupTopologyNode.Stores.init -> void
+Dekaf.Admin.StreamsGroupTopologyNode.StreamsGroupTopologyNode() -> void
+Dekaf.Admin.StreamsGroupTopologyNode.Successors.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Dekaf.Admin.StreamsGroupTopologyNode.Successors.init -> void
+Dekaf.Admin.StreamsGroupTopologyNodeType
+Dekaf.Admin.StreamsGroupTopologyNodeType.Processor = 2 -> Dekaf.Admin.StreamsGroupTopologyNodeType
+Dekaf.Admin.StreamsGroupTopologyNodeType.Sink = 3 -> Dekaf.Admin.StreamsGroupTopologyNodeType
+Dekaf.Admin.StreamsGroupTopologyNodeType.Source = 1 -> Dekaf.Admin.StreamsGroupTopologyNodeType
+Dekaf.Protocol.Messages.StreamsGroupDescribeGroup.AssignorName.get -> string?
+Dekaf.Protocol.Messages.StreamsGroupDescribeGroup.AssignorName.init -> void
+Dekaf.Protocol.Messages.StreamsGroupDescribeGroup.TopologyDescription.get -> Dekaf.Protocol.Messages.StreamsTopologyDescriptionData?
+Dekaf.Protocol.Messages.StreamsGroupDescribeGroup.TopologyDescription.init -> void
+Dekaf.Protocol.Messages.StreamsGroupDescribeGroup.TopologyDescriptionStatus.get -> sbyte
+Dekaf.Protocol.Messages.StreamsGroupDescribeGroup.TopologyDescriptionStatus.init -> void
+Dekaf.Protocol.Messages.StreamsGroupDescribeGroup.Write(ref Dekaf.Protocol.KafkaProtocolWriter writer, short version) -> void
+Dekaf.Protocol.Messages.StreamsGroupDescribeRequest.IncludeTopologyDescription.get -> bool
+Dekaf.Protocol.Messages.StreamsGroupDescribeRequest.IncludeTopologyDescription.init -> void
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionData
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionData.GlobalStores.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Protocol.Messages.StreamsTopologyDescriptionGlobalStoreData!>!
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionData.GlobalStores.init -> void
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionData.StreamsTopologyDescriptionData() -> void
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionData.Subtopologies.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Protocol.Messages.StreamsTopologyDescriptionSubtopologyData!>!
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionData.Subtopologies.init -> void
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionData.Write(ref Dekaf.Protocol.KafkaProtocolWriter writer) -> void
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionGlobalStoreData
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionGlobalStoreData.Processor.get -> Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData!
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionGlobalStoreData.Processor.init -> void
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionGlobalStoreData.Source.get -> Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData!
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionGlobalStoreData.Source.init -> void
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionGlobalStoreData.StreamsTopologyDescriptionGlobalStoreData() -> void
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionGlobalStoreData.Write(ref Dekaf.Protocol.KafkaProtocolWriter writer) -> void
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData.Name.get -> string!
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData.Name.init -> void
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData.NodeType.get -> sbyte
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData.NodeType.init -> void
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData.SinkTopic.get -> string?
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData.SinkTopic.init -> void
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData.SourceTopics.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData.SourceTopics.init -> void
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData.Stores.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData.Stores.init -> void
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData.StreamsTopologyDescriptionNodeData() -> void
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData.Successors.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData.Successors.init -> void
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData.Write(ref Dekaf.Protocol.KafkaProtocolWriter writer) -> void
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionSubtopologyData
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionSubtopologyData.Nodes.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData!>!
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionSubtopologyData.Nodes.init -> void
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionSubtopologyData.StreamsTopologyDescriptionSubtopologyData() -> void
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionSubtopologyData.SubtopologyId.get -> string!
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionSubtopologyData.SubtopologyId.init -> void
+Dekaf.Protocol.Messages.StreamsTopologyDescriptionSubtopologyData.Write(ref Dekaf.Protocol.KafkaProtocolWriter writer) -> void
+static Dekaf.Admin.AdminClientStreamsGroupDescriptionExtensions.DescribeStreamsGroupsAsync(this Dekaf.Admin.IAdminClient! adminClient, System.Collections.Generic.IEnumerable<string!>! groupIds, Dekaf.Admin.DescribeStreamsGroupsOptions? options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.StreamsGroupDescription!>!>
+static Dekaf.Protocol.Messages.StreamsGroupDescribeGroup.Read(ref Dekaf.Protocol.KafkaProtocolReader reader, short version) -> Dekaf.Protocol.Messages.StreamsGroupDescribeGroup!
+static Dekaf.Protocol.Messages.StreamsTopologyDescriptionData.Read(ref Dekaf.Protocol.KafkaProtocolReader reader) -> Dekaf.Protocol.Messages.StreamsTopologyDescriptionData!
+static Dekaf.Protocol.Messages.StreamsTopologyDescriptionData.ReadNullable(ref Dekaf.Protocol.KafkaProtocolReader reader) -> Dekaf.Protocol.Messages.StreamsTopologyDescriptionData?
+static Dekaf.Protocol.Messages.StreamsTopologyDescriptionData.WriteNullable(ref Dekaf.Protocol.KafkaProtocolWriter writer, Dekaf.Protocol.Messages.StreamsTopologyDescriptionData? description) -> void
+static Dekaf.Protocol.Messages.StreamsTopologyDescriptionGlobalStoreData.Read(ref Dekaf.Protocol.KafkaProtocolReader reader) -> Dekaf.Protocol.Messages.StreamsTopologyDescriptionGlobalStoreData!
+static Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData.Read(ref Dekaf.Protocol.KafkaProtocolReader reader) -> Dekaf.Protocol.Messages.StreamsTopologyDescriptionNodeData!
+static Dekaf.Protocol.Messages.StreamsTopologyDescriptionSubtopologyData.Read(ref Dekaf.Protocol.KafkaProtocolReader reader) -> Dekaf.Protocol.Messages.StreamsTopologyDescriptionSubtopologyData!

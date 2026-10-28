@@ -3,6 +3,7 @@ using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Streams;
+using static Dekaf.Admin.AdminClientStreamsGroupDescriptionExtensions;
 
 namespace Dekaf.Tests.Integration;
 
@@ -69,6 +70,40 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
         await replacement.JoinAsync(CreateInitialState(topic, "process-b"));
         await Assert.That(replacement.Snapshot.MemberId).IsNotEqualTo(firstMemberId);
         await replacement.CloseAsync(new StreamsGroupCloseOptions
+        {
+            GroupMembershipOperation = StreamsGroupMembershipOperation.LeaveGroup
+        });
+    }
+
+    [Test]
+    [SupportsKafka(CompleteStreamsGroupSupport)]
+    public async Task Kafka44DescribeReportsTopologyDescriptionStatus()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1).ConfigureAwait(false);
+        var groupId = $"streams-group-{Guid.NewGuid():N}";
+        await using var client = Kafka.Connect(KafkaContainer.BootstrapServers, builder =>
+            builder.WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()));
+        await using var member = client.CreateStreamsGroupMember(new StreamsGroupMemberOptions
+        {
+            GroupId = groupId
+        });
+        await member.InitializeAsync();
+        await member.JoinAsync(CreateInitialState(topic, "process-description"));
+        await using var admin = client.CreateAdminClient().Build();
+
+        var withoutDescription = await admin.DescribeStreamsGroupsAsync([groupId]);
+        // The test broker has no topology-description plugin, so no description is ever stored.
+        var withDescription = await admin.DescribeStreamsGroupsAsync(
+            [groupId],
+            new Dekaf.Admin.DescribeStreamsGroupsOptions { IncludeTopologyDescription = true });
+
+        await Assert.That(withoutDescription[groupId].TopologyDescriptionStatus)
+            .IsEqualTo(Dekaf.Admin.StreamsGroupTopologyDescriptionStatus.NotRequested);
+        await Assert.That(withDescription[groupId].TopologyDescriptionStatus)
+            .IsEqualTo(Dekaf.Admin.StreamsGroupTopologyDescriptionStatus.NotStored);
+        await Assert.That(withDescription[groupId].TopologyDescription).IsNull();
+        await Assert.That(withDescription[groupId].Members.Single().MemberId).IsEqualTo(member.Snapshot.MemberId);
+        await member.CloseAsync(new StreamsGroupCloseOptions
         {
             GroupMembershipOperation = StreamsGroupMembershipOperation.LeaveGroup
         });

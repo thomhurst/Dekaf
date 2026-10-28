@@ -1,4 +1,5 @@
 using Dekaf.Admin;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -191,6 +192,183 @@ public sealed class AdminClientStreamsGroupTests
             Arg.Any<CancellationToken>());
     }
 
+    [Test]
+    public async Task DescribeStreamsGroupsAsync_WithTopologyDescription_SendsV1AndMapsEachGroupStatus()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections(streamsGroupDescribeMaxVersion: 1);
+        var connection = connections[1];
+        StubCoordinator(connection);
+
+        connection.SendAsync<StreamsGroupDescribeRequest, StreamsGroupDescribeResponse>(
+                Arg.Any<StreamsGroupDescribeRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new StreamsGroupDescribeResponse
+            {
+                Groups =
+                [
+                    DescribedGroup("available", 3, new StreamsTopologyDescriptionData
+                    {
+                        Subtopologies =
+                        [
+                            new StreamsTopologyDescriptionSubtopologyData
+                            {
+                                SubtopologyId = "0",
+                                Nodes =
+                                [
+                                    Node("KSTREAM-SOURCE-0000000000", 1, sourceTopics: ["input"], successors: ["KSTREAM-AGGREGATE-0000000001"]),
+                                    Node("KSTREAM-AGGREGATE-0000000001", 2, stores: ["counts"], successors: ["KSTREAM-SINK-0000000002"]),
+                                    Node("KSTREAM-SINK-0000000002", 3, sinkTopic: "output")
+                                ]
+                            }
+                        ],
+                        GlobalStores =
+                        [
+                            new StreamsTopologyDescriptionGlobalStoreData
+                            {
+                                Source = Node("KSTREAM-SOURCE-0000000003", 1, sourceTopics: ["global-input"], successors: ["KTABLE-SOURCE-0000000004"]),
+                                Processor = Node("KTABLE-SOURCE-0000000004", 2, stores: ["global-store"])
+                            }
+                        ]
+                    }),
+                    DescribedGroup("failed-fetch", 2, null),
+                    DescribedGroup("not-stored", 1, null)
+                ]
+            }));
+
+        var descriptions = await admin.DescribeStreamsGroupsAsync(
+            ["available", "failed-fetch", "not-stored"],
+            new DescribeStreamsGroupsOptions { IncludeTopologyDescription = true });
+
+        var available = descriptions["available"];
+        await Assert.That(available.TopologyDescriptionStatus).IsEqualTo(StreamsGroupTopologyDescriptionStatus.Available);
+        var nodes = available.TopologyDescription!.Subtopologies[0].Nodes;
+        await Assert.That(nodes.Select(static n => n.NodeType)).IsEquivalentTo(
+            [StreamsGroupTopologyNodeType.Source, StreamsGroupTopologyNodeType.Processor, StreamsGroupTopologyNodeType.Sink]);
+        await Assert.That(nodes[0].SourceTopics).IsEquivalentTo(["input"]);
+        await Assert.That(nodes[0].Successors).IsEquivalentTo(["KSTREAM-AGGREGATE-0000000001"]);
+        await Assert.That(nodes[1].Stores).IsEquivalentTo(["counts"]);
+        await Assert.That(nodes[1].SinkTopic).IsNull();
+        await Assert.That(nodes[2].SinkTopic).IsEqualTo("output");
+        var globalStore = available.TopologyDescription.GlobalStores[0];
+        await Assert.That(globalStore.Source.SourceTopics).IsEquivalentTo(["global-input"]);
+        await Assert.That(globalStore.Processor.Stores).IsEquivalentTo(["global-store"]);
+
+        var failedFetch = descriptions["failed-fetch"];
+        await Assert.That(failedFetch.TopologyDescriptionStatus).IsEqualTo(StreamsGroupTopologyDescriptionStatus.Error);
+        await Assert.That(failedFetch.TopologyDescription).IsNull();
+        await Assert.That(failedFetch.GroupState).IsEqualTo("Stable");
+        await Assert.That(descriptions["not-stored"].TopologyDescriptionStatus).IsEqualTo(StreamsGroupTopologyDescriptionStatus.NotStored);
+        await connection.Received(1).SendAsync<StreamsGroupDescribeRequest, StreamsGroupDescribeResponse>(
+            Arg.Is<StreamsGroupDescribeRequest>(r => r != null && r.IncludeTopologyDescription),
+            1,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task DescribeStreamsGroupsAsync_WithoutTopologyDescription_DoesNotRequestIt()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections(streamsGroupDescribeMaxVersion: 1);
+        var connection = connections[1];
+        StubCoordinator(connection);
+
+        connection.SendAsync<StreamsGroupDescribeRequest, StreamsGroupDescribeResponse>(
+                Arg.Any<StreamsGroupDescribeRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new StreamsGroupDescribeResponse
+            {
+                Groups = [DescribedGroup("streams-a", 0, null)]
+            }));
+
+        var descriptions = await admin.DescribeStreamsGroupsAsync(["streams-a"]);
+
+        await Assert.That(descriptions["streams-a"].TopologyDescriptionStatus).IsEqualTo(StreamsGroupTopologyDescriptionStatus.NotRequested);
+        await connection.Received(1).SendAsync<StreamsGroupDescribeRequest, StreamsGroupDescribeResponse>(
+            Arg.Is<StreamsGroupDescribeRequest>(r => r != null && !r.IncludeTopologyDescription),
+            1,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task DescribeStreamsGroupsAsync_WithTopologyDescriptionOnV0Broker_ThrowsUnsupportedVersion()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections(streamsGroupDescribeMaxVersion: 0);
+        var connection = connections[1];
+        StubCoordinator(connection);
+
+        var exception = await Assert.That(async () => await admin.DescribeStreamsGroupsAsync(
+                ["streams-a"],
+                new DescribeStreamsGroupsOptions { IncludeTopologyDescription = true }))
+            .Throws<KafkaException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.UnsupportedVersion);
+        await connection.DidNotReceive().SendAsync<StreamsGroupDescribeRequest, StreamsGroupDescribeResponse>(
+            Arg.Any<StreamsGroupDescribeRequest>(),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task DescribeStreamsGroupsAsync_OptionsWithoutCapability_ThrowsNotSupported()
+    {
+        var admin = Substitute.For<IAdminClient>();
+
+        await Assert.That(async () => await admin.DescribeStreamsGroupsAsync(["streams-a"], new DescribeStreamsGroupsOptions()))
+            .Throws<NotSupportedException>();
+    }
+
+    private static void StubCoordinator(IKafkaConnection connection)
+    {
+        connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo => ValueTask.FromResult(new FindCoordinatorResponse
+            {
+                Coordinators =
+                [
+                    new Coordinator
+                    {
+                        Key = callInfo.Arg<FindCoordinatorRequest>()!.Key,
+                        NodeId = 1,
+                        Host = "localhost",
+                        Port = 9092,
+                        ErrorCode = ErrorCode.None
+                    }
+                ]
+            }));
+    }
+
+    private static StreamsGroupDescribeGroup DescribedGroup(
+        string groupId,
+        sbyte topologyDescriptionStatus,
+        StreamsTopologyDescriptionData? topologyDescription) => new()
+    {
+        ErrorCode = ErrorCode.None,
+        GroupId = groupId,
+        GroupState = "Stable",
+        Members = [],
+        TopologyDescription = topologyDescription,
+        TopologyDescriptionStatus = topologyDescriptionStatus
+    };
+
+    private static StreamsTopologyDescriptionNodeData Node(
+        string name,
+        sbyte nodeType,
+        IReadOnlyList<string>? sourceTopics = null,
+        string? sinkTopic = null,
+        IReadOnlyList<string>? stores = null,
+        IReadOnlyList<string>? successors = null) => new()
+    {
+        Name = name,
+        NodeType = nodeType,
+        SourceTopics = sourceTopics ?? [],
+        SinkTopic = sinkTopic,
+        Stores = stores ?? [],
+        Successors = successors ?? []
+    };
+
     private static ListGroupsResponseGroup Group(string groupId, string groupType, string state) => new()
     {
         GroupId = groupId,
@@ -228,7 +406,8 @@ public sealed class AdminClientStreamsGroupTests
         WarmupTasks = []
     };
 
-    private static (AdminClient Admin, IReadOnlyDictionary<int, IKafkaConnection> Connections) CreateAdminWithMockConnections()
+    private static (AdminClient Admin, IReadOnlyDictionary<int, IKafkaConnection> Connections) CreateAdminWithMockConnections(
+        short streamsGroupDescribeMaxVersion = 0)
     {
         var connections = new Dictionary<int, IKafkaConnection>
         {
@@ -266,7 +445,7 @@ public sealed class AdminClientStreamsGroupTests
         });
         metadataManager.SetApiVersion(ApiKey.FindCoordinator, 4, 5);
         metadataManager.SetApiVersion(ApiKey.ListGroups, 5, 5);
-        metadataManager.SetApiVersion(ApiKey.StreamsGroupDescribe, 0, 0);
+        metadataManager.SetApiVersion(ApiKey.StreamsGroupDescribe, 0, streamsGroupDescribeMaxVersion);
 
         var admin = new AdminClient(
             new AdminClientOptions { BootstrapServers = ["localhost:9092"] },
