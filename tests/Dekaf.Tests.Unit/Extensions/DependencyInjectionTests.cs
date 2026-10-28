@@ -661,6 +661,57 @@ public class DependencyInjectionTests
     }
 
     [Test]
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    [Arguments(true, true)]
+    public async Task AddProducerFromConfluentConfig_UsesConfluentPartitionerDefault(bool keyed, bool providerAware)
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092"
+        });
+        var section = configuration.GetSection("Config");
+
+        services.AddDekaf(builder =>
+        {
+            if (keyed && providerAware)
+                builder.AddProducerFromConfluentConfig<string, string>("orders", section, (_, _) => { });
+            else if (keyed)
+                builder.AddProducerFromConfluentConfig<string, string>("orders", section);
+            else if (providerAware)
+                builder.AddProducerFromConfluentConfig<string, string>(section, (_, _) => { });
+            else
+                builder.AddProducerFromConfluentConfig<string, string>(section);
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        var producer = keyed
+            ? provider.GetRequiredKeyedService<IKafkaProducer<string, string>>("orders")
+            : provider.GetRequiredService<IKafkaProducer<string, string>>();
+        await Assert.That(GetProducerOptions(producer).Partitioner).IsEqualTo(PartitionerType.ConsistentRandom);
+    }
+
+    [Test]
+    public async Task AddProducerFromConfluentConfig_FluentPartitionerOverridesConfluentDefault()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092"
+        });
+
+        services.AddDekaf(builder => builder.AddProducerFromConfluentConfig<string, string>(
+            configuration.GetSection("Config"),
+            producer => producer.WithPartitioner(PartitionerType.Default)));
+
+        await using var provider = services.BuildServiceProvider();
+        var options = GetProducerOptions(provider.GetRequiredService<IKafkaProducer<string, string>>());
+        await Assert.That(options.Partitioner).IsEqualTo(PartitionerType.Default);
+    }
+
+    [Test]
     public async Task AddProducerFromConfluentConfig_TransactionalIdEnablesIdempotenceByDefault()
     {
         var services = new ServiceCollection();
