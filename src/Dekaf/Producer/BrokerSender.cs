@@ -51,7 +51,10 @@ internal readonly record struct TransactionPartitionEnrollmentResult(
 ///
 /// Epoch recovery for OutOfOrderSequenceNumber uses the Java Kafka Sender pattern:
 /// response handlers signal a flag, and the single-threaded send loop bumps the epoch
-/// before the next send. This eliminates all races between concurrent handlers.
+/// before the next send. This eliminates all races between concurrent handlers. An
+/// OutOfOrderSequenceNumber for a batch behind an earlier batch that the broker rejected
+/// without appending (a KIP-126 split, or a retriable error) is only the gap that batch left:
+/// it is resent with its stamp behind that batch, without a bump (Java's isNextSequence rule).
 ///
 /// In-flight limiting uses both request count and encoded bytes. The byte ceiling keeps
 /// acknowledged pipelines near broker BDP instead of filling the full admission buffer.
@@ -3718,11 +3721,33 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (pendingList.Count == 0) continue;
 
             var removedAny = false;
+            // First entry this scan skipped as incomplete. A connection completes its responses
+            // in request order, but an earlier response can complete after the scan skipped it
+            // and before the scan reaches a later completed one. Going back keeps the order, so a
+            // rejected batch is queued before a later batch of its partition is judged (#3823).
+            var firstSkipped = -1;
             for (var i = 0; i < pendingList.Count; i++)
             {
                 var pending = pendingList[i];
+                if (pending.IsClaimed)
+                {
+                    continue;
+                }
+
                 if (!pending.ResponseTask.IsCompleted)
                 {
+                    if (firstSkipped < 0)
+                        firstSkipped = i;
+                    continue;
+                }
+
+                if (firstSkipped >= 0 && pendingList[firstSkipped].ResponseTask.IsCompleted)
+                {
+                    // Restart at the skipped entry; the loop increment lands on it. Each restart
+                    // claims that entry, so the scan ends. A skipped entry that is still
+                    // incomplete means a genuine out-of-order completion: process as before.
+                    i = firstSkipped - 1;
+                    firstSkipped = -1;
                     continue;
                 }
 
@@ -4031,6 +4056,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         UnmutePartition(splitTopicPartition);
                     }
 
+                    // An earlier batch of the partition under the same stamp was rejected without
+                    // being appended and waits to be resent (a KIP-126 split, or a retriable error
+                    // while this batch was on the wire): the broker saw a gap that closes once the
+                    // earlier batch lands, so this batch is resent with its sequence unchanged
+                    // behind it, without failing the transaction or bumping the epoch (Java's
+                    // TransactionManager.canRetry, !isNextSequence). Error path only.
+                    var behindRejectedPredecessor = partitionResponse.ErrorCode == ErrorCode.OutOfOrderSequenceNumber
+                        && HasRejectedPredecessor(batch, carryOver);
+
                     // A transactional producer has no epoch-bump recovery, so resending the same
                     // stamp after a fence or a sequence error can only be rejected again until the
                     // delivery timeout. Fail the batch now with the transaction's own error.
@@ -4038,7 +4072,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             or ErrorCode.InvalidProducerEpoch
                             or ErrorCode.OutOfOrderSequenceNumber
                             or ErrorCode.UnknownProducerId
-                        && _options.TransactionalId is not null;
+                        && _options.TransactionalId is not null
+                        && !behindRejectedPredecessor;
 
                     if (!transactionalStampRejected
                         && (partitionResponse.ErrorCode.IsRetriable()
@@ -4055,7 +4090,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                         HandleRetriableBatch(batch, pending.BatchGenerations[j], partitionResponse.ErrorCode,
                             partitionResponse.CurrentLeader, nodeEndpoints,
-                            carryOver, cancellationToken);
+                            carryOver, cancellationToken,
+                            behindRejectedPredecessor: behindRejectedPredecessor);
                         batches[j] = null!;
                         continue;
                     }
@@ -4372,7 +4408,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         IReadOnlyList<NodeEndpoint> nodeEndpoints,
         PartitionCarryOver carryOver,
         CancellationToken cancellationToken,
-        bool networkRetryPrepared = false)
+        bool networkRetryPrepared = false,
+        bool behindRejectedPredecessor = false)
     {
         if (!batch.IsCurrentIncarnation(generation))
         {
@@ -4406,8 +4443,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (!networkRetryPrepared && !batch.IsLoopExitRedelivery)
             MutePartition(batch.TopicPartition);
 
-        var isEpochBumpError = errorCode is ErrorCode.OutOfOrderSequenceNumber
-            or ErrorCode.InvalidProducerEpoch or ErrorCode.UnknownProducerId;
+        // An OutOfOrderSequenceNumber behind a rejected predecessor is a gap that the predecessor's
+        // resend closes, not lost sequence state: no epoch bump.
+        var isEpochBumpError = !behindRejectedPredecessor
+            && errorCode is ErrorCode.OutOfOrderSequenceNumber
+                or ErrorCode.InvalidProducerEpoch or ErrorCode.UnknownProducerId;
 
         if (isEpochBumpError && _bumpEpoch is not null)
         {
@@ -4425,6 +4465,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // Apply backoff to prevent tight retry loops if the epoch bump doesn't
             // resolve the error (e.g., broker keeps rejecting with OOSN).
             ApplyRetryBackoff(batch);
+        }
+        else if (behindRejectedPredecessor)
+        {
+            var delayMs = ApplyRetryBackoff(batch);
+            LogOutOfOrderSequenceBehindRejectedPredecessor(batch.TopicPartition.Topic,
+                batch.TopicPartition.Partition, batch.RecordBatch.BaseSequence, delayMs);
         }
         else if (!networkRetryPrepared)
         {
@@ -4457,6 +4503,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Diagnostics.DekafMetrics.Retries.Add(1,
             new System.Diagnostics.TagList { { Diagnostics.DekafDiagnostics.MessagingDestinationName, batch.TopicPartition.Topic } });
 
+        // The batch is resent with its stamp unchanged, so a successor answered with
+        // OutOfOrderSequenceNumber before this resend is answered waits behind it.
+        if (batch.InflightEntry is { } keptEntry)
+            Volatile.Write(ref keptEntry.Resent, true);
+
         // Insert after existing retries but before non-retry carry-over batches.
         // When ProcessCompletedResponses processes multiple responses (R1, R2, ...)
         // in forward order, each response's retry must go AFTER earlier responses'
@@ -4464,6 +4515,53 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         batch.IsRetry = true;
         batch.AppendDiag('H'); // HandleRetriableBatch → carry-over
         carryOver.AddAfterRetries(new BatchReference(batch, generation));
+    }
+
+    /// <summary>
+    /// True when an earlier batch of <paramref name="batch"/>'s partition, stamped with the same
+    /// producer ID and epoch, was rejected without being appended and is not resolved yet: it
+    /// waits in <paramref name="carryOver"/> to be resent (split children included), or its resend
+    /// is in flight. The broker then answers <paramref name="batch"/> with
+    /// <c>OutOfOrderSequenceNumber</c> only because of the gap, so its sequence is not the next one
+    /// the partition expects. A first send that is merely unanswered does not count: its outcome
+    /// is unknown, and the epoch recovery decides as before. <c>OutOfOrderSequenceNumber</c> path
+    /// only; scans one partition's carry-over queue and in-flight list.
+    /// </summary>
+    private bool HasRejectedPredecessor(ReadyBatch batch, PartitionCarryOver carryOver)
+    {
+        var recordBatch = batch.RecordBatch;
+        var baseSequence = recordBatch.BaseSequence;
+        if (baseSequence < 0)
+            return false;
+
+        if (carryOver.Partitions.TryGetValue(batch.TopicPartition, out var queue))
+        {
+            for (var i = 0; i < queue.Count; i++)
+            {
+                var queued = queue[i];
+                if (!queued.IsCurrentIncarnation() || ReferenceEquals(queued.Batch, batch))
+                    continue;
+
+                // Only a batch resent with its stamp closes the gap: a split child, or a retry
+                // that kept its in-flight entry. A retry that gave its entry up for an epoch bump
+                // is re-stamped, and this batch must take the epoch recovery too.
+                var queuedBatch = queued.Batch;
+                var keepsStamp = queuedBatch.InflightEntry is { } queuedEntry
+                    ? Volatile.Read(ref queuedEntry.Resent)
+                    : queuedBatch.IsSplitBatch;
+                var queuedRecordBatch = queuedBatch.RecordBatch;
+                if (keepsStamp
+                    && queuedRecordBatch.BaseSequence >= 0
+                    && queuedRecordBatch.ProducerId == recordBatch.ProducerId
+                    && queuedRecordBatch.ProducerEpoch == recordBatch.ProducerEpoch
+                    && !RecordAccumulator.IsSequenceAtOrAfter(queuedRecordBatch.BaseSequence, baseSequence))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return _inflightTracker.HasResentBefore(batch.TopicPartition, baseSequence);
     }
 
     private bool TryApplyInlineLeader(
@@ -4689,10 +4787,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     var batch = batches[i];
                     if (batch.InflightEntry is null && batch.RecordBatch.BaseSequence >= 0)
                     {
-                        batch.InflightEntry = _inflightTracker.Register(
+                        var entry = _inflightTracker.Register(
                             batch.TopicPartition,
                             batch.RecordBatch.BaseSequence,
                             batch.RecordCount);
+                        // A sequence assigned before this send: a split child, or a retry resent
+                        // with its stamp after its entry was completed (see HasRejectedPredecessor).
+                        Volatile.Write(ref entry.Resent, true);
+                        batch.InflightEntry = entry;
                     }
                 }
             }
@@ -7457,6 +7559,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "[BrokerSender] {ErrorCode} for {Topic}-{Partition} seq={Seq}, signaling epoch bump to send loop")]
     private partial void LogEpochBumpSignaled(ErrorCode errorCode, string topic, int partition, int seq);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "[BrokerSender] OutOfOrderSequenceNumber for {Topic}-{Partition} seq={Seq} behind a rejected earlier batch, resending it after that batch in {BackoffMs}ms")]
+    private partial void LogOutOfOrderSequenceBehindRejectedPredecessor(string topic, int partition, int seq, int backoffMs);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "[BrokerSender] Retriable error {ErrorCode} for {Topic}-{Partition}, retrying after {BackoffMs}ms")]
     private partial void LogRetriableErrorWithBackoff(ErrorCode errorCode, string topic, int partition, int backoffMs);

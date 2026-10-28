@@ -35,6 +35,16 @@ internal sealed class InflightEntry
     internal bool PrecedesRestart;
 
     /// <summary>
+    /// Set once this entry's batch failed with a retriable error (or lost its response) and is
+    /// resent with its sequence unchanged: a split child, or a retry that kept its stamp. A
+    /// successor answered with <c>OutOfOrderSequenceNumber</c> meanwhile is only behind the gap
+    /// this batch may have left (<see cref="PartitionInflightTracker.HasResentBefore"/>). Written
+    /// by the send loop that owns the batch and read under the partition lock; cleared on pool
+    /// return.
+    /// </summary>
+    internal bool Resent;
+
+    /// <summary>
     /// Checks and clears the InList flag under the partition lock.
     /// Returns true if this call performed the removal (was in list), false if already removed.
     /// Must be called while holding the partition SpinLock.
@@ -102,6 +112,7 @@ internal sealed class InflightEntry
         Next = null;
         InList = false;
         PrecedesRestart = false;
+        Resent = false;
         _completionSignal = null;
     }
 }
@@ -682,6 +693,43 @@ internal sealed class PartitionInflightTracker : IDisposable
         {
             state.Lock.Enter(ref lockTaken);
             return HasInflightBeforeLocked(state, baseSequence);
+        }
+        finally
+        {
+            if (lockTaken) state.Lock.Exit();
+        }
+    }
+
+    /// <summary>
+    /// True when the partition has an in-flight batch marked <see cref="InflightEntry.Resent"/>
+    /// whose base sequence comes before <paramref name="baseSequence"/>: a batch the broker
+    /// rejected without appending it, now resent with its sequence unchanged. Walks the
+    /// partition's list under its lock: <c>OutOfOrderSequenceNumber</c> handling only.
+    /// Entries carry no producer ID or epoch, unlike the carry-over check in
+    /// <c>BrokerSender.HasRejectedPredecessor</c>. None is needed: a re-stamp registers the new
+    /// entry and completes the old one, and a batch whose re-stamp claim is refused keeps its
+    /// old entry only while the restart fence stops every later batch of the partition from
+    /// claiming a sequence, so no batch under the new stamp is in flight to be judged against it.
+    /// </summary>
+    public bool HasResentBefore(TopicPartition topicPartition, int baseSequence)
+    {
+        if (!_partitions.TryGetValue(topicPartition, out var state))
+            return false;
+
+        var lockTaken = false;
+        try
+        {
+            state.Lock.Enter(ref lockTaken);
+            for (var entry = state.Head; entry is not null; entry = entry.Next)
+            {
+                if (Volatile.Read(ref entry.Resent)
+                    && !RecordAccumulator.IsSequenceAtOrAfter(entry.BaseSequence, baseSequence))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
         finally
         {

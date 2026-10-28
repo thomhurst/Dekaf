@@ -1,3 +1,4 @@
+using Dekaf.Admin;
 using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.Protocol;
@@ -301,6 +302,91 @@ public class TransactionTests(KafkaTestContainer kafka) : TransactionalKafkaInte
 
         var expected = Enumerable.Range(0, CommittedCount).Select(i => $"committed-{i}").ToArray();
         await Assert.That(values).IsEquivalentTo(expected);
+    }
+
+    /// <summary>
+    /// Batches larger than the topic's max.message.bytes are split (KIP-126) while later batches
+    /// of the same partition are already in flight. The broker appends none of a rejected batch,
+    /// so the batches behind it come back with OUT_OF_ORDER_SEQUENCE_NUMBER; they are resent
+    /// behind the split children instead of failing the transaction (#3823). The transaction
+    /// commits, and a read_committed consumer sees every record once, in order.
+    /// </summary>
+    [Test]
+    [Timeout(120_000)]
+    public async Task Transaction_BatchesSplitForTheTopicLimit_CommitsEveryRecordInOrder(
+        CancellationToken cancellationToken)
+    {
+        const int RecordCount = 400;
+        var topic = $"txn-split-{Guid.NewGuid():N}";
+        await using (var admin = Kafka.CreateAdminClient()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .Build())
+        {
+            await admin.CreateTopicsAsync([
+                new NewTopic
+                {
+                    Name = topic,
+                    NumPartitions = 1,
+                    ReplicationFactor = 1,
+                    // Each 64 KiB producer batch is four times the limit, so it is split.
+                    Configs = new Dictionary<string, string> { ["max.message.bytes"] = "16384" }
+                }
+            ], cancellationToken: cancellationToken);
+        }
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithTransactionalId($"txn-split-{Guid.NewGuid():N}")
+            .WithAcks(Acks.All)
+            .WithBatchSize(64 * 1024)
+            .WithLinger(TimeSpan.FromMilliseconds(5))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+
+        await producer.InitTransactionsAsync(cancellationToken);
+
+        var payload = new string('x', 1_000);
+        await using (var transaction = producer.BeginTransaction())
+        {
+            var produces = new Task<RecordMetadata>[RecordCount];
+            for (var i = 0; i < RecordCount; i++)
+            {
+                produces[i] = transaction.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Key = i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    Value = payload
+                }, cancellationToken).AsTask();
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            await Task.WhenAll(produces);
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId($"txn-consumer-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
+            .WithIsolationLevel(IsolationLevel.ReadCommitted)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        consumer.Subscribe(topic);
+
+        var keys = new List<string>();
+        while (keys.Count < RecordCount)
+        {
+            var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cancellationToken);
+            if (consumed is null)
+                break;
+
+            keys.Add(consumed.Value.Key!);
+        }
+
+        var expected = Enumerable.Range(0, RecordCount)
+            .Select(i => i.ToString(System.Globalization.CultureInfo.InvariantCulture))
+            .ToArray();
+        await Assert.That(keys).IsEquivalentTo(expected, TUnit.Assertions.Enums.CollectionOrdering.Matching);
     }
 
     [Test]
