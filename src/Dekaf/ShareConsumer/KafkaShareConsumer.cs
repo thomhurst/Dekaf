@@ -590,9 +590,12 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         }
 
         // Group assigned partitions by leader broker
+        var fetchErrors = GetPartitionFetchErrors(assignment);
         var partitionsByBroker = GroupPartitionsByLeader(assignment,
             _batchAcknowledgements is null ? TakePollPartitionGroups(assignment.Count) : null,
-            GetPartitionFetchErrors(assignment));
+            fetchErrors);
+        if (fetchErrors is not null && pendingAcks is { Count: > 0 })
+            DeferSuspendedAcknowledgements(pendingAcks, fetchErrors);
 
         // Send fetch requests to all brokers concurrently. Session epochs are per-broker
         // and independent, so parallelism is safe. This avoids waiting for each broker's
@@ -2604,12 +2607,12 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             target[topicPartition] = batches;
     }
 
-    private void AddAcknowledgementErrors(
+    private static void AddAcknowledgementErrors(
         ref Dictionary<TopicPartition, Exception>? target,
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? acknowledgements,
         Exception exception)
     {
-        if (_acknowledgementCommitCallback is null || acknowledgements is null)
+        if (acknowledgements is null)
             return;
 
         target ??= [];
@@ -2617,12 +2620,12 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             target.TryAdd(topicPartition, exception);
     }
 
-    private void AddAcknowledgementErrors<TException>(
+    private static void AddAcknowledgementErrors<TException>(
         ref Dictionary<TopicPartition, Exception>? target,
         Dictionary<TopicPartition, TException>? source)
         where TException : Exception
     {
-        if (_acknowledgementCommitCallback is null || source is null)
+        if (source is null)
             return;
 
         target ??= [];
@@ -2630,15 +2633,12 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             target[topicPartition] = exception;
     }
 
-    private void AddAcknowledgementErrors<TException>(
+    private static void AddAcknowledgementErrors<TException>(
         ref Dictionary<TopicPartition, Exception>? target,
         Dictionary<TopicPartition, TException> source,
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>.KeyCollection topicPartitions)
         where TException : Exception
     {
-        if (_acknowledgementCommitCallback is null)
-            return;
-
         target ??= [];
         foreach (var topicPartition in topicPartitions)
         {

@@ -278,6 +278,60 @@ public sealed partial class ShareConsumerRenewalTests
     }
 
     [Test]
+    public async Task Commit_AcknowledgementLostToLeaderChangeWithoutCallback_IsDropped()
+    {
+        var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 2)
+        {
+            ShareAcknowledgeResponse = CreateAcknowledgeResponse((0, ErrorCode.NotLeaderOrFollower))
+        };
+        await using var fixture = CreateFixture(connection);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 40));
+
+        await Assert.That(async () => await fixture.Consumer.CommitAsync()).Throws<KafkaException>();
+
+        await Assert.That(connection.ShareAcknowledgeRequests).HasSingleItem();
+        await Assert.That(HasPendingAcknowledgements(fixture.Consumer)).IsFalse();
+    }
+
+    [Test]
+    public async Task Poll_AcknowledgementForSuspendedPartition_IsDeferredWithoutFailure()
+    {
+        var responses = new Queue<ShareFetchResponse>(
+        [
+            CreatePartitionErrorResponse(
+                (0, ErrorCode.UnknownServerError, LeaderId: -1, LeaderEpoch: -1),
+                (1, ErrorCode.None, LeaderId: -1, LeaderEpoch: -1)),
+            CreateFetchResponse(1, 200),
+            CreateFetchResponse(1, 201)
+        ]);
+        var outcomes = new List<ShareAcknowledgementCommitResult>();
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
+        {
+            ShareFetchHandler = (_, _) => new(responses.Dequeue())
+        };
+        await using var fixture = CreateFixture(connection, valueDeserializer: Serializers.String,
+            retryBackoffMs: 60_000, acknowledgementCommitCallback: results => outcomes.AddRange(results));
+        PrepareForPoll(fixture.Consumer, new TopicPartition("topic", 0), new TopicPartition("topic", 1));
+        fixture.Consumer.Subscribe("topic");
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        await using var poll = fixture.Consumer.PollAsync(stop.Token).GetAsyncEnumerator();
+        await Assert.That(await poll.MoveNextAsync()).IsTrue();
+        fixture.Consumer.Acknowledge(poll.Current);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 40));
+        await Assert.That(await poll.MoveNextAsync()).IsTrue();
+
+        // Partition 0 is backing off, so its acknowledgement waits instead of failing.
+        await Assert.That(poll.Current.Offset).IsEqualTo(201);
+        var sent = connection.ShareFetchRequests[2].Topics.Single().Partitions;
+        await Assert.That(sent.Select(static partition => partition.PartitionIndex)).IsEquivalentTo([1]);
+        await Assert.That(outcomes.Select(static outcome => outcome.TopicPartition.Partition)).IsEquivalentTo([1]);
+        await Assert.That(outcomes.All(static outcome => outcome.Succeeded)).IsTrue();
+        await Assert.That(HasPendingAcknowledgements(fixture.Consumer)).IsTrue();
+    }
+
+    [Test]
     public async Task Commit_UnknownTopicAcknowledgementError_DoesNotDropOtherTopicsAcknowledgements()
     {
         // The share session still reports a topic that metadata has removed. Its error must not

@@ -208,6 +208,27 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         => errors.TryGetValue(topicPartition, out var error) && error.RetryAtTimestamp > now;
 
     /// <summary>
+    /// Keeps the acknowledgements of partitions that are backing off for the request that fetches
+    /// them again. No ShareFetch carries them, so they have no outcome to report yet.
+    /// </summary>
+    private void DeferSuspendedAcknowledgements(
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>> pendingAcks,
+        Dictionary<TopicPartition, PartitionFetchError> errors)
+    {
+        // Read the clock after GroupPartitionsByLeader: a partition suspended now was skipped there.
+        var now = Stopwatch.GetTimestamp();
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? suspended = null;
+        foreach (var (topicPartition, batches) in pendingAcks)
+        {
+            if (IsPartitionFetchSuspended(errors, topicPartition, now))
+                (suspended ??= [])[topicPartition] = batches;
+        }
+
+        if (suspended is not null)
+            DeferAcknowledgements(pendingAcks, suspended);
+    }
+
+    /// <summary>
     /// Returns the fetch-error entries that can suspend partitions of this assignment, or null.
     /// Drops entries for partitions that left the assignment when the assignment changes.
     /// </summary>
