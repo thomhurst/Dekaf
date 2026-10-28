@@ -6,6 +6,12 @@ namespace Dekaf.Security.Sasl;
 /// </summary>
 internal sealed class SaslSessionState
 {
+    /// <summary>
+    /// The largest due time <see cref="System.Threading.Timer"/> accepts (about 49.7 days).
+    /// Longer re-authentication delays are clamped to it, so the session re-authenticates early.
+    /// </summary>
+    internal const long MaxReauthenticationDelayMs = 4_294_967_294L;
+
     private readonly long _sessionLifetimeMs;
     private readonly double _reauthenticationThreshold;
     private readonly long _minSessionLifetimeMs;
@@ -111,7 +117,7 @@ internal sealed class SaslSessionState
         // Calculate the delay as a fraction of session lifetime
         var delay = (long)(_sessionLifetimeMs * _reauthenticationThreshold);
 
-        // Ensure the delay is at least 1ms if we're doing re-auth
-        return Math.Max(delay, 1);
+        // Ensure the delay is at least 1ms if we're doing re-auth, and no longer than Timer allows
+        return Math.Clamp(delay, 1, MaxReauthenticationDelayMs);
     }
 }
