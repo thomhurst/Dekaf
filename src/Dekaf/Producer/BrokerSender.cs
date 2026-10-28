@@ -2265,7 +2265,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     && _loopExitRedeliveries.IsEmpty)
                 {
                     if (hasPendingSingleConnectionFireAndForgetSend && !eventReader.TryPeek(out _))
+                    {
                         await AwaitPendingSingleConnectionFireAndForgetSendAsync().ConfigureAwait(false);
+
+                        // A failed write queues its batches for retry without posting an event and
+                        // leaves their partitions muted, so no later append can wake this loop for
+                        // them. Re-check before the untimed wait so the retry runs after backoff.
+                        if (!_sendFailedRetries.IsEmpty || !_loopExitRedeliveries.IsEmpty)
+                            continue;
+                    }
 
                     ReleaseRetainedConnectionsIfBrokerIdle();
 
