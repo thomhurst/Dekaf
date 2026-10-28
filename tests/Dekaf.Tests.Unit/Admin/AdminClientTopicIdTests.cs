@@ -95,6 +95,37 @@ public sealed class AdminClientTopicIdTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ListTopicsAsync_ListInternalFalseOrNullOptions_ExcludesInternalTopics(bool passOptions)
+    {
+        await using var context = new AdminTestContext();
+        context.SetMetadata(
+            Topic("orders", TopicId, ErrorCode.None),
+            Topic("__consumer_offsets", OtherTopicId, ErrorCode.None, isInternal: true));
+
+        var topics = await context.Client.ListTopicsAsync(passOptions ? new ListTopicsOptions() : null);
+
+        await Assert.That(topics.Select(topic => topic.Name)).IsEquivalentTo(["orders"]);
+        await Assert.That(topics[0].TopicId).IsEqualTo(TopicId);
+        await Assert.That(topics[0].IsInternal).IsFalse();
+    }
+
+    [Test]
+    public async Task ListTopicsAsync_ListInternalTrue_IncludesInternalTopics()
+    {
+        await using var context = new AdminTestContext();
+        context.SetMetadata(
+            Topic("orders", TopicId, ErrorCode.None),
+            Topic("__consumer_offsets", OtherTopicId, ErrorCode.None, isInternal: true));
+
+        var topics = await context.Client.ListTopicsAsync(new ListTopicsOptions { ListInternal = true });
+
+        await Assert.That(topics.Select(topic => topic.Name)).IsEquivalentTo(["orders", "__consumer_offsets"]);
+        await Assert.That(topics.Single(topic => topic.Name == "__consumer_offsets").IsInternal).IsTrue();
+    }
+
+    [Test]
     public async Task DeleteTopicsAsync_EmptyIds_DoesNotSendRequest()
     {
         await using var context = new AdminTestContext();
@@ -283,11 +314,12 @@ public sealed class AdminClientTopicIdTests
         await Assert.That(Delete).Throws<NotSupportedException>();
     }
 
-    private static TopicMetadata Topic(string name, Guid topicId, ErrorCode errorCode) => new()
+    private static TopicMetadata Topic(string name, Guid topicId, ErrorCode errorCode, bool isInternal = false) => new()
     {
         Name = name,
         TopicId = topicId,
         ErrorCode = errorCode,
+        IsInternal = isInternal,
         Partitions = errorCode == ErrorCode.None
             ?
             [
@@ -417,6 +449,7 @@ public sealed class AdminClientTopicIdTests
         public List<short> DeleteVersions { get; } = [];
 
         public void EnqueueMetadataResponse(MetadataResponse response) => _metadataResponses.Enqueue(response);
+        public void SetMetadata(params TopicMetadata[] topics) => _metadataManager.Metadata.Update(MetadataResponseFor(topics));
         public void EnqueueDeleteResponse(DeleteTopicsResponse response) => _deleteResponses.Enqueue(response);
 
         public async ValueTask DisposeAsync()
