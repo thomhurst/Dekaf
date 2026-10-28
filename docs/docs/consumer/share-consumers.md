@@ -164,12 +164,14 @@ mode. Read the headers with `ShareGroupDeadLetterHeaders`, which parses the nume
 without allocating:
 
 ```csharp
+using Dekaf.Consumer;
 using Dekaf.Consumer.DeadLetter;
 using Dekaf.Serialization;
 
 await using var reader = await Kafka.CreateConsumer<string?, string?>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("dlq-inspector")
+    .WithAutoOffsetReset(AutoOffsetReset.Earliest) // read records already in the topic
     .WithValueDeserializer(Serializers.NullableString)
     .SubscribeTo("dlq.order-workers")
     .BuildAsync();
