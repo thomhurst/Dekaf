@@ -630,6 +630,59 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
 
     [Test]
     [Timeout(30_000)]
+    public async Task SendLoop_FireAndForgetWriteFailsDuringIdleWait_RetriesWithoutFurtherEvents(
+        CancellationToken cancellationToken)
+    {
+        var firstWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var idleAwaitEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = new TestKafkaConnection();
+        connection.SendProduceFireAndForgetWithCallerTimeout = () =>
+            Volatile.Read(ref connection.SendFireAndForgetWithCallerTimeoutCalls) == 1
+                ? new ValueTask(firstWrite.Task)
+                : ValueTask.CompletedTask;
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection);
+
+        var options = CreateOptions(
+            acks: Acks.None,
+            enableIdempotence: false,
+            retryBackoffMs: 10,
+            retryBackoffMaxMs: 10);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { },
+            onIdlePendingSendAwaitStarted: () => idleAwaitEntered.TrySetResult());
+
+        try
+        {
+            var produced = CreateTestBatchWithDelivery(valueTaskSourcePool, "test-topic", 0);
+            // Carry-over only re-drains wire-ready batches, as every accumulator batch is.
+            produced.Batch.MarkPreSerialized();
+            sender.Enqueue(produced.Batch);
+
+            // Fail the write only once the loop has passed its retry-queue checks and awaits
+            // the write in the idle branch, the window the fix closes.
+            await idleAwaitEntered.Task.WaitAsync(cancellationToken);
+            await Assert.That(Volatile.Read(ref connection.SendFireAndForgetWithCallerTimeoutCalls))
+                .IsEqualTo(1);
+            firstWrite.SetException(new IOException("connection reset during flush"));
+
+            // No further event is posted: the retry must run from the failed write alone.
+            await produced.Delivery.WaitAsync(cancellationToken);
+            await Assert.That(Volatile.Read(ref connection.SendFireAndForgetWithCallerTimeoutCalls))
+                .IsEqualTo(2);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
     public async Task SendLoop_UnexpectedExit_TerminatesEverySurvivingDelivery(
         CancellationToken cancellationToken)
     {

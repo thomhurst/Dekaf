@@ -280,7 +280,8 @@ public abstract class ScriptedProduceResponseFixture
         Microsoft.Extensions.Logging.ILogger? logger = null,
         int brokerId = 1,
         PartitionInflightTracker? inflightTracker = null,
-        Action<TopicPartition>? onRestampRegistered = null) =>
+        Action<TopicPartition>? onRestampRegistered = null,
+        Action? onIdlePendingSendAwaitStarted = null) =>
         new(
             brokerId: brokerId, pool,
             metadataManager ?? new MetadataManager(pool, options.BootstrapServers),
@@ -307,5 +308,6 @@ public abstract class ScriptedProduceResponseFixture
             onIdleWaitStarted: onIdleWaitStarted,
             onSequenceRestartHeld: onSequenceRestartHeld,
             eventChannel: eventChannel,
-            onRestampRegistered: onRestampRegistered);
+            onRestampRegistered: onRestampRegistered,
+            onIdlePendingSendAwaitStarted: onIdlePendingSendAwaitStarted);
 }
