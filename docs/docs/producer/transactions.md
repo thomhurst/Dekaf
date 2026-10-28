@@ -76,6 +76,10 @@ catch (Exception ex)
 }
 ```
 
+A transactional producer only produces inside an open transaction. `ProduceAsync`, `ProduceAllAsync` and `FireAsync` on the producer throw `TransactionException` with `ErrorCode.InvalidTxnState` before `InitTransactionsAsync`, between a commit or abort and the next `BeginTransaction`, and while a commit or abort runs. `FireAsync` with a delivery handler reports the error through the handler. Java and librdkafka refuse these sends too. Without the check, the broker would open a transaction that the producer does not track. Use a separate non-transactional producer for records that must not be part of a transaction.
+
+If a produce started before `CommitAsync` is still waiting for topic metadata or a serializer when the commit seals the transaction, it fails with `ProduceErrorKind.TransactionAborted` and the commit does not include it. Await your produces before you commit.
+
 ## Two-Phase Commit Participation
 
 For external transaction coordinators, enable KIP-939 two-phase commit participation:

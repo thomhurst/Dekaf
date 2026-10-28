@@ -383,7 +383,9 @@ public enum ProduceErrorKind
 
     /// <summary>
     /// The produce belonged to a transaction that was aborted before its batch was sent, so its
-    /// records were never written. Java's <c>TransactionAbortedException</c>.
+    /// records were never written. Java's <c>TransactionAbortedException</c>. A produce that was
+    /// still waiting to be appended (for topic metadata or a serializer) when its transaction
+    /// was committed fails the same way: the commit does not include it.
     /// </summary>
     TransactionAborted,
 

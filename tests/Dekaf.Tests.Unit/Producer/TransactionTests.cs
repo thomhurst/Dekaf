@@ -278,6 +278,161 @@ public sealed class TransactionTests
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.InvalidTxnState);
     }
 
+    /// <summary>
+    /// A transactional producer produces only inside an open transaction (#3748). Outside one,
+    /// the broker would open a transaction the producer does not track: the record would join the
+    /// next transaction, or be aborted at transaction.timeout.ms after its produce succeeded.
+    /// Before InitTransactionsAsync it would go out as a plain non-idempotent write.
+    /// </summary>
+    [Test]
+    [Arguments((int)TransactionState.Uninitialized)]
+    [Arguments((int)TransactionState.Ready)]
+    [Arguments((int)TransactionState.CommittingTransaction)]
+    public async Task ProduceAsync_OutsideOpenTransaction_ThrowsInvalidTxnState(int state)
+    {
+        await using var producer = BuildTransactionalProducer((TransactionState)state);
+
+        var componentwise = await Assert.That(
+                () => producer.ProduceAsync("test-topic", "key", "value").AsTask())
+            .Throws<TransactionException>();
+        var message = await Assert.That(
+                () => producer.ProduceAsync(
+                    new ProducerMessage<string, string> { Topic = "test-topic", Key = "key", Value = "value" }).AsTask())
+            .Throws<TransactionException>();
+        var all = await Assert.That(
+                async () => await producer.ProduceAllAsync("test-topic", [("key", "value")]))
+            .Throws<TransactionException>();
+
+        await Assert.That(componentwise!.ErrorCode).IsEqualTo(ErrorCode.InvalidTxnState);
+        await Assert.That(message!.ErrorCode).IsEqualTo(ErrorCode.InvalidTxnState);
+        await Assert.That(all!.ErrorCode).IsEqualTo(ErrorCode.InvalidTxnState);
+        await Assert.That(componentwise.TransactionalId).IsEqualTo("test-txn-id");
+    }
+
+    [Test]
+    public async Task ProduceAsync_BeforeInitTransactions_PointsAtInitTransactions()
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.Uninitialized);
+
+        var exception = await Assert.That(
+                () => producer.ProduceAsync("test-topic", "key", "value").AsTask())
+            .Throws<TransactionException>();
+
+        await Assert.That(exception!.Message).Contains("InitTransactionsAsync()");
+    }
+
+    [Test]
+    public async Task ProduceAsync_AfterCommit_PointsAtBeginTransaction()
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.Ready);
+
+        var exception = await Assert.That(
+                () => producer.ProduceAsync("test-topic", "key", "value").AsTask())
+            .Throws<TransactionException>();
+
+        await Assert.That(exception!.Message).Contains("BeginTransaction()");
+    }
+
+    [Test]
+    [Arguments((int)TransactionState.Uninitialized)]
+    [Arguments((int)TransactionState.Ready)]
+    [Arguments((int)TransactionState.CommittingTransaction)]
+    [Arguments((int)TransactionState.PreparedTransaction)]
+    [Arguments((int)TransactionState.AbortingTransaction)]
+    public async Task FireAsync_OutsideOpenTransaction_ThrowsInvalidTxnState(int state)
+    {
+        await using var producer = BuildTransactionalProducer((TransactionState)state);
+
+        var componentwise = await Assert.That(
+                () => producer.FireAsync("test-topic", "key", "value").AsTask())
+            .Throws<TransactionException>();
+        var message = await Assert.That(
+                () => producer.FireAsync(
+                    new ProducerMessage<string, string> { Topic = "test-topic", Key = "key", Value = "value" }).AsTask())
+            .Throws<TransactionException>();
+
+        await Assert.That(componentwise!.ErrorCode).IsEqualTo(ErrorCode.InvalidTxnState);
+        await Assert.That(message!.ErrorCode).IsEqualTo(ErrorCode.InvalidTxnState);
+    }
+
+    [Test]
+    public async Task FireAsync_InAbortableErrorState_ThrowsAbortable()
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.AbortableError);
+
+        await Assert.That(() => producer.FireAsync("test-topic", "key", "value").AsTask())
+            .Throws<AbortableTransactionException>();
+    }
+
+    /// <summary>
+    /// FireAsync with a delivery handler reports a refused produce through the handler, like its
+    /// other synchronous failures.
+    /// </summary>
+    [Test]
+    public async Task FireAsync_WithDeliveryHandler_OutsideOpenTransaction_ReportsThroughHandler()
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.Ready);
+        Exception? reported = null;
+        var calls = 0;
+
+        await producer.FireAsync(
+            new ProducerMessage<string, string> { Topic = "test-topic", Key = "key", Value = "value" },
+            (_, error) =>
+            {
+                calls++;
+                reported = error;
+            });
+
+        await Assert.That(calls).IsEqualTo(1);
+        await Assert.That(reported).IsTypeOf<TransactionException>();
+        await Assert.That(((TransactionException)reported!).ErrorCode).IsEqualTo(ErrorCode.InvalidTxnState);
+    }
+
+    /// <summary>
+    /// A produce admitted while the transaction was open can still be waiting (for topic metadata
+    /// or a serializer) when the commit starts. The commit's flush does not see it, so if it
+    /// appended later its record would be sent after EndTxn and open an untracked broker
+    /// transaction. By the time EndTxn is written the commit has advanced the transactional
+    /// generation, so such a produce is rejected at the append commit point, while a record that
+    /// appended before the commit is sent and committed.
+    /// </summary>
+    [Test]
+    public async Task CommitAsync_FencesProducesAdmittedBeforeTheCommitThatHaveNotAppended(
+        CancellationToken cancellationToken)
+    {
+        var sent = new List<CapturedProduceBatch>();
+        var leader = new TestKafkaConnection { BrokerId = 2, Port = 9093 };
+        leader.SendProducePipelinedAfterWriteForRequest = request =>
+        {
+            lock (sent)
+                sent.AddRange(request.Batches);
+            return ValueTask.FromResult(Task.FromResult(CreateProduceSuccessResponse(request)));
+        };
+        await using var harness = BuildAbortDrainHarness(leader);
+        var producer = harness.Producer;
+
+        var transaction = producer.BeginTransaction();
+        var admittedGeneration = producer.RecordAccumulator.TransactionalAppendGeneration;
+        var committedProduce = transaction.ProduceAsync(AbortDrainTopic, "key", "committed", cancellationToken);
+
+        var generationAtEndTxn = admittedGeneration;
+        await ((Transaction<string, string>)transaction).CommitAfterRequestWrittenAsync(
+            () =>
+            {
+                generationAtEndTxn = producer.RecordAccumulator.TransactionalAppendGeneration;
+                return ValueTask.CompletedTask;
+            },
+            cancellationToken);
+
+        await committedProduce.AsTask().WaitAsync(cancellationToken);
+        int sentRecords;
+        lock (sent)
+            sentRecords = sent.Sum(batch => batch.RecordCount);
+        await Assert.That(sentRecords).IsEqualTo(1);
+        await Assert.That(generationAtEndTxn).IsNotEqualTo(admittedGeneration);
+        await Assert.That(producer._transactionState).IsEqualTo(TransactionState.Ready);
+    }
+
     [Test]
     public async Task MarkTransactionAbortable_AfterConcurrentFatalBatch_KeepsFatalError()
     {

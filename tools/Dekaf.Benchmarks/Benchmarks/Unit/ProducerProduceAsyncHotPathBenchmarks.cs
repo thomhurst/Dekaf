@@ -15,8 +15,9 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// synchronous fast path: admission, metadata cache, serialization, partitioning and the span
 /// append into the accumulator with a completion source. A background drainer completes and
 /// recycles published batches (as a sender would on success), so each produce's pooled completion
-/// resolves and is returned; nothing is set up per iteration. Uses only APIs that exist on main so
-/// the gate compares both revisions.
+/// resolves and is returned; nothing is set up per iteration. <see cref="Transactional"/> adds the
+/// transactional admission check (a producer with a TransactionalId in an open transaction).
+/// Uses only APIs that exist on main so the gate compares both revisions.
 /// </summary>
 [MemoryDiagnoser]
 [SimpleJob(RunStrategy.Throughput, launchCount: 1, warmupCount: 3, iterationCount: 5)]
@@ -37,6 +38,9 @@ public class ProducerProduceAsyncHotPathBenchmarks
     [Params(1, 12)]
     public int PartitionCount { get; set; }
 
+    [Params(false, true)]
+    public bool Transactional { get; set; }
+
     [GlobalSetup]
     public async Task Setup()
     {
@@ -54,6 +58,7 @@ public class ProducerProduceAsyncHotPathBenchmarks
                 EnableIdempotence = false,
                 DeliveryLatencyTargetMs = 0,
                 UnackedByteBudgetCapOverride = FixtureCapacityBytes,
+                TransactionalId = Transactional ? "producer-produce-hot-path" : null,
             },
             Serializers.String,
             Serializers.String);
@@ -61,6 +66,8 @@ public class ProducerProduceAsyncHotPathBenchmarks
         await _producer.StopSenderLoopsForTestingAsync().ConfigureAwait(false);
         SeedMetadata(_producer, PartitionCount);
         SetInstanceField(_producer, "_initialized", true);
+        if (Transactional)
+            _producer._transactionState = TransactionState.InTransaction;
         _accumulator = _producer.RecordAccumulator;
 
         var value = new string('x', 100);
