@@ -442,7 +442,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('git merge-base --is-ancestor "$base" "$head"', workflow)
         settings = re.search(r"BDN_SETTINGS: '([^']+)'", workflow).group(1)
         for setting in ('--warmupCount 10', '--iterationCount 15', '--iterationTime 500', '--launchCount 1',
-                        '--outliers DontRemove', '--exporters fulljson'):
+                        '--outliers DontRemove', '--exporters fulljson', '--keepFiles'):
             self.assertIn(setting, settings, setting)
         self.assertIn("ITERATIONS: '15'", workflow)
         self.assertEqual(15, gate.DEFAULT_ITERATIONS)

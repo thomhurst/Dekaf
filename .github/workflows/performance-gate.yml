@@ -54,8 +54,11 @@ env:
   MSBUILDDISABLENODEREUSE: '1'
   DOTNET_CLI_USE_MSBUILD_SERVER: '0'
   # Identical in every phase: about 15 s per case per phase, so a 16-case class measures all three
-  # phases in about 12 minutes and the two controls stay minutes apart.
-  BDN_SETTINGS: '--warmupCount 10 --iterationCount 15 --iterationTime 500 --launchCount 1 --outliers DontRemove --exporters fulljson --buildTimeout 900'
+  # phases in about 12 minutes and the two controls stay minutes apart. Do not shorten the counts:
+  # re-scoring past gate runs with 7 iterations, or 3 warmups and 7 iterations, missed regressions the
+  # repeat had confirmed on noisy async cases. --keepFiles keeps BenchmarkDotNet's generated project,
+  # so A2 and the repeat phases build incrementally instead of spending about 135 s each recompiling.
+  BDN_SETTINGS: '--warmupCount 10 --iterationCount 15 --iterationTime 500 --launchCount 1 --outliers DontRemove --exporters fulljson --buildTimeout 900 --keepFiles'
   ITERATIONS: '15'
 jobs:
   plan:
