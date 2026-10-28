@@ -175,7 +175,7 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
-    public async Task UpdateAsync_WhenStaticMemberFenced_RejoinsWithStaticEpoch()
+    public async Task UpdateAsync_WhenStaticMemberFenced_RejoinsWithEpochZero()
     {
         var connection = new ScriptedConnection();
         connection.EnqueueHeartbeat(Success(epoch: 1));
@@ -188,13 +188,87 @@ public sealed class StreamsGroupMemberTests
         await using var fixture = CreateFixture(connection, instanceId: "instance-1");
         await fixture.Member.JoinAsync(CreateInitialUpdate());
 
-        await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate { ProcessId = "process-2" });
+        var result = await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate { ProcessId = "process-2" });
 
-        await Assert.That(connection.HeartbeatRequests[2].MemberEpoch).IsEqualTo(-2);
+        var rejoin = connection.HeartbeatRequests[2];
+        await Assert.That(rejoin.MemberEpoch).IsEqualTo(0);
+        await Assert.That(rejoin.MemberId).IsEqualTo("member-1");
+        await Assert.That(rejoin.InstanceId).IsEqualTo("instance-1");
+        await Assert.That(result.MemberEpoch).IsEqualTo(2);
+        await Assert.That(fixture.Member.Snapshot.IsJoined).IsTrue();
     }
 
     [Test]
-    public async Task UpdateAsync_StaticTopologyChangeUsesStaticRejoinEpoch()
+    public async Task BackgroundHeartbeat_WhenStaticMemberFenced_RejoinsWithEpochZero()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.FencedMemberEpoch,
+            MemberId = "member-1"
+        });
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        await using var fixture = CreateFixture(connection, instanceId: "instance-1");
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        StopHeartbeatTimer(fixture.Member);
+
+        await InvokeBackgroundHeartbeatAsync(fixture.Member);
+
+        var rejoin = connection.HeartbeatRequests[2];
+        await Assert.That(rejoin.MemberEpoch).IsEqualTo(0);
+        await Assert.That(rejoin.InstanceId).IsEqualTo("instance-1");
+        await Assert.That(rejoin.Topology).IsNotNull();
+        await Assert.That(fixture.Member.Snapshot.IsJoined).IsTrue();
+        await Assert.That(fixture.Member.Snapshot.MemberEpoch).IsEqualTo(2);
+    }
+
+    [Test]
+    [Arguments(null)]
+    [Arguments("instance-1")]
+    public async Task JoinAsync_SuccessWithoutPositiveEpochFails(string? instanceId)
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: -2));
+        await using var fixture = CreateFixture(connection, instanceId);
+
+        await Assert.ThrowsAsync<GroupException>(async () =>
+            await fixture.Member.JoinAsync(CreateInitialUpdate()));
+
+        await Assert.That(fixture.Member.Snapshot.IsJoined).IsFalse();
+        await Assert.That(fixture.Member.Snapshot.MemberEpoch).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task BackgroundHeartbeat_FencedRecoveryWithoutPositiveEpochSurfacesFailure()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.FencedMemberEpoch,
+            MemberId = "member-1"
+        });
+        connection.EnqueueHeartbeat(Success(epoch: -2));
+        connection.EnqueueHeartbeat(Success(epoch: 3));
+        await using var fixture = CreateFixture(connection, instanceId: "instance-1");
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        StopHeartbeatTimer(fixture.Member);
+
+        await InvokeBackgroundHeartbeatAsync(fixture.Member);
+
+        await Assert.That(fixture.Member.Snapshot.IsJoined).IsFalse();
+        await Assert.ThrowsAsync<GroupException>(async () =>
+            await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate { ProcessId = "process-2" }));
+
+        var result = await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await Assert.That(connection.HeartbeatRequests[3].MemberEpoch).IsEqualTo(0);
+        await Assert.That(result.MemberEpoch).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task UpdateAsync_StaticTopologyChangeRejoinsWithEpochZero()
     {
         var connection = new ScriptedConnection();
         connection.EnqueueHeartbeat(Success(epoch: 1));
@@ -204,7 +278,8 @@ public sealed class StreamsGroupMemberTests
 
         await fixture.Member.UpdateAsync(CreateInitialUpdate(topologyEpoch: 2));
 
-        await Assert.That(connection.HeartbeatRequests[1].MemberEpoch).IsEqualTo(-2);
+        await Assert.That(connection.HeartbeatRequests[1].MemberEpoch).IsEqualTo(0);
+        await Assert.That(fixture.Member.Snapshot.IsJoined).IsTrue();
     }
 
     [Test]
@@ -1150,11 +1225,9 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
-    [Arguments(null, 0)]
-    [Arguments("instance-1", -2)]
-    public async Task UpdateAsync_AmbiguousCancellationRejoinUsesMembershipEpoch(
-        string? instanceId,
-        int expectedEpoch)
+    [Arguments(null)]
+    [Arguments("instance-1")]
+    public async Task UpdateAsync_AmbiguousCancellationRejoinsWithEpochZero(string? instanceId)
     {
         var connection = new ScriptedConnection();
         connection.EnqueueHeartbeat(Success(epoch: 1));
@@ -1180,7 +1253,7 @@ public sealed class StreamsGroupMemberTests
         });
 
         var recovery = connection.HeartbeatRequests[2];
-        await Assert.That(recovery.MemberEpoch).IsEqualTo(expectedEpoch);
+        await Assert.That(recovery.MemberEpoch).IsEqualTo(0);
         await Assert.That(recovery.ProcessId).IsEqualTo("process-2");
         await Assert.That(result.MemberEpoch).IsEqualTo(2);
     }
@@ -1204,7 +1277,7 @@ public sealed class StreamsGroupMemberTests
 
         var result = await fixture.Member.JoinAsync(CreateInitialUpdate());
 
-        await Assert.That(connection.HeartbeatRequests[1].MemberEpoch).IsEqualTo(-2);
+        await Assert.That(connection.HeartbeatRequests[1].MemberEpoch).IsEqualTo(0);
         await Assert.That(result.MemberEpoch).IsEqualTo(1);
     }
 
