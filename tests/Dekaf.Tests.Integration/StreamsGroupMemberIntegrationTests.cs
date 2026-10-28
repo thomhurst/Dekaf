@@ -362,6 +362,43 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
         await Assert.That(member.Snapshot.IsJoined).IsTrue();
     }
 
+    [Test]
+    [SupportsKafka(CompleteStreamsGroupSupport)]
+    public async Task StaticMemberRecoversAfterBrokerFencesItsEpoch()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
+        var groupId = $"streams-group-{Guid.NewGuid():N}";
+        var instanceId = $"streams-instance-{Guid.NewGuid():N}";
+        await using var client = Kafka.Connect(KafkaContainer.BootstrapServers, builder =>
+            builder.WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()));
+        await using var member = CreateStaticMember(client, groupId, instanceId);
+        await member.InitializeAsync();
+        await member.JoinAsync(CreateInitialState(topic, "static-fenced-process"));
+        await using var admin = client.CreateAdminClient().Build();
+        await ReceiveActiveTasksAsync(admin, member, [0]);
+        var staleEpoch = member.Snapshot.MemberEpoch;
+        var memberId = member.Snapshot.MemberId!;
+
+        await ((StreamsGroupMember)member).SuspendHeartbeatsForTestingAsync();
+
+        await RemoveRejoinAndFenceRawMemberAsync(groupId, memberId, staleEpoch, topic, instanceId);
+
+        // The recovery rejoin must use epoch 0: epoch -2 would make the broker treat it as a
+        // temporary static leave, and the member would silently drop out of the group.
+        var recovered = await member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
+            ProcessId = "static-recovered-process"
+        });
+        await Assert.That(recovered.MemberId).IsEqualTo(memberId);
+        await Assert.That(recovered.MemberEpoch).IsGreaterThan(staleEpoch);
+        await Assert.That(member.Snapshot.IsJoined).IsTrue();
+
+        var described = await admin.DescribeStreamsGroupsAsync([groupId]);
+        var brokerMember = described[groupId].Members.Single(m => m.InstanceId == instanceId);
+        await Assert.That(brokerMember.MemberId).IsEqualTo(memberId);
+        await Assert.That(brokerMember.MemberEpoch).IsGreaterThan(0);
+    }
+
     private static IStreamsGroupMember CreateStaticMember(
         KafkaClient client,
         string groupId,
@@ -435,7 +472,8 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
         string groupId,
         string memberId,
         int staleEpoch,
-        string topic)
+        string topic,
+        string? instanceId = null)
     {
         await using var pool = new ConnectionPool(
             "streams-fencing-test",
@@ -464,7 +502,8 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
             {
                 GroupId = groupId,
                 MemberId = memberId,
-                MemberEpoch = -1
+                MemberEpoch = -1,
+                InstanceId = instanceId
             },
             heartbeatVersion,
             CancellationToken.None);
@@ -476,6 +515,7 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
                 GroupId = groupId,
                 MemberId = memberId,
                 MemberEpoch = 0,
+                InstanceId = instanceId,
                 RebalanceTimeoutMs = 30_000,
                 Topology = CreateProtocolTopology(topic),
                 ActiveTasks = [],
@@ -495,6 +535,7 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
                 GroupId = groupId,
                 MemberId = memberId,
                 MemberEpoch = staleEpoch,
+                InstanceId = instanceId,
                 ProcessId = "stale-process"
             },
             heartbeatVersion,

@@ -486,26 +486,23 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember
         try
         {
             StreamsGroupHeartbeatRequest request;
-            var joinEpoch = InstanceId is not null &&
-                (_snapshot.MemberId is not null || _ambiguousMembership)
-                    ? -2
-                    : 0;
-            int? recoveryJoinEpoch = command.Kind == MemberCommandKind.Join ? joinEpoch : null;
+            // Static and dynamic members both (re)join with epoch 0; the broker matches a static
+            // member by its instance id. Epoch -2 is a temporary static leave, so only close sends it.
+            var recoveryRejoins = command.Kind == MemberCommandKind.Join;
             switch (command.Kind)
             {
                 case MemberCommandKind.Join:
                     var initialState = command.Update!;
                     ApplyUpdate(initialState);
-                    request = CreateJoinRequest(joinEpoch, initialState.ShutdownApplication);
+                    request = CreateJoinRequest(initialState.ShutdownApplication);
                     break;
                 case MemberCommandKind.Update:
                     var update = command.Update!;
                     ApplyUpdate(update);
-                    var topologyJoinEpoch = InstanceId is null ? 0 : -2;
-                    request = update.Topology is null
-                        ? CreateDeltaRequest(update)
-                        : CreateJoinRequest(topologyJoinEpoch, update.ShutdownApplication);
-                    recoveryJoinEpoch = update.Topology is not null ? topologyJoinEpoch : null;
+                    recoveryRejoins = update.Topology is not null;
+                    request = recoveryRejoins
+                        ? CreateJoinRequest(update.ShutdownApplication)
+                        : CreateDeltaRequest(update);
                     break;
                 case MemberCommandKind.ReportOffsets:
                     _taskOffsets = MapTaskOffsets(command.OffsetReport!.TaskOffsets);
@@ -519,7 +516,7 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember
             response = await SendWithRecoveryAsync(
                     request,
                     cancellationToken,
-                    recoveryJoinEpoch: recoveryJoinEpoch,
+                    recoveryRejoins: recoveryRejoins,
                     trackAmbiguousRequestFailure: true)
                 .ConfigureAwait(false);
         }
@@ -578,7 +575,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember
 
     private void HandleBackgroundHeartbeatFailure(Exception exception)
     {
-        var fatal = IsFatalHeartbeatFailure(exception);
+        // A failed fencing recovery leaves the member unjoined, and heartbeats stop until the
+        // next JoinAsync, so the failure must surface instead of being retried silently.
+        var fatal = IsFatalHeartbeatFailure(exception) || _memberEpoch <= 0;
         if (fatal)
             MarkUnjoined();
         Volatile.Write(
@@ -819,7 +818,7 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember
     private async ValueTask<StreamsGroupHeartbeatResponse> SendWithRecoveryAsync(
         StreamsGroupHeartbeatRequest request,
         CancellationToken cancellationToken,
-        int? recoveryJoinEpoch = null,
+        bool recoveryRejoins = false,
         bool recoverFencing = true,
         bool trackAmbiguousRequestFailure = false)
     {
@@ -900,12 +899,24 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember
                     if (attempt == attemptLimit - 1)
                         throw;
                     if (recoverFencing)
-                        request = CreateRecoveryRequest(recoveryJoinEpoch, shutdownApplication);
+                        request = CreateRecoveryRequest(recoveryRejoins, shutdownApplication);
                     await DelayForRetryAsync(attempt + 1, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
                 if (response.ErrorCode == ErrorCode.None)
+                {
+                    // A successful join always assigns a positive epoch. Anything else means the
+                    // broker did not keep the member in the group, so the join must not succeed.
+                    if (request.MemberEpoch == 0 && response.MemberEpoch <= 0)
+                    {
+                        throw new GroupException(
+                            $"StreamsGroupHeartbeat join returned member epoch {response.MemberEpoch} " +
+                            "without an error; the member is not part of the group.")
+                        { GroupId = GroupId };
+                    }
+
                     return response;
+                }
 
                 if (response.ErrorCode == ErrorCode.UnsupportedVersion)
                 {
@@ -949,7 +960,7 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember
                     if (response.ErrorCode != ErrorCode.CoordinatorLoadInProgress)
                         _coordinatorId = -1;
                     if (recoverFencing)
-                        request = CreateRecoveryRequest(recoveryJoinEpoch, shutdownApplication);
+                        request = CreateRecoveryRequest(recoveryRejoins, shutdownApplication);
                     await DelayForRetryAsync(attempt + 1, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
@@ -961,9 +972,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember
                     fencingObserved = true;
                     fencedRecoveryAttempted = true;
                     attemptLimit++;
-                    recoveryJoinEpoch = InstanceId is null ? 0 : -2;
+                    recoveryRejoins = true;
                     ResetTaskAssignment(markUnjoined: false);
-                    request = CreateJoinRequest(recoveryJoinEpoch.Value, shutdownApplication);
+                    request = CreateJoinRequest(shutdownApplication);
                     continue;
                 }
 
@@ -1331,13 +1342,11 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember
         _steadyRequestCache.Invalidate();
     }
 
-    private StreamsGroupHeartbeatRequest CreateJoinRequest(
-        int memberEpoch = 0,
-        bool shutdownApplication = false) => new()
+    private StreamsGroupHeartbeatRequest CreateJoinRequest(bool shutdownApplication) => new()
     {
         GroupId = GroupId,
         MemberId = _memberId,
-        MemberEpoch = memberEpoch,
+        MemberEpoch = 0,
         EndpointInformationEpoch = _endpointInformationEpoch,
         InstanceId = InstanceId,
         RackId = _options.RackId,
@@ -1355,10 +1364,10 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember
     };
 
     private StreamsGroupHeartbeatRequest CreateRecoveryRequest(
-        int? recoveryJoinEpoch,
+        bool rejoin,
         bool shutdownApplication) =>
-        recoveryJoinEpoch is not null || _memberEpoch <= 0
-            ? CreateJoinRequest(recoveryJoinEpoch ?? _memberEpoch, shutdownApplication)
+        rejoin || _memberEpoch <= 0
+            ? CreateJoinRequest(shutdownApplication)
             : CreateFullRequest(shutdownApplication);
 
     private StreamsGroupHeartbeatRequest CreateDeltaRequest(StreamsGroupMemberUpdate update) => new()
