@@ -98,6 +98,12 @@ public sealed class JsonSerializer<T> : ISerde<T>
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = JsonSerializerAotMessages.ReflectionBranchJustification)]
     public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
+        // Tombstones (null values) arrive as empty data with IsNull set; they are not JSON.
+        if (context.IsNull)
+        {
+            return default!;
+        }
+
         return _typeInfo is not null
             ? System.Text.Json.JsonSerializer.Deserialize(data.Span, _typeInfo)!
             : System.Text.Json.JsonSerializer.Deserialize<T>(data.Span, _options)!;
