@@ -1932,8 +1932,8 @@ public sealed class StreamsGroupMemberTests
         await fixture.Member.JoinAsync(CreateInitialUpdate(topologyEpoch: 0, CreateDescription()));
         var attempt = await connection.PublicationAttempts.Reader.ReadAsync();
 
-        await Assert.That(fixture.Member.QueueHeartbeatForTesting()).IsTrue();
-        await connection.SecondHeartbeatCompleted.Task;
+        // Await response application, not only the fake connection returning the response.
+        await InvokeBackgroundHeartbeatAsync(fixture.Member);
 
         await Assert.That(fixture.Member.Snapshot.MemberEpoch).IsEqualTo(2);
         await Assert.That(attempt.CancellationToken.IsCancellationRequested).IsFalse();
