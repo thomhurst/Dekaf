@@ -218,19 +218,46 @@ public sealed class ClientQuotaEntity : IEquatable<ClientQuotaEntity>
             return false;
         }
 
-        var matched = new bool[other.Components.Count];
-        foreach (var component in Components)
+        // Dictionary and HashSet lookups call Equals on hash collisions, whose count depends on the
+        // per-process string hash seed, so the common case must not allocate.
+        var count = other.Components.Count;
+        if (count <= 64)
         {
-            var found = false;
-            for (var i = 0; i < other.Components.Count; i++)
+            var matchedMask = 0UL;
+            for (var c = 0; c < count; c++)
             {
-                if (matched[i])
+                var component = Components[c];
+                var found = false;
+                for (var i = 0; i < count; i++)
                 {
-                    continue;
+                    var bit = 1UL << i;
+                    if ((matchedMask & bit) != 0 || !ComponentEquals(component, other.Components[i]))
+                    {
+                        continue;
+                    }
+
+                    matchedMask |= bit;
+                    found = true;
+                    break;
                 }
 
-                var otherComponent = other.Components[i];
-                if (component.EntityType != otherComponent.EntityType || component.Name != otherComponent.Name)
+                if (!found)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        var matched = new bool[count];
+        for (var c = 0; c < count; c++)
+        {
+            var component = Components[c];
+            var found = false;
+            for (var i = 0; i < count; i++)
+            {
+                if (matched[i] || !ComponentEquals(component, other.Components[i]))
                 {
                     continue;
                 }
@@ -249,13 +276,18 @@ public sealed class ClientQuotaEntity : IEquatable<ClientQuotaEntity>
         return true;
     }
 
+    private static bool ComponentEquals(ClientQuotaEntityComponent left, ClientQuotaEntityComponent right) =>
+        left.EntityType == right.EntityType && string.Equals(left.Name, right.Name, StringComparison.Ordinal);
+
     public override bool Equals(object? obj) => Equals(obj as ClientQuotaEntity);
 
     public override int GetHashCode()
     {
-        var hash = Components.Count;
-        foreach (var component in Components)
+        var count = Components.Count;
+        var hash = count;
+        for (var i = 0; i < count; i++)
         {
+            var component = Components[i];
             hash ^= HashCode.Combine(component.EntityType, component.Name);
         }
 
