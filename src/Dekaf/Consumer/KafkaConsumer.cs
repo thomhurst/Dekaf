@@ -2018,11 +2018,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private const long NoPreferredReplicaExpiry = long.MaxValue;
     private const int MaxRetainedUnassignedWatermarkSnapshots = 256;
 
+    // ExpiresAtTimestamp is the earliest preferred read replica expiry or fetch backoff
+    // expiry in the grouping, so the cached grouping expires by itself when either ends.
     private readonly record struct PartitionBrokerCacheEntry(
         Dictionary<int, List<TopicPartition>> PartitionsByBroker,
-        long PreferredReplicaExpiresAtTimestamp,
-        DateTimeOffset MetadataLastRefreshed,
-        long FetchBackoffExpiresAtTimestamp);
+        long ExpiresAtTimestamp,
+        DateTimeOffset MetadataLastRefreshed);
 
     private readonly record struct PartitionFetchBrokerResolution(
         TopicPartition Partition,
@@ -12651,9 +12652,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (changed)
                 _cachedPartitionsByBroker = new PartitionBrokerCacheEntry(
                     updated,
-                    cached.PreferredReplicaExpiresAtTimestamp,
-                    cached.MetadataLastRefreshed,
-                    cached.FetchBackoffExpiresAtTimestamp);
+                    cached.ExpiresAtTimestamp,
+                    cached.MetadataLastRefreshed);
         }
     }
 
@@ -12705,9 +12705,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (updated is not null)
                 _cachedPartitionsByBroker = new PartitionBrokerCacheEntry(
                     updated,
-                    cached.PreferredReplicaExpiresAtTimestamp,
-                    cached.MetadataLastRefreshed,
-                    cached.FetchBackoffExpiresAtTimestamp);
+                    cached.ExpiresAtTimestamp,
+                    cached.MetadataLastRefreshed);
         }
     }
 
@@ -12815,9 +12814,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 _cachedPartitionsByBroker = new PartitionBrokerCacheEntry(
                     result,
-                    preferredReplicaExpiresAtTimestamp,
-                    _metadataManager.Metadata.LastRefreshed,
-                    fetchBackoffExpiresAtTimestamp);
+                    Math.Min(preferredReplicaExpiresAtTimestamp, fetchBackoffExpiresAtTimestamp),
+                    _metadataManager.Metadata.LastRefreshed);
             }
 
             if (_cachedPartitionsByBroker is { } cached
@@ -13157,13 +13155,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private bool IsPartitionBrokerCacheValid(PartitionBrokerCacheEntry cached, long now)
     {
-        if (cached.FetchBackoffExpiresAtTimestamp <= now)
-            return false;
-
-        if (cached.PreferredReplicaExpiresAtTimestamp == NoPreferredReplicaExpiry)
+        if (cached.ExpiresAtTimestamp == NoPreferredReplicaExpiry)
             return true;
 
-        return cached.PreferredReplicaExpiresAtTimestamp > now
+        return cached.ExpiresAtTimestamp > now
             && cached.MetadataLastRefreshed == _metadataManager.Metadata.LastRefreshed;
     }
 

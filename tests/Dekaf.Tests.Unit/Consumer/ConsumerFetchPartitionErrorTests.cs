@@ -352,8 +352,8 @@ public sealed class ConsumerFetchPartitionErrorTests
         var cached = cacheField.GetValue(consumer)
             ?? throw new InvalidOperationException("Expected a cached partition grouping");
         var entryType = cached.GetType();
-        var expiry = entryType.GetProperty("FetchBackoffExpiresAtTimestamp")
-            ?? throw new InvalidOperationException("FetchBackoffExpiresAtTimestamp not found");
+        var expiry = entryType.GetProperty("ExpiresAtTimestamp")
+            ?? throw new InvalidOperationException("ExpiresAtTimestamp not found");
         if ((long)expiry.GetValue(cached)! == long.MaxValue)
             throw new InvalidOperationException("Cached grouping does not record the backoff expiry");
 
@@ -362,9 +362,8 @@ public sealed class ConsumerFetchPartitionErrorTests
             var rewound = Activator.CreateInstance(
                 entryType,
                 entryType.GetProperty("PartitionsByBroker")!.GetValue(cached),
-                entryType.GetProperty("PreferredReplicaExpiresAtTimestamp")!.GetValue(cached),
-                entryType.GetProperty("MetadataLastRefreshed")!.GetValue(cached),
-                0L);
+                0L,
+                entryType.GetProperty("MetadataLastRefreshed")!.GetValue(cached));
             cacheField.SetValue(consumer, rewound);
         }
     }
