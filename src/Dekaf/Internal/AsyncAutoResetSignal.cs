@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Threading.Tasks.Sources;
 
 namespace Dekaf.Internal;
@@ -29,18 +30,31 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>,
     private int _queuedCompletion;
 
     /// <summary>
-    /// 0 = idle (no waiter), 1 = waiting (waiter registered), 2 = signaled-before-wait.
+    /// The low two bits hold the kind: 0 = idle (no waiter), 1 = waiting (waiter registered),
+    /// 2 = signaled-before-wait. The remaining bits hold a wait generation that every
+    /// idle -> waiting transition advances, so a compare-and-swap against an observed
+    /// waiting state cannot complete a later wait.
     /// Transitions:
-    ///   idle -> waiting     (WaitAsync when no pending signal)
+    ///   idle -> waiting     (WaitAsync when no pending signal; advances the generation)
     ///   idle -> signaled    (Signal when no waiter)
-    ///   waiting -> idle     (Signal completes the waiter)
+    ///   waiting -> idle     (Signal, timeout or shutdown completes the waiter)
     ///   signaled -> idle    (WaitAsync consumes the pending signal)
     /// </summary>
-    private int _state; // 0=idle, 1=waiting, 2=signaled — all accesses via Interlocked
+    private int _state; // written via Interlocked, or by the single waiter when only it can change the state
 
     private const int Idle = 0;
     private const int Waiting = 1;
     private const int Signaled = 2;
+    private const int KindMask = 3;
+    private const int GenerationIncrement = 4;
+
+    /// <summary>
+    /// <see cref="Stopwatch"/> timestamp at which the current wait times out, or
+    /// <see cref="NoDeadline"/> for an infinite wait. The waiter writes it before it
+    /// publishes the waiting state and does not change it until that wait completes.
+    /// </summary>
+    private long _timeoutDeadline = NoDeadline;
+    private const long NoDeadline = long.MaxValue;
 
     /// <summary>
     /// Reusable timer for timeout support. Created lazily on first WaitAsync with timeout.
@@ -63,19 +77,33 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>,
     private int _shutdownRequested; // 0 = running, 1 = shutdown requested — terminal once set
     private CancellationToken _shutdownToken;
 
+    private readonly Action? _afterSignalObservedWaiterForTesting;
+    private readonly Action? _beforeTimeoutCompletionForTesting;
+    private readonly Action? _afterTimeoutCallbackForTesting;
+
     public AsyncAutoResetSignal(bool inlineTimeoutContinuations = false, bool inlineContinuations = false)
+        : this(
+            inlineTimeoutContinuations,
+            inlineContinuations,
+            afterSignalObservedWaiterForTesting: null,
+            beforeTimeoutCompletionForTesting: null,
+            afterTimeoutCallbackForTesting: null)
+    {
+    }
+
+    internal AsyncAutoResetSignal(
+        bool inlineTimeoutContinuations,
+        bool inlineContinuations,
+        Action? afterSignalObservedWaiterForTesting,
+        Action? beforeTimeoutCompletionForTesting,
+        Action? afterTimeoutCallbackForTesting)
     {
         _inlineTimeoutContinuations = inlineTimeoutContinuations;
         _core.RunContinuationsAsynchronously = !inlineTimeoutContinuations && !inlineContinuations;
-        _timeoutCallback = static state =>
-        {
-            var self = (AsyncAutoResetSignal)state!;
-            // Timeout fired — only complete if still waiting.
-            if (Interlocked.CompareExchange(ref self._state, Idle, Waiting) == Waiting)
-            {
-                self._core.SetResult(false);
-            }
-        };
+        _afterSignalObservedWaiterForTesting = afterSignalObservedWaiterForTesting;
+        _beforeTimeoutCompletionForTesting = beforeTimeoutCompletionForTesting;
+        _afterTimeoutCallbackForTesting = afterTimeoutCallbackForTesting;
+        _timeoutCallback = static state => ((AsyncAutoResetSignal)state!).OnTimeout();
     }
 
     /// <summary>
@@ -109,8 +137,10 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>,
             {
                 var self = (AsyncAutoResetSignal)state!;
                 Volatile.Write(ref self._shutdownRequested, 1);
-                // Shutdown requested — complete the waiter if one is pending.
-                if (Interlocked.CompareExchange(ref self._state, Idle, Waiting) == Waiting)
+                // Shutdown requested — complete the waiter if one is pending. A wait
+                // registered after this read rechecks _shutdownRequested itself.
+                var observed = Volatile.Read(ref self._state);
+                if ((observed & KindMask) == Waiting && self.TryTakeWaiter(observed))
                 {
                     self.CompleteShutdown();
                 }
@@ -125,18 +155,35 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>,
     /// </summary>
     public void Signal()
     {
-        // Try transition: idle -> signaled (store for next WaitAsync)
-        // If already signaled, that's fine — signals coalesce.
-        var previous = Interlocked.CompareExchange(ref _state, Signaled, Idle);
-        if (previous == Idle || previous == Signaled)
-            return;
+        while (true)
+        {
+            var observed = Volatile.Read(ref _state);
+            switch (observed & KindMask)
+            {
+                case Signaled:
+                    // Signals coalesce.
+                    return;
+                case Idle:
+                    // Store the signal for the next WaitAsync.
+                    if (Interlocked.CompareExchange(ref _state, observed | Signaled, observed) == observed)
+                        return;
+                    break;
+                default:
+                    _afterSignalObservedWaiterForTesting?.Invoke();
+                    // A CAS (not Exchange) guards against the timer or shutdown callback
+                    // having completed the waiter already: double completion of
+                    // ManualResetValueTaskSourceCore is undefined behavior. When that
+                    // callback wins, retry, so the signal is stored for the next wait
+                    // instead of being dropped.
+                    if (TryTakeWaiter(observed))
+                    {
+                        CompleteSignal();
+                        return;
+                    }
 
-        // previous == Waiting: a waiter is registered. Complete it.
-        // Must use CAS (not Exchange) to guard against the timer or shutdown callback
-        // having already transitioned Waiting → Idle and called SetResult/SetException.
-        // Double-completion of ManualResetValueTaskSourceCore is undefined behavior.
-        if (Interlocked.CompareExchange(ref _state, Idle, Waiting) == Waiting)
-            CompleteSignal();
+                    break;
+            }
+        }
     }
 
     /// <summary>
@@ -158,9 +205,13 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>,
         ThrowIfShutdownRequested();
 
         // Fast path: if already signaled, consume it immediately (no allocation).
-        var previous = Interlocked.CompareExchange(ref _state, Idle, Signaled);
-        if (previous == Signaled)
+        // Only the waiter leaves the signaled state, so no CAS is needed.
+        var idle = Volatile.Read(ref _state);
+        if ((idle & KindMask) == Signaled)
+        {
+            Volatile.Write(ref _state, idle & ~KindMask);
             return new ValueTask<bool>(true);
+        }
 
         // Zero-timeout = immediate check only (already handled above)
         if (timeoutMs == 0)
@@ -169,41 +220,109 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>,
         // Reset the core for a new wait cycle.
         _core.Reset();
 
+        // Publish the deadline before the waiting state, so a timer callback that observes
+        // this wait also observes its deadline.
+        Volatile.Write(
+            ref _timeoutDeadline,
+            timeoutMs == Timeout.Infinite
+                ? NoDeadline
+                : Stopwatch.GetTimestamp() + timeoutMs * Stopwatch.Frequency / 1000);
+
         // Transition: idle -> waiting. Must happen BEFORE arming the timer.
-        // If the timer were armed first, it could fire before the CAS, see state=Idle,
-        // fail its CAS(Waiting→Idle), and _core would never be completed (hang).
-        previous = Interlocked.CompareExchange(ref _state, Waiting, Idle);
-        if (previous == Signaled)
+        // If the timer were armed first, it could fire before the CAS, find no waiter,
+        // and _core would never be completed (hang).
+        var waiting = unchecked(idle + GenerationIncrement) | Waiting;
+        var previous = Interlocked.CompareExchange(ref _state, waiting, idle);
+        if (previous != idle)
         {
-            // Signal arrived between our first check and setting Waiting.
-            // Consume it — transition back to idle.
-            Interlocked.Exchange(ref _state, Idle);
+            // Only Signal changes an idle state: a signal arrived between the first
+            // check and setting Waiting. Consume it.
+            Volatile.Write(ref _state, previous & ~KindMask);
             return new ValueTask<bool>(true);
         }
 
         // Shutdown can race the loop's cancellation check and this wait registration.
         // The callback latches cancellation even when no waiter exists; this recheck
         // completes a waiter registered after such an idle callback.
-        if (Volatile.Read(ref _shutdownRequested) != 0
-            && Interlocked.CompareExchange(ref _state, Idle, Waiting) == Waiting)
+        if (Volatile.Read(ref _shutdownRequested) != 0 && TryTakeWaiter(waiting))
         {
             _core.SetException(new OperationCanceledException(_shutdownToken));
         }
 
         // Now in Waiting state — safe to arm timer. If timer fires immediately,
-        // it will see Waiting, CAS succeeds, and SetResult(false) is called correctly.
-        // If Signal() already completed _core (Waiting→Idle + SetResult), the timer's
-        // CAS will fail (Idle != Waiting) and harmlessly no-op.
+        // it observes this wait and its deadline and completes it with false.
+        // If Signal() already completed _core, the timer callback finds no waiter.
         if (timeoutMs != Timeout.Infinite)
         {
-            if (_timeoutTimer is null)
-                _timeoutTimer = new Timer(_timeoutCallback, this, timeoutMs, Timeout.Infinite);
-            else
-                _timeoutTimer.Change(timeoutMs, Timeout.Infinite);
+            // Created disarmed, so the field is set before the first callback can read it.
+            _timeoutTimer ??= new Timer(_timeoutCallback, this, Timeout.Infinite, Timeout.Infinite);
+            _timeoutTimer.Change(timeoutMs, Timeout.Infinite);
         }
 
         // Return the awaitable — Signal(), timeout, or shutdown will complete _core.
         return new ValueTask<bool>(this, _core.Version);
+    }
+
+    private bool TryTakeWaiter(int waiting)
+        => Interlocked.CompareExchange(ref _state, waiting & ~KindMask, waiting) == waiting;
+
+    /// <summary>
+    /// Timer callback. Disarming the timer cannot stop a callback that is already running,
+    /// so a callback armed for an earlier wait can run during a later one. The callback
+    /// therefore completes only a wait whose own deadline has passed. A callback that
+    /// runs before the current wait's deadline (stale, or early because the timer uses
+    /// a coarser clock) re-arms the timer for that wait's remaining time.
+    /// </summary>
+    private void OnTimeout()
+    {
+        while (true)
+        {
+            var waiting = Volatile.Read(ref _state);
+            if ((waiting & KindMask) != Waiting)
+                break;
+
+            var deadline = Volatile.Read(ref _timeoutDeadline);
+            if (Volatile.Read(ref _state) != waiting)
+                continue; // The deadline can belong to a newer wait; read both again.
+
+            if (deadline == NoDeadline)
+                break;
+
+            var remaining = deadline - Stopwatch.GetTimestamp();
+            if (remaining <= 0)
+            {
+                _beforeTimeoutCompletionForTesting?.Invoke();
+                if (TryTakeWaiter(waiting))
+                {
+                    _core.SetResult(false);
+                    break;
+                }
+
+                continue; // Signal or shutdown completed it; a newer wait can need the timer.
+            }
+
+            try
+            {
+                _timeoutTimer!.Change(ToTimerMilliseconds(remaining), Timeout.Infinite);
+            }
+            catch (ObjectDisposedException)
+            {
+                break;
+            }
+
+            // This Change can overwrite the arming of a wait that started after the
+            // state read; loop to re-arm the timer for that wait.
+            if (Volatile.Read(ref _state) == waiting)
+                break;
+        }
+
+        _afterTimeoutCallbackForTesting?.Invoke();
+    }
+
+    private static int ToTimerMilliseconds(long stopwatchTicks)
+    {
+        var milliseconds = (stopwatchTicks * 1000 + Stopwatch.Frequency - 1) / Stopwatch.Frequency;
+        return (int)Math.Min(Math.Max(milliseconds, 1), int.MaxValue - 1);
     }
 
     private void ThrowIfShutdownRequested()
