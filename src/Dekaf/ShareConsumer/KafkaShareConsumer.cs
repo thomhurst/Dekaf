@@ -37,7 +37,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 {
     private const int MaxDeserializerPreparationAttempts = 2;
     private readonly ShareConsumerOptions _options;
-    private readonly string? _autoOffsetResetConfig;
+    // Explicit group configs applied once before joining; null when the broker settings are preserved.
+    private readonly IReadOnlyList<Admin.ConfigAlter>? _groupConfigAlters;
     private readonly IDeserializer<TKey> _keyDeserializer;
     private readonly IDeserializer<TValue> _valueDeserializer;
     private readonly IAsyncDeserializerPreparer<TKey>? _keyDeserializerPreparer;
@@ -162,7 +163,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         bool ownsInfrastructure)
     {
         ExponentialRetryBackoff.Validate(options.RetryBackoffMs, options.RetryBackoffMaxMs);
-        _autoOffsetResetConfig = ShareAutoOffsetResetStrategy.GetConfigValue(options);
+        _groupConfigAlters = CreateGroupConfigAlters(options);
         _options = options;
         _acknowledgementCommitCallback = options.AcknowledgementCommitCallback;
         _keyDeserializer = RecordHeaderDeserializer.WrapIfNeeded(keyDeserializer);
@@ -268,8 +269,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 return;
 
             await _metadataManager.InitializeAsync(cancellationToken).ConfigureAwait(false);
-            if (_autoOffsetResetConfig is not null)
-                await ConfigureAutoOffsetResetAsync(cancellationToken).ConfigureAwait(false);
+            if (_groupConfigAlters is not null)
+                await ConfigureGroupAsync(cancellationToken).ConfigureAwait(false);
             await _telemetryManager.StartAsync(cancellationToken).ConfigureAwait(false);
             _initialized = true;
         }

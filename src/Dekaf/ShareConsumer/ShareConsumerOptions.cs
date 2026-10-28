@@ -48,6 +48,24 @@ public sealed class ShareConsumerOptions
     public TimeSpan? AutoOffsetResetDuration { get; init; }
 
     /// <summary>
+    /// Optional group-level errors.deadletterqueue.topic.name (KIP-1191), applied during initialization
+    /// before joining. The broker writes rejected records and records that reach the delivery limit to
+    /// this topic. Null preserves the broker configuration, whose default disables the dead-letter queue.
+    /// Requires Kafka 4.4+ with share.version=2 and group ALTER_CONFIGS, and affects every member.
+    /// The name must be a valid topic name that does not start with "__"; the topic must have
+    /// errors.deadletterqueue.group.enable=true.
+    /// </summary>
+    public string? DeadLetterQueueTopic { get; init; }
+
+    /// <summary>
+    /// Optional group-level errors.deadletterqueue.copy.record.enable (KIP-1191), applied during
+    /// initialization before joining. True copies the original key and value into the dead-letter
+    /// record; false writes a null key and value. Kafka 4.4.0 writes only the context headers either way.
+    /// Null preserves the broker configuration, whose default is false.
+    /// </summary>
+    public bool? DeadLetterQueueCopyRecord { get; init; }
+
+    /// <summary>
     /// The rack ID of the consumer, used for rack-aware assignment.
     /// </summary>
     public string? RackId { get; init; }

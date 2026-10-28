@@ -3449,6 +3449,8 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private string? _rackId;
     private AutoOffsetReset? _autoOffsetReset;
     private TimeSpan? _autoOffsetResetDuration;
+    private string? _deadLetterQueueTopic;
+    private bool? _deadLetterQueueCopyRecord;
     private int _fetchMinBytes = 1;
     private int _fetchMaxBytes = 52428800;
     private int _maxPartitionFetchBytes = 1048576;
@@ -3567,6 +3569,32 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         AutoOffsetResetStrategy.ValidateDuration(duration);
         _autoOffsetReset = AutoOffsetReset.ByDuration;
         _autoOffsetResetDuration = duration;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the group-level broker dead-letter queue (KIP-1191) before joining. The broker writes records
+    /// that a consumer rejects, or that reach the group's delivery limit, to <paramref name="topicName"/>.
+    /// Requires Kafka 4.4+ with share.version=2 and group ALTER_CONFIGS, and affects all members.
+    /// The topic must have errors.deadletterqueue.group.enable=true.
+    /// </summary>
+    /// <param name="topicName">The dead-letter topic. Must be a valid topic name that does not start with "__".</param>
+    /// <param name="copyRecord">True copies the original key and value; false writes a null key and value.</param>
+    public ShareConsumerBuilder<TKey, TValue> WithDeadLetterQueue(string topicName, bool copyRecord = false)
+    {
+        ShareDeadLetterQueueConfiguration.ValidateTopicName(topicName, nameof(topicName));
+        _deadLetterQueueTopic = topicName;
+        _deadLetterQueueCopyRecord = copyRecord;
+        return this;
+    }
+
+    // Options binding keeps each null setting, so the broker value is preserved independently.
+    internal ShareConsumerBuilder<TKey, TValue> WithDeadLetterQueueOptions(string? topicName, bool? copyRecord)
+    {
+        if (topicName is not null)
+            ShareDeadLetterQueueConfiguration.ValidateTopicName(topicName, nameof(topicName));
+        _deadLetterQueueTopic = topicName;
+        _deadLetterQueueCopyRecord = copyRecord;
         return this;
     }
 
@@ -4178,6 +4206,8 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             GroupId = _groupId,
             AutoOffsetReset = _autoOffsetReset,
             AutoOffsetResetDuration = _autoOffsetResetDuration,
+            DeadLetterQueueTopic = _deadLetterQueueTopic,
+            DeadLetterQueueCopyRecord = _deadLetterQueueCopyRecord,
             RackId = _rackId,
             FetchMinBytes = _fetchMinBytes,
             FetchMaxBytes = _fetchMaxBytes,

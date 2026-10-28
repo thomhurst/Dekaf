@@ -194,6 +194,8 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             ? asyncValueDeserializer is IRecordHeaderDeserializer { ConsumesRecordHeaders: true }
             : RecordHeaderDeserializer.UsesCallerOwnedHeaders(_valueDeserializer);
         _hasAsyncDeserializers = asyncKeyDeserializer is not null || asyncValueDeserializer is not null;
+        if (options.DeadLetterQueueTopic is { } deadLetterQueueTopic)
+            ShareDeadLetterQueueConfiguration.ValidateTopicName(deadLetterQueueTopic, nameof(options));
         _options = options;
         _memberId = _options.MemberId ?? Guid.NewGuid().ToString("N");
     }
@@ -578,7 +580,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                 throw;
             }
 
-            return RegisterPending(partition, record, result, acquiredRegistration);
+            return RegisterPending(partition, record, deliveryCount, result, acquiredRegistration);
         }
 
         return null;
@@ -614,7 +616,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                 throw;
             }
 
-            return RegisterPending(partition, record, result, acquiredRegistration);
+            return RegisterPending(partition, record, deliveryCount, result, acquiredRegistration);
         }
 
         return null;
@@ -700,7 +702,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                 throw;
             }
 
-            return RegisterPending(partition, record, result, registration);
+            return RegisterPending(partition, record, deliveryCount, result, registration);
         }
 
         return null;
@@ -851,10 +853,11 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     private ShareConsumeResult<TKey, TValue>? RegisterPending(
         TopicPartition partition,
         InMemoryRecord record,
+        int deliveryCount,
         ShareConsumeResult<TKey, TValue> result,
         ShareGroupMemberRegistration registration)
     {
-        var pending = new PendingShareRecord(partition, record.Offset, record.Offset + 1);
+        var pending = new PendingShareRecord(partition, record, deliveryCount);
         bool disposed;
 
         lock (_gate)
@@ -1053,6 +1056,22 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             recordCount,
             _commitOffsets,
             commitCount);
+
+        if (_options.DeadLetterQueueTopic is not { } deadLetterQueueTopic)
+            return;
+
+        // KIP-1191: the broker writes each rejected record to the group's dead-letter topic.
+        for (var index = 0; index < recordCount; index++)
+        {
+            var record = _commitRecords[index];
+            if (record.AcknowledgeType == AcknowledgeType.Reject)
+                _cluster.AppendShareDeadLetterRecord(
+                    deadLetterQueueTopic,
+                    _options.DeadLetterQueueCopyRecord,
+                    _options.GroupId,
+                    record.Record,
+                    record.DeliveryCount);
+        }
     }
 
     private int BuildCommitOffsets(int recordCount)
@@ -1127,16 +1146,18 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
 
     private sealed class PendingShareRecord
     {
-        public PendingShareRecord(TopicPartition topicPartition, long offset, long nextOffset)
+        public PendingShareRecord(TopicPartition topicPartition, InMemoryRecord record, int deliveryCount)
         {
             TopicPartition = topicPartition;
-            Offset = offset;
-            NextOffset = nextOffset;
+            Record = record;
+            DeliveryCount = deliveryCount;
         }
 
         public TopicPartition TopicPartition { get; }
-        public long Offset { get; }
-        public long NextOffset { get; }
+        public InMemoryRecord Record { get; }
+        public int DeliveryCount { get; }
+        public long Offset => Record.Offset;
+        public long NextOffset => Record.Offset + 1;
         // A provisional delivery is accepted by poll/commit, but released by close.
         private const AcknowledgeType ImplicitDelivery = (AcknowledgeType)byte.MaxValue;
         public AcknowledgeType AcknowledgeType { get; set; } = ImplicitDelivery;

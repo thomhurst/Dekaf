@@ -55,6 +55,7 @@ below do not extend Dekaf's tested broker range to older Kafka releases.
 | [KIP-890][kip890] Transactions V2 | Complete: negotiate V2 and adopt producer identity returned at transaction completion | `transaction.version` 2+, `InitProducerId` / `EndTxn` v5+; Kafka 4.0+ | [Producer][src/Producer/KafkaProducer.cs] | Configured CI: [V2 integration tests][integration/TransactionV2Tests.cs]. No outstanding issue tracked for this scope. |
 | [KIP-939][kip939] external two-phase commit | Experimental: prepare and complete prepared transactions | `transaction.version` 3+ and `InitProducerId` v6; require an explicitly supporting broker, not merely Kafka 4.x | [Two-phase transaction API](producer/transactions.md), [options][src/Producer/ProducerOptions.cs] | Source: [transaction unit tests][unit/Producer/TransactionTests.cs], [wire tests][unit/Protocol/TransactionProtocolTests.cs]. No successful supporting-broker run cited; KIP acceptance is not release evidence. |
 | [KIP-932][kip932] share consumption | Complete for queue consumption: explicit acknowledgements, record ownership, renewal and close | Dekaf requires `ShareGroupHeartbeat` v1 and `ShareAcknowledge` v1+; `ShareFetch` v0+; share groups enabled. Integration tests require Kafka 4.2+. Upstream: 4.0 early access, 4.1 preview, 4.2 completed | [Share consumers](consumer/share-consumers.md), [implementation][src/ShareConsumer/KafkaShareConsumer.cs] | Configured CI: [share integration tests][integration/ShareConsumerTests.cs], [ownership tests][integration/ShareConsumerOwnershipLoadTests.cs]. Early-access broker support is not a production recommendation. |
+| [KIP-1191][kip1191] share-group dead-letter queues | Complete for client configuration and record inspection: the broker writes dead-letter records; Dekaf sets the group configs before joining and parses the `__dlq.errors.*` headers | Kafka 4.4+ with `share.version=2` on every broker (the default for new 4.4 clusters). Kafka 4.2 and 4.3 reject the group configs; 4.4 with `share.version=1` accepts them but writes nothing | [Broker dead-letter queues](consumer/share-consumers.md#broker-dead-letter-queues-kip-1191), [header parser][src/Consumer/DeadLetter/ShareGroupDeadLetterHeaders.cs] | Configured CI: [dead-letter integration tests][integration/ShareConsumerDeadLetterQueueTests.cs] cover the reject and delivery-limit paths on Kafka 4.4.0 and the config rejection on older brokers. Kafka 4.4.0 copies the key and value but not the original headers. |
 
 ## Telemetry and authentication
 
@@ -128,6 +129,7 @@ SHA, runtime, broker image and relevant results; skipped cases remain unverified
 [integration/Security/SaslAuthenticationTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Integration/Security/SaslAuthenticationTests.cs
 [integration/Security/SaslReauthenticationIntegrationTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Integration/Security/SaslReauthenticationIntegrationTests.cs
 [integration/Security/SaslSslAuthenticationTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Integration/Security/SaslSslAuthenticationTests.cs
+[integration/ShareConsumerDeadLetterQueueTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Integration/ShareConsumerDeadLetterQueueTests.cs
 [integration/ShareConsumerOwnershipLoadTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Integration/ShareConsumerOwnershipLoadTests.cs
 [integration/ShareConsumerTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Integration/ShareConsumerTests.cs
 [integration/StreamsGroupMemberIntegrationTests.cs]: https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Integration/StreamsGroupMemberIntegrationTests.cs
@@ -149,6 +151,7 @@ SHA, runtime, broker image and relevant results; skipped cases remain unverified
 [kip1071]: https://cwiki.apache.org/confluence/pages/viewpage.action?pageId=311627992
 [kip1312]: https://cwiki.apache.org/confluence/spaces/KAFKA/pages/406623954/KIP-1312+Support+unregistering+controllers
 [kip1331]: https://cwiki.apache.org/confluence/spaces/KAFKA/pages/421957212/KIP-1331+Streams+Group+Topology+Description+Plugin
+[kip1191]: https://cwiki.apache.org/confluence/x/fApJFg
 [kip12]: https://cwiki.apache.org/confluence/pages/viewpage.action?pageId=51809888
 [kip227]: https://cwiki.apache.org/confluence/pages/viewpage.action?pageId=74687799
 [kip255]: https://cwiki.apache.org/confluence/pages/viewpage.action?pageId=75968876
@@ -169,6 +172,7 @@ SHA, runtime, broker image and relevant results; skipped cases remain unverified
 [src/Admin/IControllerRegistrationAdminClient.cs]: https://github.com/thomhurst/Dekaf/blob/main/src/Dekaf/Admin/IControllerRegistrationAdminClient.cs
 [src/Admin/IAdminClient.cs]: https://github.com/thomhurst/Dekaf/blob/main/src/Dekaf/Admin/IAdminClient.cs
 [src/Consumer/ConsumerCoordinator.cs]: https://github.com/thomhurst/Dekaf/blob/main/src/Dekaf/Consumer/ConsumerCoordinator.cs
+[src/Consumer/DeadLetter/ShareGroupDeadLetterHeaders.cs]: https://github.com/thomhurst/Dekaf/blob/main/src/Dekaf/Consumer/DeadLetter/ShareGroupDeadLetterHeaders.cs
 [src/Consumer/FetchSessionHandler.cs]: https://github.com/thomhurst/Dekaf/blob/main/src/Dekaf/Consumer/FetchSessionHandler.cs
 [src/Consumer/KafkaConsumer.cs]: https://github.com/thomhurst/Dekaf/blob/main/src/Dekaf/Consumer/KafkaConsumer.cs
 [src/Networking/KafkaConnection.cs]: https://github.com/thomhurst/Dekaf/blob/main/src/Dekaf/Networking/KafkaConnection.cs

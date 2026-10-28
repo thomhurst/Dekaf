@@ -221,3 +221,44 @@ Dekaf.ShareConsumer.ShareConsumerOptions.AutoOffsetResetDuration.get -> System.T
 Dekaf.ShareConsumer.ShareConsumerOptions.AutoOffsetResetDuration.init -> void
 Dekaf.ShareConsumerBuilder<TKey, TValue>.WithAutoOffsetReset(Dekaf.Consumer.AutoOffsetReset autoOffsetReset) -> Dekaf.ShareConsumerBuilder<TKey, TValue>!
 Dekaf.ShareConsumerBuilder<TKey, TValue>.WithAutoOffsetResetByDuration(System.TimeSpan duration) -> Dekaf.ShareConsumerBuilder<TKey, TValue>!
+Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext
+Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.Deconstruct(out string! Topic, out int Partition, out long Offset, out string! Group, out int DeliveryCount, out string? Message) -> void
+Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.DeliveryCount.get -> int
+Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.DeliveryCount.init -> void
+Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.Equals(Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext other) -> bool
+Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.Group.get -> string!
+Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.Group.init -> void
+Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.Message.get -> string?
+Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.Message.init -> void
+Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.Offset.get -> long
+Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.Offset.init -> void
+Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.Partition.get -> int
+Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.Partition.init -> void
+Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.ShareGroupDeadLetterContext() -> void
+Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.ShareGroupDeadLetterContext(string! Topic, int Partition, long Offset, string! Group, int DeliveryCount, string? Message) -> void
+Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.Topic.get -> string!
+Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.Topic.init -> void
+Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterHeaders
+Dekaf.ShareConsumer.ShareConsumerOptions.DeadLetterQueueCopyRecord.get -> bool?
+Dekaf.ShareConsumer.ShareConsumerOptions.DeadLetterQueueCopyRecord.init -> void
+Dekaf.ShareConsumer.ShareConsumerOptions.DeadLetterQueueTopic.get -> string?
+Dekaf.ShareConsumer.ShareConsumerOptions.DeadLetterQueueTopic.init -> void
+Dekaf.ShareConsumerBuilder<TKey, TValue>.WithDeadLetterQueue(string! topicName, bool copyRecord = false) -> Dekaf.ShareConsumerBuilder<TKey, TValue>!
+const Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterHeaders.DeliveryCountKey = "__dlq.errors.delivery.count" -> string!
+const Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterHeaders.GroupKey = "__dlq.errors.group" -> string!
+const Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterHeaders.MessageKey = "__dlq.errors.message" -> string!
+const Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterHeaders.OffsetKey = "__dlq.errors.offset" -> string!
+const Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterHeaders.PartitionKey = "__dlq.errors.partition" -> string!
+const Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterHeaders.TopicKey = "__dlq.errors.topic" -> string!
+override Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.GetHashCode() -> int
+static Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.operator !=(Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext left, Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext right) -> bool
+static Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.operator ==(Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext left, Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext right) -> bool
+static Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterHeaders.GetGroup(System.Collections.Generic.IReadOnlyList<Dekaf.Serialization.Header>? headers) -> string?
+static Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterHeaders.GetMessage(System.Collections.Generic.IReadOnlyList<Dekaf.Serialization.Header>? headers) -> string?
+static Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterHeaders.GetTopic(System.Collections.Generic.IReadOnlyList<Dekaf.Serialization.Header>? headers) -> string?
+static Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterHeaders.TryGetDeliveryCount(System.Collections.Generic.IReadOnlyList<Dekaf.Serialization.Header>? headers, out int deliveryCount) -> bool
+static Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterHeaders.TryGetOffset(System.Collections.Generic.IReadOnlyList<Dekaf.Serialization.Header>? headers, out long offset) -> bool
+static Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterHeaders.TryGetPartition(System.Collections.Generic.IReadOnlyList<Dekaf.Serialization.Header>? headers, out int partition) -> bool
+static Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterHeaders.TryParse(System.Collections.Generic.IReadOnlyList<Dekaf.Serialization.Header>? headers, out Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext context) -> bool
+~override Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.Equals(object obj) -> bool
+~override Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterContext.ToString() -> string
