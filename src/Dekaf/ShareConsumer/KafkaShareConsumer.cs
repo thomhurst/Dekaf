@@ -2441,6 +2441,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
         foreach (var batch in batches)
         {
+            // A gap range can cover a large compacted hole and holds no delivered record.
+            if (batch.IsGapOnly)
+                continue;
+
             for (var i = 0; i < batch.OffsetCount; i++)
             {
                 if (batch.GetAcknowledgeType(i) != (byte)AcknowledgeType.Gap)
@@ -2708,6 +2712,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         {
             foreach (var batch in batches)
             {
+                // Gap offsets never had a delivered record, so they hold no renewal state.
+                // Skipping the range keeps a large compacted hole from costing one lookup per offset.
+                if (batch.IsGapOnly)
+                    continue;
+
                 for (var i = 0; i < batch.OffsetCount; i++)
                 {
                     var key = new RenewedRecordKey(

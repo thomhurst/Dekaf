@@ -152,6 +152,27 @@ public sealed partial class ShareConsumerRenewalTests
     }
 
     [Test]
+    public async Task RenewalCompletion_GapRange_DoesNotWalkMissingOffsets()
+    {
+        await using var fixture = CreateFixture(new CapturingConnection(ApiKey.ShareFetch, 2));
+        fixture.Consumer.Acknowledge(CreateRecord(), AcknowledgeType.Renew);
+        await Assert.That(RenewedRecordStateCount(fixture.Consumer)).IsEqualTo(1);
+
+        // A compacted hole wider than int.MaxValue offsets: walking it per offset would
+        // overflow OffsetCount, and a smaller one would still cost a lookup per offset.
+        var partition = new TopicPartition("topic", 0);
+        var gaps = new List<AcknowledgementBatchData>
+        {
+            new(1_000, 1_000 + 3_000_000_000L, AcknowledgementBatchData.GapTypes)
+        };
+        InvokePrivate(fixture.Consumer, "ApplySuccessfulAcknowledgements",
+            new Dictionary<TopicPartition, List<AcknowledgementBatchData>> { [partition] = gaps }, 0L);
+        InvokePrivate(fixture.Consumer, "ReleaseStaleRenewals", partition, gaps);
+
+        await Assert.That(RenewedRecordStateCount(fixture.Consumer)).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task PollBatches_ExplicitAcknowledgements_DoNotSendUnacknowledgedRecordsAsGaps()
     {
         var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
