@@ -182,13 +182,18 @@ TLS properties require `SecurityProtocol=Ssl` or `SaslSsl`. SASL properties requ
 | Status | Properties or behavior |
 | --- | --- |
 | Translated | `Acks`, `BatchSize`, `CompressionLevel`, `CompressionType`, `EnableIdempotence`, `LingerMs`, `MaxInFlight`, `MessageMaxBytes`, `MessageSendMaxRetries`, `MessageTimeoutMs`, `Partitioner`, `QueueBufferingMaxKbytes`, `RequestTimeoutMs`, `TransactionTimeoutMs`, `TransactionalId` |
-| Native-only | Key/value serializers, producer interceptors, retry policy, presets, custom codecs including Brotli, explicit partitioner implementations, and connection-pool controls |
+| Native-only | Key/value serializers, producer interceptors, retry policy, presets, custom codecs, explicit partitioner implementations, and connection-pool controls |
 | Rejected property | Any producer property absent from the translated rows, including `EnableBackgroundPoll`, `QueueBufferingMaxMessages`, `DeliveryReportFields`, `EnableDeliveryReports`, `StatisticsIntervalMs`, and `Debug` |
 | Rejected value | `MessageTimeoutMs=0` (infinite), a fractional `LingerMs`, or a `CompressionType`/`Partitioner` enum without an exact Dekaf mapping |
 
 Supported compression values are `None`, `Gzip`, `Snappy`, `Lz4`, and `Zstd`. Supported
 partitioner values are `Random`, `Consistent`, `ConsistentRandom`, `Murmur2`, `Murmur2Random`,
 `Fnv1a`, and `Fnv1aRandom`.
+
+Dekaf's Brotli codec is not a producer compression option. Standard Kafka brokers reject Brotli,
+so the producer builder throws `NotSupportedException` from `Build()`, even when both clients
+install `Dekaf.Compression.Brotli`. Use `BrotliCompressionCodec` directly only for client-side
+data such as local or custom storage.
 
 Compression configuration selects a codec but does not load its package or register it.
 For LZ4, Zstd, or Snappy, install the matching package and call
