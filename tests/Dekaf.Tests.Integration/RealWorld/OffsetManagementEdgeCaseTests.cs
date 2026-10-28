@@ -379,6 +379,133 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
     }
 
     [Test]
+    public async Task CommitAsync_InvalidExplicitOffset_ThrowsAndLeavesCommittedOffsetUnchanged()
+    {
+        // Arrange
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var groupId = $"test-group-{Guid.NewGuid():N}";
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer-commit-invalid")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        for (var i = 0; i < 5; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"key-{i}",
+                Value = $"value-{i}"
+            }, CancellationToken.None);
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-consumer-commit-invalid")
+            .WithGroupId(groupId)
+            .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+        consumer.Subscribe(topic);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts.Token);
+
+        var tp = new TopicPartition(topic, 0);
+        await consumer.CommitAsync([new TopicPartitionOffset(topic, 0, 3)]);
+
+        // Act - the SeekToEnd (-1) and SeekToBeginning (-2) sentinels must never reach the broker,
+        // even next to a valid entry, because a restarted consumer would read them as "no offset"
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            consumer.CommitAsync([new TopicPartitionOffset(topic, 0, TopicPartitionTimestamp.Latest)]).AsTask());
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            consumer.CommitAsync(
+            [
+                new TopicPartitionOffset(topic, 0, 4),
+                new TopicPartitionOffset(topic, 0, TopicPartitionTimestamp.Earliest)
+            ]).AsTask());
+
+        // Assert - the group's committed offset is still the last valid commit
+        var committed = await consumer.GetCommittedOffsetAsync(tp);
+        await Assert.That(committed).IsEqualTo(3);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task GetPosition_AfterSeekToBeginningOrEnd_NeverReturnsSentinel(bool seekToEnd)
+    {
+        // Arrange
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer-position-sentinel")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        for (var i = 0; i < 5; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"key-{i}",
+                Value = $"value-{i}"
+            }, CancellationToken.None);
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-consumer-position-sentinel")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+        var tp = new TopicPartition(topic, 0);
+        consumer.Assign(tp);
+
+        var consumedCount = 0;
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await foreach (var _ in consumer.ConsumeAsync(cts.Token))
+        {
+            if (++consumedCount >= 5) break;
+        }
+
+        await Assert.That(consumer.GetPosition(tp)).IsEqualTo(5);
+
+        // Act
+        if (seekToEnd)
+            consumer.SeekToEnd(tp);
+        else
+            consumer.SeekToBeginning(tp);
+
+        // Assert - before a fetch resolves the seek the position is unknown (null); a background
+        // prefetch may already have resolved it, but the -1/-2 sentinel is never returned
+        var expectedResolved = seekToEnd ? 5L : 0L;
+        var unresolved = consumer.GetPosition(tp);
+        await Assert.That(unresolved is null || unresolved == expectedResolved).IsTrue();
+
+        if (seekToEnd)
+        {
+            // Nothing past the end: the poll times out, but its fetch resolves the seek
+            var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(5), cts.Token);
+            await Assert.That(result).IsNull();
+        }
+        else
+        {
+            var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts.Token);
+            await Assert.That(result).IsNotNull();
+            await Assert.That(result!.Value.Offset).IsEqualTo(0);
+            expectedResolved = 1;
+        }
+
+        await Assert.That(consumer.GetPosition(tp)).IsEqualTo(expectedResolved);
+    }
+
+    [Test]
     public async Task Position_TracksConsumedOffset()
     {
         // Arrange
