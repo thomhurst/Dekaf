@@ -28,6 +28,8 @@ public sealed partial class InMemoryAdminClient : IDetailedConfigMutationAdminCl
     private ValueTask<IReadOnlyDictionary<ConfigResource, AdminMutationResult>> ExecuteInMemoryConfigMutationsAsync(
         List<AdminClient.ConfigMutation> items, int timeoutMs, bool replace, bool validateOnly, CancellationToken token) =>
         ExecuteInMemoryMutationAsync(items, static item => item.Resource, static _ => (null, null),
-            item => _cluster.AlterShareIsolation(item.Resource, item.Changes, replace, validateOnly),
+            item => replace
+                ? _cluster.AlterShareIsolation(item.Resource, item.Changes, replace: true, validateOnly)
+                : _cluster.IncrementallyAlterConfigs(item.Resource, item.Changes, validateOnly),
             timeoutMs, token, applyFault: (item, cancellation) => ApplyAdminResourceFaultAsync(item.Resource, cancellation));
 }
