@@ -177,6 +177,9 @@ public sealed partial class KafkaConnection :
     // 1 while the receive loop waits for response-memory admission. The broker has answered,
     // so OnReceiveTimeout treats the wait as progress instead of silence (issue #3816).
     private int _responseAdmissionWaiting;
+    // Published under the pending-request shard lock before a selected pool can reserve.
+    // Cancellation cannot remove that request before the renewal drain sees admission.
+    private int _responseAdmissionInProgress;
     private TaskCompletionSource? _reauthenticationResponsesDrained;
     // Receive-loop only: the request whose frame GetResponseFrameAdmission last bounded.
     private PendingRequestEntry _admissionRequest;
@@ -2833,22 +2836,27 @@ public sealed partial class KafkaConnection :
 
     private ResponseFrameAdmission GetResponseFrameAdmission(int correlationId)
     {
-        if (!TryGetPendingRequest(correlationId, out var pending))
-            return ResponseFrameAdmission.Discarded;
+        var shard = GetPendingRequestShard(correlationId);
+        lock (shard.Gate)
+        {
+            if (!shard.Requests.TryGetValue(correlationId, out var pending))
+                return ResponseFrameAdmission.Discarded;
 
-        if (!pending.Request.TryGetResponseMemoryPool(pending.Version, out var memoryPool))
-            return ResponseFrameAdmission.Discarded;
+            if (!pending.Request.TryGetResponseMemoryPool(pending.Version, out var memoryPool))
+                return ResponseFrameAdmission.Discarded;
 
-        if (memoryPool is null)
-            return ResponseFrameAdmission.Unrestricted;
+            if (memoryPool is null)
+                return ResponseFrameAdmission.Unrestricted;
 
-        _admissionRequest = pending;
-        return new ResponseFrameAdmission(memoryPool, Discard: false);
+            _admissionRequest = pending;
+            Volatile.Write(ref _responseAdmissionInProgress, 1);
+            return new ResponseFrameAdmission(memoryPool, Discard: false);
+        }
     }
 
     /// <summary>
-    /// Invoked by <see cref="ResponseFrameReader"/> around a response-memory admission wait
-    /// that did not complete synchronously. The wait is local backpressure while the
+    /// Invoked by <see cref="ResponseFrameReader"/> when admission waits and when admission
+    /// ends (including synchronous reservations). The wait is local backpressure while the
     /// application drains buffered records, not broker silence: it must neither expire the
     /// connection receive timeout nor fail the admitted request with its request timeout.
     /// </summary>
@@ -2862,13 +2870,17 @@ public sealed partial class KafkaConnection :
             return;
         }
 
-        // Restamp before clearing the flag: a timer that observes the cleared flag also
-        // observes a deadline that starts from admission, not from the last byte read.
-        if (Volatile.Read(ref _receiveTimeoutDeadlineTimestamp) != 0)
-            Volatile.Write(ref _receiveTimeoutDeadlineTimestamp, GetReceiveTimeoutDeadlineTimestamp());
-        Volatile.Write(ref _responseAdmissionWaiting, 0);
-        request.Request?.EndAdmissionWait(request.Version);
+        if (IsResponseAdmissionWaiting)
+        {
+            // Restamp before clearing the flag: a timer that observes the cleared flag also
+            // observes a deadline that starts from admission, not from the last byte read.
+            if (Volatile.Read(ref _receiveTimeoutDeadlineTimestamp) != 0)
+                Volatile.Write(ref _receiveTimeoutDeadlineTimestamp, GetReceiveTimeoutDeadlineTimestamp());
+            Volatile.Write(ref _responseAdmissionWaiting, 0);
+            request.Request?.EndAdmissionWait(request.Version);
+        }
         _admissionRequest = default;
+        Volatile.Write(ref _responseAdmissionInProgress, 0);
         TrySignalReauthenticationResponsesDrained();
     }
 
@@ -3104,7 +3116,7 @@ public sealed partial class KafkaConnection :
     {
         // Request admission is paused, but pipelined sends leave the SASL gate after writing.
         // Drain their responses before putting a handshake behind a locally blocked fetch.
-        if (!HasPendingRequests() && !IsResponseAdmissionWaiting)
+        if (!HasPendingRequests() && Volatile.Read(ref _responseAdmissionInProgress) == 0)
             return;
 
         var drained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -3123,9 +3135,9 @@ public sealed partial class KafkaConnection :
     private void TrySignalReauthenticationResponsesDrained()
     {
         var drained = Volatile.Read(ref _reauthenticationResponsesDrained);
-        // Caller cancellation can remove the last request while its frame still waits
-        // for local memory. Only the receive loop can finish that admission wait.
-        if (drained is not null && !HasPendingRequests() && !IsResponseAdmissionWaiting)
+        // Caller cancellation can remove the last request after its pool is selected,
+        // before the wait callback runs. Only the receive loop can finish admission.
+        if (drained is not null && !HasPendingRequests() && Volatile.Read(ref _responseAdmissionInProgress) == 0)
             drained.TrySetResult();
     }
 

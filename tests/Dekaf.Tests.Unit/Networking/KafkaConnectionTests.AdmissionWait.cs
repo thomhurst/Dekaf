@@ -16,6 +16,68 @@ public sealed partial class KafkaConnectionTests
     [Arguments(false)]
     [Arguments(true)]
     [Timeout(20_000)]
+    public async Task FetchAdmissionWait_CancellationBeforeWaitCallback_KeepsReauthenticationDrainBlocked(
+        bool synchronousAdmission, CancellationToken cancellationToken)
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var accept = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
+        await using var connection = new KafkaConnection(
+            IPAddress.Loopback.ToString(), port, clientId: null,
+            new ConnectionOptions { RequestTimeout = TimeSpan.FromSeconds(5) }, logger: null,
+            ResponseBufferPool.Default, responseMemoryAdmissionsEnabled: true);
+        await connection.ConnectAsync(cancellationToken);
+        using var server = await accept;
+        var stream = server.GetStream();
+        using var memoryPool = new FetchBufferMemoryPool(64);
+        using var buffered = synchronousAdmission ? null : await memoryPool.ReserveAsync(64, cancellationToken);
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var admissionStarted = new TaskCompletionSource<(Task Drain, bool CompletedBeforeReservation)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancellingPool = new AdmissionCallbackMemoryPool(memoryPool, () =>
+        {
+            // ReserveAsync runs after admission selected the pool, before the reader's wait callback.
+            caller.Cancel();
+            var drain = (Task)typeof(KafkaConnection)
+                .GetMethod("DrainResponsesBeforeReauthenticationAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(connection, [cancellationToken])!;
+            admissionStarted.TrySetResult((drain, drain.IsCompleted));
+        });
+        var fetch = connection.SendPipelinedAsync<FetchRequest, FetchResponse>(
+            new FetchRequest { ResponseMemoryPool = cancellingPool }, 16, caller.Token);
+        var request = await ReadRequestFrameAsync(stream, cancellationToken);
+        await stream.WriteAsync(BuildEmptyFetchV16ResponseFrame(
+            BinaryPrimitives.ReadInt32BigEndian(request.AsSpan(4))), cancellationToken);
+
+        var admission = await admissionStarted.Task.WaitAsync(cancellationToken);
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await fetch);
+        await Assert.That(admission.CompletedBeforeReservation).IsFalse();
+        if (!synchronousAdmission)
+        {
+            while (!connection.IsResponseAdmissionWaiting)
+                await Task.Delay(1, cancellationToken);
+            await Assert.That(admission.Drain.IsCompleted).IsFalse();
+        }
+
+        buffered?.Dispose();
+        await admission.Drain.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+        await Assert.That(connection.IsConnected).IsTrue();
+    }
+
+    private sealed class AdmissionCallbackMemoryPool(IResponseMemoryPool inner, Action onReserve) : IResponseMemoryPool
+    {
+        public ValueTask<IResponseMemoryReservation> ReserveAsync(int bytes, CancellationToken cancellationToken)
+        {
+            onReserve();
+            return inner.ReserveAsync(bytes, cancellationToken);
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    [Timeout(20_000)]
     public async Task FetchAdmissionWait_CancelledLastFetch_KeepsReauthenticationDrainBlocked(
         bool cancelDrain, CancellationToken cancellationToken)
     {
@@ -154,4 +216,3 @@ public sealed partial class KafkaConnectionTests
         }
     }
 }
-

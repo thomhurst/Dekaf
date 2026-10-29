@@ -1,6 +1,6 @@
-using Dekaf.Networking;
 using Dekaf.Consumer;
 using Dekaf.Errors;
+using Dekaf.Networking;
 using Dekaf.Protocol.Messages;
 using Dekaf.Security.Sasl;
 using Microsoft.Extensions.Logging;
