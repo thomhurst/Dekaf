@@ -1079,15 +1079,24 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
-    internal void AddInterceptorsFirst(IReadOnlyList<IProducerInterceptor<TKey, TValue>> interceptors)
+    internal IKafkaProducer<TKey, TValue> BuildForServiceProvider(
+        ILoggerFactory? loggerFactory,
+        IReadOnlyList<IProducerInterceptor<TKey, TValue>>? globalInterceptors)
     {
-        if (interceptors.Count == 0)
+        // Keep registration-time configuration reusable across providers. Build can also
+        // normalize scalar options, so run it on a copy even without global interceptors.
+        var builder = (ProducerBuilder<TKey, TValue>)MemberwiseClone();
+        builder._loggerFactory = loggerFactory ?? _loggerFactory;
+        if (globalInterceptors is { Count: > 0 })
         {
-            return;
+            builder._interceptors = new List<IProducerInterceptor<TKey, TValue>>(
+                globalInterceptors.Count + (_interceptors?.Count ?? 0));
+            builder._interceptors.AddRange(globalInterceptors);
+            if (_interceptors is not null)
+                builder._interceptors.AddRange(_interceptors);
         }
 
-        _interceptors ??= [];
-        _interceptors.InsertRange(0, interceptors);
+        return builder.Build();
     }
 
     /// <summary>
@@ -3081,15 +3090,24 @@ public sealed class ConsumerBuilder<TKey, TValue>
         ? null
         : string.Join(",", _bootstrapServers);
 
-    internal void AddInterceptorsFirst(IReadOnlyList<IConsumerInterceptor<TKey, TValue>> interceptors)
+    internal IKafkaConsumer<TKey, TValue> BuildForServiceProvider(
+        ILoggerFactory? loggerFactory,
+        IReadOnlyList<IConsumerInterceptor<TKey, TValue>>? globalInterceptors)
     {
-        if (interceptors.Count == 0)
+        // Keep registration-time configuration reusable across providers. Build can also
+        // normalize scalar options, so run it on a copy even without global interceptors.
+        var builder = (ConsumerBuilder<TKey, TValue>)MemberwiseClone();
+        builder._loggerFactory = loggerFactory ?? _loggerFactory;
+        if (globalInterceptors is { Count: > 0 })
         {
-            return;
+            builder._interceptors = new List<IConsumerInterceptor<TKey, TValue>>(
+                globalInterceptors.Count + (_interceptors?.Count ?? 0));
+            builder._interceptors.AddRange(globalInterceptors);
+            if (_interceptors is not null)
+                builder._interceptors.AddRange(_interceptors);
         }
 
-        _interceptors ??= [];
-        _interceptors.InsertRange(0, interceptors);
+        return builder.Build();
     }
 
     /// <summary>

@@ -897,9 +897,10 @@ public sealed class DekafBuilder
     {
         var loggerFactory = serviceProvider.GetService<ILoggerFactory>();
 
+        List<IProducerInterceptor<TKey, TValue>>? globalInterceptors = null;
         if (globalFactories.Count > 0)
         {
-            var globalInterceptors = new List<IProducerInterceptor<TKey, TValue>>(globalFactories.Count);
+            globalInterceptors = new List<IProducerInterceptor<TKey, TValue>>(globalFactories.Count);
             foreach (var factory in globalFactories)
             {
                 var interceptor = factory(serviceProvider, typeof(TKey), typeof(TValue));
@@ -916,19 +917,9 @@ public sealed class DekafBuilder
 
                 globalInterceptors.Add(typedInterceptor);
             }
-
-            if (globalInterceptors.Count > 0)
-            {
-                builder.AddInterceptorsFirst(globalInterceptors);
-            }
         }
 
-        if (loggerFactory is not null)
-        {
-            builder.WithLoggerFactory(loggerFactory);
-        }
-
-        return builder.Build();
+        return builder.BuildForServiceProvider(loggerFactory, globalInterceptors);
     }
 
     private static IKafkaConsumer<TKey, TValue> BuildConsumer<TKey, TValue>(
@@ -938,9 +929,10 @@ public sealed class DekafBuilder
     {
         var loggerFactory = serviceProvider.GetService<ILoggerFactory>();
 
+        List<IConsumerInterceptor<TKey, TValue>>? globalInterceptors = null;
         if (globalFactories.Count > 0)
         {
-            var globalInterceptors = new List<IConsumerInterceptor<TKey, TValue>>(globalFactories.Count);
+            globalInterceptors = new List<IConsumerInterceptor<TKey, TValue>>(globalFactories.Count);
             foreach (var factory in globalFactories)
             {
                 var interceptor = factory(serviceProvider, typeof(TKey), typeof(TValue));
@@ -957,19 +949,9 @@ public sealed class DekafBuilder
 
                 globalInterceptors.Add(typedInterceptor);
             }
-
-            if (globalInterceptors.Count > 0)
-            {
-                builder.AddInterceptorsFirst(globalInterceptors);
-            }
         }
 
-        if (loggerFactory is not null)
-        {
-            builder.WithLoggerFactory(loggerFactory);
-        }
-
-        return builder.Build();
+        return builder.BuildForServiceProvider(loggerFactory, globalInterceptors);
     }
 
     private sealed class ProviderConfiguredConsumerState<TKey, TValue>(
