@@ -2510,6 +2510,7 @@ public sealed class InMemoryConsumerFaultTests
     public async Task CloseAsync_AutoCommitFailureStillDisposesWithoutCommitting()
     {
         var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic(Topic);
         var consumer = CreateConsumer(
             cluster,
             enableAutoOffsetStore: false,
@@ -2534,6 +2535,7 @@ public sealed class InMemoryConsumerFaultTests
     public async Task CloseAsync_ConcurrentCallersShareCommitBarrier()
     {
         var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic(Topic);
         var consumer = CreateConsumer(
             cluster,
             enableAutoOffsetStore: false,

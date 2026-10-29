@@ -38,6 +38,7 @@ public sealed partial class InMemoryKafkaCluster
     private readonly InMemoryKafkaClusterOptions _options;
     private TaskCompletionSource _recordsChanged = NewRecordsChangedSource();
     private long[] _shareDeliveryRemovalOffsets = [];
+    private long _topologyVersion;
     private long _nextProducerId;
     private long _nextConsumerGroupRegistrationId;
     private TimeSpan _produceLatency;
@@ -122,7 +123,12 @@ public sealed partial class InMemoryKafkaCluster
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
         lock (_gate)
-            return _topics.Remove(name);
+        {
+            if (!_topics.Remove(name))
+                return false;
+            OnTopologyChangedUnderLock();
+            return true;
+        }
     }
 
     internal bool DeleteTopic(Guid topicId)
@@ -142,7 +148,7 @@ public sealed partial class InMemoryKafkaCluster
                 }
             }
 
-            return topicName is not null && _topics.Remove(topicName);
+            return topicName is not null && DeleteTopic(topicName);
         }
     }
 
@@ -150,6 +156,25 @@ public sealed partial class InMemoryKafkaCluster
     {
         lock (_gate)
             return _topics.Keys.Order(StringComparer.Ordinal).ToArray();
+    }
+
+    internal long TopologyVersion => Volatile.Read(ref _topologyVersion);
+
+    internal (long Version, (string Name, Guid Id, int PartitionCount)[] Topics) GetTopologySnapshot()
+    {
+        lock (_gate)
+        {
+            var topics = _topics.Values
+                .Select(static topic => (topic.Name, topic.TopicId, topic.Partitions.Count))
+                .ToArray();
+            return (_topologyVersion, topics);
+        }
+    }
+
+    private void OnTopologyChangedUnderLock()
+    {
+        Interlocked.Increment(ref _topologyVersion);
+        _recordsChanged.TrySetResult();
     }
 
     public IReadOnlyList<TopicPartition> GetTopicPartitions(string topic)
@@ -235,6 +260,29 @@ public sealed partial class InMemoryKafkaCluster
             var generation = ++_nextConsumerGroupGeneration;
             _consumerGroupGenerations[groupId] = generation;
             return generation;
+        }
+    }
+
+    internal void UpdateConsumerGroupSubscription(
+        string groupId,
+        string memberId,
+        long registrationId,
+        IReadOnlySet<TopicPartition> subscribedPartitions)
+    {
+        lock (_gate)
+        {
+            // A metadata refresh must not rejoin a member removed or fenced by the admin client.
+            if (!_consumerGroupMembers.TryGetValue(groupId, out var members) ||
+                !members.TryGetValue(memberId, out var member) ||
+                member.RegistrationId != registrationId ||
+                member.SubscribedPartitions.SetEquals(subscribedPartitions))
+            {
+                return;
+            }
+
+            member.SubscribedPartitions.Clear();
+            member.SubscribedPartitions.UnionWith(subscribedPartitions);
+            _consumerGroupGenerations[groupId] = ++_nextConsumerGroupGeneration;
         }
     }
 
@@ -1515,6 +1563,7 @@ public sealed partial class InMemoryKafkaCluster
 
             while (topic.Partitions.Count < newPartitionCount)
                 topic.Partitions.Add(new PartitionState());
+            OnTopologyChangedUnderLock();
         }
     }
 
@@ -1544,6 +1593,7 @@ public sealed partial class InMemoryKafkaCluster
             {
                 while (topic.Partitions.Count < expansion.Count)
                     topic.Partitions.Add(new PartitionState());
+                OnTopologyChangedUnderLock();
             }
         }
     }
@@ -1967,6 +2017,7 @@ public sealed partial class InMemoryKafkaCluster
 
         var state = new TopicState(name, partitionCount, configs);
         _topics[name] = state;
+        OnTopologyChangedUnderLock();
         return state;
     }
 
