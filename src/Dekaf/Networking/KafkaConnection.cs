@@ -3132,12 +3132,20 @@ public sealed partial class KafkaConnection :
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void TrySignalReauthenticationResponsesDrained()
     {
         var drained = Volatile.Read(ref _reauthenticationResponsesDrained);
+        if (drained is not null)
+            TryCompleteReauthenticationResponsesDrained(drained);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void TryCompleteReauthenticationResponsesDrained(TaskCompletionSource drained)
+    {
         // Caller cancellation can remove the last request after its pool is selected,
         // before the wait callback runs. Only the receive loop can finish admission.
-        if (drained is not null && !HasPendingRequests() && Volatile.Read(ref _responseAdmissionInProgress) == 0)
+        if (!HasPendingRequests() && Volatile.Read(ref _responseAdmissionInProgress) == 0)
             drained.TrySetResult();
     }
 

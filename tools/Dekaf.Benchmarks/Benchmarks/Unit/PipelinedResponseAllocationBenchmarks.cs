@@ -27,6 +27,7 @@ public class PipelinedResponseAllocationBenchmarks
     private KafkaConnection _connection = null!;
     private CancellationTokenSource _serverCancellation = null!;
     private Task _serverTask = null!;
+    private ApiVersionsRequest _ordinaryRequest = null!;
     private Func<ApiVersionsRequest, short, CancellationToken, ValueTask<ApiVersionsResponse>> _sendObserved = null!;
     private Func<ApiVersionsRequest, short, CancellationToken, ValueTask<ApiVersionsResponse>> _sendObservedAfterWrite = null!;
 
@@ -43,6 +44,7 @@ public class PipelinedResponseAllocationBenchmarks
     [GlobalSetup]
     public async Task Setup()
     {
+        _ordinaryRequest = CreateRequest();
         _listener = new TcpListener(IPAddress.Loopback, 0);
         _listener.Start();
         var port = ((IPEndPoint)_listener.LocalEndpoint).Port;
@@ -149,6 +151,13 @@ public class PipelinedResponseAllocationBenchmarks
     public async ValueTask<ErrorCode> OrdinaryRequest()
     {
         var response = await _connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(CreateRequest(), 3);
+        return response.ErrorCode;
+    }
+
+    [Benchmark]
+    public async ValueTask<ErrorCode> OrdinaryRequestReusableInput()
+    {
+        var response = await _connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(_ordinaryRequest, 3);
         return response.ErrorCode;
     }
 

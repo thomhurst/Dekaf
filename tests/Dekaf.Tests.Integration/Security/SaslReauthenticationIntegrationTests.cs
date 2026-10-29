@@ -92,7 +92,7 @@ public sealed class OAuthReauthenticationIntegrationTests(ReauthOAuthKafkaContai
             }, logger: null, ResponseBufferPool.Default, responseMemoryAdmissionsEnabled: true);
         await connection.ConnectAsync(cancellationToken);
         using var memoryPool = new FetchBufferMemoryPool(64);
-        using var buffered = await memoryPool.ReserveAsync(64, cancellationToken);
+        await Assert.That(memoryPool.TryReserve(64)).IsTrue();
         using var caller = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var fetch = connection.SendPipelinedAsync<FetchRequest, FetchResponse>(
             new FetchRequest { ResponseMemoryPool = memoryPool }, 16, caller.Token);
@@ -125,7 +125,7 @@ public sealed class OAuthReauthenticationIntegrationTests(ReauthOAuthKafkaContai
         await Assert.That(connection.IsConnected).IsTrue();
         if (!cancelFetch)
             await Assert.That(fetch.IsCompleted).IsFalse();
-        buffered.Dispose();
+        memoryPool.Release(64);
         if (!cancelFetch)
         {
             var response = await fetch.WaitAsync(deadline.Token);

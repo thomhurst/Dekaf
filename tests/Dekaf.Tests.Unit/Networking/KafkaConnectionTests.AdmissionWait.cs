@@ -31,7 +31,8 @@ public sealed partial class KafkaConnectionTests
         using var server = await accept;
         var stream = server.GetStream();
         using var memoryPool = new FetchBufferMemoryPool(64);
-        using var buffered = synchronousAdmission ? null : await memoryPool.ReserveAsync(64, cancellationToken);
+        if (!synchronousAdmission)
+            await Assert.That(memoryPool.TryReserve(64)).IsTrue();
         using var caller = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var admissionStarted = new TaskCompletionSource<(Task Drain, bool CompletedBeforeReservation)>(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -60,7 +61,8 @@ public sealed partial class KafkaConnectionTests
             await Assert.That(admission.Drain.IsCompleted).IsFalse();
         }
 
-        buffered?.Dispose();
+        if (!synchronousAdmission)
+            memoryPool.Release(64);
         await admission.Drain.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
         await Assert.That(connection.IsConnected).IsTrue();
     }
@@ -93,7 +95,7 @@ public sealed partial class KafkaConnectionTests
         using var server = await accept;
         var stream = server.GetStream();
         using var memoryPool = new FetchBufferMemoryPool(64);
-        using var buffered = await memoryPool.ReserveAsync(64, cancellationToken);
+        await Assert.That(memoryPool.TryReserve(64)).IsTrue();
         using var caller = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var renewal = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var fetch = connection.SendPipelinedAsync<FetchRequest, FetchResponse>(
@@ -121,7 +123,7 @@ public sealed partial class KafkaConnectionTests
             await Assert.That(drain.IsCompleted).IsFalse();
         }
 
-        buffered.Dispose();
+        memoryPool.Release(64);
         await drain.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
         await Assert.That(connection.IsResponseAdmissionWaiting).IsFalse();
         await Assert.That(connection.IsConnected).IsTrue();
@@ -157,7 +159,7 @@ public sealed partial class KafkaConnectionTests
         using var server = await accept;
         var stream = server.GetStream();
         using var memoryPool = new FetchBufferMemoryPool(64);
-        using var buffered = await memoryPool.ReserveAsync(64, cancellationToken);
+        await Assert.That(memoryPool.TryReserve(64)).IsTrue();
         using var caller = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         var fetch = connection.SendPipelinedAsync<FetchRequest, FetchResponse>(
@@ -188,7 +190,7 @@ public sealed partial class KafkaConnectionTests
             await Assert.That(exception!.CancellationToken).IsEqualTo(caller.Token);
         }
 
-        buffered.Dispose();
+        memoryPool.Release(64);
         var fetchResponse = await fetch.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
         fetchResponse.PooledMemoryOwner?.Dispose();
         fetchResponse.ReturnToPool();

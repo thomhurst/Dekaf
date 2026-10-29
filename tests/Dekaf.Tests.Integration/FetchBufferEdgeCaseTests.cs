@@ -66,7 +66,7 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
             ResponseBufferPool.Default, responseMemoryAdmissionsEnabled: true);
         await connection.ConnectAsync(cancellationToken);
         using var memoryPool = new FetchBufferMemoryPool(64);
-        using var buffered = await memoryPool.ReserveAsync(64, cancellationToken);
+        await Assert.That(memoryPool.TryReserve(64)).IsTrue();
         var fetch = connection.SendPipelinedAsync<FetchRequest, FetchResponse>(
             new FetchRequest { ResponseMemoryPool = memoryPool }, 16, cancellationToken);
 
@@ -84,7 +84,7 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         await Assert.That(queuedFetch.IsCompleted).IsFalse();
         await Assert.That(metadata.IsCompleted).IsFalse();
         await Assert.That(connection.IsConnected).IsTrue();
-        buffered.Dispose();
+        memoryPool.Release(64);
 
         var response = await fetch.WaitAsync(deadline.Token);
         response.PooledMemoryOwner?.Dispose();
