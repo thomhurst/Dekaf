@@ -12,6 +12,7 @@ namespace Dekaf.Tests.Integration;
 public sealed class SchemaRegistryContainerStartupRetryTests
 {
     [Test]
+    [SkipWhenExternalSchemaRegistry]
     [Arguments(false)]
     [Arguments(true)]
     public async Task InitializeAsync_TransientStartupFailure_ReplacesAndRemovesFailedResources(
@@ -82,4 +83,13 @@ public sealed class SchemaRegistryContainerStartupRetryTests
                 new InvalidOperationException("injected startup failure"));
         }
     }
+}
+
+public sealed class SkipWhenExternalSchemaRegistryAttribute() : SkipAttribute(
+    "This fault-injection test requires locally managed Kafka and Schema Registry containers.")
+{
+    public override Task<bool> ShouldSkip(TestRegisteredContext context) =>
+        Task.FromResult(
+            !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("KAFKA_BOOTSTRAP_SERVERS")) &&
+            !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SCHEMA_REGISTRY_URL")));
 }
