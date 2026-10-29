@@ -147,14 +147,14 @@ public sealed class InMemoryShareRecordStateTests
         await ProduceRecords(cluster, 1);
         var partition = new TopicPartition("shared", 0);
         var first = cluster.RegisterShareGroupMember("workers", "first");
-        cluster.TryAcquireShareRecord("workers", "first", first, partition, 0, out _, out _);
+        cluster.TryAcquireShareRecord("workers", "first", first, partition, 0, out var stale, out _);
         cluster.UnregisterShareGroupMember("workers", "first", first);
         var second = cluster.RegisterShareGroupMember("workers", "second");
-        cluster.TryAcquireShareRecord("workers", "second", second, partition, 0, out _, out _);
+        cluster.TryAcquireShareRecord("workers", "second", second, partition, 0, out var current, out _);
         cluster.CompleteShareRecords("workers", "first", first,
-            [new InMemoryShareRecordCompletion(new TopicPartitionOffset("shared", 0, 0), AcknowledgeType.Accept)], 1);
+            [new InMemoryShareRecordCompletion(stale, AcknowledgeType.Accept)], 1);
         await Assert.That(cluster.GetCommittedShareOffset("workers", partition)).IsNull();
-        cluster.ReleaseShareRecords("workers", "second", second, [new TopicPartitionOffset("shared", 0, 0)]);
+        cluster.ReleaseShareRecords("workers", "second", second, [current]);
         await Assert.That(cluster.TryAcquireShareRecord("workers", "second", second, partition, 0, out _, out var count)).IsTrue();
         await Assert.That(count).IsEqualTo(3);
     }
@@ -193,7 +193,7 @@ public sealed class InMemoryShareRecordStateTests
         cluster.TryAcquireShareRecord("workers", "second", second, partition, 0, out var acknowledged, out _);
         await Assert.That(acknowledged.Offset).IsEqualTo(1);
         cluster.CompleteShareRecords("workers", "second", second,
-            [new InMemoryShareRecordCompletion(new TopicPartitionOffset("shared", 0, 1), AcknowledgeType.Accept)], 1);
+            [new InMemoryShareRecordCompletion(acknowledged, AcknowledgeType.Accept)], 1);
         cluster.UnregisterShareGroupMember("workers", "first", first);
 
         var acquired = cluster.TryAcquireShareRecord("workers", "second", second, partition, 0, out var next, out var count);
@@ -279,6 +279,84 @@ public sealed class InMemoryShareRecordStateTests
     }
 
     [Test]
+    [Arguments(AcknowledgeType.Accept, false)]
+    [Arguments(AcknowledgeType.Accept, true)]
+    [Arguments(AcknowledgeType.Reject, false)]
+    [Arguments(AcknowledgeType.Reject, true)]
+    [Arguments(AcknowledgeType.Release, false)]
+    [Arguments(AcknowledgeType.Release, true)]
+    public async Task RecreatedTopic_StaleAcknowledgementDoesNotCompleteNewLease(AcknowledgeType type, bool withFault)
+    {
+        var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions { DeliveryCountLimit = 2 });
+        cluster.CreateTopic("dead-letters", configs: new Dictionary<string, string>
+        {
+            ["errors.deadletterqueue.group.enable"] = "true"
+        });
+        await ProduceRecords(cluster, 1);
+        await using var consumer = new InMemoryShareConsumer<string, string>(cluster,
+            new InMemoryShareConsumerOptions { GroupId = "workers", DeadLetterQueueTopic = "dead-letters" });
+        consumer.Subscribe("shared");
+        await using var poll = consumer.PollAsync().GetAsyncEnumerator();
+        await Assert.That(await poll.MoveNextAsync()).IsTrue();
+        var stale = poll.Current;
+
+        cluster.DeleteTopic("shared");
+        await ProduceRecords(cluster, 1);
+        if (withFault)
+            cluster.FaultPlan.PauseNext(new(KafkaFaultOperation.ShareConsume)).Release();
+        await Assert.That(await poll.MoveNextAsync()).IsTrue();
+        var current = poll.Current;
+        await Assert.That(current.Offset).IsEqualTo(stale.Offset);
+        await Assert.That(current.DeliveryCount).IsEqualTo(1);
+        consumer.Acknowledge(stale, type);
+        consumer.Acknowledge(current, AcknowledgeType.Release);
+        if (withFault)
+            cluster.FaultPlan.PauseNext(new(KafkaFaultOperation.ShareAcknowledge)).Release();
+        await consumer.CommitAsync();
+
+        await Assert.That(cluster.ReadRecords("dead-letters")).IsEmpty();
+        await Assert.That(cluster.GetCommittedShareOffset("workers", new("shared", 0))).IsNull();
+        var replayed = await consumer.PollAsync().ToListAsync();
+        await Assert.That(replayed.Count).IsEqualTo(1);
+        await Assert.That(replayed[0].DeliveryCount).IsEqualTo(2);
+        consumer.Acknowledge(replayed[0], AcknowledgeType.Reject);
+        await consumer.CommitAsync();
+        await Assert.That(cluster.ReadRecords("dead-letters").Count).IsEqualTo(1);
+        await Assert.That(cluster.GetCommittedShareOffset("workers", new("shared", 0))).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task StaleAcquisition_DoesNotCompleteOrReleaseReplacement(bool recreateTopic)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await ProduceRecords(cluster, 1);
+        var partition = new TopicPartition("shared", 0);
+        var member = cluster.RegisterShareGroupMember("workers", "member");
+        await Assert.That(cluster.TryAcquireShareRecordForFault("workers", "member", member, partition, 0, out var stale)).IsTrue();
+        if (recreateTopic)
+        {
+            cluster.DeleteTopic("shared");
+            await ProduceRecords(cluster, 1);
+        }
+        else
+            cluster.RollbackShareRecordAcquisition("workers", "member", member, partition, stale);
+
+        await Assert.That(cluster.TryAcquireShareRecordForFault("workers", "member", member, partition, 0, out var current)).IsTrue();
+        await Assert.That(cluster.TryCompleteShareRecordAcquisition("workers", "member", member, partition, stale, out _)).IsFalse();
+        cluster.RollbackShareRecordAcquisition("workers", "member", member, partition, stale);
+        cluster.ReleaseShareRecords("workers", "member", member, [stale]);
+        var other = cluster.RegisterShareGroupMember("workers", "other");
+        await Assert.That(cluster.TryAcquireShareRecord("workers", "other", other, partition, 0, out _, out _)).IsFalse();
+        await Assert.That(cluster.TryCompleteShareRecordAcquisition("workers", "member", member, partition, current, out var count)).IsTrue();
+        await Assert.That(count).IsEqualTo(1);
+        cluster.ReleaseShareRecords("workers", "member", member, [current]);
+        await Assert.That(cluster.TryAcquireShareRecord("workers", "other", other, partition, 0, out _, out count)).IsTrue();
+        await Assert.That(count).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task Commit_AdvancesEachPartitionAcrossUnorderedAcknowledgements()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -293,8 +371,8 @@ public sealed class InMemoryShareRecordStateTests
             {
                 await producer.ProduceAsync(new Dekaf.Producer.ProducerMessage<string, string>
                     { Topic = "shared", Partition = partition, Key = "key", Value = "value" });
-                cluster.TryAcquireShareRecord("workers", "member", registration, topicPartition, offset, out _, out _);
-                completions.Add(new(new("shared", partition, offset), AcknowledgeType.Accept));
+                cluster.TryAcquireShareRecord("workers", "member", registration, topicPartition, offset, out var record, out _);
+                completions.Add(new(record, AcknowledgeType.Accept));
             }
         }
         completions.Reverse();

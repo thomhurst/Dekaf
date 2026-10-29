@@ -378,6 +378,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                 finally
                 {
                     Array.Clear(_commitRecords, 0, recordCount);
+                    Array.Clear(_completedRecords, 0, recordCount);
                 }
             }
 
@@ -511,6 +512,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             finally
             {
                 Array.Clear(_commitRecords, 0, recordCount);
+                Array.Clear(_completedRecords, 0, recordCount);
             }
         }
     }
@@ -578,7 +580,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             }
             catch
             {
-                ReleaseAcquiredRecord(partition, record, acquiredRegistration);
+                ReleaseAcquiredRecord(record, acquiredRegistration);
                 throw;
             }
 
@@ -614,7 +616,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             }
             catch
             {
-                ReleaseAcquiredRecord(partition, record, acquiredRegistration);
+                ReleaseAcquiredRecord(record, acquiredRegistration);
                 throw;
             }
 
@@ -660,7 +662,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                         _memberId,
                         registration,
                         partition,
-                        record.Offset);
+                        record);
                     throw;
                 }
 
@@ -669,7 +671,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                         _memberId,
                         registration,
                         partition,
-                        record.Offset,
+                        record,
                         out deliveryCount))
                 {
                     _cluster.RollbackShareRecordAcquisition(
@@ -677,7 +679,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                         _memberId,
                         registration,
                         partition,
-                        record.Offset);
+                        record);
                     continue;
                 }
             }
@@ -700,7 +702,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             }
             catch
             {
-                ReleaseAcquiredRecord(partition, record, registration);
+                ReleaseAcquiredRecord(record, registration);
                 throw;
             }
 
@@ -835,14 +837,13 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     /// unavailable to the group's other members.
     /// </summary>
     private void ReleaseAcquiredRecord(
-        TopicPartition partition,
         InMemoryRecord record,
         ShareGroupMemberRegistration registration) =>
         _cluster.ReleaseShareRecords(
             _options.GroupId,
             _memberId,
             registration,
-            [new TopicPartitionOffset(partition.Topic, partition.Partition, record.Offset)]);
+            [record]);
 
     private ShareConsumeResult<TKey, TValue>? RegisterPending(
         TopicPartition partition,
@@ -864,7 +865,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             }
         }
 
-        ReleaseAcquiredRecord(partition, record, registration);
+        ReleaseAcquiredRecord(record, registration);
         if (disposed)
             throw new ObjectDisposedException(GetType().FullName);
 
@@ -1010,7 +1011,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         {
             var record = _commitRecords[index];
             _completedRecords[index] = new InMemoryShareRecordCompletion(
-                new TopicPartitionOffset(record.TopicPartition.Topic, record.TopicPartition.Partition, record.Offset),
+                record.Record,
                 record.AcknowledgeType);
         }
 
@@ -1039,14 +1040,10 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         }
     }
 
-
-    private static TopicPartitionOffset[] BuildCompletedRecords(IEnumerable<PendingShareRecord> records)
+    private static InMemoryRecord[] BuildCompletedRecords(IEnumerable<PendingShareRecord> records)
     {
         return records
-            .Select(record => new TopicPartitionOffset(
-                record.TopicPartition.Topic,
-                record.TopicPartition.Partition,
-                record.Offset))
+            .Select(record => record.Record)
             .ToArray();
     }
 

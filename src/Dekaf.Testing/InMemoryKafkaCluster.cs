@@ -38,6 +38,7 @@ public sealed partial class InMemoryKafkaCluster
     private TaskCompletionSource _recordsChanged = NewRecordsChangedSource();
     private long _topologyVersion;
     private long _nextProducerId;
+    private long _nextShareAcquisitionId;
     private long _nextConsumerGroupRegistrationId;
     private TimeSpan _produceLatency;
     private int _nextConsumerGroupGeneration;
@@ -869,8 +870,10 @@ public sealed partial class InMemoryKafkaCluster
             }
 
             candidateState.Registration = registration;
+            // Fence delayed work even when a topic or lease is recreated under the same member.
+            candidateState.AcquisitionId = ++_nextShareAcquisitionId;
             state = candidateState;
-            record = CloneRecord(candidate);
+            record = CloneRecord(candidate, candidateState.AcquisitionId);
             return true;
         }
 
@@ -882,15 +885,15 @@ public sealed partial class InMemoryKafkaCluster
         string memberId,
         ShareGroupMemberRegistration registration,
         TopicPartition topicPartition,
-        long offset,
+        InMemoryRecord record,
         out int deliveryCount)
     {
         lock (_gate)
         {
             var records = GetShareRecordPartition(groupId, topicPartition, create: false);
             if (!registration.IsActive || records is null ||
-                !records.TryGetValue(offset, out var state) ||
-                !OwnsShareRecord(state, memberId, registration))
+                !records.TryGetValue(record.Offset, out var state) ||
+                !OwnsShareRecord(state, memberId, registration, record.ShareAcquisitionId))
             {
                 deliveryCount = 0;
                 return false;
@@ -905,7 +908,7 @@ public sealed partial class InMemoryKafkaCluster
         string groupId,
         string memberId,
         ShareGroupMemberRegistration registration,
-        IEnumerable<TopicPartitionOffset> records)
+        IEnumerable<InMemoryRecord> records)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
         ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
@@ -943,12 +946,12 @@ public sealed partial class InMemoryKafkaCluster
             for (var index = 0; index < recordCount; index++)
             {
                 var record = records[index];
-                var archived = CompleteShareRecordUnderLock(groupId, memberId, registration, record.Offset, record.Type);
+                var archived = CompleteShareRecordUnderLock(groupId, memberId, registration, record.Record, record.Type);
                 // Only the current lease's accepted Reject may write a dead-letter record.
                 if (!deadLetterEligible.IsEmpty)
                     deadLetterEligible[index] = archived && record.Type == AcknowledgeType.Reject;
                 if (archived)
-                    (archivedPartitions ??= []).Add(new TopicPartition(record.Offset.Topic, record.Offset.Partition));
+                    (archivedPartitions ??= []).Add(new TopicPartition(record.Record.Topic, record.Record.Partition));
             }
             AdvanceShareStartOffsetsUnderLock(groupId, archivedPartitions);
         }
@@ -966,13 +969,13 @@ public sealed partial class InMemoryKafkaCluster
         string groupId,
         string memberId,
         ShareGroupMemberRegistration registration,
-        TopicPartitionOffset record,
+        InMemoryRecord record,
         AcknowledgeType type)
     {
         var partition = new TopicPartition(record.Topic, record.Partition);
         var records = GetShareRecordPartition(groupId, partition, create: false);
         if (records is null || !records.TryGetValue(record.Offset, out var state) ||
-            !OwnsShareRecord(state, memberId, registration))
+            !OwnsShareRecord(state, memberId, registration, record.ShareAcquisitionId))
             return false;
 
         state.Registration = null;
@@ -981,7 +984,12 @@ public sealed partial class InMemoryKafkaCluster
         return state.Archived;
     }
 
-    private static bool OwnsShareRecord(ShareRecordState state, string memberId, ShareGroupMemberRegistration registration) =>
+    private static bool OwnsShareRecord(
+        ShareRecordState state,
+        string memberId,
+        ShareGroupMemberRegistration registration,
+        long acquisitionId) =>
+        state.AcquisitionId == acquisitionId &&
         ReferenceEquals(state.Registration, registration) &&
         StringComparer.Ordinal.Equals(registration.MemberId, memberId);
 
@@ -1005,13 +1013,13 @@ public sealed partial class InMemoryKafkaCluster
         string memberId,
         ShareGroupMemberRegistration registration,
         TopicPartition topicPartition,
-        long offset)
+        InMemoryRecord record)
     {
         lock (_gate)
         {
             var records = GetShareRecordPartition(groupId, topicPartition, create: false);
-            if (records is not null && records.TryGetValue(offset, out var state) &&
-                OwnsShareRecord(state, memberId, registration))
+            if (records is not null && records.TryGetValue(record.Offset, out var state) &&
+                OwnsShareRecord(state, memberId, registration, record.ShareAcquisitionId))
                 state.Registration = null;
         }
     }
@@ -1897,6 +1905,7 @@ public sealed partial class InMemoryKafkaCluster
 
     private sealed class ShareRecordState
     {
+        public long AcquisitionId { get; set; }
         public ShareGroupMemberRegistration? Registration { get; set; }
         public int DeliveryCount { get; set; }
         public bool Archived { get; set; }
@@ -1982,10 +1991,11 @@ public sealed partial class InMemoryKafkaCluster
     private static IReadOnlyList<Header> CopyHeaders(IReadOnlyList<Header>? headers)
         => headers is null ? Array.Empty<Header>() : LazyConsumeHeaders.CreateSnapshot(headers);
 
-    private static InMemoryRecord CloneRecord(InMemoryRecord record)
+    private static InMemoryRecord CloneRecord(InMemoryRecord record, long shareAcquisitionId = 0)
     {
         return record with
         {
+            ShareAcquisitionId = shareAcquisitionId,
             Key = record.Key.ToArray(),
             Value = record.Value.ToArray(),
             Headers = CopyHeaders(record.Headers)
@@ -2109,4 +2119,4 @@ internal sealed class ShareGroupMemberRegistration
     internal bool IsActive { get; set; } = true;
 }
 
-internal readonly record struct InMemoryShareRecordCompletion(TopicPartitionOffset Offset, AcknowledgeType Type);
+internal readonly record struct InMemoryShareRecordCompletion(InMemoryRecord Record, AcknowledgeType Type);

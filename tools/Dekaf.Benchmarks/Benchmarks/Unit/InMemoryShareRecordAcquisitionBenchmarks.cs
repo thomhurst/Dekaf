@@ -17,7 +17,7 @@ public class InMemoryShareRecordAcquisitionBenchmarks
         DeliveryCountLimit = int.MaxValue
     });
     private readonly TopicPartition _topicPartition = new("benchmark-topic", 0);
-    private TopicPartitionOffset[] _benchmarkLeases = null!;
+    private InMemoryRecord[] _benchmarkLeases = null!;
     private ShareGroupMemberRegistration _registration = null!;
 
     [GlobalSetup]
@@ -25,16 +25,12 @@ public class InMemoryShareRecordAcquisitionBenchmarks
     {
         _cluster.CreateTopic(_topicPartition.Topic);
         _registration = _cluster.RegisterShareGroupMember(GroupId, MemberId);
-        _benchmarkLeases = new TopicPartitionOffset[OperationsPerInvoke];
+        _benchmarkLeases = new InMemoryRecord[OperationsPerInvoke];
         await using var producer = new InMemoryProducer<byte[], byte[]>(_cluster);
         await producer.ProduceAsync(_topicPartition.Topic, [], []).ConfigureAwait(false);
         for (var i = 0; i < OperationsPerInvoke; i++)
         {
             await producer.ProduceAsync(_topicPartition.Topic, [], []).ConfigureAwait(false);
-            _benchmarkLeases[i] = new TopicPartitionOffset(
-                _topicPartition.Topic,
-                _topicPartition.Partition,
-                i + 1);
         }
 
         _cluster.TryAcquireShareRecord(
@@ -59,7 +55,7 @@ public class InMemoryShareRecordAcquisitionBenchmarks
                     _registration,
                     _topicPartition,
                     offset: i + 1,
-                    out _,
+                    out _benchmarkLeases[i],
                     out _))
             {
                 acquired++;
