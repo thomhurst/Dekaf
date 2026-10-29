@@ -229,7 +229,7 @@ public sealed class InMemoryShareIsolationTests
         if (abort)
             await transaction.AbortAsync();
         await using var ordinaryProducer = new InMemoryProducer<string, string>(cluster);
-        await ordinaryProducer.ProduceAsync("orders", "key", "ordinary");
+        var ordinary = await ordinaryProducer.ProduceAsync("orders", "key", "ordinary");
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster,
             new InMemoryShareConsumerOptions { GroupId = Workers.Name, MaxPollRecords = 1 });
         consumer.Subscribe("orders");
@@ -244,7 +244,7 @@ public sealed class InMemoryShareIsolationTests
         await Assert.That(second.Offset).IsEqualTo(1);
         await Assert.That(second.Value).IsEqualTo("second");
         await consumer.CommitAsync();
-        await Assert.That(cluster.GetCommittedShareOffset(Workers.Name, new("orders", 0))).IsEqualTo(2);
+        await Assert.That(cluster.GetCommittedShareOffset(Workers.Name, new("orders", 0))).IsEqualTo(ordinary.Offset);
         await Assert.That((await consumer.PollAsync().FirstAsync()).Value).IsEqualTo("ordinary");
     }
 
