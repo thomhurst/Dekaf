@@ -2869,6 +2869,7 @@ public sealed partial class KafkaConnection :
         Volatile.Write(ref _responseAdmissionWaiting, 0);
         request.Request?.EndAdmissionWait(request.Version);
         _admissionRequest = default;
+        TrySignalReauthenticationResponsesDrained();
     }
 
     private void DispatchDiscardedResponse(int correlationId)
@@ -3068,7 +3069,7 @@ public sealed partial class KafkaConnection :
 
             if (remaining == 0)
             {
-                Volatile.Read(ref _reauthenticationResponsesDrained)?.TrySetResult();
+                TrySignalReauthenticationResponsesDrained();
                 if (Volatile.Read(ref _disposed) != 0)
                     Volatile.Read(ref _pendingRequestsDrained)?.TrySetResult();
             }
@@ -3103,21 +3104,29 @@ public sealed partial class KafkaConnection :
     {
         // Request admission is paused, but pipelined sends leave the SASL gate after writing.
         // Drain their responses before putting a handshake behind a locally blocked fetch.
-        if (!HasPendingRequests())
+        if (!HasPendingRequests() && !IsResponseAdmissionWaiting)
             return;
 
         var drained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Volatile.Write(ref _reauthenticationResponsesDrained, drained);
         try
         {
-            if (!HasPendingRequests())
-                drained.TrySetResult();
+            TrySignalReauthenticationResponsesDrained();
             await drained.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             Volatile.Write(ref _reauthenticationResponsesDrained, null);
         }
+    }
+
+    private void TrySignalReauthenticationResponsesDrained()
+    {
+        var drained = Volatile.Read(ref _reauthenticationResponsesDrained);
+        // Caller cancellation can remove the last request while its frame still waits
+        // for local memory. Only the receive loop can finish that admission wait.
+        if (drained is not null && !HasPendingRequests() && !IsResponseAdmissionWaiting)
+            drained.TrySetResult();
     }
 
     private bool HasPendingRequests() => Volatile.Read(ref _pendingRequestCount) != 0;

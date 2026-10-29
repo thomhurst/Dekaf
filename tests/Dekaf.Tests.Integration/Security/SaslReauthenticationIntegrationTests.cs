@@ -73,10 +73,12 @@ public sealed class OAuthReauthenticationIntegrationTests(ReauthOAuthKafkaContai
     }
 
     [Test]
-    [Arguments(false)]
-    [Arguments(true)]
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    [Arguments(true, true)]
     public async Task FetchAdmissionWait_ReauthenticationDrainsResponsesBeforeHandshake(
-        bool expireBudget, CancellationToken cancellationToken)
+        bool expireBudget, bool cancelFetch, CancellationToken cancellationToken)
     {
         var endpoint = BootstrapServerList.Parse(kafka.BootstrapServers);
         await using var connection = new KafkaConnection(
@@ -91,18 +93,28 @@ public sealed class OAuthReauthenticationIntegrationTests(ReauthOAuthKafkaContai
         await connection.ConnectAsync(cancellationToken);
         using var memoryPool = new FetchBufferMemoryPool(64);
         using var buffered = await memoryPool.ReserveAsync(64, cancellationToken);
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var fetch = connection.SendPipelinedAsync<FetchRequest, FetchResponse>(
-            new FetchRequest { ResponseMemoryPool = memoryPool }, 16, cancellationToken);
+            new FetchRequest { ResponseMemoryPool = memoryPool }, 16, caller.Token);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
-        while (memoryPool.DepletedDurationSeconds == 0)
+        while (!connection.IsResponseAdmissionWaiting)
             await Task.Delay(10, deadline.Token);
 
         var previousSession = connection.SaslSession;
         var renewal = connection.PerformReauthenticationAsync();
         await Assert.That(renewal.IsCompleted).IsFalse();
-        await Assert.That(GetPrivateField<TaskCompletionSource>(connection, "_reauthenticationResponsesDrained"))
-            .IsNotNull();
+        var drained = GetPrivateField<TaskCompletionSource>(connection, "_reauthenticationResponsesDrained");
+        await Assert.That(drained).IsNotNull();
+        if (cancelFetch)
+        {
+            await caller.CancelAsync();
+            var exception = await Assert.ThrowsAsync<OperationCanceledException>(async () => await fetch);
+            await Assert.That(exception!.CancellationToken).IsEqualTo(caller.Token);
+            // Removing the final pending request must not release the drain while its
+            // response reader still waits for local memory.
+            await Assert.That(drained.Task.IsCompleted).IsFalse();
+        }
         if (expireBudget)
         {
             // The renewal budget expires before a handshake is written. The current session
@@ -111,11 +123,15 @@ public sealed class OAuthReauthenticationIntegrationTests(ReauthOAuthKafkaContai
             await Assert.That(connection.SaslSession).IsSameReferenceAs(previousSession);
         }
         await Assert.That(connection.IsConnected).IsTrue();
-        await Assert.That(fetch.IsCompleted).IsFalse();
+        if (!cancelFetch)
+            await Assert.That(fetch.IsCompleted).IsFalse();
         buffered.Dispose();
-        var response = await fetch.WaitAsync(deadline.Token);
-        response.PooledMemoryOwner?.Dispose();
-        response.ReturnToPool();
+        if (!cancelFetch)
+        {
+            var response = await fetch.WaitAsync(deadline.Token);
+            response.PooledMemoryOwner?.Dispose();
+            response.ReturnToPool();
+        }
         if (expireBudget)
             await connection.PerformReauthenticationAsync().WaitAsync(deadline.Token);
         else
