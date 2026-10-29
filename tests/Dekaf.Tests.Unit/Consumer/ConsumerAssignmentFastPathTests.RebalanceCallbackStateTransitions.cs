@@ -24,7 +24,7 @@ public sealed partial class ConsumerAssignmentFastPathTests
         UnsubscribedBeforeSync,
         AssignedManuallyBeforeSync,
         RevokedThenAssignedManuallyBeforeSync,
-        UnassignedBeforeSync,
+        UnsubscribedThenUnassignedBeforeSync,
         IncrementallyAssignedBeforeSync,
         SyncCancelledThenRetried,
         SyncSupersededThenRetried,
@@ -49,7 +49,7 @@ public sealed partial class ConsumerAssignmentFastPathTests
     [Arguments(CallbackTransition.UnsubscribedBeforeSync, false, 20L)]
     [Arguments(CallbackTransition.AssignedManuallyBeforeSync, false, null)]
     [Arguments(CallbackTransition.RevokedThenAssignedManuallyBeforeSync, false, null)]
-    [Arguments(CallbackTransition.UnassignedBeforeSync, false, null)]
+    [Arguments(CallbackTransition.UnsubscribedThenUnassignedBeforeSync, false, null)]
     [Arguments(CallbackTransition.IncrementallyAssignedBeforeSync, false, null)]
     [Arguments(CallbackTransition.SyncCancelledThenRetried, true, 42L)]
     [Arguments(CallbackTransition.SyncSupersededThenRetried, true, 42L)]
@@ -135,7 +135,8 @@ public sealed partial class ConsumerAssignmentFastPathTests
                 consumer.Assign(new TopicPartition("test-topic", 0), Partition1);
                 sync = false;
                 break;
-            case CallbackTransition.UnassignedBeforeSync:
+            case CallbackTransition.UnsubscribedThenUnassignedBeforeSync:
+                consumer.Unsubscribe();
                 consumer.Unassign();
                 sync = false;
                 break;
@@ -208,7 +209,7 @@ public sealed partial class ConsumerAssignmentFastPathTests
     public enum AbandonInCallback
     {
         Assign,
-        Unassign,
+        UnsubscribeThenUnassign,
         IncrementalAssign,
         Unsubscribe,
         SubscribeTopics,
@@ -222,7 +223,7 @@ public sealed partial class ConsumerAssignmentFastPathTests
     /// </summary>
     [Test]
     [Arguments(AbandonInCallback.Assign)]
-    [Arguments(AbandonInCallback.Unassign)]
+    [Arguments(AbandonInCallback.UnsubscribeThenUnassign)]
     [Arguments(AbandonInCallback.IncrementalAssign)]
     [Arguments(AbandonInCallback.Unsubscribe)]
     [Arguments(AbandonInCallback.SubscribeTopics)]
@@ -251,7 +252,8 @@ public sealed partial class ConsumerAssignmentFastPathTests
                 case AbandonInCallback.Assign:
                     consumer.Assign(partition0, Partition1);
                     break;
-                case AbandonInCallback.Unassign:
+                case AbandonInCallback.UnsubscribeThenUnassign:
+                    consumer.Unsubscribe();
                     consumer.Unassign();
                     break;
                 case AbandonInCallback.IncrementalAssign:

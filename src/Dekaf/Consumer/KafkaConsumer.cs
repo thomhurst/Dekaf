@@ -3230,6 +3230,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public void Unassign()
     {
+        if (IsGroupSubscribed)
+        {
+            throw new InvalidOperationException(
+                $"{nameof(Unassign)} applies only to manually assigned partitions and cannot be used " +
+                "while the consumer is subscribed. Call Unsubscribe to leave the group.");
+        }
+
         var hadPaused = false;
         SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try

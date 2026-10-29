@@ -247,7 +247,7 @@ public sealed class InMemorySubscriptionTopologyTests
     [Arguments("assign")]
     [Arguments("incremental")]
     [Arguments("unsubscribe")]
-    [Arguments("unassign")]
+    [Arguments("unsubscribe-unassign")]
     public async Task LeavingSubscription_DisablesTopologyRefresh(string operation)
     {
         var cluster = new InMemoryKafkaCluster();
@@ -262,7 +262,10 @@ public sealed class InMemorySubscriptionTopologyTests
                 consumer.IncrementalAssign([new TopicPartitionOffset("manual", 0, 0)]);
                 break;
             case "unsubscribe": consumer.Unsubscribe(); break;
-            case "unassign": consumer.Unassign(); break;
+            case "unsubscribe-unassign":
+                consumer.Unsubscribe();
+                consumer.Unassign();
+                break;
         }
         var before = consumer.Assignment;
         cluster.CreateTopic("later");

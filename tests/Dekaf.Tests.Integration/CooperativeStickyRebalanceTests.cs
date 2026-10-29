@@ -123,7 +123,9 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
     }
 
     [Test]
-    public async Task IncrementalUnassign_WhileGroupSubscribed_ThrowsAndKeepsCoordinatorAssignment()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Unassign_WhileGroupSubscribed_ThrowsAndKeepsCoordinatorAssignment(bool incremental)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
         var listener = new TestRebalanceListener();
@@ -157,8 +159,16 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
         await Assert.That(() => consumer.Assignment.Count)
             .Eventually(x => x.IsEqualTo(2), TimeSpan.FromSeconds(30));
 
-        await Assert.That(() => consumer.IncrementalUnassign([new TopicPartition(topic, 1)]))
+        await Assert.That(() =>
+            {
+                if (incremental)
+                    consumer.Partitions.IncrementalUnassign([new TopicPartition(topic, 1)]);
+                else
+                    consumer.Partitions.Unassign();
+            })
             .Throws<InvalidOperationException>();
+        await Assert.That(consumer.Subscription).Contains(topic);
+        await Assert.That(consumer.Assignment).Count().IsEqualTo(2);
         await Assert.That(consumer.Assignment).Contains(new TopicPartition(topic, 1));
 
         // The rejected call leaves partition 1 consumed by this member.
