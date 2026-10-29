@@ -755,11 +755,12 @@ var rules = new SchemaRegistryRuleExecutor([csfle]);
 ```
 
 `AwsKmsProvider()` uses the AWS SDK default credential and region provider chains. The region
-constructor fixes the KMS endpoint while retaining the default credential chain. For custom
+constructor sets the fallback region while retaining the default credential chain. For custom
 endpoints, retry settings, or other SDK options, pass an `AmazonKeyManagementServiceConfig`. For
 explicit credentials or application-managed client lifetimes, construct an
 `AmazonKeyManagementServiceClient` and pass it as `IAmazonKeyManagementService`; injected clients
-remain caller-owned unless `ownsClient: true` is specified.
+remain caller-owned unless `ownsClient: true` is specified. Injected clients always control their
+own endpoint; the provider does not reroute their requests.
 
 The AWS SDK default credential chain checks explicitly configured client credentials first, then
 environment credentials, web-identity/container credentials, shared AWS profiles, and instance
@@ -767,18 +768,16 @@ metadata as applicable to the host. Prefer short-lived workload credentials over
 keys. The principal needs `kms:Encrypt` and `kms:Decrypt` for each configured key.
 
 Schema Registry key references may contain a raw key ARN/alias or a Confluent-compatible
-`aws-kms://` URI. Configure the provider's region or endpoint to match the key. The provider forwards
+`aws-kms://` URI. For a KMS key or alias ARN, owned clients use the ARN's region, including AWS China
+and GovCloud partitions. Bare key IDs and aliases use the configured or SDK default region. An
+explicit `ServiceURL` takes precedence over ARN routing, including for LocalStack.
+
+One provider with the standard `aws-kms` type can serve KEKs in multiple regions, preserving
+Confluent interoperability. It reuses up to 16 additional regional clients with the same credentials
+and SDK settings. Further regions use temporary clients that are disposed after each operation.
+Disposing the provider cancels in-flight calls and disposes all its clients. The provider forwards
 cancellation to the AWS SDK, is safe for concurrent use, never logs key material or ciphertext, and
 clears temporary plaintext buffers where the runtime exposes them.
-
-Each provider instance registers one KMS type. Applications using keys in multiple regions can give
-each regional provider a distinct type and use that type on the matching KEK:
-
-```csharp
-using var euKms = new AwsKmsProvider(RegionEndpoint.EUWest2, type: "aws-kms-eu-west-2");
-using var usKms = new AwsKmsProvider(RegionEndpoint.USEast1, type: "aws-kms-us-east-1");
-var multiRegionCsfle = new SchemaRegistryCsfleRuleHandler(schemaRegistry, [euKms, usKms]);
-```
 
 ## Azure Key Vault KMS
 

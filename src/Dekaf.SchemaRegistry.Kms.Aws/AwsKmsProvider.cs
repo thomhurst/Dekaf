@@ -17,7 +17,7 @@ namespace Dekaf.SchemaRegistry.Kms.Aws;
 /// <remarks>
 /// AWS SDK clients are thread-safe. Reuse one provider for all operations that share a client configuration.
 /// </remarks>
-public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
+public sealed partial class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
 {
     /// <summary>
     /// Schema Registry KMS provider type.
@@ -36,6 +36,7 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
 
     private readonly IAmazonKeyManagementService _client;
     private readonly bool _ownsClient;
+    private readonly RegionalClientCache? _regionalClients;
     private readonly CancellationTokenSource _disposeCancellation = new();
     private int _operationState;
     private int _cancellationFinished;
@@ -47,20 +48,17 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
     /// </summary>
     /// <param name="type">Schema Registry KMS provider type.</param>
     public AwsKmsProvider(string type = DefaultType)
-        : this(CreateOwnedClient(type), ownsClient: true, type: type)
+        : this(CreateOwnedClient(type), type)
     {
     }
 
     /// <summary>
     /// Creates a provider using the AWS SDK default credential provider chain in <paramref name="region" />.
     /// </summary>
-    /// <param name="region">AWS region containing the KMS key.</param>
+    /// <param name="region">Fallback AWS region for key identifiers without a region ARN.</param>
     /// <param name="type">Schema Registry KMS provider type.</param>
     public AwsKmsProvider(RegionEndpoint region, string type = DefaultType)
-        : this(
-            CreateOwnedClient(region, type),
-            ownsClient: true,
-            type: type)
+        : this(CreateOwnedClient(region, type), type)
     {
     }
 
@@ -70,10 +68,7 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
     /// <param name="config">AWS KMS client configuration, including region or custom service endpoint.</param>
     /// <param name="type">Schema Registry KMS provider type.</param>
     public AwsKmsProvider(AmazonKeyManagementServiceConfig config, string type = DefaultType)
-        : this(
-            CreateOwnedClient(config, type),
-            ownsClient: true,
-            type: type)
+        : this(CreateOwnedClient(config, type), type)
     {
     }
 
@@ -94,6 +89,14 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
         _client = client;
         _ownsClient = ownsClient;
         Type = type;
+    }
+
+    private AwsKmsProvider(AmazonKeyManagementServiceClient client, string type)
+        : this(client, ownsClient: true, type: type)
+    {
+        var config = (AmazonKeyManagementServiceConfig)client.Config;
+        if (string.IsNullOrEmpty(config.ServiceURL))
+            _regionalClients = new RegionalClientCache(config);
     }
 
     /// <inheritdoc />
@@ -122,7 +125,8 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
         using var plaintext = CreateInputStream(keyMaterial, out var temporaryBuffer);
         try
         {
-            var response = await _client.EncryptAsync(new EncryptRequest
+            using var client = GetClient(keyId);
+            var response = await client.Client.EncryptAsync(new EncryptRequest
             {
                 KeyId = keyId,
                 Plaintext = plaintext
@@ -161,7 +165,8 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
         using var ciphertext = CreateInputStream(encryptedKeyMaterial, out var temporaryBuffer);
         try
         {
-            var response = await _client.DecryptAsync(new DecryptRequest
+            using var client = GetClient(keyId);
+            var response = await client.Client.DecryptAsync(new DecryptRequest
             {
                 KeyId = keyId,
                 CiphertextBlob = ciphertext
@@ -256,7 +261,10 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
     private void DisposeOwnedClient()
     {
         if (_ownsClient && Interlocked.Exchange(ref _clientDisposed, 1) == 0)
+        {
+            _regionalClients?.Dispose();
             _client.Dispose();
+        }
     }
 
     private void TryDisposeCancellation()

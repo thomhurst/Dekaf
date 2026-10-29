@@ -9,7 +9,7 @@ using System.Net;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;
 
-public class AwsKmsProviderTests
+public partial class AwsKmsProviderTests
 {
     private const string KeyArn = "arn:aws:kms:eu-west-2:123456789012:key/1234";
 
