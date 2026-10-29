@@ -54,11 +54,17 @@ public sealed class InMemoryShareOffsetResetTests
         await using var producer = new InMemoryProducer<string, string>(cluster);
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
-            Topic = "jobs", Key = "key", Value = "old", Timestamp = DateTimeOffset.UtcNow.AddHours(-2)
+            Topic = "jobs",
+            Key = "key",
+            Value = "old",
+            Timestamp = DateTimeOffset.UtcNow.AddHours(-2)
         });
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
-            Topic = "jobs", Key = "key", Value = "recent", Timestamp = DateTimeOffset.UtcNow.AddHours(1)
+            Topic = "jobs",
+            Key = "key",
+            Value = "recent",
+            Timestamp = DateTimeOffset.UtcNow.AddHours(1)
         });
         await using var configured = new InMemoryShareConsumer<string, string>(cluster, new()
         {
@@ -92,11 +98,15 @@ public sealed class InMemoryShareOffsetResetTests
         await using var producer = new InMemoryProducer<string, string>(cluster);
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
-            Topic = "jobs", Key = "key", Value = "before", Timestamp = DateTimeOffset.UtcNow.AddHours(1)
+            Topic = "jobs",
+            Key = "key",
+            Value = "before",
+            Timestamp = DateTimeOffset.UtcNow.AddHours(1)
         });
         await using (var configured = new InMemoryShareConsumer<string, string>(cluster, new()
         {
-            GroupId = "workers", AutoOffsetReset = policy,
+            GroupId = "workers",
+            AutoOffsetReset = policy,
             AutoOffsetResetDuration = policy == AutoOffsetReset.ByDuration ? TimeSpan.FromHours(1) : null
         }))
         {
@@ -125,7 +135,8 @@ public sealed class InMemoryShareOffsetResetTests
         await producer.ProduceAsync("jobs", "key", "before");
         await using var configured = new InMemoryShareConsumer<string, string>(cluster, new()
         {
-            GroupId = "workers", AutoOffsetReset = AutoOffsetReset.Earliest
+            GroupId = "workers",
+            AutoOffsetReset = AutoOffsetReset.Earliest
         });
         configured.Subscribe("jobs");
         await using var admin = new InMemoryAdminClient(cluster);
@@ -143,11 +154,15 @@ public sealed class InMemoryShareOffsetResetTests
         await using var producer = new InMemoryProducer<string, string>(cluster);
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
-            Topic = "jobs", Key = "key", Value = "old", Timestamp = DateTimeOffset.UtcNow.AddHours(-2)
+            Topic = "jobs",
+            Key = "key",
+            Value = "old",
+            Timestamp = DateTimeOffset.UtcNow.AddHours(-2)
         });
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster, new()
         {
-            AutoOffsetReset = AutoOffsetReset.ByDuration, AutoOffsetResetDuration = TimeSpan.FromHours(1)
+            AutoOffsetReset = AutoOffsetReset.ByDuration,
+            AutoOffsetResetDuration = TimeSpan.FromHours(1)
         });
         consumer.Subscribe("jobs");
         await Assert.That(await consumer.PollAsync().ToListAsync()).IsEmpty();
@@ -178,23 +193,32 @@ public sealed class InMemoryShareOffsetResetTests
         var oldTimestamp = DateTimeOffset.UtcNow.AddHours(-2);
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
-            Topic = "jobs", Key = "key", Value = "before", Timestamp = oldTimestamp
+            Topic = "jobs",
+            Key = "key",
+            Value = "before",
+            Timestamp = oldTimestamp
         });
         await using var transactionalProducer = new InMemoryProducer<string, string>(cluster);
         await transactionalProducer.InitTransactionsAsync();
         await using var transaction = transactionalProducer.BeginTransaction();
         await transaction.ProduceAsync(new ProducerMessage<string, string>
         {
-            Topic = "jobs", Key = "key", Value = "transactional", Timestamp = oldTimestamp
+            Topic = "jobs",
+            Key = "key",
+            Value = "transactional",
+            Timestamp = oldTimestamp
         });
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
-            Topic = "jobs", Key = "key", Value = "ordinary",
+            Topic = "jobs",
+            Key = "key",
+            Value = "ordinary",
             Timestamp = matchingTimestamp ? DateTimeOffset.UtcNow.AddHours(1) : oldTimestamp
         });
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster, new()
         {
-            GroupId = "workers", AutoOffsetReset = policy,
+            GroupId = "workers",
+            AutoOffsetReset = policy,
             AutoOffsetResetDuration = policy == AutoOffsetReset.ByDuration ? TimeSpan.FromHours(1) : null
         });
         consumer.Subscribe("jobs");
@@ -245,7 +269,8 @@ public sealed class InMemoryShareOffsetResetTests
         await admin.AlterShareGroupOffsetsAsync("workers", [new() { TopicPartition = new("jobs", 0), StartOffset = 1 }]);
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster, new()
         {
-            GroupId = "workers", AutoOffsetReset = policy,
+            GroupId = "workers",
+            AutoOffsetReset = policy,
             AutoOffsetResetDuration = policy == AutoOffsetReset.ByDuration ? TimeSpan.Zero : null
         });
         consumer.Subscribe("jobs");
@@ -264,7 +289,8 @@ public sealed class InMemoryShareOffsetResetTests
     {
         await Assert.That(() => new InMemoryShareConsumer<string, string>(new InMemoryKafkaCluster(), new()
         {
-            AutoOffsetReset = policy, AutoOffsetResetDuration = seconds is { } value ? TimeSpan.FromSeconds(value) : null
+            AutoOffsetReset = policy,
+            AutoOffsetResetDuration = seconds is { } value ? TimeSpan.FromSeconds(value) : null
         })).Throws<ArgumentException>();
     }
 
@@ -301,11 +327,17 @@ public sealed class InMemoryShareOffsetResetTests
         await using var producer = new InMemoryProducer<string, string>(cluster);
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
-            Topic = "jobs", Key = "key", Value = "old", Timestamp = DateTimeOffset.UtcNow.AddHours(-2)
+            Topic = "jobs",
+            Key = "key",
+            Value = "old",
+            Timestamp = DateTimeOffset.UtcNow.AddHours(-2)
         });
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
-            Topic = "jobs", Key = "key", Value = "recent", Timestamp = DateTimeOffset.UtcNow.AddHours(1)
+            Topic = "jobs",
+            Key = "key",
+            Value = "recent",
+            Timestamp = DateTimeOffset.UtcNow.AddHours(1)
         });
         var consumer = keyed
             ? provider.GetRequiredKeyedService<IKafkaShareConsumer<string, string>>("worker")

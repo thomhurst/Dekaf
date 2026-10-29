@@ -26,7 +26,9 @@ public sealed class AdminControllerRecoveryTests(KafkaTestContainer kafka) : Kaf
             ControllerId = -1,
             Brokers = metadata.Metadata.GetBrokers().Select(broker => new BrokerMetadata
             {
-                NodeId = broker.NodeId, Host = broker.Host, Port = broker.Port
+                NodeId = broker.NodeId,
+                Host = broker.Host,
+                Port = broker.Port
             }).ToList(),
             Topics = []
         });
