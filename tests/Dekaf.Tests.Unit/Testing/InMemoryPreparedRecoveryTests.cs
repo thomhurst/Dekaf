@@ -82,6 +82,39 @@ public sealed class InMemoryPreparedRecoveryTests
     }
 
     [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Completion_AfterAdoptedHandleCompletes_CanCompleteNextPreparedTransaction(
+        bool useReplacement, bool commitAdopted)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await using var original = new InMemoryProducer<string, string>(cluster, Writer);
+        await using var transaction = original.BeginTransaction();
+        _ = await transaction.ProduceAsync("original", "k", "first");
+        _ = await transaction.PrepareAsync();
+        await using var replacement = new InMemoryProducer<string, string>(cluster, Writer);
+        var recovering = useReplacement ? replacement : original;
+        await recovering.InitTransactionsAsync(keepPreparedTransaction: true);
+
+        if (commitAdopted)
+            await transaction.CommitAsync();
+        else
+            await transaction.AbortAsync();
+
+        await using var next = recovering.BeginTransaction();
+        _ = await next.ProduceAsync("next", "k", "second");
+        var nextState = await next.PrepareAsync();
+        await recovering.CompletePreparedTransactionAsync(nextState, committed: !commitAdopted);
+
+        await Assert.That(cluster.ReadRecords("original")).Count().IsEqualTo(commitAdopted ? 1 : 0);
+        await Assert.That(cluster.ReadRecords("next")).Count().IsEqualTo(commitAdopted ? 0 : 1);
+        await using var final = recovering.BeginTransaction();
+        await final.AbortAsync();
+    }
+
+    [Test]
     public async Task Recovery_RequiresAdoptionDuringInit()
     {
         var cluster = new InMemoryKafkaCluster();

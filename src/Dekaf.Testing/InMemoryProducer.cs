@@ -488,6 +488,8 @@ public sealed class InMemoryProducer<TKey, TValue> :
             if (_preparedRecoveryInProgress)
                 throw new InvalidOperationException("A prepared transaction recovery is already in progress.");
 
+            if (_pendingPreparedTransaction is { IsCompleted: true })
+                Volatile.Write(ref _pendingPreparedTransaction, null);
             transaction = _pendingPreparedTransaction ?? (IInMemoryPreparedTransaction?)_activeTransaction;
             if (transaction is null || transaction.IsCompleted || !transaction.IsPrepared ||
                 transaction.PreparedState != preparedState)
