@@ -21,7 +21,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     private readonly IAsyncDeserializer<TValue>? _asyncValueDeserializer;
     private readonly bool _keyUsesRecordHeaders;
     private readonly bool _valueUsesRecordHeaders;
-    private readonly bool _hasAsyncDeserializers;
+    private readonly bool _requiresAsyncDeserialization;
     private readonly InMemoryShareConsumerOptions _options;
     private readonly HashSet<string> _subscription = new(StringComparer.Ordinal);
     private readonly HashSet<TopicPartition> _assignment = [];
@@ -193,7 +193,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         _valueUsesRecordHeaders = asyncValueDeserializer is not null
             ? asyncValueDeserializer is IRecordHeaderDeserializer { ConsumesRecordHeaders: true }
             : RecordHeaderDeserializer.UsesCallerOwnedHeaders(_valueDeserializer);
-        _hasAsyncDeserializers = asyncKeyDeserializer is not null || asyncValueDeserializer is not null;
+        _requiresAsyncDeserialization = asyncKeyDeserializer is not null || asyncValueDeserializer is not null
+            || DeserializerPreparation.RequiresPreparation(_keyDeserializer)
+            || DeserializerPreparation.RequiresPreparation(_valueDeserializer);
         if (options.DeadLetterQueueTopic is { } deadLetterQueueTopic)
             ShareDeadLetterQueueConfiguration.ValidateTopicName(deadLetterQueueTopic, nameof(options));
         _options = options;
@@ -293,7 +295,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             cancellationToken.ThrowIfCancellationRequested();
             var record = HasPotentialFault(KafkaFaultOperation.ShareConsume)
                 ? await TryTakeAvailableRecordWithFaultAsync(cancellationToken).ConfigureAwait(false)
-                : _hasAsyncDeserializers
+                : _requiresAsyncDeserialization
                 ? await TryTakeAvailableRecordAsync(cancellationToken).ConfigureAwait(false)
                 : TryTakeAvailableRecord();
             if (record is null)
@@ -587,7 +589,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     }
 
     /// <summary>
-    /// Poll path used when at least one component has an <see cref="IAsyncDeserializer{T}"/>.
+    /// Poll path for asynchronous deserialization or preparation.
     /// Deliberate mirror of <see cref="TryTakeAvailableRecord"/>: both drive the same acquisition
     /// and pending-record bookkeeping helpers.
     /// </summary>
@@ -692,7 +694,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             ShareConsumeResult<TKey, TValue> result;
             try
             {
-                result = _hasAsyncDeserializers
+                result = _requiresAsyncDeserialization
                     ? await ToShareResultAsync(record, deliveryCount, cancellationToken).ConfigureAwait(false)
                     : ToShareResult(record, deliveryCount);
             }
@@ -887,7 +889,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             : null;
         var key = record.IsKeyNull
             ? default
-            : await DeserializeAsync(
+            : await InMemoryDeserializer.DeserializeAsync(
                 _asyncKeyDeserializer,
                 _keyDeserializer,
                 record.Key,
@@ -898,7 +900,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                     isNull: false),
                 cancellationToken).ConfigureAwait(false);
 
-        var value = await DeserializeAsync(
+        var value = await InMemoryDeserializer.DeserializeAsync(
             _asyncValueDeserializer,
             _valueDeserializer,
             record.IsValueNull ? ReadOnlyMemory<byte>.Empty : record.Value,
@@ -923,16 +925,6 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             DeliveryCount = deliveryCount
         };
     }
-
-    private static ValueTask<T> DeserializeAsync<T>(
-        IAsyncDeserializer<T>? asyncDeserializer,
-        IDeserializer<T> deserializer,
-        ReadOnlyMemory<byte> data,
-        SerializationContext context,
-        CancellationToken cancellationToken) =>
-        asyncDeserializer is not null
-            ? asyncDeserializer.DeserializeAsync(data, context, cancellationToken)
-            : ValueTask.FromResult(deserializer.Deserialize(data, context));
 
     private ShareConsumeResult<TKey, TValue> ToShareResult(InMemoryRecord record, int deliveryCount)
     {

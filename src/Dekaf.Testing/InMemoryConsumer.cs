@@ -61,7 +61,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     // means a consume path missed the asynchronous divert and must fail loudly.
     private readonly IAsyncDeserializer<TKey>? _asyncKeyDeserializer;
     private readonly IAsyncDeserializer<TValue>? _asyncValueDeserializer;
-    private readonly bool _hasAsyncDeserializers;
+    private readonly bool _requiresAsyncDeserialization;
     private readonly bool _borrowStoredRecords;
     private readonly InMemoryConsumerOptions _options;
     private readonly HashSet<string> _subscription = new(StringComparer.Ordinal);
@@ -278,10 +278,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         _valueUsesRecordHeaders = asyncValueDeserializer is not null
             ? asyncValueDeserializer is IRecordHeaderDeserializer { ConsumesRecordHeaders: true }
             : RecordHeaderDeserializer.UsesCallerOwnedHeaders(_valueDeserializer);
-        _hasAsyncDeserializers = asyncKeyDeserializer is not null || asyncValueDeserializer is not null;
+        _requiresAsyncDeserialization = asyncKeyDeserializer is not null || asyncValueDeserializer is not null
+            || DeserializerPreparation.RequiresPreparation(_keyDeserializer)
+            || DeserializerPreparation.RequiresPreparation(_valueDeserializer);
         _borrowStoredRecords = CanBorrowStoredInput(_keyDeserializer, asyncKeyDeserializer) &&
                               CanBorrowStoredInput(_valueDeserializer, asyncValueDeserializer);
-        _asyncDeserializationHeaders = _hasAsyncDeserializers
+        _asyncDeserializationHeaders = _requiresAsyncDeserialization
                                        && (_keyUsesRecordHeaders || _valueUsesRecordHeaders)
             ? new Headers(2)
             : null;
@@ -689,7 +691,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                         consumerGroupGeneration);
                 }
 
-                var result = _hasAsyncDeserializers
+                var result = _requiresAsyncDeserialization
                     ? await ToConsumeResultAsync(
                         partition,
                         record,
@@ -802,7 +804,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (!_hasAsyncDeserializers && !HasPotentialConsumerFault())
+            if (!_requiresAsyncDeserialization && !HasPotentialConsumerFault())
             {
                 if (TryConsumeOne(out var result, out var retryWithFaults))
                     return result;
@@ -1772,8 +1774,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     /// <summary>
     /// Consume path used when fault injection is active or a component has an
-    /// <see cref="IAsyncDeserializer{T}"/>. Faults run before position advancement so a retry
-    /// sees the same record.
+    /// <see cref="IAsyncDeserializer{T}"/> or asynchronous preparation. Faults run before
+    /// position advancement so a retry sees the same record.
     /// </summary>
     private async ValueTask<ConsumeAttemptResult> TryConsumeOneAsync(
         CancellationToken cancellationToken)
@@ -1813,7 +1815,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                         continue;
                 }
 
-                var selectedResult = _hasAsyncDeserializers
+                var selectedResult = _requiresAsyncDeserialization
                     ? await ToConsumeResultAsync(partition, record, cancellationToken).ConfigureAwait(false)
                     : ToConsumeResult(partition, record);
 
@@ -2281,9 +2283,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     }
 
     /// <summary>
-    /// Deserializes a record via the configured <see cref="IAsyncDeserializer{T}"/> implementations
-    /// (falling back to the synchronous deserializer for a component without one) and builds the
-    /// result from the awaited values. Null-ness semantics mirror the eager
+    /// Deserializes a record via asynchronous deserialization or preparation when configured,
+    /// then builds the result from the awaited values. Null-ness semantics mirror the eager
     /// <see cref="ConsumeResult{TKey,TValue}"/> constructor used by the synchronous path: null keys
     /// skip the deserializer, null values invoke it with empty data and <c>IsNull = true</c>.
     /// </summary>
@@ -2315,11 +2316,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
             try
             {
-                key = _asyncKeyDeserializer is not null
-                    ? await _asyncKeyDeserializer.DeserializeAsync(record.Key, keyContext, cancellationToken).ConfigureAwait(false)
-                    : keyContext.Headers is not null
-                        ? RecordHeaderDeserializer.DeserializeCallerOwned(_keyDeserializer, record.Key, keyContext)
-                        : _keyDeserializer.Deserialize(record.Key, keyContext);
+                key = await InMemoryDeserializer.DeserializeAsync(
+                    _asyncKeyDeserializer, _keyDeserializer, record.Key, keyContext, cancellationToken)
+                    .ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -2340,11 +2339,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         TValue value;
         try
         {
-            value = _asyncValueDeserializer is not null
-                ? await _asyncValueDeserializer.DeserializeAsync(valueData, valueContext, cancellationToken).ConfigureAwait(false)
-                : valueContext.Headers is not null
-                    ? RecordHeaderDeserializer.DeserializeCallerOwned(_valueDeserializer, valueData, valueContext)
-                    : _valueDeserializer.Deserialize(valueData, valueContext);
+            value = await InMemoryDeserializer.DeserializeAsync(
+                _asyncValueDeserializer, _valueDeserializer, valueData, valueContext, cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
