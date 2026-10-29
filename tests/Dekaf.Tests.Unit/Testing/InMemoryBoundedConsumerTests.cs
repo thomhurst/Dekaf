@@ -328,6 +328,7 @@ public sealed class InMemoryBoundedConsumerTests
     {
         var cluster = new InMemoryKafkaCluster();
         var transactionalProducer = new InMemoryProducer<string, string>(cluster);
+        await transactionalProducer.InitTransactionsAsync();
         await using var transaction = transactionalProducer.BeginTransaction();
         _ = await transaction.ProduceAsync("events", "key-0", "pending");
         var producer = new InMemoryProducer<string, string>(cluster);

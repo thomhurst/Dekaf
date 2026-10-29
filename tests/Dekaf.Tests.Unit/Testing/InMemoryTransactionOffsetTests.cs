@@ -21,6 +21,7 @@ public sealed class InMemoryTransactionOffsetTests
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic(Partition.Topic, partitionCount: 3);
         await using var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         await using (var transaction = producer.BeginTransaction())
         {
             await transaction.ProduceAsync(Message(0));
@@ -63,6 +64,7 @@ public sealed class InMemoryTransactionOffsetTests
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic(Partition.Topic);
         await using var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         await using (var aborted = producer.BeginTransaction())
         {
             await aborted.ProduceAsync(Message(0, "aborted"));
@@ -99,6 +101,7 @@ public sealed class InMemoryTransactionOffsetTests
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic(Partition.Topic);
         await using var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         await using (var transaction = producer.BeginTransaction())
         {
             await transaction.ProduceAsync(Message(0));
@@ -132,7 +135,9 @@ public sealed class InMemoryTransactionOffsetTests
         cluster.CreateTopic(Partition.Topic);
         await using var firstProducer = new InMemoryProducer<string, string>(cluster);
         await using var secondProducer = new InMemoryProducer<string, string>(cluster);
+        await firstProducer.InitTransactionsAsync();
         await using var first = firstProducer.BeginTransaction();
+        await secondProducer.InitTransactionsAsync();
         await using var second = secondProducer.BeginTransaction();
         await first.ProduceAsync(Message(0));
         await second.ProduceAsync(Message(0));
@@ -169,6 +174,7 @@ public sealed class InMemoryTransactionOffsetTests
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic(Partition.Topic);
         await using var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         for (var i = 0; i < 4; i++)
         {
             await using var transaction = producer.BeginTransaction();
@@ -216,6 +222,7 @@ public sealed class InMemoryTransactionOffsetTests
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic(Partition.Topic);
         await using var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         await using (var transaction = producer.BeginTransaction())
         {
             await transaction.ProduceAsync(Message(0));
@@ -228,7 +235,8 @@ public sealed class InMemoryTransactionOffsetTests
         await Assert.That(cluster.GetWatermarks(Partition).High).IsEqualTo(2L);
         await Assert.That(cluster.ReadRecords(Partition.Topic)).IsEmpty();
         await Assert.That(cluster.GetOffsetForTimestamp(Partition, 0L)).IsEqualTo(-1L);
-        var next = await producer.ProduceAsync(Message(0));
+        await using var ordinaryProducer = new InMemoryProducer<string, string>(cluster);
+        var next = await ordinaryProducer.ProduceAsync(Message(0));
         await Assert.That(next.Offset).IsEqualTo(2L);
     }
 
@@ -238,6 +246,7 @@ public sealed class InMemoryTransactionOffsetTests
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic(Partition.Topic);
         await using var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await transaction.CommitAsync();
 

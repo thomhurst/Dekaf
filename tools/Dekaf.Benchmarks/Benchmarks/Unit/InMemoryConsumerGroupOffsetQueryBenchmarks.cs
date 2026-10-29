@@ -24,6 +24,7 @@ public class InMemoryConsumerGroupOffsetQueryBenchmarks
         cluster.CreateTopic("orders", partitionCount: Partitions);
         _admin = new(cluster);
         _producer = new(cluster);
+        _producer.InitTransactionsAsync().GetAwaiter().GetResult();
         _offsets = new TopicPartitionOffset[Partitions];
         for (var i = 0; i < _offsets.Length; i++)
             _offsets[i] = new("orders", i, 42, 3) { Metadata = "checkpoint" };

@@ -62,6 +62,7 @@ public sealed class InMemoryProducer<TKey, TValue> :
     private FatalTransactionException? _fatalTransactionException;
     private IInMemoryPreparedTransaction? _pendingPreparedTransaction;
     private bool _preparedRecoveryInProgress;
+    private bool _transactionsInitialized;
     private TaskCompletionSource? _preparedRecoveryCompletion;
     private TaskCompletionSource? _disposeCompletion;
     private bool _disposeStarted;
@@ -419,6 +420,11 @@ public sealed class InMemoryProducer<TKey, TValue> :
         lock (_transactionGate)
         {
             ThrowIfDisposingOrDisposed();
+            if (!Volatile.Read(ref _transactionsInitialized))
+            {
+                throw new InvalidOperationException(
+                    "Transactions not initialized. Call InitTransactionsAsync() before BeginTransaction().");
+            }
             if (_preparedRecoveryInProgress)
                 throw new InvalidOperationException("A prepared transaction recovery is already in progress.");
             if (_pendingPreparedTransaction is { IsCompleted: false } ||
@@ -464,6 +470,8 @@ public sealed class InMemoryProducer<TKey, TValue> :
 
             if (transaction is not null && !keepPreparedTransaction)
                 await transaction.CompletePreparedAsync(this, committed: false, cancellationToken).ConfigureAwait(false);
+
+            Volatile.Write(ref _transactionsInitialized, true);
         }
         finally
         {
@@ -493,7 +501,8 @@ public sealed class InMemoryProducer<TKey, TValue> :
             if (_pendingPreparedTransaction is { IsCompleted: true })
                 Volatile.Write(ref _pendingPreparedTransaction, null);
             transaction = _pendingPreparedTransaction ?? (IInMemoryPreparedTransaction?)_activeTransaction;
-            if (transaction is null || transaction.IsCompleted || !transaction.IsPrepared ||
+            if (!Volatile.Read(ref _transactionsInitialized) ||
+                transaction is null || transaction.IsCompleted || !transaction.IsPrepared ||
                 transaction.PreparedState != preparedState)
             {
                 throw new TransactionException(ErrorCode.InvalidTxnState,
@@ -623,7 +632,7 @@ public sealed class InMemoryProducer<TKey, TValue> :
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
         ThrowIfFatalTransactionError();
         if (transactionMarker is null)
-            ThrowIfTransactionActive();
+            ThrowIfProducerCannotProduce();
 
         if (key is not null && _keyProducesRecordHeaders
             || value is not null && _valueProducesRecordHeaders)
@@ -670,6 +679,8 @@ public sealed class InMemoryProducer<TKey, TValue> :
         Headers? headers,
         DateTimeOffset timestamp)
     {
+        ThrowIfFatalTransactionError();
+        ThrowIfProducerCannotProduce();
         try
         {
             await ProduceCoreAsync(topic, partition, key, value, headers, timestamp, CancellationToken.None)
@@ -920,9 +931,20 @@ public sealed class InMemoryProducer<TKey, TValue> :
             this);
     }
 
-    private void ThrowIfTransactionActive()
+    private void ThrowIfProducerCannotProduce()
     {
         ThrowIfDisposingOrDisposed();
+        var transactionsInitialized = Volatile.Read(ref _transactionsInitialized);
+        if (_transactionalId is not null || transactionsInitialized)
+        {
+            throw new TransactionException(ErrorCode.InvalidTxnState,
+                transactionsInitialized
+                    ? "Cannot produce outside a transaction handle. Call BeginTransaction() and use the transaction handle."
+                    : "Cannot produce: transactions are not initialized. Call InitTransactionsAsync(), then BeginTransaction(), before producing.")
+            {
+                TransactionalId = _transactionalId
+            };
+        }
         if (Volatile.Read(ref _activeTransaction) is { IsCompleted: false } ||
             Volatile.Read(ref _pendingPreparedTransaction) is { IsCompleted: false } ||
             Volatile.Read(ref _preparedRecoveryInProgress))

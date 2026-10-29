@@ -19,6 +19,7 @@ public sealed class InMemoryPreparedRecoveryTests
     {
         var cluster = new InMemoryKafkaCluster();
         await using var original = new InMemoryProducer<string, string>(cluster, Writer);
+        await original.InitTransactionsAsync();
         await using var transaction = original.BeginTransaction();
         _ = await transaction.ProduceAsync("orders", "k", "aborted");
         await transaction.SendOffsetsToTransactionAsync([new TopicPartitionOffset("orders", 0, 17)], "billing");
@@ -58,7 +59,9 @@ public sealed class InMemoryPreparedRecoveryTests
         var otherWriter = new InMemoryProducerOptions { TransactionalId = "other-writer" };
         await using var first = new InMemoryProducer<string, string>(cluster, Writer);
         await using var second = new InMemoryProducer<string, string>(cluster, otherWriter);
+        await first.InitTransactionsAsync();
         await using var firstTransaction = first.BeginTransaction();
+        await second.InitTransactionsAsync();
         await using var secondTransaction = second.BeginTransaction();
         _ = await firstTransaction.ProduceAsync("orders", "k", "first");
         _ = await secondTransaction.ProduceAsync("other-orders", "k", "second");
@@ -91,6 +94,7 @@ public sealed class InMemoryPreparedRecoveryTests
     {
         var cluster = new InMemoryKafkaCluster();
         await using var original = new InMemoryProducer<string, string>(cluster, Writer);
+        await original.InitTransactionsAsync();
         await using var transaction = original.BeginTransaction();
         _ = await transaction.ProduceAsync("original", "k", "first");
         _ = await transaction.PrepareAsync();
@@ -121,11 +125,13 @@ public sealed class InMemoryPreparedRecoveryTests
     {
         var cluster = new InMemoryKafkaCluster();
         await using var original = new InMemoryProducer<string, string>(cluster, Writer);
+        await original.InitTransactionsAsync();
+        await using var replacement = new InMemoryProducer<string, string>(cluster, Writer);
+        await replacement.InitTransactionsAsync();
         await using var preparedTransaction = original.BeginTransaction();
         _ = await preparedTransaction.ProduceAsync("prepared", "k", "pending");
         var state = await preparedTransaction.PrepareAsync();
         await original.DisposeAsync();
-        await using var replacement = new InMemoryProducer<string, string>(cluster, Writer);
         await using var activeTransaction = replacement.BeginTransaction();
 
         await Assert.That(async () => await replacement.InitTransactionsAsync(keepPreparedTransaction))
@@ -156,6 +162,7 @@ public sealed class InMemoryPreparedRecoveryTests
         await using var replacement = new InMemoryProducer<string, string>(cluster, Writer);
         await replacement.InitTransactionsAsync(keepPreparedTransaction: true);
         await using var original = new InMemoryProducer<string, string>(cluster, Writer);
+        await original.InitTransactionsAsync();
         await using var transaction = original.BeginTransaction();
         var state = await transaction.PrepareAsync();
         await original.DisposeAsync();
@@ -173,6 +180,7 @@ public sealed class InMemoryPreparedRecoveryTests
     {
         var cluster = new InMemoryKafkaCluster();
         await using var original = new InMemoryProducer<string, string>(cluster);
+        await original.InitTransactionsAsync();
         await using var transaction = original.BeginTransaction();
         var state = await transaction.PrepareAsync();
         await using var replacement = new InMemoryProducer<string, string>(cluster);
@@ -187,6 +195,7 @@ public sealed class InMemoryPreparedRecoveryTests
     {
         await using var producer = new InMemoryProducer<string, string>(new InMemoryKafkaCluster(), Writer);
         await AssertInvalidStateAsync(producer, new PreparedTransactionState(123, 0));
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await AssertInvalidStateAsync(producer, new PreparedTransactionState(123, 0));
         var state = await transaction.PrepareAsync();
@@ -201,6 +210,7 @@ public sealed class InMemoryPreparedRecoveryTests
     {
         var cluster = new InMemoryKafkaCluster();
         await using var original = new InMemoryProducer<string, string>(cluster, Writer);
+        await original.InitTransactionsAsync();
         await using var transaction = original.BeginTransaction();
         var state = await transaction.PrepareAsync();
         await original.DisposeAsync();
@@ -223,6 +233,7 @@ public sealed class InMemoryPreparedRecoveryTests
     {
         var cluster = new InMemoryKafkaCluster();
         await using var original = new InMemoryProducer<string, string>(cluster, Writer);
+        await original.InitTransactionsAsync();
         await using var transaction = original.BeginTransaction();
         var state = await transaction.PrepareAsync();
         await original.DisposeAsync();
@@ -241,6 +252,7 @@ public sealed class InMemoryPreparedRecoveryTests
     {
         var cluster = new InMemoryKafkaCluster();
         await using var original = new InMemoryProducer<string, string>(cluster, Writer);
+        await original.InitTransactionsAsync();
         await using var transaction = original.BeginTransaction();
         _ = await transaction.ProduceAsync("orders", "k", "aborted");
         _ = await transaction.PrepareAsync();
@@ -269,6 +281,7 @@ public sealed class InMemoryPreparedRecoveryTests
         services.AddDekafInMemory();
         await using var provider = services.BuildServiceProvider();
         var original = provider.GetRequiredService<IKafkaProducer<string, string>>();
+        await original.InitTransactionsAsync();
         await using var transaction = original.BeginTransaction();
         var state = await transaction.PrepareAsync();
         await original.DisposeAsync();
