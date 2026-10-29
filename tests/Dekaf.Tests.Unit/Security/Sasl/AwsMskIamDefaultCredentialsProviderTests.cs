@@ -92,10 +92,17 @@ public sealed partial class AwsMskIamDefaultCredentialsProviderTests
     }
 
     [Test]
-    public async Task IsTrustedContainerCredentialsFullUri_RejectsHttpNonMetadataHost()
+    [Arguments("http://example.com/credentials")]
+    [Arguments("http://localhost.example.com/credentials")]
+    [Arguments("http://LOCALHOST.example.com/credentials")]
+    [Arguments("http://127.0.0.1.example.com/credentials")]
+    [Arguments("http://127.0.0.1@192.0.2.1/credentials")]
+    [Arguments("http://192.168.1.1/credentials")]
+    [Arguments("http://[2001:db8::1]/credentials")]
+    [Arguments("ftp://localhost/credentials")]
+    public async Task IsTrustedContainerCredentialsFullUri_RejectsUntrustedEndpoint(string uri)
     {
-        var trusted = AwsMskIamDefaultCredentialsProvider.IsTrustedContainerCredentialsFullUri(
-            new Uri("http://example.com/credentials"));
+        var trusted = AwsMskIamDefaultCredentialsProvider.IsTrustedContainerCredentialsFullUri(new Uri(uri));
 
         await Assert.That(trusted).IsFalse();
     }
@@ -114,6 +121,20 @@ public sealed partial class AwsMskIamDefaultCredentialsProviderTests
     [Arguments("http://[fd00:ec2::23]/credentials")]
     [Test]
     public async Task IsTrustedContainerCredentialsFullUri_AllowsTrustedMetadataHosts(string uri)
+    {
+        var trusted = AwsMskIamDefaultCredentialsProvider.IsTrustedContainerCredentialsFullUri(new Uri(uri));
+
+        await Assert.That(trusted).IsTrue();
+    }
+
+    [Test]
+    [Arguments("http://localhost:8080/credentials")]
+    [Arguments("http://LOCALHOST:8080/credentials")]
+    [Arguments("http://LoCaLhOsT:8080/credentials")]
+    [Arguments("http://127.0.0.1:8080/credentials")]
+    [Arguments("http://127.0.0.2:8080/credentials")]
+    [Arguments("http://[::1]:8080/credentials")]
+    public async Task IsTrustedContainerCredentialsFullUri_AllowsHttpLoopback(string uri)
     {
         var trusted = AwsMskIamDefaultCredentialsProvider.IsTrustedContainerCredentialsFullUri(new Uri(uri));
 

@@ -70,6 +70,37 @@ public sealed partial class AwsMskIamDefaultCredentialsProviderTests
     }
 
     [Test]
+    [Arguments("http://localhost:8080/credentials?source=container")]
+    [Arguments("http://LOCALHOST:8080/credentials?source=container")]
+    [Arguments("http://LoCaLhOsT:8080/credentials?source=container")]
+    [Arguments("http://127.0.0.1:8080/credentials?source=container")]
+    [Arguments("http://[::1]:8080/credentials?source=container")]
+    public async Task Container_FullUriUsesHttpLoopbackEndpoint(string endpoint)
+    {
+        using var environment = new CredentialEnvironment();
+        Environment.SetEnvironmentVariable("AWS_CONTAINER_CREDENTIALS_FULL_URI", endpoint);
+        Environment.SetEnvironmentVariable("AWS_CONTAINER_AUTHORIZATION_TOKEN", "container-token");
+        var expiration = DateTimeOffset.UtcNow.AddHours(1);
+        var calls = 0;
+        using var http = new HttpClient(new CredentialHandler(async (request, _) =>
+        {
+            calls++;
+            await Assert.That(request.RequestUri).IsEqualTo(new Uri(endpoint));
+            await Assert.That(request.Method).IsEqualTo(HttpMethod.Get);
+            await Assert.That(request.Headers.GetValues("Authorization").Single()).IsEqualTo("container-token");
+            return CredentialResponse(expiration);
+        }));
+        var provider = new AwsMskIamDefaultCredentialsProvider(http);
+
+        var credentials = await provider.GetCredentialsAsync();
+        var cached = await provider.GetCredentialsAsync();
+
+        await AssertCredentialsAsync(credentials, "access", "secret", "token", expiration);
+        await Assert.That(cached).IsSameReferenceAs(credentials);
+        await Assert.That(calls).IsEqualTo(1);
+    }
+
+    [Test]
     [Arguments("http://169.254.170.23/credentials/other")]
     [Arguments("http://example.com/credentials/other")]
     [Arguments("not a URI")]
