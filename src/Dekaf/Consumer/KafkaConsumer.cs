@@ -6469,10 +6469,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         /// <summary>Marks the slot clean if it still holds exactly what was committed.</summary>
-        public void ClearIfUnchanged(long ownership, long offset)
+        public void ClearIfUnchanged(long ownership, long offset, int leaderEpoch)
         {
             var sequence = Enter();
-            if (_dirty && _ownership == ownership && _offset == offset)
+            if (_dirty && _ownership == ownership && _offset == offset && _leaderEpoch == leaderEpoch)
                 _dirty = false;
             Exit(sequence);
         }
@@ -6568,17 +6568,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return lastConsumedLeaderEpochs?.GetValueOrDefault(partition, -1) ?? -1;
     }
 
-    private void MarkOffsetCommitted(TopicPartition partition, long committedOffset)
-        => MarkOffsetCommitted(partition, GetCurrentStoreOwnership(partition), committedOffset);
+    private void MarkOffsetCommitted(TopicPartition partition, long committedOffset, int leaderEpoch)
+        => MarkOffsetCommitted(partition, GetCurrentStoreOwnership(partition), committedOffset, leaderEpoch);
 
-    private void MarkOffsetCommitted(TopicPartition partition, long ownership, long committedOffset)
+    private void MarkOffsetCommitted(TopicPartition partition, long ownership, long committedOffset, int leaderEpoch)
     {
         _ = TryCacheCommittedOffset(
             partition,
             committedOffset,
             Interlocked.Increment(ref _committedOffsetGeneration));
         if (_storedOffsetSlots.TryGetValue(partition, out var slot))
-            slot.ClearIfUnchanged(ownership, committedOffset);
+            slot.ClearIfUnchanged(ownership, committedOffset, leaderEpoch);
     }
 
     internal void UpdateFetchPositionsFromPrefetch(
@@ -8877,7 +8877,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                 // Update committed offsets tracking
                 foreach (var stored in dirtyOffsetsSnapshot)
-                    MarkOffsetCommitted(stored.Partition, stored.Ownership, stored.Offset);
+                    MarkOffsetCommitted(stored.Partition, stored.Ownership, stored.Offset, stored.LeaderEpoch);
 
                 // Invoke OnCommit interceptors - wrap array as ArraySegment to avoid Span→Array copy
                 InvokeOnCommitInterceptors(new ArraySegment<TopicPartitionOffset>(offsetsArray, 0, offsetCount));
@@ -8925,7 +8925,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (ownership != GetCurrentStoreOwnership(partition))
             {
                 LogStoredOffsetOfUnownedPartitionNotCommitted(partition.Topic, partition.Partition, offset);
-                slot.ClearIfUnchanged(ownership, offset);
+                slot.ClearIfUnchanged(ownership, offset, leaderEpoch);
                 continue;
             }
 
@@ -9054,7 +9054,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             foreach (var offset in offsetsList)
             {
                 var partition = new TopicPartition(offset.Topic, offset.Partition);
-                MarkOffsetCommitted(partition, offset.Offset);
+                MarkOffsetCommitted(partition, offset.Offset, offset.LeaderEpoch);
             }
 
             // Invoke OnCommit interceptors

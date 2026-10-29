@@ -112,6 +112,7 @@ public sealed class ConsumeBatchSkipTests(KafkaTestContainer kafka) : KafkaInteg
 
         using var skipperStop = new CancellationTokenSource();
         var bothSkipped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var rebalanced = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var skippedPartitions = new HashSet<int>();
         var skipperTask = Task.Run(async () =>
         {
@@ -125,6 +126,9 @@ public sealed class ConsumeBatchSkipTests(KafkaTestContainer kafka) : KafkaInteg
                         if (skippedPartitions.Add(batch.Partition) && skippedPartitions.Count == 2)
                             bothSkipped.TrySetResult();
                     }
+
+                    if (skipper.Assignment.Count == 1)
+                        rebalanced.TrySetResult();
                 }
             }
             catch (OperationCanceledException) when (skipperStop.IsCancellationRequested)
@@ -134,19 +138,26 @@ public sealed class ConsumeBatchSkipTests(KafkaTestContainer kafka) : KafkaInteg
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(60));
-        await bothSkipped.Task.WaitAsync(timeout.Token);
+        try
+        {
+            await bothSkipped.Task.WaitAsync(timeout.Token);
 
-        // A second member joins. The skipper must release a partition promptly rather than
-        // only after being fenced at the rebalance timeout.
-        await using var joiner = await CreateGroupConsumerAsync(groupId, prefetch);
-        joiner.Subscribe(topic);
-        var received = await joiner.ConsumeOneAsync(TimeSpan.FromSeconds(45), timeout.Token);
+            // A second member joins. The skipper must release a partition promptly rather than
+            // only after being fenced at the rebalance timeout.
+            await using var joiner = await CreateGroupConsumerAsync(groupId, prefetch);
+            joiner.Subscribe(topic);
+            var received = await joiner.ConsumeOneAsync(TimeSpan.FromSeconds(45), timeout.Token);
 
-        await Assert.That(received).IsNotNull();
-        await Assert.That(skipper.Assignment.Count).IsEqualTo(1);
-
-        await skipperStop.CancelAsync();
-        await skipperTask;
+            await Assert.That(received).IsNotNull();
+            // The joiner can receive before the skipper's consume loop publishes its assignment.
+            await rebalanced.Task.WaitAsync(timeout.Token);
+            await Assert.That(skipper.Assignment.Count).IsEqualTo(1);
+        }
+        finally
+        {
+            await skipperStop.CancelAsync();
+            await skipperTask;
+        }
     }
 
     private sealed class BatchView(int partition, Func<long[]> offsets)
