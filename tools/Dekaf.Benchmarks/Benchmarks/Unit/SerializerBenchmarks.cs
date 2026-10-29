@@ -37,7 +37,7 @@ public class SerializerBenchmarks
     private JsonSerializer<string> _jsonSerializer = null!;
     private byte[] _jsonBytes = null!;
     private SerializationContext _context;
-    private JsonSerializer<JsonPayload> _jsonSerializer = null!;
+    private JsonSerializer<JsonPayload> _jsonPayloadSerializer = null!;
     private JsonPayload _jsonPayload = null!;
     private JsonPayload _largeJsonPayload = null!;
     private ArrayBufferWriter<byte> _largeJsonBuffer = null!;
@@ -64,7 +64,7 @@ public class SerializerBenchmarks
             Component = SerializationComponent.Value
         };
 
-        _jsonSerializer = new JsonSerializer<JsonPayload>();
+        _jsonPayloadSerializer = new JsonSerializer<JsonPayload>();
         _jsonPayload = new JsonPayload { Id = 42, Name = _mediumString };
         _largeJsonPayload = new JsonPayload { Id = 42, Name = new string('x', 2 * 1024 * 1024) };
         _largeJsonBuffer = new ArrayBufferWriter<byte>(3 * 1024 * 1024);
@@ -135,7 +135,7 @@ public class SerializerBenchmarks
     public void SerializeJson_Small()
     {
         _buffer.ResetWrittenCount();
-        _jsonSerializer.Serialize(_jsonPayload, ref _buffer, _context);
+        _jsonPayloadSerializer.Serialize(_jsonPayload, ref _buffer, _context);
     }
 
     [BenchmarkCategory("Json")]
@@ -143,7 +143,7 @@ public class SerializerBenchmarks
     public void SerializeJson_Large()
     {
         _largeJsonBuffer.ResetWrittenCount();
-        _jsonSerializer.Serialize(_largeJsonPayload, ref _largeJsonBuffer, _context);
+        _jsonPayloadSerializer.Serialize(_largeJsonPayload, ref _largeJsonBuffer, _context);
     }
 
     [BenchmarkCategory("Json")]
