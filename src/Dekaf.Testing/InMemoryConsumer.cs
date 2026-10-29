@@ -2441,6 +2441,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         var timestamp = AutoOffsetResetStrategy.GetListOffsetsTimestamp(
             _offsetResetOptions, DateTimeOffset.UtcNow, partition);
         var offset = _cluster.GetOffsetForTimestamp(partition, timestamp);
+        // A missing topic returns -1 for every timestamp; retain the earliest policy sentinel.
+        if (timestamp == TopicPartitionTimestamp.Earliest && offset == TopicPartitionTimestamp.Latest)
+            return TopicPartitionTimestamp.Earliest;
+
         return timestamp >= 0 && offset == TopicPartitionTimestamp.Latest
             ? _cluster.GetWatermarks(partition).High
             : offset;
@@ -2460,8 +2464,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _ => GetResetOffset(partition)
         };
         _positions[partition] = resolved;
-        if (_options.EnableAutoOffsetStore)
-            StoreOffsetUnderLock(partition, resolved);
+        // A reset is not consumed progress, and invalidates any previously stored offset.
+        if (_storedOffsets.Remove(partition))
+            _storedOffsetsVersion++;
         return resolved;
     }
 

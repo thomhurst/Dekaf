@@ -243,6 +243,64 @@ public sealed class InMemoryConsumerOffsetResetTests
         await Assert.That((await consumer.ConsumeOneAsync(TimeSpan.Zero))!.Value.Offset).IsEqualTo(1L);
     }
 
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    [Arguments(true, true)]
+    public async Task Earliest_AssignedBeforeTopicExists_ReadsFirstRecord(bool incremental, bool snapshot)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await using var consumer = CreateConsumer(cluster, AutoOffsetReset.Earliest);
+        var partition = new TopicPartition("events", 0);
+        if (incremental)
+            consumer.IncrementalAssign([new TopicPartitionOffset("events", 0, -1)]);
+        else
+            consumer.Assign(partition);
+        await ProduceAsync(cluster, DateTimeOffset.UtcNow);
+
+        var result = await ReadAsync(consumer, snapshot);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Offset).IsEqualTo(0L);
+    }
+
+    [Test]
+    [Arguments(AutoOffsetReset.Latest, false, false)]
+    [Arguments(AutoOffsetReset.Latest, true, false)]
+    [Arguments(AutoOffsetReset.Latest, false, true)]
+    [Arguments(AutoOffsetReset.Latest, true, true)]
+    [Arguments(AutoOffsetReset.ByDuration, false, false)]
+    [Arguments(AutoOffsetReset.ByDuration, true, false)]
+    [Arguments(AutoOffsetReset.ByDuration, false, true)]
+    [Arguments(AutoOffsetReset.ByDuration, true, true)]
+    public async Task EmptyResetThenClose_DoesNotCommitResetOrStaleStore(
+        AutoOffsetReset policy, bool snapshot, bool autoStore)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await ProduceAsync(cluster, DateTimeOffset.UtcNow.AddDays(-1));
+        await ProduceAsync(cluster, DateTimeOffset.UtcNow.AddDays(-1));
+        var partition = new TopicPartition("events", 0);
+        cluster.CommitOffsets("group", [new TopicPartitionOffset("events", 0, 0)]);
+        cluster.DeleteRecords(new Dictionary<TopicPartition, long> { [partition] = 1 });
+        await using var consumer = new InMemoryConsumer<string, string>(cluster, new InMemoryConsumerOptions
+        {
+            GroupId = "group",
+            AutoOffsetReset = policy,
+            AutoOffsetResetDuration = policy == AutoOffsetReset.ByDuration ? TimeSpan.FromHours(1) : null,
+            EnableAutoOffsetStore = autoStore
+        });
+        consumer.Assign(partition);
+        // A reset clears explicitly stored progress too, even with automatic storage disabled.
+        consumer.StoreOffset(new TopicPartitionOffset("events", 0, 1));
+
+        await Assert.That(await ReadAsync(consumer, snapshot)).IsNull();
+        await Assert.That(consumer.GetPosition(partition)).IsEqualTo(2L);
+        await consumer.CloseAsync();
+
+        await Assert.That(cluster.GetCommittedOffset("group", partition)).IsEqualTo(0L);
+    }
+
     private static InMemoryConsumer<string, string> CreateConsumer(InMemoryKafkaCluster cluster, AutoOffsetReset policy) =>
         new(cluster, new InMemoryConsumerOptions
         {
