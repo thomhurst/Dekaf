@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Dekaf.Consumer;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -107,7 +108,9 @@ public sealed class ConsumerFollowerOffsetRetryIntegrationTests(RackAwareKafkaCo
         public ValueTask CloseAllAsync() => inner.CloseAllAsync();
         public ValueTask DisposeAsync() => inner.DisposeAsync();
 
-        private async ValueTask<TResponse> SendAsync<TRequest, TResponse>(
+        private async ValueTask<TResponse> SendAsync<
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
             IKafkaConnection connection, int brokerId, TRequest request, short apiVersion, CancellationToken cancellationToken)
             where TRequest : IKafkaRequest<TResponse>
             where TResponse : IKafkaResponse
@@ -166,19 +169,29 @@ public sealed class ConsumerFollowerOffsetRetryIntegrationTests(RackAwareKafkaCo
             public string Host => innerConnection.Host;
             public int Port => innerConnection.Port;
             public bool IsConnected => innerConnection.IsConnected;
-            public ValueTask<TResponse> SendAsync<TRequest, TResponse>(TRequest request, short apiVersion, CancellationToken cancellationToken = default)
+            public ValueTask<TResponse> SendAsync<
+                [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+                [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(TRequest request, short apiVersion, CancellationToken cancellationToken = default)
                 where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse =>
                 owner.SendAsync<TRequest, TResponse>(innerConnection, brokerId, request, apiVersion, cancellationToken);
-            public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(TRequest request, short apiVersion, CancellationToken cancellationToken = default)
+            public ValueTask SendFireAndForgetAsync<
+                [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+                [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(TRequest request, short apiVersion, CancellationToken cancellationToken = default)
                 where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse =>
                 innerConnection.SendFireAndForgetAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
-            public Task<TResponse> SendPipelinedAsync<TRequest, TResponse>(TRequest request, short apiVersion, CancellationToken cancellationToken = default)
+            public Task<TResponse> SendPipelinedAsync<
+                [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+                [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(TRequest request, short apiVersion, CancellationToken cancellationToken = default)
                 where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse =>
                 SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken).AsTask();
-            public ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(TRequest request, short apiVersion, CancellationToken cancellationToken = default)
+            public ValueTask SendFireAndForgetWithCallerTimeoutAsync<
+                [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+                [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(TRequest request, short apiVersion, CancellationToken cancellationToken = default)
                 where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse =>
                 innerConnection.SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
-            public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(TRequest request, short apiVersion, CancellationToken cancellationToken = default)
+            public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<
+                [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+                [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(TRequest request, short apiVersion, CancellationToken cancellationToken = default)
                 where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse =>
                 SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken).AsTask();
             public ValueTask ConnectAsync(CancellationToken cancellationToken = default) => innerConnection.ConnectAsync(cancellationToken);
