@@ -1770,7 +1770,7 @@ public sealed class InMemoryKafkaClusterTests
             groupId,
             memberId,
             staleRegistration,
-            [new TopicPartitionOffset(partition.Topic, partition.Partition, record.Offset)]);
+            [record]);
         const string thirdMemberId = "third-member";
         var thirdRegistration = cluster.RegisterShareGroupMember(groupId, thirdMemberId);
         var thirdAcquired = cluster.TryAcquireShareRecord(

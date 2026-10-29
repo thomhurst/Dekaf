@@ -30,7 +30,7 @@ public sealed class InMemoryShareConsumerOptions
     /// written to this topic with the <see cref="Dekaf.Consumer.DeadLetter.ShareGroupDeadLetterHeaders"/>
     /// context headers. As on the broker, the topic must already exist with the topic config
     /// <c>errors.deadletterqueue.group.enable=true</c>; otherwise nothing is written. The in-memory
-    /// cluster has no delivery limit, so only rejects are dead-lettered.
+    /// cluster dead-letters explicit rejects only; delivery-limit archival does not write a dead-letter record.
     /// </summary>
     public string? DeadLetterQueueTopic { get; init; }
 

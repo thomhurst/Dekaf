@@ -18,6 +18,7 @@ public sealed record InMemoryRecord
     public required long TimestampMs { get; init; }
     public DateTimeOffset Timestamp => DateTimeOffset.FromUnixTimeMilliseconds(TimestampMs);
     internal InMemoryTransactionMarker? Transaction { get; init; }
+    internal long ShareAcquisitionId { get; init; }
 }
 
 internal sealed class InMemoryTransactionMarker
