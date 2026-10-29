@@ -142,32 +142,39 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
         var avroSubject = $"{avroTopic}-governed";
         var jsonSubject = $"{jsonTopic}-governed";
         var protobufSubject = $"{protobufTopic}-governed";
-        await RegisterAssociatedSchemaAsync(
-            client,
-            avroTopic,
-            avroSubject,
-            new Schema { SchemaType = SchemaType.Avro, SchemaString = AvroRecordSchema });
-        await RegisterAssociatedSchemaAsync(
-            client,
-            jsonTopic,
-            jsonSubject,
-            new Schema
-            {
-                SchemaType = SchemaType.Json,
-                SchemaString = JsonRecordSchema
-            });
-        await RegisterAssociatedSchemaAsync(
-            client,
-            protobufTopic,
-            protobufSubject,
-            new Schema
-            {
-                SchemaType = SchemaType.Protobuf,
-                SchemaString = TestPerson.Descriptor.File.ToProto().ToByteString().ToBase64()
-            });
-
+        var associatedTopics = new List<string>(3);
         try
         {
+            await RegisterAssociatedSchemaAsync(
+                client,
+                avroTopic,
+                avroSubject,
+                new Schema { SchemaType = SchemaType.Avro, SchemaString = AvroRecordSchema },
+                associatedTopics,
+                cancellationToken);
+            await RegisterAssociatedSchemaAsync(
+                client,
+                jsonTopic,
+                jsonSubject,
+                new Schema
+                {
+                    SchemaType = SchemaType.Json,
+                    SchemaString = JsonRecordSchema
+                },
+                associatedTopics,
+                cancellationToken);
+            await RegisterAssociatedSchemaAsync(
+                client,
+                protobufTopic,
+                protobufSubject,
+                new Schema
+                {
+                    SchemaType = SchemaType.Protobuf,
+                    SchemaString = TestPerson.Descriptor.File.ToProto().ToByteString().ToBase64()
+                },
+                associatedTopics,
+                cancellationToken);
+
             var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(AvroRecordSchema);
             var avroValue = new GenericRecord(avroSchema);
             avroValue.Add("id", 42);
@@ -206,19 +213,34 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
         }
         finally
         {
-            await DeleteAssociationAsync(client, avroTopic);
-            await DeleteAssociationAsync(client, jsonTopic);
-            await DeleteAssociationAsync(client, protobufTopic);
+            var cleanup = new Task[associatedTopics.Count];
+            for (var i = 0; i < associatedTopics.Count; i++)
+                cleanup[i] = DeleteAssociationAsync(client, associatedTopics[i]);
+            await Task.WhenAll(cleanup);
         }
     }
 
-    private static async Task RegisterAssociatedSchemaAsync(
+    private async Task RegisterAssociatedSchemaAsync(
         ISchemaRegistryClient client,
         string topic,
         string subject,
-        Schema schema)
+        Schema schema,
+        List<string> associatedTopics,
+        CancellationToken cancellationToken)
     {
-        _ = await client.RegisterSchemaAsync(subject, schema);
+        Console.WriteLine($"Registering {schema.SchemaType} subject '{subject}' at {testInfra.RegistryUrl}");
+        try
+        {
+            _ = await client.RegisterSchemaAsync(subject, schema, cancellationToken);
+        }
+        catch (SchemaRegistryException exception)
+        {
+            Console.WriteLine($"Registration failed: format={schema.SchemaType}, subject={subject}, " +
+                $"registry={testInfra.RegistryUrl}, errorCode={exception.ErrorCode}, message={exception.Message}");
+            Console.WriteLine(await testInfra.DescribeSchemaRegistryContainerAsync());
+            throw;
+        }
+
         _ = await client.CreateAssociationAsync(new AssociationCreateOrUpdateRequest
         {
             ResourceName = topic,
@@ -234,7 +256,8 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
                     Lifecycle = "WEAK"
                 }
             ]
-        });
+        }, cancellationToken);
+        associatedTopics.Add(topic);
     }
 
     private static Task DeleteAssociationAsync(ISchemaRegistryClient client, string topic) =>

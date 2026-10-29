@@ -127,7 +127,7 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         }
     }
 
-    private async Task<string> DescribeSchemaRegistryContainerAsync()
+    internal async Task<string> DescribeSchemaRegistryContainerAsync()
     {
         if (_schemaRegistryContainer is null)
             return string.Empty;
@@ -218,6 +218,10 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
             .WithEnvironment("SCHEMA_REGISTRY_HOST_NAME", "schema-registry")
             .WithEnvironment("SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS", "kafka:9093")
             .WithEnvironment("SCHEMA_REGISTRY_LISTENERS", "http://0.0.0.0:8081")
+            // The server defaults Kafka-store writes to 500 ms. Cold concurrent registrations
+            // on loaded CI runners can exceed that even after /subjects reports ready (#4016).
+            // Bound individual store operations without retrying or hiding registry failures.
+            .WithEnvironment("SCHEMA_REGISTRY_KAFKASTORE_TIMEOUT_MS", "10000")
             .WithEnvironment(
                 "SCHEMA_REGISTRY_RESOURCE_EXTENSION_CLASS",
                 "io.confluent.kafka.schemaregistry.rulehandler.RuleSetResourceExtension")
