@@ -927,20 +927,27 @@ public sealed partial class InMemoryKafkaCluster
         string memberId,
         ShareGroupMemberRegistration registration,
         InMemoryShareRecordCompletion[] records,
-        int recordCount)
+        int recordCount,
+        Span<bool> deadLetterEligible = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
         ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
         ArgumentNullException.ThrowIfNull(records);
         ArgumentOutOfRangeException.ThrowIfNegative(recordCount);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(recordCount, records.Length);
+        if (!deadLetterEligible.IsEmpty)
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(recordCount, deadLetterEligible.Length);
         lock (_gate)
         {
             HashSet<TopicPartition>? archivedPartitions = null;
             for (var index = 0; index < recordCount; index++)
             {
                 var record = records[index];
-                if (CompleteShareRecordUnderLock(groupId, memberId, registration, record.Offset, record.Type))
+                var archived = CompleteShareRecordUnderLock(groupId, memberId, registration, record.Offset, record.Type);
+                // Only the current lease's accepted Reject may write a dead-letter record.
+                if (!deadLetterEligible.IsEmpty)
+                    deadLetterEligible[index] = archived && record.Type == AcknowledgeType.Reject;
+                if (archived)
                     (archivedPartitions ??= []).Add(new TopicPartition(record.Offset.Topic, record.Offset.Partition));
             }
             AdvanceShareStartOffsetsUnderLock(groupId, archivedPartitions);

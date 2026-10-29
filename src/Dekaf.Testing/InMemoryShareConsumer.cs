@@ -30,6 +30,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     private KeyValuePair<ShareConsumeResult<TKey, TValue>, PendingShareRecord>[] _commitSnapshot = [];
     private PendingShareRecord[] _commitRecords = [];
     private InMemoryShareRecordCompletion[] _completedRecords = [];
+    private bool[] _deadLetterEligible = [];
     private readonly string _memberId;
     private ShareGroupMemberRegistration? _registration;
     private int _shareFaultIndexVersion = -1;
@@ -999,6 +1000,8 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             Array.Resize(ref _commitRecords, count);
         if (_completedRecords.Length < count)
             Array.Resize(ref _completedRecords, count);
+        if (_options.DeadLetterQueueTopic is not null && _deadLetterEligible.Length < count)
+            Array.Resize(ref _deadLetterEligible, count);
     }
 
     private void CompleteRecords(int recordCount)
@@ -1016,7 +1019,8 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             _memberId,
             _registration!,
             _completedRecords,
-            recordCount);
+            recordCount,
+            _deadLetterEligible);
 
         if (_options.DeadLetterQueueTopic is not { } deadLetterQueueTopic)
             return;
@@ -1025,7 +1029,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         for (var index = 0; index < recordCount; index++)
         {
             var record = _commitRecords[index];
-            if (record.AcknowledgeType == AcknowledgeType.Reject)
+            if (_deadLetterEligible[index])
                 _cluster.AppendShareDeadLetterRecord(
                     deadLetterQueueTopic,
                     _options.DeadLetterQueueCopyRecord,

@@ -56,6 +56,81 @@ public sealed class InMemoryShareDeadLetterQueueTests
     }
 
     [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task StaleReject_DoesNotDeadLetterOrCompleteReplacementLease(bool withFault, bool sameMemberId)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders");
+        cluster.CreateTopic("dlq.orders", configs: EnabledDeadLetterTopic);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync("orders", "key", "first");
+        await producer.ProduceAsync("orders", "key", "replacement");
+        await using var consumer = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions
+        {
+            GroupId = "workers", MemberId = "first", DeadLetterQueueTopic = "dlq.orders"
+        });
+        consumer.Subscribe("orders");
+
+        // Populate the completion buffer with a valid Reject before reusing it for a stale one.
+        var first = await consumer.PollAsync().FirstAsync();
+        consumer.Acknowledge(first, AcknowledgeType.Reject);
+        await consumer.CommitAsync();
+        await Assert.That(cluster.ReadRecords("dlq.orders").Count).IsEqualTo(1);
+
+        var stale = await consumer.PollAsync().FirstAsync();
+        consumer.Acknowledge(stale, AcknowledgeType.Reject);
+        var barrier = withFault
+            ? cluster.FaultPlan.PauseNext(new KafkaFaultScope(KafkaFaultOperation.ShareAcknowledge,
+                "orders", partition: 0, groupId: "workers"))
+            : null;
+        var pendingCommit = withFault ? consumer.CommitAsync().AsTask() : null;
+        if (barrier is not null)
+            await barrier.WaitUntilEnteredAsync();
+
+        // Invalidate only the cluster registration, retaining the old consumer's pending Reject.
+        var registration = (ShareGroupMemberRegistration)typeof(InMemoryShareConsumer<string, string>)
+            .GetField("_registration", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(consumer)!;
+        cluster.UnregisterShareGroupMember("workers", "first", registration);
+        await using var replacement = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions
+        {
+            GroupId = "workers", MemberId = sameMemberId ? "first" : "second", DeadLetterQueueTopic = "dlq.orders"
+        });
+        replacement.Subscribe("orders");
+        var current = await replacement.PollAsync().FirstAsync();
+        await Assert.That(current.Offset).IsEqualTo(stale.Offset);
+        await Assert.That(current.DeliveryCount).IsEqualTo(2);
+
+        if (barrier is not null)
+            barrier.Release();
+        if (pendingCommit is not null)
+            await pendingCommit;
+        else
+            await consumer.CommitAsync();
+
+        await Assert.That(cluster.ReadRecords("dlq.orders").Count).IsEqualTo(1);
+        var partition = new TopicPartition("orders", 0);
+        await Assert.That(cluster.GetCommittedShareOffset("workers", partition)).IsEqualTo(1);
+        await using var other = new InMemoryShareConsumer<string, string>(cluster,
+            new InMemoryShareConsumerOptions { GroupId = "workers", MemberId = "third" });
+        other.Subscribe("orders");
+        await Assert.That(await other.PollAsync().AnyAsync()).IsFalse();
+
+        replacement.Acknowledge(current, AcknowledgeType.Reject);
+        await replacement.CommitAsync();
+        await replacement.CommitAsync();
+        var deadLetters = cluster.ReadRecords("dlq.orders");
+        await Assert.That(deadLetters.Count).IsEqualTo(2);
+        await Assert.That(ShareGroupDeadLetterHeaders.TryParse(deadLetters[1].Headers, out var context)).IsTrue();
+        await Assert.That(context.Offset).IsEqualTo(stale.Offset);
+        await Assert.That(context.DeliveryCount).IsEqualTo(2);
+        await Assert.That(cluster.GetCommittedShareOffset("workers", partition)).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task RejectedRecord_IsNotDeadLetteredWithoutConfiguredTopic()
     {
         var cluster = new InMemoryKafkaCluster();
