@@ -1,3 +1,4 @@
+using System.Buffers;
 using Avro.Generic;
 using Dekaf.Consumer;
 using Dekaf.Producer;
@@ -41,6 +42,73 @@ public sealed class SchemaIdentityFramingIntegrationTests(
             "required": ["OrderId", "CustomerName", "Amount"]
         }
         """;
+
+    [Test]
+    public async Task Avro_HeaderFraming_RoundTripsAfterDatumReaderEviction(CancellationToken cancellationToken)
+    {
+        var topic = await testInfra.CreateTestTopicAsync();
+        using var registry = CreateRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            registry,
+            new AvroSerializerConfig { SchemaIdStrategy = SchemaIdSerializerStrategy.Header });
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            registry,
+            new AvroDeserializerConfig { SchemaIdStrategy = SchemaIdDeserializerStrategy.Header });
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(AvroSchemaText);
+        var record = new GenericRecord(schema);
+        record.Add("id", 84);
+        record.Add("name", "Cache Churn");
+        var headers = new Headers();
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(record, ref buffer, new SerializationContext
+        {
+            Topic = topic,
+            Component = SerializationComponent.Value,
+            Headers = headers
+        });
+
+        // Topic names only scope the local GUID cache in this no-rules path. No extra
+        // Kafka topics or Schema Registry subjects are needed to exercise eviction.
+        for (var pass = 0; pass < 2; pass++)
+        {
+            for (var i = 0; i < 1100; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var value = deserializer.Deserialize(buffer.WrittenMemory, new SerializationContext
+                {
+                    Topic = $"{topic}-churn-{i}",
+                    Component = SerializationComponent.Value,
+                    Headers = headers
+                });
+                await Assert.That((int)value["id"]).IsEqualTo(84);
+                await Assert.That((string)value["name"]).IsEqualTo("Cache Churn");
+            }
+        }
+
+        await using var producer = await Kafka.CreateProducer<string, GenericRecord>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithValueSerializer(serializer)
+            .BuildAsync(cancellationToken);
+        await producer.ProduceAsync(topic, "churn", record, cancellationToken);
+        await using var consumer = await Kafka.CreateConsumer<string, GenericRecord>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithGroupId($"avro-header-churn-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithValueDeserializer(deserializer)
+            .BuildAsync(cancellationToken);
+        consumer.Subscribe(topic);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        await foreach (var message in consumer.ConsumeAsync(timeout.Token))
+        {
+            await Assert.That((int)message.Value["id"]).IsEqualTo(84);
+            await Assert.That((string)message.Value["name"]).IsEqualTo("Cache Churn");
+            await AssertIdentityHeaderAsync(message.Headers);
+            return;
+        }
+
+        Assert.Fail("No Avro record was consumed after datum-reader eviction.");
+    }
 
     [Test]
     public async Task Avro_RoutedExplicitIdHeaderFraming_RoundTripsWithoutCallerHeaders(CancellationToken cancellationToken)
