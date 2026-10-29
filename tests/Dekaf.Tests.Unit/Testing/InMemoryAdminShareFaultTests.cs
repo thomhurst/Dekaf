@@ -804,6 +804,7 @@ public sealed class InMemoryAdminShareFaultTests
         cluster.FaultPlan.FailPersistently(scope, new InvalidOperationException("blocked"));
 
         var removed = cluster.FaultPlan.Clear(scope);
+        cluster.CreateTopic("orders");
         await admin.AlterConsumerGroupOffsetsAsync(
             "billing",
             [new TopicPartitionOffset("orders", 0, 7)]);
