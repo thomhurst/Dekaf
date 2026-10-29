@@ -200,6 +200,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             || DeserializerPreparation.RequiresPreparation(_valueDeserializer);
         if (options.DeadLetterQueueTopic is { } deadLetterQueueTopic)
             ShareDeadLetterQueueConfiguration.ValidateTopicName(deadLetterQueueTopic, nameof(options));
+        InMemoryKafkaCluster.ValidateShareOffsetReset(options);
         _options = options;
         _memberId = _options.MemberId ?? Guid.NewGuid().ToString("N");
     }
@@ -264,7 +265,10 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                 _assignment.Add(topicPartition);
 
             if (_subscription.Count != 0)
+            {
+                _cluster.ConfigureShareOffsetReset(_options);
                 _registration = _cluster.RegisterShareGroupMember(_options.GroupId, _memberId);
+            }
 
             Volatile.Write(ref _shareFaultIndexVersion, -1);
         }

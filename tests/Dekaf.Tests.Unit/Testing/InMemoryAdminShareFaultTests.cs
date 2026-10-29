@@ -1,5 +1,6 @@
 using System.Threading.Tasks.Sources;
 using Dekaf.Admin;
+using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.ShareConsumer;
@@ -828,7 +829,7 @@ public sealed class InMemoryAdminShareFaultTests
         });
         await using var consumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "workers" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "workers" });
         consumer.Subscribe("shared");
         var failure = new InvalidOperationException("delivery failed");
         cluster.FaultPlan.Fail(
@@ -856,7 +857,7 @@ public sealed class InMemoryAdminShareFaultTests
         await producer.ProduceAsync("shared", "key", "value");
         await using var consumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "workers", MemberId = "first" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "workers", MemberId = "first" });
         consumer.Subscribe("shared");
         var scope = new KafkaFaultScope(
             KafkaFaultOperation.ShareConsume,
@@ -876,7 +877,7 @@ public sealed class InMemoryAdminShareFaultTests
         await Assert.That(barrier.Release()).IsTrue();
         await using var otherConsumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "workers", MemberId = "second" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "workers", MemberId = "second" });
         otherConsumer.Subscribe("shared");
         await using var duplicatePoll = otherConsumer.PollAsync().GetAsyncEnumerator();
 
@@ -894,7 +895,7 @@ public sealed class InMemoryAdminShareFaultTests
         await producer.ProduceAsync("topic-b", "key-b", "value-b");
         await using var consumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "workers" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "workers" });
         consumer.Subscribe("topic-a");
         var barrier = cluster.FaultPlan.PauseNext(
             new KafkaFaultScope(
@@ -923,7 +924,7 @@ public sealed class InMemoryAdminShareFaultTests
         await producer.ProduceAsync("shared", "key", "value");
         await using var consumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "workers" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "workers" });
         consumer.Subscribe("shared");
         var record = await consumer.PollAsync().FirstAsync();
         consumer.Acknowledge(record);
@@ -943,7 +944,7 @@ public sealed class InMemoryAdminShareFaultTests
         await consumer.CommitAsync();
 
         await Assert.That(actual).IsSameReferenceAs(failure);
-        await Assert.That(beforeRetry.ContainsKey(topicPartition)).IsFalse();
+        await Assert.That(beforeRetry[topicPartition]).IsEqualTo(0);
         await Assert.That(cluster.GetShareGroupOffsets("workers")[topicPartition])
             .IsEqualTo(1);
     }
@@ -956,7 +957,7 @@ public sealed class InMemoryAdminShareFaultTests
         await producer.ProduceAsync("shared", "key", "value");
         await using var consumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "workers" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "workers" });
         consumer.Subscribe("shared");
         var consumedFaults = 0;
         cluster.FaultPlan.FaultConsumed += _ => consumedFaults++;
@@ -984,7 +985,7 @@ public sealed class InMemoryAdminShareFaultTests
         await producer.ProduceAsync("shared", "key", "value");
         await using var consumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "workers" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "workers" });
         consumer.Subscribe("shared");
         var record = await consumer.PollAsync().FirstAsync();
         consumer.Acknowledge(record);
@@ -1002,7 +1003,7 @@ public sealed class InMemoryAdminShareFaultTests
 
         _ = await Assert.ThrowsAsync<OperationCanceledException>(() => pending);
         var topicPartition = new TopicPartition("shared", 0);
-        await Assert.That(cluster.GetShareGroupOffsets("workers").ContainsKey(topicPartition)).IsFalse();
+        await Assert.That(cluster.GetShareGroupOffsets("workers")[topicPartition]).IsEqualTo(0);
         await Assert.That(barrier.Release()).IsTrue();
 
         await consumer.CommitAsync();
@@ -1018,7 +1019,7 @@ public sealed class InMemoryAdminShareFaultTests
         await producer.ProduceAsync("shared", "key", "value");
         await using var consumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "workers" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "workers" });
         consumer.Subscribe("shared");
         consumer.Acknowledge(await consumer.PollAsync().FirstAsync());
         var barrier = cluster.FaultPlan.PauseNext(
@@ -1030,7 +1031,7 @@ public sealed class InMemoryAdminShareFaultTests
 
         await Assert.That(second.IsCompleted).IsFalse();
         var topicPartition = new TopicPartition("shared", 0);
-        await Assert.That(cluster.GetShareGroupOffsets("workers").ContainsKey(topicPartition)).IsFalse();
+        await Assert.That(cluster.GetShareGroupOffsets("workers")[topicPartition]).IsEqualTo(0);
         await Assert.That(barrier.Release()).IsTrue();
         await Task.WhenAll(first, second);
         await Assert.That(cluster.GetShareGroupOffsets("workers")[topicPartition])
@@ -1045,7 +1046,7 @@ public sealed class InMemoryAdminShareFaultTests
         await producer.ProduceAsync("shared", "key", "value");
         var consumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "workers" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "workers" });
         consumer.Subscribe("shared");
         consumer.Acknowledge(await consumer.PollAsync().FirstAsync());
         var barrier = cluster.FaultPlan.PauseNext(
@@ -1072,7 +1073,7 @@ public sealed class InMemoryAdminShareFaultTests
         await producer.ProduceAsync("shared", "key", "value");
         await using var consumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "workers" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "workers" });
         consumer.Subscribe("shared");
         consumer.Acknowledge(await consumer.PollAsync().FirstAsync());
 

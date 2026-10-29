@@ -85,10 +85,39 @@ public static class ServiceCollectionExtensions
             if (implementationType is null)
                 continue;
 
+            if (descriptor is IShareConsumerConfigurationRegistration shareRegistration)
+            {
+                services[i] = descriptor.IsKeyedService
+                    ? ServiceDescriptor.DescribeKeyed(descriptor.ServiceType, descriptor.ServiceKey,
+                        (provider, _) => CreateShareConsumer(provider, implementationType, shareRegistration), descriptor.Lifetime)
+                    : ServiceDescriptor.Describe(descriptor.ServiceType,
+                        provider => CreateShareConsumer(provider, implementationType, shareRegistration), descriptor.Lifetime);
+                continue;
+            }
+
             services[i] = descriptor.IsKeyedService
                 ? ServiceDescriptor.DescribeKeyed(descriptor.ServiceType, descriptor.ServiceKey, implementationType, descriptor.Lifetime)
                 : ServiceDescriptor.Describe(descriptor.ServiceType, implementationType, descriptor.Lifetime);
         }
+    }
+
+    private static object CreateShareConsumer(IServiceProvider provider,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] Type implementationType,
+        IShareConsumerConfigurationRegistration registration)
+    {
+        var options = registration.GetOptions(provider);
+        var inMemoryOptions = new InMemoryShareConsumerOptions
+        {
+            GroupId = options.GroupId,
+            MemberId = provider.GetRequiredService<InMemoryShareConsumerOptions>().MemberId,
+            AutoOffsetReset = options.AutoOffsetReset,
+            AutoOffsetResetDuration = options.AutoOffsetResetDuration,
+            MaxPollRecords = options.MaxPollRecords,
+            AcknowledgementMode = options.AcknowledgementMode,
+            DeadLetterQueueTopic = options.DeadLetterQueueTopic,
+            DeadLetterQueueCopyRecord = options.DeadLetterQueueCopyRecord ?? false
+        };
+        return ActivatorUtilities.CreateInstance(provider, implementationType, inMemoryOptions);
     }
 
 #if NET8_0

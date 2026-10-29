@@ -1,3 +1,4 @@
+using Dekaf.Consumer;
 using Dekaf.ShareConsumer;
 
 namespace Dekaf.Testing;
@@ -16,6 +17,15 @@ public sealed class InMemoryShareConsumerOptions
     /// to select read-committed isolation for all members of the group.
     /// </remarks>
     public string GroupId { get; init; } = "dekaf-in-memory-share";
+
+    /// <summary>
+    /// Optional group-level reset policy. Null preserves the group policy, whose default is Latest.
+    /// An explicit policy affects every member and does not rewind initialized partitions.
+    /// </summary>
+    public AutoOffsetReset? AutoOffsetReset { get; init; }
+
+    /// <summary>Non-negative lookback used with ByDuration. Otherwise must be null.</summary>
+    public TimeSpan? AutoOffsetResetDuration { get; init; }
 
     /// <summary>
     /// Maximum records returned by each poll.

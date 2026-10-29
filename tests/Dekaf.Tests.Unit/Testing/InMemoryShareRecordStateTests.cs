@@ -1,3 +1,4 @@
+using Dekaf.Consumer;
 using Dekaf.Admin;
 using Dekaf.Errors;
 using Dekaf.Protocol;
@@ -26,7 +27,7 @@ public sealed class InMemoryShareRecordStateTests
         await Assert.That(firstRecord.Offset).IsEqualTo(0);
         await Assert.That(secondRecords.Select(record => record.Offset).ToArray()).IsEquivalentTo([1L, 2L]);
         await second.CommitAsync();
-        await Assert.That(cluster.GetCommittedShareOffset("workers", new TopicPartition("shared", 0))).IsNull();
+        await Assert.That(cluster.GetCommittedShareOffset("workers", new TopicPartition("shared", 0))).IsEqualTo(0);
         first.Acknowledge(firstRecord, AcknowledgeType.Release);
         await first.CommitAsync();
         var redelivered = await second.PollAsync().ToListAsync();
@@ -153,7 +154,7 @@ public sealed class InMemoryShareRecordStateTests
         cluster.TryAcquireShareRecord("workers", "second", second, partition, 0, out var current, out _);
         cluster.CompleteShareRecords("workers", "first", first,
             [new InMemoryShareRecordCompletion(stale, AcknowledgeType.Accept)], 1);
-        await Assert.That(cluster.GetCommittedShareOffset("workers", partition)).IsNull();
+        await Assert.That(cluster.GetCommittedShareOffset("workers", partition)).IsEqualTo(0);
         cluster.ReleaseShareRecords("workers", "second", second, [current]);
         await Assert.That(cluster.TryAcquireShareRecord("workers", "second", second, partition, 0, out _, out var count)).IsTrue();
         await Assert.That(count).IsEqualTo(3);
@@ -169,7 +170,7 @@ public sealed class InMemoryShareRecordStateTests
         });
         await ProduceRecords(cluster, 2);
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster,
-            new InMemoryShareConsumerOptions { GroupId = "workers", DeadLetterQueueTopic = "dead-letters" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "workers", DeadLetterQueueTopic = "dead-letters" });
         consumer.Subscribe("shared");
         var records = await consumer.PollAsync().ToListAsync();
         consumer.Acknowledge(records[0], AcknowledgeType.Release);
@@ -294,7 +295,7 @@ public sealed class InMemoryShareRecordStateTests
         });
         await ProduceRecords(cluster, 1);
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster,
-            new InMemoryShareConsumerOptions { GroupId = "workers", DeadLetterQueueTopic = "dead-letters" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "workers", DeadLetterQueueTopic = "dead-letters" });
         consumer.Subscribe("shared");
         await using var poll = consumer.PollAsync().GetAsyncEnumerator();
         await Assert.That(await poll.MoveNextAsync()).IsTrue();
@@ -315,7 +316,7 @@ public sealed class InMemoryShareRecordStateTests
         await consumer.CommitAsync();
 
         await Assert.That(cluster.ReadRecords("dead-letters")).IsEmpty();
-        await Assert.That(cluster.GetCommittedShareOffset("workers", new("shared", 0))).IsNull();
+        await Assert.That(cluster.GetCommittedShareOffset("workers", new("shared", 0))).IsEqualTo(0);
         var replayed = await consumer.PollAsync().ToListAsync();
         await Assert.That(replayed.Count).IsEqualTo(1);
         await Assert.That(replayed[0].DeliveryCount).IsEqualTo(2);
@@ -361,6 +362,7 @@ public sealed class InMemoryShareRecordStateTests
     {
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic("shared", 2);
+        cluster.ConfigureShareOffsetReset(new InMemoryShareConsumerOptions { GroupId = "workers", AutoOffsetReset = AutoOffsetReset.Earliest });
         await using var producer = new InMemoryProducer<string, string>(cluster);
         var registration = cluster.RegisterShareGroupMember("workers", "member");
         var completions = new List<InMemoryShareRecordCompletion>();
@@ -454,13 +456,14 @@ public sealed class InMemoryShareRecordStateTests
     private static InMemoryShareConsumer<string, string> CreateConsumer(InMemoryKafkaCluster cluster)
     {
         var consumer = new InMemoryShareConsumer<string, string>(cluster,
-            new InMemoryShareConsumerOptions { GroupId = "workers" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "workers" });
         consumer.Subscribe("shared");
         return consumer;
     }
 
     private static async Task ProduceRecords(InMemoryKafkaCluster cluster, int count)
     {
+        cluster.ConfigureShareOffsetReset(new InMemoryShareConsumerOptions { GroupId = "workers", AutoOffsetReset = AutoOffsetReset.Earliest });
         await using var producer = new InMemoryProducer<string, string>(cluster);
         for (var index = 0; index < count; index++)
             await producer.ProduceAsync("shared", "key", $"value-{index}");

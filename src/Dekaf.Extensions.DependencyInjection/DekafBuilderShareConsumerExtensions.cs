@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using Dekaf.Consumer.DeadLetter;
+using Dekaf.Internal;
 using Dekaf.ShareConsumer;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -214,15 +215,13 @@ public static class DekafBuilderShareConsumerExtensions
         });
         if (serviceKey is null)
         {
-            builder.Services.AddSingleton<IKafkaShareConsumer<TKey, TValue>>(provider => provider
-                .GetRequiredKeyedService<Registration<TKey, TValue>>(stateKey).Builder.Build());
+            builder.Services.Add(new ShareConsumerDescriptor<TKey, TValue>(stateKey));
             builder.Services.AddSingleton<IInitializableKafkaClient>(provider => provider
                 .GetRequiredService<IKafkaShareConsumer<TKey, TValue>>());
         }
         else
         {
-            builder.Services.AddKeyedSingleton<IKafkaShareConsumer<TKey, TValue>>(serviceKey, (provider, _) => provider
-                .GetRequiredKeyedService<Registration<TKey, TValue>>(stateKey).Builder.Build());
+            builder.Services.Add(new ShareConsumerDescriptor<TKey, TValue>(serviceKey, stateKey));
             builder.Services.AddSingleton<IInitializableKafkaClient>(provider => provider
                 .GetRequiredKeyedService<IKafkaShareConsumer<TKey, TValue>>(serviceKey));
         }
@@ -230,6 +229,28 @@ public static class DekafBuilderShareConsumerExtensions
             builder.Services.AddKeyedSingleton<DeadLetterOptions>(DeadLetterOptionsKey<TKey, TValue>(serviceKey),
                 (provider, _) => provider.GetRequiredKeyedService<Registration<TKey, TValue>>(stateKey).DeadLetterOptions!);
         return builder;
+    }
+
+    private sealed class ShareConsumerDescriptor<TKey, TValue> : ServiceDescriptor, IShareConsumerConfigurationRegistration
+    {
+        private readonly object _stateKey;
+
+        public ShareConsumerDescriptor(object stateKey)
+            : base(typeof(IKafkaShareConsumer<TKey, TValue>), provider => provider
+                .GetRequiredKeyedService<Registration<TKey, TValue>>(stateKey).Builder.Build(), ServiceLifetime.Singleton)
+        {
+            _stateKey = stateKey;
+        }
+
+        public ShareConsumerDescriptor(object serviceKey, object stateKey)
+            : base(typeof(IKafkaShareConsumer<TKey, TValue>), serviceKey, (provider, _) => provider
+                .GetRequiredKeyedService<Registration<TKey, TValue>>(stateKey).Builder.Build(), ServiceLifetime.Singleton)
+        {
+            _stateKey = stateKey;
+        }
+
+        public ShareConsumerOptions GetOptions(IServiceProvider provider) => provider
+            .GetRequiredKeyedService<Registration<TKey, TValue>>(_stateKey).Builder.BuildOptions();
     }
 
     private sealed record Registration<TKey, TValue>(

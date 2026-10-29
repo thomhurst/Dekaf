@@ -1,4 +1,5 @@
 using Dekaf.Admin;
+using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Protocol;
 using Dekaf.Testing;
@@ -86,7 +87,7 @@ public sealed class InMemoryShareIsolationTests
         await Assert.That((await consumer.PollAsync().FirstAsync()).Value).IsEqualTo("pending");
         await MutateAsync(admin, detailed: false, incremental: true, "read_committed");
         await using var other = new InMemoryShareConsumer<string, string>(cluster,
-            new InMemoryShareConsumerOptions { GroupId = "other" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "other" });
         other.Subscribe("orders");
         await Assert.That((await other.PollAsync().FirstAsync()).Value).IsEqualTo("pending");
     }
@@ -231,7 +232,7 @@ public sealed class InMemoryShareIsolationTests
         await using var ordinaryProducer = new InMemoryProducer<string, string>(cluster);
         var ordinary = await ordinaryProducer.ProduceAsync("orders", "key", "ordinary");
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster,
-            new InMemoryShareConsumerOptions { GroupId = Workers.Name, MaxPollRecords = 1 });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = Workers.Name, MaxPollRecords = 1 });
         consumer.Subscribe("orders");
         EnableFaultPath(cluster, withFault);
 
@@ -300,7 +301,7 @@ public sealed class InMemoryShareIsolationTests
 
     private static InMemoryShareConsumer<string, string> CreateConsumer(InMemoryKafkaCluster cluster)
     {
-        var consumer = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions { GroupId = Workers.Name });
+        var consumer = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = Workers.Name });
         consumer.Subscribe("orders");
         return consumer;
     }

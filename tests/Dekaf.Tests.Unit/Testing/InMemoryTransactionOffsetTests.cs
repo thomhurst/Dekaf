@@ -190,7 +190,7 @@ public sealed class InMemoryTransactionOffsetTests
         if (withFault)
             cluster.FaultPlan.PauseNext(new KafkaFaultScope(KafkaFaultOperation.ShareConsume)).Release();
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster,
-            new InMemoryShareConsumerOptions { GroupId = "share-markers" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "share-markers" });
         consumer.Subscribe(Partition.Topic);
 
         var offsets = new List<long>();

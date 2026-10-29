@@ -1,3 +1,4 @@
+using Dekaf.Consumer;
 using Dekaf.Extensions.Hosting;
 using Dekaf.ShareConsumer;
 using Dekaf.Testing;
@@ -26,6 +27,7 @@ public sealed class InMemoryShareRenewalTests
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster,
             new InMemoryShareConsumerOptions
             {
+                AutoOffsetReset = AutoOffsetReset.Earliest,
                 GroupId = "group",
                 AcknowledgementMode = ShareAcknowledgementMode.Explicit,
                 DeadLetterQueueTopic = "dead-letters"
@@ -41,7 +43,7 @@ public sealed class InMemoryShareRenewalTests
             var replay = await consumer.PollAsync().FirstAsync();
             await Assert.That(replay).IsSameReferenceAs(record);
             await Assert.That(replay.DeliveryCount).IsEqualTo(1);
-            await Assert.That(cluster.GetCommittedShareOffset("group", new("orders", 0))).IsNull();
+            await Assert.That(cluster.GetCommittedShareOffset("group", new("orders", 0))).IsEqualTo(0);
             await Assert.That(cluster.ReadRecords("dead-letters")).IsEmpty();
         }
         consumer.Acknowledge(record, finalType);
@@ -159,7 +161,7 @@ public sealed class InMemoryShareRenewalTests
     public async Task Configuration_ReportsConfiguredMode(ShareAcknowledgementMode mode)
     {
         await using var consumer = new InMemoryShareConsumer<string, string>(new InMemoryKafkaCluster(),
-            new InMemoryShareConsumerOptions { AcknowledgementMode = mode });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, AcknowledgementMode = mode });
         await Assert.That(((IShareConsumerConfiguration)consumer).AcknowledgementMode).IsEqualTo(mode);
         await Assert.That(new InMemoryShareConsumerOptions().AcknowledgementMode).IsEqualTo(ShareAcknowledgementMode.Implicit);
     }
@@ -175,6 +177,7 @@ public sealed class InMemoryShareRenewalTests
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster,
             new InMemoryShareConsumerOptions
             {
+                AutoOffsetReset = AutoOffsetReset.Earliest,
                 AcknowledgementMode = ShareAcknowledgementMode.Explicit,
                 MaxPollRecords = maxPollRecords
             });
@@ -451,7 +454,7 @@ public sealed class InMemoryShareRenewalTests
         var cluster = new InMemoryKafkaCluster();
         await using var producer = new InMemoryProducer<string, string>(cluster);
         await producer.ProduceAsync("orders", "key", "value");
-        await using var consumer = new InMemoryShareConsumer<string, string>(cluster);
+        await using var consumer = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
         consumer.Subscribe("orders");
         var record = await consumer.PollAsync().FirstAsync();
         await Assert.That(() => consumer.Acknowledge(record, AcknowledgeType.Renew))
@@ -515,6 +518,7 @@ public sealed class InMemoryShareRenewalTests
     private static InMemoryShareConsumer<string, string> ExplicitConsumer(InMemoryKafkaCluster cluster) =>
         new(cluster, new InMemoryShareConsumerOptions
         {
+            AutoOffsetReset = AutoOffsetReset.Earliest,
             GroupId = "group",
             AcknowledgementMode = ShareAcknowledgementMode.Explicit
         });

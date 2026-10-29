@@ -1,3 +1,4 @@
+using Dekaf.Consumer;
 using Dekaf.ShareConsumer;
 using Dekaf.Testing;
 
@@ -14,7 +15,7 @@ public class InMemoryShareCloseTests
         await using var producer = new InMemoryProducer<string, string>(cluster);
         await producer.ProduceAsync("topic", "key", "first");
         await producer.ProduceAsync("topic", "key", "second");
-        await using (var first = new InMemoryShareConsumer<string, string>(cluster))
+        await using (var first = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest }))
         {
             first.Subscribe("topic");
             var record = await first.PollAsync().FirstAsync();
@@ -22,7 +23,7 @@ public class InMemoryShareCloseTests
                 first.Acknowledge(record);
         }
 
-        await using var second = new InMemoryShareConsumer<string, string>(cluster);
+        await using var second = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
         second.Subscribe("topic");
         var redelivered = await second.PollAsync().FirstAsync();
         await Assert.That(redelivered.Value).IsEqualTo(explicitAccept ? "second" : "first");
@@ -35,7 +36,7 @@ public class InMemoryShareCloseTests
         await using var producer = new InMemoryProducer<string, string>(cluster);
         await producer.ProduceAsync("topic", "key", "first");
         await producer.ProduceAsync("topic", "key", "second");
-        await using (var first = new InMemoryShareConsumer<string, string>(cluster))
+        await using (var first = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest }))
         {
             first.Subscribe("topic");
             _ = await first.PollAsync().FirstAsync();
@@ -43,7 +44,7 @@ public class InMemoryShareCloseTests
             await Assert.ThrowsAsync<InvalidOperationException>(async () => await first.CommitAsync());
         }
 
-        await using var second = new InMemoryShareConsumer<string, string>(cluster);
+        await using var second = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
         second.Subscribe("topic");
         await Assert.That((await second.PollAsync().FirstAsync()).Value).IsEqualTo("second");
     }

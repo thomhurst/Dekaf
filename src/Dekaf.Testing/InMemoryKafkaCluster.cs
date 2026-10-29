@@ -855,7 +855,7 @@ public sealed partial class InMemoryKafkaCluster
             (uint)topicPartition.Partition >= (uint)topic.Partitions.Count)
             return false;
 
-        offset = Math.Max(offset, GetCommittedShareOffset(groupId, topicPartition) ?? GetWatermarks(topicPartition).Low);
+        offset = Math.Max(offset, GetOrInitializeShareOffsetUnderLock(groupId, topicPartition));
         var partition = topic.Partitions[topicPartition.Partition];
         var records = GetShareRecordPartition(groupId, topicPartition, create: true)!;
         var isolationLevel = GetShareIsolationUnderLock(groupId);
@@ -1390,6 +1390,7 @@ public sealed partial class InMemoryKafkaCluster
             _shareGroupMembers.Remove(groupId);
             _shareRecords.Remove(groupId);
             _shareGroupsWithMemberHistory.Remove(groupId);
+            _shareOffsetResetOptions.Remove(groupId);
             return ErrorCode.None;
         }
     }

@@ -104,7 +104,7 @@ public class ShareAcknowledgeCommitBenchmarks
     {
         var consumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = GroupId, MaxPollRecords = BatchSize });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = Dekaf.Consumer.AutoOffsetReset.Earliest, GroupId = GroupId, MaxPollRecords = BatchSize });
         consumer.Subscribe(Topic);
         return consumer;
     }
