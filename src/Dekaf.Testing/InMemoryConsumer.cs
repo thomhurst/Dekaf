@@ -1519,6 +1519,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     private bool SetPauseStateUnderLock(IReadOnlyList<TopicPartition> partitions, bool pause)
     {
+        _ = GetCurrentAssignmentUnderLock();
         var changed = false;
         for (var index = 0; index < partitions.Count; index++)
         {

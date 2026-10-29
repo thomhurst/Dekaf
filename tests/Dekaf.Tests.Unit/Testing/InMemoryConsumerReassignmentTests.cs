@@ -184,6 +184,59 @@ public sealed class InMemoryConsumerReassignmentTests
     }
 
     [Test]
+    [Arguments(false, false, false)]
+    [Arguments(false, true, false)]
+    [Arguments(true, false, false)]
+    [Arguments(true, true, false)]
+    [Arguments(false, false, true)]
+    [Arguments(false, true, true)]
+    [Arguments(true, false, true)]
+    [Arguments(true, true, true)]
+    public async Task Pause_AfterReassignment_PreservesRequestedPause(
+        bool manualAssignment, bool observeRevocation, bool pendingCommit)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("topic", 2);
+        await using var producer = new InMemoryProducer<string, string>(cluster);
+        await Produce(producer, 1, "first");
+        await Produce(producer, 1, "second");
+        var moved = new TopicPartition("topic", 1);
+        await using var first = CreateConsumer(cluster, "a", pendingCommit ? OffsetCommitMode.Auto : OffsetCommitMode.Manual);
+        if (manualAssignment)
+            first.Assign(new TopicPartition("topic", 0), moved);
+        else
+            first.Subscribe("topic");
+        var barrier = pendingCommit
+            ? cluster.FaultPlan.PauseNext(new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: "group"))
+            : null;
+        var consume = first.ConsumeOneAsync(TimeSpan.Zero).AsTask();
+        if (barrier is not null)
+            await barrier.WaitUntilEnteredAsync();
+        else
+            _ = await consume;
+        await using var second = CreateConsumer(cluster, "b", OffsetCommitMode.Manual);
+        second.Subscribe("topic");
+        if (observeRevocation)
+            await Assert.That(first.Assignment.Contains(moved)).IsFalse();
+        await second.CommitAsync([new("topic", 1, 1)]);
+        second.Unsubscribe();
+
+        first.Pause(moved);
+        if (barrier is not null)
+        {
+            await Assert.That(barrier.Release()).IsTrue();
+            _ = await consume;
+        }
+
+        await Assert.That(first.Paused.Contains(moved)).IsTrue();
+        await Assert.That(await first.ConsumeOneAsync(TimeSpan.Zero)).IsNull();
+        first.Resume(moved);
+        await Assert.That(first.Paused.Contains(moved)).IsFalse();
+        var record = await first.ConsumeOneAsync(TimeSpan.Zero);
+        await Assert.That(record!.Value.Offset).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ScaleOut_DoesNotSeedUnownedPartitions_AndPreservesRetainedProgress()
     {
         var cluster = new InMemoryKafkaCluster();
