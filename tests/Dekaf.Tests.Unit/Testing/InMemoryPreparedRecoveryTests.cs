@@ -230,6 +230,7 @@ public sealed class InMemoryPreparedRecoveryTests
     {
         var services = new ServiceCollection();
         services.AddSingleton(Writer);
+        services.AddTransient(typeof(IKafkaProducer<,>), typeof(InMemoryProducer<,>));
         services.AddDekafInMemory();
         await using var provider = services.BuildServiceProvider();
         var original = provider.GetRequiredService<IKafkaProducer<string, string>>();
@@ -238,6 +239,7 @@ public sealed class InMemoryPreparedRecoveryTests
         await original.DisposeAsync();
 
         var replacement = provider.GetRequiredService<IKafkaProducer<string, string>>();
+        await Assert.That(replacement).IsNotSameReferenceAs(original);
         await replacement.InitTransactionsAsync(keepPreparedTransaction: true);
         await replacement.CompletePreparedTransactionAsync(state, committed: true);
         var exception = await Assert.ThrowsAsync<TransactionException>(() =>
