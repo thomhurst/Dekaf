@@ -283,6 +283,53 @@ public sealed class InMemoryConsumerWatermarkTests
         await Assert.That(consumer.GetPosition(Partition)).IsEqualTo((long)expectedEnd);
     }
 
+    [Test]
+    [Arguments(IsolationLevel.ReadCommitted, 12L, false)]
+    [Arguments(IsolationLevel.ReadCommitted, 15L, false)]
+    [Arguments(IsolationLevel.ReadUncommitted, 12L, false)]
+    [Arguments(IsolationLevel.ReadUncommitted, 15L, false)]
+    [Arguments(IsolationLevel.ReadCommitted, 12L, true)]
+    [Arguments(IsolationLevel.ReadCommitted, 15L, true)]
+    [Arguments(IsolationLevel.ReadUncommitted, 12L, true)]
+    [Arguments(IsolationLevel.ReadUncommitted, 15L, true)]
+    public async Task EndWatermarks_AfterDeletion_DoNotPrecedeLogStart(
+        IsolationLevel isolationLevel, long deletedBefore, bool seekToTail)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await using var producer = new InMemoryProducer<string, string>(cluster);
+        await ProduceCommittedAsync(producer);
+        await using var transaction = producer.BeginTransaction();
+        await ProducePendingAsync(transaction);
+        await using var admin = new InMemoryAdminClient(cluster);
+        await admin.DeleteRecordsAsync(new Dictionary<TopicPartition, long> { [Partition] = deletedBefore });
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                AutoOffsetReset = AutoOffsetReset.None,
+                IsolationLevel = isolationLevel
+            });
+        consumer.Assign(Partition);
+        var expectedEnd = isolationLevel == IsolationLevel.ReadCommitted ? deletedBefore : 15L;
+
+        var watermarks = await consumer.QueryWatermarkOffsetsAsync(Partition);
+        await Assert.That(watermarks.Low).IsEqualTo(deletedBefore);
+        await Assert.That(watermarks.High).IsEqualTo(expectedEnd);
+        await Assert.That(consumer.GetWatermarkOffsets(Partition)!.Value).IsEqualTo(watermarks);
+        if (seekToTail)
+            await consumer.SeekToTailAsync(Partition, 0);
+        else
+            consumer.SeekToEnd(Partition);
+        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(expectedEnd);
+        await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.Zero)).IsNull();
+
+        await transaction.CommitAsync();
+        var produced = await producer.ProduceAsync(Partition.Topic, "after", "after");
+        var record = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        var expectedNext = expectedEnd < 15 ? expectedEnd : produced.Offset;
+        await Assert.That(record!.Value.Offset).IsEqualTo(expectedNext);
+    }
+
     private static InMemoryConsumer<string, string> CreateConsumer(
         InMemoryKafkaCluster cluster,
         IsolationLevel isolationLevel) => new(
