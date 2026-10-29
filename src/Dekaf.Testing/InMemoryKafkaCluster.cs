@@ -1107,7 +1107,10 @@ public sealed partial class InMemoryKafkaCluster
         }
     }
 
-    internal long GetOffsetForTimestamp(TopicPartition topicPartition, long timestamp)
+    internal long GetOffsetForTimestamp(
+        TopicPartition topicPartition,
+        long timestamp,
+        IsolationLevel isolationLevel = IsolationLevel.ReadUncommitted)
     {
         lock (_gate)
         {
@@ -1120,11 +1123,17 @@ public sealed partial class InMemoryKafkaCluster
             var partition = topic.Partitions[topicPartition.Partition];
             if (timestamp == TopicPartitionTimestamp.Earliest)
                 return partition.LogStartOffset;
+
+            var endOffset = isolationLevel == IsolationLevel.ReadCommitted
+                ? Math.Max(partition.LogStartOffset, Math.Min(partition.HighWatermark, partition.FirstUnstableOffset))
+                : partition.HighWatermark;
             if (timestamp == TopicPartitionTimestamp.Latest)
-                return partition.HighWatermark;
+                return endOffset;
 
             foreach (var record in partition.Records)
             {
+                if (record.Offset >= endOffset)
+                    break;
                 if (record.TimestampMs >= timestamp)
                     return record.Offset;
             }

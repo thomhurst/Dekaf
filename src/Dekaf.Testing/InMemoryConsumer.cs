@@ -1532,7 +1532,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         var result = timestampsToSearch.ToDictionary(
             item => item.TopicPartition,
-            item => _cluster.GetOffsetForTimestamp(item.TopicPartition, item.Timestamp));
+            item => _cluster.GetOffsetForTimestamp(item.TopicPartition, item.Timestamp, _options.IsolationLevel));
 
         return ValueTask.FromResult<IReadOnlyDictionary<TopicPartition, long>>(result);
     }
@@ -2454,7 +2454,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 : TopicPartitionTimestamp.Latest;
         }
 
-        var offset = _cluster.GetOffsetForTimestamp(partition, timestamp);
+        var offset = _cluster.GetOffsetForTimestamp(partition, timestamp, _options.IsolationLevel);
         // A missing topic returns -1 for every timestamp; retain the earliest policy sentinel.
         if (timestamp == TopicPartitionTimestamp.Earliest && offset == TopicPartitionTimestamp.Latest)
             return TopicPartitionTimestamp.Earliest;
