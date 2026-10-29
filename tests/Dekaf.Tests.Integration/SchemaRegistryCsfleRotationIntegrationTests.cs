@@ -34,7 +34,10 @@ public sealed class SchemaRegistryCsfleRotationIntegrationTests
         // New nonrotating writers must also keep using v1 after rotation has created v2.
         var unversioned = CreateHandler(client).TransformSerializedPayload(payload, unversionedContext).ToArray();
         await Assert.That(CreateHandler(client).TransformDeserializedPayload(unversioned, unversionedContext).ToArray()).IsEquivalentTo(payload);
-        await Assert.That(endpoint.Requests.Count(path => path == $"{DekRegistryEndpoint.DekPath}?algorithm={endpoint.AlgorithmName}")).IsEqualTo(4);
+        // Both writers use v1 without deleted keys; both unversioned reads include deleted keys.
+        await Assert.That(endpoint.Requests.Count(path => path == $"{DekRegistryEndpoint.DekPath}?algorithm={endpoint.AlgorithmName}")).IsEqualTo(2);
+        await Assert.That(endpoint.Requests.Count(path => path == $"{DekRegistryEndpoint.DekPath}?algorithm={endpoint.AlgorithmName}&deleted=true")).IsEqualTo(2);
+        await Assert.That(endpoint.Requests).Contains($"{DekRegistryEndpoint.DekPath}/versions/2?algorithm={endpoint.AlgorithmName}&deleted=true");
     }
 
     [Test]

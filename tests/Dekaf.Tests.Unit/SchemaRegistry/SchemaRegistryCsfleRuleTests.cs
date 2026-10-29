@@ -2792,7 +2792,7 @@ public sealed partial class SchemaRegistryCsfleRuleTests
             lock (_gate)
             {
                 _getKekCallCount++;
-                if (_keks.TryGetValue(name, out var kek))
+                if (_keks.TryGetValue(name, out var kek) && (deleted || !kek.Deleted))
                     return Task.FromResult(kek);
             }
 
@@ -2855,7 +2855,7 @@ public sealed partial class SchemaRegistryCsfleRuleTests
                 var found = version == -1
                     ? _latestDeks.TryGetValue((kekName, subject, algorithm), out var dek)
                     : _deksByVersion.TryGetValue((kekName, subject, version, algorithm), out dek);
-                if (found)
+                if (found && (deleted || !dek!.Deleted))
                     return Task.FromResult(dek!);
             }
 

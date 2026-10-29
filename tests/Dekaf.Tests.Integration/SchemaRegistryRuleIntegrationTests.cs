@@ -24,11 +24,16 @@ namespace Dekaf.Tests.Integration;
 public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
     [Test]
-    [Arguments("AES256_GCM", false)]
-    [Arguments("AES256_SIV", false)]
-    [Arguments("AES256_GCM", true)]
-    [Arguments("AES256_SIV", true)]
-    public async Task RegisteredAvroCsfleRule_ProduceConsume_RoundTripsTaggedField(string algorithm, bool shared, CancellationToken cancellationToken)
+    [Arguments("AES256_GCM", null, false, false)]
+    [Arguments("AES256_SIV", null, false, false)]
+    [Arguments("AES256_GCM", null, false, true)]
+    [Arguments("AES256_SIV", null, false, true)]
+    [Arguments("AES256_GCM", "KEK", false, false)]
+    [Arguments("AES256_GCM", "DEK", false, false)]
+    [Arguments("AES256_SIV", "KEK", true, false)]
+    [Arguments("AES256_SIV", "DEK", true, false)]
+    public async Task RegisteredAvroCsfleRule_ProduceConsume_RoundTripsTaggedField(
+        string algorithm, string? deletedKey, bool versioned, bool shared, CancellationToken cancellationToken)
     {
         const string schemaText = """
             {
@@ -58,6 +63,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             {
                 ["encrypt.kek.name"] = $"integration-kek-{Guid.NewGuid():N}",
                 ["encrypt.dek.algorithm"] = algorithm,
+                ["encrypt.dek.expiry.days"] = versioned ? "1" : "0",
                 ["encrypt.kms.type"] = LocalKmsProvider.DefaultType,
                 ["encrypt.kms.key.id"] = "local://integration"
             }
@@ -93,9 +99,6 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
             registryClient,
             new AvroSerializerConfig { AutoRegisterSchemas = false, RuleExecutor = executor });
-        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
-            registryClient,
-            new AvroDeserializerConfig { RuleExecutor = executor });
         var serializationContext = CreateContext(topic);
         var encrypted = new ArrayBufferWriter<byte>();
         serializer.Serialize(record, ref encrypted, serializationContext);
@@ -114,6 +117,16 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             Key = "key",
             Value = record
         }, cancellationToken);
+        registryClient.KekDeleted = deletedKey == "KEK";
+        registryClient.DekDeleted = deletedKey == "DEK";
+        var keyRegistrations = registryClient.KeyRegistrationCount;
+        var readerExecutor = new SchemaRegistryRuleExecutor(
+        [
+            new SchemaRegistryCsfleRuleHandler(registryClient, shared ? [] : [kms])
+        ]);
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            registryClient,
+            new AvroDeserializerConfig { RuleExecutor = readerExecutor });
         await using var consumer = await Kafka.CreateConsumer<string, GenericRecord>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithGroupId($"avro-csfle-{Guid.NewGuid():N}")
@@ -132,6 +145,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
 
         await Assert.That((string)consumed!["id"]!).IsEqualTo("payment-1");
         await Assert.That((string)consumed["secret"]!).IsEqualTo("account-secret");
+        await Assert.That(registryClient.KeyRegistrationCount).IsEqualTo(keyRegistrations);
     }
 
     [Test]
@@ -830,11 +844,18 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             CancellationToken cancellationToken = default) =>
             inner.DeleteSubjectAsync(subject, permanent, cancellationToken);
 
+        public bool KekDeleted { get; set; }
+
+        public bool DekDeleted { get; set; }
+
+        public int KeyRegistrationCount { get; private set; }
+
         public Task<Kek> RegisterKekAsync(
             RegisterKekRequest request,
             bool testSharing = false,
             CancellationToken cancellationToken = default)
         {
+            KeyRegistrationCount++;
             var kek = new Kek
             {
                 Name = request.Name,
@@ -851,7 +872,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             string name,
             bool deleted = false,
             CancellationToken cancellationToken = default) =>
-            _keks.TryGetValue(name, out var kek)
+            _keks.TryGetValue(name, out var kek) && (deleted || !KekDeleted)
                 ? Task.FromResult(kek)
                 : Task.FromException<Kek>(new SchemaRegistryException(40470, $"KEK '{name}' not found"));
 
@@ -860,6 +881,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             RegisterDekRequest request,
             CancellationToken cancellationToken = default)
         {
+            KeyRegistrationCount++;
             var algorithm = request.Algorithm ?? DekAlgorithm.Aes256Gcm;
             var shared = _keks[kekName].Shared;
             if (shared && request.EncryptedKeyMaterial is not null)
@@ -913,7 +935,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
                     .DefaultIfEmpty(1)
                     .Max();
             }
-            return _deks.TryGetValue((kekName, subject, version, algorithm), out var dek)
+            return _deks.TryGetValue((kekName, subject, version, algorithm), out var dek) && (deleted || !DekDeleted)
                 ? Task.FromResult(dek)
                 : Task.FromException<Dek>(new SchemaRegistryException(40471, $"DEK version '{version}' for '{subject}' not found"));
         }

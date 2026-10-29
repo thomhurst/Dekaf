@@ -711,7 +711,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
 
     private ResolvedDek ResolveWriteDek(EncryptionSettings settings)
     {
-        var kek = ResolveKek(settings);
+        var kek = ResolveWriteKek(settings);
         Dek? existing = null;
         try
         {
@@ -775,14 +775,19 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
 
     private ResolvedDek ResolveReadDek(EncryptionSettings settings, int? version)
     {
-        var kek = ResolveKek(settings);
+        var kek = WaitFor(_schemaRegistryClient.GetKekAsync(settings.KekName, deleted: true));
         var dek = version is { } dekVersion
             ? WaitFor(_schemaRegistryClient.GetDekAsync(
                 settings.KekName,
                 settings.Subject,
                 dekVersion,
-                settings.Algorithm))
-            : WaitFor(_schemaRegistryClient.GetDekAsync(settings.KekName, settings.Subject, settings.Algorithm));
+                settings.Algorithm,
+                deleted: true))
+            : WaitFor(_schemaRegistryClient.GetDekAsync(
+                settings.KekName,
+                settings.Subject,
+                settings.Algorithm,
+                deleted: true));
 
         return ResolveDekMaterial(dek, kek, settings.Subject, settings.RuleName, settings.Algorithm);
     }
@@ -819,7 +824,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         return new ResolvedDek(algorithm, dek.Version, rawKey, dek.Timestamp);
     }
 
-    private Kek ResolveKek(EncryptionSettings settings)
+    private Kek ResolveWriteKek(EncryptionSettings settings)
     {
         try
         {
