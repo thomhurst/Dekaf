@@ -19,7 +19,7 @@ public sealed partial class KafkaConsumer<TKey, TValue>
             {
                 if (consumer._bufferedBatchProof is { Active: true })
                     throw new InvalidOperationException("Cannot consume records while a buffered batch stream is active.");
-                consumer._bufferedBatchProof = null;
+                consumer._bufferedBatchProof?.PreserveForExplicitCommit();
             }
             return consumer.SelectConsumeCore<RecordProofMode>(sourceToken).GetAsyncEnumerator(cancellationToken);
         }
@@ -36,7 +36,9 @@ public sealed partial class KafkaConsumer<TKey, TValue>
         {
             if (_bufferedBatchProof is { Active: true })
                 throw new InvalidOperationException("Only one buffered batch stream can be active on a consumer.");
-            proof = new BufferedBatchProof();
+            proof = _bufferedBatchProof ?? new BufferedBatchProof();
+            proof.PreserveForExplicitCommit();
+            proof.Active = true;
             _bufferedBatchProof = proof;
         }
 
@@ -69,7 +71,7 @@ public sealed partial class KafkaConsumer<TKey, TValue>
         }
     }
 
-    private void BeginBufferedBatchFetch(PendingFetchData pending)
+    private bool BeginBufferedBatchFetch(PendingFetchData pending)
     {
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
@@ -77,7 +79,10 @@ public sealed partial class KafkaConsumer<TKey, TValue>
             {
                 proof.Pending = pending;
                 proof.HeaderGeneration = pending.HeaderGeneration;
+                return proof.Positions.ContainsKey(pending.TopicPartition)
+                    || HasUnprovenCommitPosition(proof, pending.TopicPartition);
             }
+            return false;
         }
     }
 
@@ -88,7 +93,15 @@ public sealed partial class KafkaConsumer<TKey, TValue>
             return false;
 
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            // A rejected-only prefix has no application work to prove. Do not defer
+            // it unless an earlier fetch or stream left this partition in doubt.
+            if (pending.ProvenOffset == pending.LastYieldedOffset
+                && !proof.Positions.ContainsKey(pending.TopicPartition)
+                && !HasUnprovenCommitPosition(proof, pending.TopicPartition))
+                return false;
             CaptureBufferedBatchPositionLocked(proof, pending);
+        }
         return true;
     }
 
@@ -104,7 +117,7 @@ public sealed partial class KafkaConsumer<TKey, TValue>
         }
     }
 
-    private void ProveBufferedBatch()
+    private void ProveBufferedBatch(bool includePreviousStreams = false)
     {
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
@@ -118,17 +131,50 @@ public sealed partial class KafkaConsumer<TKey, TValue>
 
             if (_options.EnableAutoOffsetStore)
             {
-                foreach (var (partition, position) in proof.Positions)
-                {
-                    if (HasPendingFetchClear(partition) || !IsCurrentlyAssigned(partition))
-                        continue;
-                    StoreOffsetCore(partition, IsGroupManagedSubscription() ? position.Ownership : 0,
-                        position.NextOffset, position.LeaderEpoch);
-                    if (position.Pending.TryGetFetchGeneration(position.HeaderGeneration, out _))
-                        position.Pending.MarkYieldedProcessed();
-                }
+                if (includePreviousStreams)
+                    StoreBufferedBatchPositions(proof.CommitPositions, preserveNewerOffsets: true);
+                StoreBufferedBatchPositions(proof.Positions);
             }
             proof.Positions.Clear();
+            if (includePreviousStreams)
+                proof.CommitPositions.Clear();
+        }
+    }
+
+    private bool HasUnprovenCommitPosition(BufferedBatchProof proof, TopicPartition partition)
+    {
+        if (!proof.CommitPositions.TryGetValue(partition, out var position))
+            return false;
+        if (!IsBufferedBatchPositionStored(partition, position))
+            return true;
+        proof.CommitPositions.Remove(partition);
+        return false;
+    }
+
+    private bool IsBufferedBatchPositionStored(TopicPartition partition, BufferedBatchPosition position)
+    {
+        if (!_storedOffsetSlots.TryGetValue(partition, out var slot))
+            return false;
+        slot.TryReadDirty(out var storedOwnership, out var storedOffset, out _);
+        var ownership = IsGroupManagedSubscription() ? position.Ownership : 0;
+        return storedOwnership == ownership && storedOffset >= position.NextOffset;
+    }
+
+    private void StoreBufferedBatchPositions(Dictionary<TopicPartition, BufferedBatchPosition> positions,
+        bool preserveNewerOffsets = false)
+    {
+        foreach (var (partition, position) in positions)
+        {
+            if (HasPendingFetchClear(partition) || !IsCurrentlyAssigned(partition))
+                continue;
+            // Another stream may already have proven a later offset. An explicit
+            // commit must not replace that progress with an abandoned checkpoint.
+            if (preserveNewerOffsets && IsBufferedBatchPositionStored(partition, position))
+                continue;
+            StoreOffsetCore(partition, IsGroupManagedSubscription() ? position.Ownership : 0,
+                position.NextOffset, position.LeaderEpoch);
+            if (position.Pending.TryGetFetchGeneration(position.HeaderGeneration, out _))
+                position.Pending.MarkYieldedProcessed();
         }
     }
 
@@ -141,10 +187,20 @@ public sealed partial class KafkaConsumer<TKey, TValue>
         public PendingFetchData? Pending;
         public int HeaderGeneration;
         public Dictionary<TopicPartition, BufferedBatchPosition> Positions { get; } = new();
+        public Dictionary<TopicPartition, BufferedBatchPosition> CommitPositions { get; } = new();
+
+        public void PreserveForExplicitCommit()
+        {
+            foreach (var (partition, position) in Positions)
+                CommitPositions[partition] = position;
+            Positions.Clear();
+            Pending = null;
+        }
 
         public void Invalidate(TopicPartition partition)
         {
             Positions.Remove(partition);
+            CommitPositions.Remove(partition);
             if (Pending is { } pending && pending.TopicPartition.Equals(partition))
                 Pending = null;
         }
@@ -152,6 +208,7 @@ public sealed partial class KafkaConsumer<TKey, TValue>
         public void InvalidateAll()
         {
             Positions.Clear();
+            CommitPositions.Clear();
             Pending = null;
         }
     }

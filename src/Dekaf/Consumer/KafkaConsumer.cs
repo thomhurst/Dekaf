@@ -3824,8 +3824,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // record retained when a previous stream was disposed at its yield point.
                     if (typeof(TProofMode) == typeof(RecordProofMode))
                         pending.MarkYieldedProcessed();
-                    if (typeof(TProofMode) == typeof(BufferedBatchProofMode))
-                        BeginBufferedBatchFetch(pending);
+                    var hasUnprovenBufferedRecords = typeof(TProofMode) == typeof(BufferedBatchProofMode)
+                        && BeginBufferedBatchFetch(pending);
                     var pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
                     var pausedDuringDelivery = false;
                     long? batchProcessingStarted = _adaptiveFetchSizer is not null
@@ -3935,6 +3935,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                                 if (!shouldDeserialize)
                                 {
+                                    var proveRejectedRecord = typeof(TProofMode) == typeof(RecordProofMode)
+                                        || (!hasUnprovenBufferedRecords
+                                            && pending.ProvenOffset == pending.LastYieldedOffset);
                                     if (activeSnapshot is not null)
                                     {
                                         iterationStatus = TrackSnapshotConsumedPosition(
@@ -3956,7 +3959,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     {
                                         TrackConsumedPosition(pending, offset, messageBytes);
                                     }
-                                    if (typeof(TProofMode) == typeof(RecordProofMode))
+                                    if (proveRejectedRecord)
                                         pending.MarkYieldedProcessed();
                                     filteredRecordRejected = true;
                                     goto FilteredRecordComplete;
@@ -4238,6 +4241,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         // never executes this, leaving the in-doubt record unproven.
                         if (typeof(TProofMode) == typeof(RecordProofMode))
                             pending.MarkYieldedProcessed();
+                        else
+                            hasUnprovenBufferedRecords = pending.ProvenOffset != pending.LastYieldedOffset;
 
                         if (--recordsUntilPollRefresh == 0)
                         {
@@ -9091,7 +9096,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// </summary>
     private void StageExplicitCommitOffsets()
     {
-        ProveBufferedBatch();
+        ProveBufferedBatch(includePreviousStreams: true);
         FlushActiveConsumedPosition();
         FlushPausedConsumedPositions();
     }

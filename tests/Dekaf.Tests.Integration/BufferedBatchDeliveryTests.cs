@@ -70,6 +70,56 @@ public sealed class BufferedBatchDeliveryTests(KafkaTestContainer kafka) : Kafka
         await Assert.That(replayed).IsEquivalentTo(failed);
     }
 
+    [Test]
+    [Timeout(120_000)]
+    public async Task RejectAllFilter_CommitsWithoutYieldingApplicationBatch(CancellationToken cancellationToken)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var group = $"buffered-batch-filter-{Guid.NewGuid():N}";
+        await using (var producer = await Kafka.CreateProducer<string, string>()
+                         .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync(cancellationToken))
+        {
+            for (var i = 0; i < 3; i++)
+                await producer.ProduceAsync(topic, "key", "value", cancellationToken);
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(group)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithQueuedMinMessages(1)
+            .WithAutoCommitInterval(TimeSpan.FromMilliseconds(100))
+            .WithRecordFilter(new RejectAllRecords())
+            .BuildAsync(cancellationToken);
+        consumer.Subscribe(topic);
+
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var batches = DrainBatchesAsync();
+        try
+        {
+            var partition = new TopicPartition(topic, 0);
+            while (await consumer.GetCommittedOffsetAsync(partition, cancellationToken) != 3)
+                await Task.Delay(50, cancellationToken);
+        }
+        finally
+        {
+            await stop.CancelAsync();
+            try { await batches; }
+            catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
+        }
+
+        async Task DrainBatchesAsync()
+        {
+            await foreach (var _ in consumer.ConsumeAsync(stop.Token).Batch(8, stop.Token))
+                throw new InvalidOperationException("An all-rejecting filter must not yield a batch.");
+        }
+    }
+
+    private sealed class RejectAllRecords : IConsumerRecordFilter
+    {
+        public bool ShouldDeserialize(in ConsumerRecordFilterContext record) => false;
+    }
+
     private ValueTask<IKafkaConsumer<string, string>> CreateConsumerAsync(string group, CancellationToken cancellationToken) =>
         Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
