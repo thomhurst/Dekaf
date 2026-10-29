@@ -6,6 +6,8 @@
   - .NET 10 retains IReadOnlySet and ref-struct protocol contracts.
   - Modern enums inherit runtime-provided ISpanFormattable.
   - SkipLocalsInit metadata differs between the modern and .NET Standard writers.
+  - Protocol metadata annotations use an internal polyfill on .NET Standard;
+    APICompat only observes the public BCL attribute on .NET 8 and later.
   The SDK compares adjacent compatible assets: netstandard2.0 to net8.0, then
   net8.0 to net10.0. Each suppression names its exact target and asset pair.
   Released-package baseline breaks are not suppressed. Remove entries when assets converge.
@@ -584,6 +586,126 @@
   <Suppression>
     <DiagnosticId>CP0008</DiagnosticId>
     <Target>T:Dekaf.Telemetry.ApplicationTelemetryMetricKind</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net8.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0016</DiagnosticId>
+    <Target>M:Dekaf.Networking.IKafkaConnection.SendAsync``2(``0,System.Int16,System.Threading.CancellationToken)&lt;0&gt;:[T:System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute]</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net8.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0016</DiagnosticId>
+    <Target>M:Dekaf.Networking.IKafkaConnection.SendAsync``2(``0,System.Int16,System.Threading.CancellationToken)&lt;1&gt;:[T:System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute]</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net8.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0016</DiagnosticId>
+    <Target>M:Dekaf.Networking.IKafkaConnection.SendFireAndForgetAsync``2(``0,System.Int16,System.Threading.CancellationToken)&lt;0&gt;:[T:System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute]</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net8.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0016</DiagnosticId>
+    <Target>M:Dekaf.Networking.IKafkaConnection.SendFireAndForgetAsync``2(``0,System.Int16,System.Threading.CancellationToken)&lt;1&gt;:[T:System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute]</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net8.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0016</DiagnosticId>
+    <Target>M:Dekaf.Networking.IKafkaConnection.SendFireAndForgetWithCallerTimeoutAsync``2(``0,System.Int16,System.Threading.CancellationToken)&lt;0&gt;:[T:System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute]</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net8.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0016</DiagnosticId>
+    <Target>M:Dekaf.Networking.IKafkaConnection.SendFireAndForgetWithCallerTimeoutAsync``2(``0,System.Int16,System.Threading.CancellationToken)&lt;1&gt;:[T:System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute]</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net8.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0016</DiagnosticId>
+    <Target>M:Dekaf.Networking.IKafkaConnection.SendPipelinedAsync``2(``0,System.Int16,System.Threading.CancellationToken)&lt;0&gt;:[T:System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute]</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net8.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0016</DiagnosticId>
+    <Target>M:Dekaf.Networking.IKafkaConnection.SendPipelinedAsync``2(``0,System.Int16,System.Threading.CancellationToken)&lt;1&gt;:[T:System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute]</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net8.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0016</DiagnosticId>
+    <Target>M:Dekaf.Networking.IKafkaConnection.SendPipelinedWithCallerTimeoutAsync``2(``0,System.Int16,System.Threading.CancellationToken)&lt;0&gt;:[T:System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute]</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net8.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0016</DiagnosticId>
+    <Target>M:Dekaf.Networking.IKafkaConnection.SendPipelinedWithCallerTimeoutAsync``2(``0,System.Int16,System.Threading.CancellationToken)&lt;1&gt;:[T:System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute]</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net8.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0016</DiagnosticId>
+    <Target>M:Dekaf.Networking.KafkaConnection.SendAsync``2(``0,System.Int16,System.Threading.CancellationToken)&lt;0&gt;:[T:System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute]</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net8.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0016</DiagnosticId>
+    <Target>M:Dekaf.Networking.KafkaConnection.SendAsync``2(``0,System.Int16,System.Threading.CancellationToken)&lt;1&gt;:[T:System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute]</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net8.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0016</DiagnosticId>
+    <Target>M:Dekaf.Networking.KafkaConnection.SendFireAndForgetAsync``2(``0,System.Int16,System.Threading.CancellationToken)&lt;0&gt;:[T:System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute]</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net8.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0016</DiagnosticId>
+    <Target>M:Dekaf.Networking.KafkaConnection.SendFireAndForgetAsync``2(``0,System.Int16,System.Threading.CancellationToken)&lt;1&gt;:[T:System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute]</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net8.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0016</DiagnosticId>
+    <Target>M:Dekaf.Networking.KafkaConnection.SendFireAndForgetWithCallerTimeoutAsync``2(``0,System.Int16,System.Threading.CancellationToken)&lt;0&gt;:[T:System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute]</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net8.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0016</DiagnosticId>
+    <Target>M:Dekaf.Networking.KafkaConnection.SendFireAndForgetWithCallerTimeoutAsync``2(``0,System.Int16,System.Threading.CancellationToken)&lt;1&gt;:[T:System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute]</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net8.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0016</DiagnosticId>
+    <Target>M:Dekaf.Networking.KafkaConnection.SendPipelinedAsync``2(``0,System.Int16,System.Threading.CancellationToken)&lt;0&gt;:[T:System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute]</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net8.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0016</DiagnosticId>
+    <Target>M:Dekaf.Networking.KafkaConnection.SendPipelinedAsync``2(``0,System.Int16,System.Threading.CancellationToken)&lt;1&gt;:[T:System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute]</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net8.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0016</DiagnosticId>
+    <Target>M:Dekaf.Networking.KafkaConnection.SendPipelinedWithCallerTimeoutAsync``2(``0,System.Int16,System.Threading.CancellationToken)&lt;0&gt;:[T:System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute]</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net8.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0016</DiagnosticId>
+    <Target>M:Dekaf.Networking.KafkaConnection.SendPipelinedWithCallerTimeoutAsync``2(``0,System.Int16,System.Threading.CancellationToken)&lt;1&gt;:[T:System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute]</Target>
     <Left>lib/netstandard2.0/Dekaf.dll</Left>
     <Right>lib/net8.0/Dekaf.dll</Right>
   </Suppression>

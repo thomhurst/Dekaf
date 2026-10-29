@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using System.Runtime.CompilerServices;
@@ -53,7 +54,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static ValueTask<TResponse> SendHostedRequestAsync<TRequest, TResponse>(
+    private static ValueTask<TResponse> SendHostedRequestAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         IKafkaConnection connection, TRequest request, short version,
         KafkaRequestWriteContext? context, CancellationToken cancellationToken)
         where TRequest : IKafkaRequest<TResponse>
@@ -74,7 +77,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static ValueTask<TResponse> SendObservedRequestAsync<TRequest, TResponse>(
+    private static ValueTask<TResponse> SendObservedRequestAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         IKafkaConnection connection, TRequest request, short version,
         KafkaRequestWriteContext? context, CancellationToken cancellationToken)
         where TRequest : IKafkaRequest<TResponse>

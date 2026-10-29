@@ -807,16 +807,19 @@ jobs:
 
       - name: Publish and run dependency-injection smoke test
         run: |
-          dotnet publish tests/Dekaf.Tests.Aot.DependencyInjection/Dekaf.Tests.Aot.DependencyInjection.csproj \
-            --configuration Release \
-            --framework net10.0 \
-            --runtime linux-x64 \
-            --self-contained true \
-            --output artifacts/aot/dependency-injection \
-            -p:PublishAot=true \
-            -p:ContinuousIntegrationBuild=true \
-            -p:TreatWarningsAsErrors=true
-          ./artifacts/aot/dependency-injection/Dekaf.Tests.Aot.DependencyInjection
+          for framework in net8.0 net10.0; do
+            dotnet publish tests/Dekaf.Tests.Aot.DependencyInjection/Dekaf.Tests.Aot.DependencyInjection.csproj \
+              --configuration Release \
+              --framework "$framework" \
+              --runtime linux-x64 \
+              --self-contained true \
+              --output "artifacts/aot/dependency-injection/$framework" \
+              -p:PublishAot=true \
+              -p:ContinuousIntegrationBuild=true \
+              -p:TreatWarningsAsErrors=true \
+              -warnaserror:IL2090,IL2091,IL2092,IL2093
+            "./artifacts/aot/dependency-injection/$framework/Dekaf.Tests.Aot.DependencyInjection"
+          done
 
   aot-integration-publish:
     name: NativeAOT Integration Publish

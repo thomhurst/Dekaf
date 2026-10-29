@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics.Metrics;
 using Dekaf.Errors;
 using System.Runtime.CompilerServices;
@@ -11028,7 +11029,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return null;
     }
 
-    private ValueTask<TResponse> SendWithWatermarkWriteSequenceAsync<TRequest, TResponse>(
+    private ValueTask<TResponse> SendWithWatermarkWriteSequenceAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         IKafkaConnection connection,
         TRequest request,
         short apiVersion,

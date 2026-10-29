@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using Dekaf.Admin;
 using Dekaf.Metadata;
@@ -62,7 +63,9 @@ public sealed partial class ClientTelemetryReceiverIntegrationTests
         public int Port => inner.Port;
         public bool IsConnected => inner.IsConnected;
 
-        public async ValueTask<TResponse> SendAsync<TRequest, TResponse>(
+        public async ValueTask<TResponse> SendAsync<
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
             TRequest request, short apiVersion, CancellationToken cancellationToken = default)
             where TRequest : IKafkaRequest<TResponse>
             where TResponse : IKafkaResponse
@@ -80,25 +83,33 @@ public sealed partial class ClientTelemetryReceiverIntegrationTests
         public ValueTask ConnectAsync(CancellationToken cancellationToken = default) => inner.ConnectAsync(cancellationToken);
         public ValueTask DisposeAsync() => inner.DisposeAsync();
 
-        public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
+        public ValueTask SendFireAndForgetAsync<
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
             TRequest request, short apiVersion, CancellationToken cancellationToken = default)
             where TRequest : IKafkaRequest<TResponse>
             where TResponse : IKafkaResponse =>
             inner.SendFireAndForgetAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
 
-        public Task<TResponse> SendPipelinedAsync<TRequest, TResponse>(
+        public Task<TResponse> SendPipelinedAsync<
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
             TRequest request, short apiVersion, CancellationToken cancellationToken = default)
             where TRequest : IKafkaRequest<TResponse>
             where TResponse : IKafkaResponse =>
             inner.SendPipelinedAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
 
-        public ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
+        public ValueTask SendFireAndForgetWithCallerTimeoutAsync<
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
             TRequest request, short apiVersion, CancellationToken cancellationToken = default)
             where TRequest : IKafkaRequest<TResponse>
             where TResponse : IKafkaResponse =>
             inner.SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
 
-        public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
+        public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
             TRequest request, short apiVersion, CancellationToken cancellationToken = default)
             where TRequest : IKafkaRequest<TResponse>
             where TResponse : IKafkaResponse =>

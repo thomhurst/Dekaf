@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -64,7 +65,9 @@ public sealed partial class AdminClient : IDetailedConfigMutationAdminClient
                 static resource => resource.ErrorCode, static resource => resource.ErrorMessage), cancellationToken);
     }
 
-    private async ValueTask<IReadOnlyDictionary<ConfigResource, AdminMutationResult>> ExecuteConfigMutationsAsync<TRequest, TResponse>(
+    private async ValueTask<IReadOnlyDictionary<ConfigResource, AdminMutationResult>> ExecuteConfigMutationsAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         List<ConfigMutation> items, MutationProtocol protocol, int timeoutMs,
         Func<List<ConfigMutation>, short, Dictionary<ConfigResource, AdminMutationResult>, TRequest> createRequest,
         Func<List<ConfigMutation>, TResponse, Dictionary<ConfigResource, AdminMutationResult>> readResponse,

@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Metadata;
@@ -119,7 +120,9 @@ public sealed class StuckFetchPositionIntegrationTests(KafkaTestContainer kafka)
         public int Port => inner.Port;
         public bool IsConnected => inner.IsConnected;
 
-        public async ValueTask<TResponse> SendAsync<TRequest, TResponse>(
+        public async ValueTask<TResponse> SendAsync<
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
             TRequest request,
             short apiVersion,
             CancellationToken cancellationToken = default)
@@ -131,7 +134,9 @@ public sealed class StuckFetchPositionIntegrationTests(KafkaTestContainer kafka)
             return response;
         }
 
-        public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
+        public ValueTask SendFireAndForgetAsync<
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
             TRequest request,
             short apiVersion,
             CancellationToken cancellationToken = default)
@@ -139,7 +144,9 @@ public sealed class StuckFetchPositionIntegrationTests(KafkaTestContainer kafka)
             where TResponse : IKafkaResponse
             => inner.SendFireAndForgetAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
 
-        public async Task<TResponse> SendPipelinedAsync<TRequest, TResponse>(
+        public async Task<TResponse> SendPipelinedAsync<
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
             TRequest request,
             short apiVersion,
             CancellationToken cancellationToken = default)
@@ -151,7 +158,9 @@ public sealed class StuckFetchPositionIntegrationTests(KafkaTestContainer kafka)
             return response;
         }
 
-        public ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
+        public ValueTask SendFireAndForgetWithCallerTimeoutAsync<
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
             TRequest request,
             short apiVersion,
             CancellationToken cancellationToken = default)
@@ -159,7 +168,9 @@ public sealed class StuckFetchPositionIntegrationTests(KafkaTestContainer kafka)
             where TResponse : IKafkaResponse
             => inner.SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
 
-        public async Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
+        public async Task<TResponse> SendPipelinedWithCallerTimeoutAsync<
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
             TRequest request,
             short apiVersion,
             CancellationToken cancellationToken = default)

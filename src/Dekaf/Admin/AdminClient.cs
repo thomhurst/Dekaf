@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
@@ -6113,7 +6114,9 @@ public sealed partial class AdminClient :
     // A connection that cannot report the write start is treated as having started it. The context
     // is reset on every send, so one context per call serves all its batches and attempts; read
     // WriteStarted only in the catch around this send.
-    private static ValueTask<TResponse> SendObservingWriteAsync<TRequest, TResponse>(
+    private static ValueTask<TResponse> SendObservingWriteAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         KafkaRequestWriteContext writeContext,
         IKafkaConnection connection,
         TRequest request,
