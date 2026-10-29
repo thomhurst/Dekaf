@@ -32,7 +32,7 @@ public sealed partial class InMemoryKafkaCluster
     private readonly HashSet<string> _shareGroupsWithMemberHistory = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, ShareRecordState>>> _shareRecords = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Exception> _produceFailures = new(StringComparer.Ordinal);
-    private readonly Dictionary<PreparedTransactionState, IInMemoryPreparedTransaction> _preparedTransactions = [];
+    private readonly Dictionary<object, IInMemoryPreparedTransaction> _preparedTransactions = [];
     private readonly Dictionary<InMemoryTransactionMarker, List<PartitionState>> _transactionPartitions = [];
     private readonly InMemoryKafkaClusterOptions _options;
     private TaskCompletionSource _recordsChanged = NewRecordsChangedSource();
@@ -399,25 +399,29 @@ public sealed partial class InMemoryKafkaCluster
     internal long AllocateProducerId() => Interlocked.Increment(ref _nextProducerId);
 
     internal void RegisterPreparedTransaction(
-        PreparedTransactionState state,
         IInMemoryPreparedTransaction transaction)
     {
         ArgumentNullException.ThrowIfNull(transaction);
         lock (_gate)
-            _preparedTransactions[state] = transaction;
+        {
+            if (!_preparedTransactions.TryAdd(transaction.TransactionalIdentity, transaction))
+            {
+                throw new TransactionException(ErrorCode.InvalidTxnState,
+                    "A prepared transaction is already pending for this transactional identity.");
+            }
+        }
     }
 
-    internal IInMemoryPreparedTransaction? GetPreparedTransaction(PreparedTransactionState state)
+    internal IInMemoryPreparedTransaction? GetPreparedTransaction(object transactionalIdentity)
     {
         lock (_gate)
-            return _preparedTransactions.GetValueOrDefault(state);
+            return _preparedTransactions.GetValueOrDefault(transactionalIdentity);
     }
 
     internal FatalTransactionException? CompleteTransaction(
         InMemoryTransactionMarker transactionMarker,
         bool committed,
         Dictionary<string, InMemoryPendingGroupOffsets> pendingOffsets,
-        PreparedTransactionState preparedState,
         IInMemoryPreparedTransaction transaction)
     {
         ArgumentNullException.ThrowIfNull(pendingOffsets);
@@ -472,11 +476,10 @@ public sealed partial class InMemoryKafkaCluster
                     partition.CompleteTransaction(transactionMarker);
             }
 
-            if (preparedState.HasTransaction &&
-                _preparedTransactions.TryGetValue(preparedState, out var registered) &&
+            if (_preparedTransactions.TryGetValue(transaction.TransactionalIdentity, out var registered) &&
                 ReferenceEquals(registered, transaction))
             {
-                _preparedTransactions.Remove(preparedState);
+                _preparedTransactions.Remove(transaction.TransactionalIdentity);
             }
 
             var offsetsCompleted = _pendingConsumerGroupOffsets?.Remove(transactionMarker) == true;

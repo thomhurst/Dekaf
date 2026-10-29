@@ -146,3 +146,12 @@ Dekaf.Testing.InMemoryKafkaClusterOptions.DeliveryCountLimit.get -> int
 Dekaf.Testing.InMemoryKafkaClusterOptions.DeliveryCountLimit.init -> void
 Dekaf.Testing.InMemoryShareConsumerOptions.AcknowledgementMode.get -> Dekaf.ShareConsumer.ShareAcknowledgementMode
 Dekaf.Testing.InMemoryShareConsumerOptions.AcknowledgementMode.init -> void
+Dekaf.Testing.InMemoryProducerOptions
+Dekaf.Testing.InMemoryProducerOptions.InMemoryProducerOptions() -> void
+Dekaf.Testing.InMemoryProducerOptions.TransactionalId.get -> string?
+Dekaf.Testing.InMemoryProducerOptions.TransactionalId.init -> void
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.InMemoryProducer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Testing.InMemoryProducerOptions? options) -> void
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.InMemoryProducer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.ISerializer<TKey>! keySerializer, Dekaf.Serialization.ISerializer<TValue>! valueSerializer, Dekaf.Testing.InMemoryProducerOptions? options) -> void
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.InMemoryProducer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.IAsyncSerializer<TKey>! keySerializer, Dekaf.Serialization.IAsyncSerializer<TValue>! valueSerializer, Dekaf.Testing.InMemoryProducerOptions? options) -> void
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.InMemoryProducer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.ISerializer<TKey>! keySerializer, Dekaf.Serialization.IAsyncSerializer<TValue>! valueSerializer, Dekaf.Testing.InMemoryProducerOptions? options) -> void
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.InMemoryProducer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.IAsyncSerializer<TKey>! keySerializer, Dekaf.Serialization.ISerializer<TValue>! valueSerializer, Dekaf.Testing.InMemoryProducerOptions? options) -> void

@@ -15,6 +15,7 @@ internal interface IInMemoryPreparedTransaction
     bool IsCompleted { get; }
     bool IsPrepared { get; }
     PreparedTransactionState PreparedState { get; }
+    object TransactionalIdentity { get; }
 
     ValueTask CompletePreparedAsync(
         IInMemoryTransactionRecoveryContext recoveryContext,
@@ -55,9 +56,11 @@ public sealed class InMemoryProducer<TKey, TValue> :
     private readonly bool _valueProducesRecordHeaders;
     private readonly object _transactionGate = new();
     private readonly long _producerId;
+    private readonly string? _transactionalId;
+    private readonly object _transactionalIdentity;
     private InMemoryTransaction? _activeTransaction;
     private FatalTransactionException? _fatalTransactionException;
-    private bool _preparedRecoveryEnabled;
+    private IInMemoryPreparedTransaction? _pendingPreparedTransaction;
     private bool _preparedRecoveryInProgress;
     private TaskCompletionSource? _preparedRecoveryCompletion;
     private TaskCompletionSource? _disposeCompletion;
@@ -65,10 +68,7 @@ public sealed class InMemoryProducer<TKey, TValue> :
     private bool _disposed;
 
     public InMemoryProducer(InMemoryKafkaCluster cluster)
-        : this(
-            cluster,
-            InMemorySerdeResolver.Serializer<TKey>(),
-            InMemorySerdeResolver.Serializer<TValue>())
+        : this(cluster, options: null)
     {
     }
 
@@ -76,12 +76,7 @@ public sealed class InMemoryProducer<TKey, TValue> :
         InMemoryKafkaCluster cluster,
         ISerializer<TKey> keySerializer,
         ISerializer<TValue> valueSerializer)
-        : this(
-            cluster,
-            InMemorySerdeResolver.Required(keySerializer, nameof(keySerializer)),
-            InMemorySerdeResolver.Required(valueSerializer, nameof(valueSerializer)),
-            asyncKeySerializer: null,
-            asyncValueSerializer: null)
+        : this(cluster, keySerializer, valueSerializer, options: null)
     {
     }
 
@@ -92,12 +87,7 @@ public sealed class InMemoryProducer<TKey, TValue> :
         InMemoryKafkaCluster cluster,
         IAsyncSerializer<TKey> keySerializer,
         IAsyncSerializer<TValue> valueSerializer)
-        : this(
-            cluster,
-            keySerializer: null,
-            valueSerializer: null,
-            InMemorySerdeResolver.Required(keySerializer, nameof(keySerializer)),
-            InMemorySerdeResolver.Required(valueSerializer, nameof(valueSerializer)))
+        : this(cluster, keySerializer, valueSerializer, options: null)
     {
     }
 
@@ -108,12 +98,7 @@ public sealed class InMemoryProducer<TKey, TValue> :
         InMemoryKafkaCluster cluster,
         ISerializer<TKey> keySerializer,
         IAsyncSerializer<TValue> valueSerializer)
-        : this(
-            cluster,
-            InMemorySerdeResolver.Required(keySerializer, nameof(keySerializer)),
-            valueSerializer: null,
-            asyncKeySerializer: null,
-            InMemorySerdeResolver.Required(valueSerializer, nameof(valueSerializer)))
+        : this(cluster, keySerializer, valueSerializer, options: null)
     {
     }
 
@@ -124,12 +109,87 @@ public sealed class InMemoryProducer<TKey, TValue> :
         InMemoryKafkaCluster cluster,
         IAsyncSerializer<TKey> keySerializer,
         ISerializer<TValue> valueSerializer)
+        : this(cluster, keySerializer, valueSerializer, options: null)
+    {
+    }
+
+    /// <summary>
+    /// Creates a producer with an optional identity for prepared transaction recovery.
+    /// </summary>
+    public InMemoryProducer(InMemoryKafkaCluster cluster, InMemoryProducerOptions? options)
+        : this(cluster, InMemorySerdeResolver.Serializer<TKey>(), InMemorySerdeResolver.Serializer<TValue>(), options)
+    {
+    }
+
+    /// <summary>
+    /// Creates a producer with custom serializers and optional prepared transaction recovery identity.
+    /// </summary>
+    public InMemoryProducer(
+        InMemoryKafkaCluster cluster,
+        ISerializer<TKey> keySerializer,
+        ISerializer<TValue> valueSerializer,
+        InMemoryProducerOptions? options)
         : this(
             cluster,
-            keySerializer: null,
+            InMemorySerdeResolver.Required(keySerializer, nameof(keySerializer)),
+            InMemorySerdeResolver.Required(valueSerializer, nameof(valueSerializer)),
+            null,
+            null,
+            options)
+    {
+    }
+
+    /// <summary>
+    /// Creates a producer with custom serializers and optional prepared transaction recovery identity.
+    /// </summary>
+    public InMemoryProducer(
+        InMemoryKafkaCluster cluster,
+        IAsyncSerializer<TKey> keySerializer,
+        IAsyncSerializer<TValue> valueSerializer,
+        InMemoryProducerOptions? options)
+        : this(
+            cluster,
+            null,
+            null,
+            InMemorySerdeResolver.Required(keySerializer, nameof(keySerializer)),
+            InMemorySerdeResolver.Required(valueSerializer, nameof(valueSerializer)),
+            options)
+    {
+    }
+
+    /// <summary>
+    /// Creates a producer with custom serializers and optional prepared transaction recovery identity.
+    /// </summary>
+    public InMemoryProducer(
+        InMemoryKafkaCluster cluster,
+        ISerializer<TKey> keySerializer,
+        IAsyncSerializer<TValue> valueSerializer,
+        InMemoryProducerOptions? options)
+        : this(
+            cluster,
+            InMemorySerdeResolver.Required(keySerializer, nameof(keySerializer)),
+            null,
+            null,
+            InMemorySerdeResolver.Required(valueSerializer, nameof(valueSerializer)),
+            options)
+    {
+    }
+
+    /// <summary>
+    /// Creates a producer with custom serializers and optional prepared transaction recovery identity.
+    /// </summary>
+    public InMemoryProducer(
+        InMemoryKafkaCluster cluster,
+        IAsyncSerializer<TKey> keySerializer,
+        ISerializer<TValue> valueSerializer,
+        InMemoryProducerOptions? options)
+        : this(
+            cluster,
+            null,
             InMemorySerdeResolver.Required(valueSerializer, nameof(valueSerializer)),
             InMemorySerdeResolver.Required(keySerializer, nameof(keySerializer)),
-            asyncValueSerializer: null)
+            null,
+            options)
     {
     }
 
@@ -138,10 +198,13 @@ public sealed class InMemoryProducer<TKey, TValue> :
         ISerializer<TKey>? keySerializer,
         ISerializer<TValue>? valueSerializer,
         IAsyncSerializer<TKey>? asyncKeySerializer,
-        IAsyncSerializer<TValue>? asyncValueSerializer)
+        IAsyncSerializer<TValue>? asyncValueSerializer,
+        InMemoryProducerOptions? options = null)
     {
         _cluster = cluster ?? throw new ArgumentNullException(nameof(cluster));
         _producerId = _cluster.AllocateProducerId();
+        _transactionalId = options?.TransactionalId;
+        _transactionalIdentity = (object?)_transactionalId ?? new object();
         _asyncKeySerializer = asyncKeySerializer;
         _asyncValueSerializer = asyncValueSerializer;
         _keySerializer = asyncKeySerializer is null
@@ -327,6 +390,7 @@ public sealed class InMemoryProducer<TKey, TValue> :
             return ValueTask.CompletedTask;
 
         if (Volatile.Read(ref _activeTransaction) is { IsCompleted: false } ||
+            Volatile.Read(ref _pendingPreparedTransaction) is { IsCompleted: false } ||
             Volatile.Read(ref _preparedRecoveryInProgress))
         {
             throw new InvalidOperationException(
@@ -357,6 +421,12 @@ public sealed class InMemoryProducer<TKey, TValue> :
             ThrowIfDisposingOrDisposed();
             if (_preparedRecoveryInProgress)
                 throw new InvalidOperationException("A prepared transaction recovery is already in progress.");
+            if (_pendingPreparedTransaction is { IsCompleted: false } ||
+                _activeTransaction is { IsCompleted: false, IsPrepared: true })
+            {
+                throw new InvalidOperationException(
+                    "A prepared transaction is waiting for completion. Complete, commit, or abort it before starting a new one.");
+            }
             if (_activeTransaction is { IsCompleted: false })
                 throw new InvalidOperationException("A transaction is already active.");
 
@@ -372,12 +442,31 @@ public sealed class InMemoryProducer<TKey, TValue> :
     public async ValueTask InitTransactionsAsync(bool keepPreparedTransaction, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        ThrowIfDisposed();
         ThrowIfFatalTransactionError();
-        await ApplyFaultAsync(
-            new KafkaFaultScope(KafkaFaultOperation.InitializeTransactions),
-            cancellationToken).ConfigureAwait(false);
-        Volatile.Write(ref _preparedRecoveryEnabled, keepPreparedTransaction);
+        TaskCompletionSource recoveryCompletion;
+        lock (_transactionGate)
+        {
+            ThrowIfDisposingOrDisposed();
+            recoveryCompletion = StartPreparedRecovery();
+        }
+
+        try
+        {
+            await ApplyFaultAsync(
+                new KafkaFaultScope(KafkaFaultOperation.InitializeTransactions),
+                cancellationToken).ConfigureAwait(false);
+
+            var transaction = _cluster.GetPreparedTransaction(_transactionalIdentity);
+            lock (_transactionGate)
+                Volatile.Write(ref _pendingPreparedTransaction, transaction);
+
+            if (transaction is not null && !keepPreparedTransaction)
+                await transaction.CompletePreparedAsync(this, committed: false, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            FinishPreparedRecovery(recoveryCompletion);
+        }
     }
 
     public async ValueTask CompletePreparedTransactionAsync(
@@ -386,10 +475,12 @@ public sealed class InMemoryProducer<TKey, TValue> :
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (!preparedState.HasTransaction)
+            throw new ArgumentException("Prepared transaction state must identify a transaction.", nameof(preparedState));
         ThrowIfDisposed();
         ThrowIfFatalTransactionError();
 
-        IInMemoryPreparedTransaction transaction;
+        IInMemoryPreparedTransaction? transaction;
         TaskCompletionSource recoveryCompletion;
         lock (_transactionGate)
         {
@@ -397,32 +488,18 @@ public sealed class InMemoryProducer<TKey, TValue> :
             if (_preparedRecoveryInProgress)
                 throw new InvalidOperationException("A prepared transaction recovery is already in progress.");
 
-            transaction = _activeTransaction!;
-            if (transaction is { IsCompleted: false } &&
-                (!transaction.IsPrepared || transaction.PreparedState != preparedState))
+            transaction = _pendingPreparedTransaction ?? (IInMemoryPreparedTransaction?)_activeTransaction;
+            if (transaction is null || transaction.IsCompleted || !transaction.IsPrepared ||
+                transaction.PreparedState != preparedState)
             {
-                throw new InvalidOperationException(
-                    "Cannot recover a prepared transaction while another transaction is active.");
-            }
-
-            if (transaction is null || !transaction.IsPrepared || transaction.PreparedState != preparedState)
-            {
-                if (!Volatile.Read(ref _preparedRecoveryEnabled) ||
-                    _cluster.GetPreparedTransaction(preparedState) is not { } recovered)
+                throw new TransactionException(ErrorCode.InvalidTxnState,
+                    "Prepared transaction state does not match the pending prepared transaction.")
                 {
-                    throw new InvalidOperationException(
-                        "There is no matching active or recoverable prepared transaction.");
-                }
-
-                transaction = recovered;
+                    TransactionalId = _transactionalId
+                };
             }
 
-            if (!transaction.IsPrepared || transaction.PreparedState != preparedState)
-                throw new InvalidOperationException("The prepared transaction state does not match the active transaction.");
-
-            Volatile.Write(ref _preparedRecoveryInProgress, true);
-            recoveryCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            _preparedRecoveryCompletion = recoveryCompletion;
+            recoveryCompletion = StartPreparedRecovery();
         }
 
         try
@@ -431,12 +508,30 @@ public sealed class InMemoryProducer<TKey, TValue> :
         }
         finally
         {
-            lock (_transactionGate)
-            {
-                Volatile.Write(ref _preparedRecoveryInProgress, false);
-                recoveryCompletion.TrySetResult();
-                _preparedRecoveryCompletion = null;
-            }
+            FinishPreparedRecovery(recoveryCompletion);
+        }
+    }
+
+    // Called under _transactionGate. Disposal waits for both initialization and completion.
+    private TaskCompletionSource StartPreparedRecovery()
+    {
+        if (_preparedRecoveryInProgress)
+            throw new InvalidOperationException("A prepared transaction recovery is already in progress.");
+        Volatile.Write(ref _preparedRecoveryInProgress, true);
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _preparedRecoveryCompletion = completion;
+        return completion;
+    }
+
+    private void FinishPreparedRecovery(TaskCompletionSource completion)
+    {
+        lock (_transactionGate)
+        {
+            if (_pendingPreparedTransaction is { IsCompleted: true })
+                Volatile.Write(ref _pendingPreparedTransaction, null);
+            Volatile.Write(ref _preparedRecoveryInProgress, false);
+            completion.TrySetResult();
+            _preparedRecoveryCompletion = null;
         }
     }
 
@@ -825,6 +920,7 @@ public sealed class InMemoryProducer<TKey, TValue> :
     {
         ThrowIfDisposingOrDisposed();
         if (Volatile.Read(ref _activeTransaction) is { IsCompleted: false } ||
+            Volatile.Read(ref _pendingPreparedTransaction) is { IsCompleted: false } ||
             Volatile.Read(ref _preparedRecoveryInProgress))
         {
             throw new InvalidOperationException(
@@ -854,6 +950,8 @@ public sealed class InMemoryProducer<TKey, TValue> :
         }
 
         public InMemoryTransactionMarker TransactionMarker { get; }
+
+        public object TransactionalIdentity => _producer._transactionalIdentity;
 
         public bool IsCompleted => GetState(Volatile.Read(ref _lifecycle)) == TransactionLifecycleState.Completed;
 
@@ -1003,7 +1101,7 @@ public sealed class InMemoryProducer<TKey, TValue> :
             try
             {
                 Volatile.Write(ref _prepared, true);
-                _producer._cluster.RegisterPreparedTransaction(PreparedState, this);
+                _producer._cluster.RegisterPreparedTransaction(this);
                 Volatile.Write(ref _lifecycle, Pack(TransactionLifecycleState.Prepared));
                 return ValueTask.FromResult(PreparedState);
             }
@@ -1190,7 +1288,6 @@ public sealed class InMemoryProducer<TKey, TValue> :
                     TransactionMarker,
                     committed,
                     _pendingOffsets,
-                    PreparedState,
                     this);
                 _pendingOffsets.Clear();
             }
