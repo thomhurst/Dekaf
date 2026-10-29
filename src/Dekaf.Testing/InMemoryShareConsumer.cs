@@ -8,7 +8,7 @@ namespace Dekaf.Testing;
 /// <summary>
 /// In-memory <see cref="IKafkaShareConsumer{TKey,TValue}"/> backed by an <see cref="InMemoryKafkaCluster"/>.
 /// </summary>
-public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TKey, TValue>, IApplicationTelemetryShareConsumer
+public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TKey, TValue>, IApplicationTelemetryShareConsumer, IShareConsumerConfiguration
 {
     private readonly object _gate = new();
     private readonly InMemoryKafkaCluster _cluster;
@@ -178,6 +178,8 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         ArgumentNullException.ThrowIfNull(options);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.GroupId);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPollRecords, 1);
+        if (options.AcknowledgementMode is not (ShareAcknowledgementMode.Implicit or ShareAcknowledgementMode.Explicit))
+            throw new ArgumentOutOfRangeException(nameof(options), "Unknown acknowledgement mode.");
         _cluster = cluster ?? throw new ArgumentNullException(nameof(cluster));
         _asyncKeyDeserializer = asyncKeyDeserializer;
         _asyncValueDeserializer = asyncValueDeserializer;
@@ -222,6 +224,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
 
     public string? MemberId => _memberId;
     public int? AcquisitionLockTimeoutMs => null;
+    ShareAcknowledgementMode IShareConsumerConfiguration.AcknowledgementMode => _options.AcknowledgementMode;
 
 #if !NET10_0_OR_GREATER
     IReadOnlyCollection<string> IKafkaShareConsumer<TKey, TValue>.Subscription => Subscription;
@@ -290,7 +293,19 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     {
         await CommitAsync(cancellationToken).ConfigureAwait(false);
 
-        for (var i = 0; i < _options.MaxPollRecords; i++)
+        List<ShareConsumeResult<TKey, TValue>>? renewed = null;
+        lock (_gate)
+        {
+            foreach (var pair in _pending)
+            {
+                if (pair.Value.IsRenewed)
+                    (renewed ??= []).Add(pair.Key);
+            }
+        }
+
+        var recordCount = 0;
+        // Reserve the poll budget for fresh records before replaying renewed acquisitions.
+        for (; recordCount < _options.MaxPollRecords; recordCount++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var record = HasPotentialFault(KafkaFaultOperation.ShareConsume)
@@ -299,9 +314,31 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                 ? await TryTakeAvailableRecordAsync(cancellationToken).ConfigureAwait(false)
                 : TryTakeAvailableRecord();
             if (record is null)
-                yield break;
+                break;
 
             yield return record;
+        }
+
+        if (renewed is not null)
+        {
+            foreach (var record in renewed)
+            {
+                if (recordCount == _options.MaxPollRecords)
+                    yield break;
+                cancellationToken.ThrowIfCancellationRequested();
+                lock (_gate)
+                {
+                    if (!_pending.TryGetValue(record, out var pending) || !pending.IsRenewed)
+                        continue;
+                    if (!IsCurrentRecord(pending))
+                    {
+                        _pending.Remove(record);
+                        continue;
+                    }
+                }
+                recordCount++;
+                yield return record;
+            }
         }
     }
 
@@ -311,13 +348,24 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     {
         ArgumentNullException.ThrowIfNull(record);
         ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfGreaterThan((byte)type, (byte)AcknowledgeType.Renew);
+        if (type == AcknowledgeType.Renew && _options.AcknowledgementMode != ShareAcknowledgementMode.Explicit)
+            throw new InvalidOperationException("Renew acknowledgements require explicit acknowledgement mode.");
 
         lock (_gate)
         {
             if (!_pending.TryGetValue(record, out var pending))
                 throw new InvalidOperationException("Record was not returned by the current poll.");
+            if (!IsCurrentRecord(pending))
+            {
+                // Preserve the existing stale-acknowledgement no-op while discarding the delivery.
+                _pending.Remove(record);
+                return;
+            }
 
             pending.AcknowledgeType = type;
+            if (type != AcknowledgeType.Renew)
+                pending.IsRenewed = false;
         }
     }
 
@@ -359,26 +407,32 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                     return ValueTask.CompletedTask;
 
                 ThrowIfDisposed();
+                RemoveInvalidPendingUnderLock();
                 if (_pending.Count == 0)
                     return ValueTask.CompletedTask;
 
                 EnsureCommitRecordCapacity(_pending.Count);
+                EnsureSnapshotCapacity(_pending.Count);
                 var recordCount = 0;
-                foreach (var record in _pending.Values)
+                foreach (var pair in _pending)
                 {
-                    record.ResolveImplicitAcknowledgement(allowDisposed);
-                    _commitRecords[recordCount++] = record;
+                    pair.Value.ResolveImplicitAcknowledgement(allowDisposed, _options.AcknowledgementMode);
+                    if (!pair.Value.HasAcknowledgement)
+                        continue;
+                    _commitSnapshot[recordCount] = pair;
+                    _commitRecords[recordCount++] = pair.Value;
                 }
 
                 try
                 {
                     CompleteRecords(recordCount);
-                    _pending.Clear();
+                    RemoveCompletedRecords(recordCount);
                 }
                 finally
                 {
                     Array.Clear(_commitRecords, 0, recordCount);
                     Array.Clear(_completedRecords, 0, recordCount);
+                    Array.Clear(_commitSnapshot, 0, recordCount);
                 }
             }
 
@@ -404,6 +458,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                 }
 
                 ThrowIfDisposed();
+                RemoveInvalidPendingUnderLock();
                 if (_pending.Count == 0)
                 {
                     _commitSemaphore.Release();
@@ -413,8 +468,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                 EnsureSnapshotCapacity(_pending.Count);
                 foreach (var pair in _pending)
                 {
-                    pair.Value.ResolveImplicitAcknowledgement(allowDisposed);
-                    _commitSnapshot[snapshotCount++] = pair;
+                    pair.Value.ResolveImplicitAcknowledgement(allowDisposed, _options.AcknowledgementMode);
+                    if (pair.Value.HasAcknowledgement)
+                        _commitSnapshot[snapshotCount++] = pair;
                 }
             }
 
@@ -487,6 +543,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     {
         lock (_gate)
         {
+            RemoveInvalidPendingUnderLock();
             EnsureCommitRecordCapacity(snapshotCount);
             var recordCount = 0;
             for (var index = 0; index < snapshotCount; index++)
@@ -502,18 +559,24 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             try
             {
                 CompleteRecords(recordCount);
-                for (var index = 0; index < snapshotCount; index++)
-                {
-                    var pair = _commitSnapshot[index];
-                    if (_pending.TryGetValue(pair.Key, out var record) && ReferenceEquals(record, pair.Value))
-                        _pending.Remove(pair.Key);
-                }
+                RemoveCompletedRecords(snapshotCount);
             }
             finally
             {
                 Array.Clear(_commitRecords, 0, recordCount);
                 Array.Clear(_completedRecords, 0, recordCount);
             }
+        }
+    }
+
+    private void RemoveCompletedRecords(int snapshotCount)
+    {
+        for (var index = 0; index < snapshotCount; index++)
+        {
+            var pair = _commitSnapshot[index];
+            if (pair.Value.HasAcknowledgement &&
+                _pending.TryGetValue(pair.Key, out var record) && ReferenceEquals(record, pair.Value))
+                _pending.Remove(pair.Key);
         }
     }
 
@@ -547,6 +610,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                 return;
 
             cancellationToken.ThrowIfCancellationRequested();
+            ReleasePendingUnderLock();
             UnregisterShareGroupMemberUnderLock();
             _disposed = true;
         }
@@ -858,7 +922,8 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         lock (_gate)
         {
             disposed = _disposed;
-            if (!disposed && ReferenceEquals(_registration, registration))
+            if (!disposed && ReferenceEquals(_registration, registration) &&
+                _cluster.IsCurrentShareRecord(_options.GroupId, registration, record))
             {
                 _pending[result] = pending;
                 return result;
@@ -967,6 +1032,19 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         };
     }
 
+    private bool IsCurrentRecord(PendingShareRecord record) =>
+        _registration is { } registration &&
+        _cluster.IsCurrentShareRecord(_options.GroupId, registration, record.Record);
+
+    private void RemoveInvalidPendingUnderLock()
+    {
+        foreach (var pair in _pending)
+        {
+            if (!IsCurrentRecord(pair.Value))
+                _pending.Remove(pair.Key);
+        }
+    }
+
     private void ReleasePendingUnderLock()
     {
         if (_pending.Count == 0)
@@ -1022,6 +1100,13 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             _completedRecords,
             recordCount,
             _deadLetterEligible);
+
+        for (var index = 0; index < recordCount; index++)
+        {
+            var record = _commitRecords[index];
+            if (record.AcknowledgeType == AcknowledgeType.Renew)
+                record.CompleteRenewal();
+        }
 
         if (_options.DeadLetterQueueTopic is not { } deadLetterQueueTopic)
             return;
@@ -1081,14 +1166,22 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         public InMemoryRecord Record { get; }
         public int DeliveryCount { get; }
         public long Offset => Record.Offset;
-        // A provisional delivery is accepted by poll/commit, but released by close.
+        // Only implicit mode accepts a provisional delivery. Close releases it in either mode.
         private const AcknowledgeType ImplicitDelivery = (AcknowledgeType)byte.MaxValue;
         public AcknowledgeType AcknowledgeType { get; set; } = ImplicitDelivery;
+        public bool HasAcknowledgement => AcknowledgeType != ImplicitDelivery;
+        public bool IsRenewed { get; set; }
 
-        public void ResolveImplicitAcknowledgement(bool closing)
+        public void ResolveImplicitAcknowledgement(bool closing, ShareAcknowledgementMode mode)
         {
-            if (AcknowledgeType == ImplicitDelivery)
+            if (!HasAcknowledgement && (closing || mode == ShareAcknowledgementMode.Implicit))
                 AcknowledgeType = closing ? AcknowledgeType.Release : AcknowledgeType.Accept;
+        }
+
+        public void CompleteRenewal()
+        {
+            AcknowledgeType = ImplicitDelivery;
+            IsRenewed = true;
         }
     }
 }
