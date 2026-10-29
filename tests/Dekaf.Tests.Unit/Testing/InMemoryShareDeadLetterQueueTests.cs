@@ -117,7 +117,7 @@ public sealed class InMemoryShareDeadLetterQueueTests
         await using var other = new InMemoryShareConsumer<string, string>(cluster,
             new InMemoryShareConsumerOptions { GroupId = "workers", MemberId = "third" });
         other.Subscribe("orders");
-        await Assert.That(await other.PollAsync().AnyAsync()).IsFalse();
+        await Assert.That(await other.PollAsync().ToListAsync()).IsEmpty();
 
         replacement.Acknowledge(current, AcknowledgeType.Reject);
         await replacement.CommitAsync();

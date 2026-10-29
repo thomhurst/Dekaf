@@ -21,7 +21,7 @@ public sealed class InMemoryShareRecordStateTests
         await using var first = CreateConsumer(cluster);
         await using var second = CreateConsumer(cluster);
         var firstRecord = await first.PollAsync().FirstAsync();
-        var secondRecords = await second.PollAsync().ToArrayAsync();
+        var secondRecords = await second.PollAsync().ToListAsync();
 
         await Assert.That(firstRecord.Offset).IsEqualTo(0);
         await Assert.That(secondRecords.Select(record => record.Offset).ToArray()).IsEquivalentTo([1L, 2L]);
@@ -29,7 +29,7 @@ public sealed class InMemoryShareRecordStateTests
         await Assert.That(cluster.GetCommittedShareOffset("workers", new TopicPartition("shared", 0))).IsNull();
         first.Acknowledge(firstRecord, AcknowledgeType.Release);
         await first.CommitAsync();
-        var redelivered = await second.PollAsync().ToArrayAsync();
+        var redelivered = await second.PollAsync().ToListAsync();
         await Assert.That(redelivered.Select(record => record.Offset).ToArray()).IsEquivalentTo([0L]);
         await Assert.That(redelivered[0].DeliveryCount).IsEqualTo(2);
         await second.CommitAsync();
@@ -44,18 +44,18 @@ public sealed class InMemoryShareRecordStateTests
         var cluster = new InMemoryKafkaCluster();
         await ProduceRecords(cluster, 3);
         await using var consumer = CreateConsumer(cluster);
-        var records = await consumer.PollAsync().ToArrayAsync();
+        var records = await consumer.PollAsync().ToListAsync();
         consumer.Acknowledge(records[0], AcknowledgeType.Accept);
         consumer.Acknowledge(records[1], AcknowledgeType.Release);
         consumer.Acknowledge(records[2], acknowledgement);
         await consumer.CommitAsync();
 
         await Assert.That(cluster.GetCommittedShareOffset("workers", new TopicPartition("shared", 0))).IsEqualTo(1);
-        var redelivered = await consumer.PollAsync().ToArrayAsync();
+        var redelivered = await consumer.PollAsync().ToListAsync();
         await Assert.That(redelivered.Select(record => record.Offset).ToArray()).IsEquivalentTo([1L]);
         await consumer.CommitAsync();
         await Assert.That(cluster.GetCommittedShareOffset("workers", new TopicPartition("shared", 0))).IsEqualTo(3);
-        await Assert.That(await consumer.PollAsync().ToArrayAsync()).IsEmpty();
+        await Assert.That(await consumer.PollAsync().ToListAsync()).IsEmpty();
     }
 
     [Test]
@@ -71,7 +71,7 @@ public sealed class InMemoryShareRecordStateTests
             consumer.Acknowledge(record, AcknowledgeType.Release);
             await consumer.CommitAsync();
         }
-        await Assert.That(await consumer.PollAsync().ToArrayAsync()).IsEmpty();
+        await Assert.That(await consumer.PollAsync().ToListAsync()).IsEmpty();
         await Assert.That(cluster.GetCommittedShareOffset("workers", new TopicPartition("shared", 0))).IsEqualTo(1);
     }
 
@@ -101,7 +101,7 @@ public sealed class InMemoryShareRecordStateTests
             // Close implicitly releases this unacknowledged delivery at the limit.
         }
         await using var third = CreateConsumer(cluster);
-        await Assert.That(await third.PollAsync().ToArrayAsync()).IsEmpty();
+        await Assert.That(await third.PollAsync().ToListAsync()).IsEmpty();
         await Assert.That(cluster.GetCommittedShareOffset("workers", new TopicPartition("shared", 0))).IsEqualTo(1);
     }
 
@@ -117,7 +117,7 @@ public sealed class InMemoryShareRecordStateTests
         await Assert.That(record.DeliveryCount).IsEqualTo(1);
         consumer.Acknowledge(record, AcknowledgeType.Release);
         await consumer.CommitAsync();
-        await Assert.That(await consumer.PollAsync().ToArrayAsync()).IsEmpty();
+        await Assert.That(await consumer.PollAsync().ToListAsync()).IsEmpty();
     }
 
     [Test]
@@ -171,11 +171,11 @@ public sealed class InMemoryShareRecordStateTests
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster,
             new InMemoryShareConsumerOptions { GroupId = "workers", DeadLetterQueueTopic = "dead-letters" });
         consumer.Subscribe("shared");
-        var records = await consumer.PollAsync().ToArrayAsync();
+        var records = await consumer.PollAsync().ToListAsync();
         consumer.Acknowledge(records[0], AcknowledgeType.Release);
         consumer.Acknowledge(records[1], AcknowledgeType.Reject);
         await consumer.CommitAsync();
-        var redelivered = await consumer.PollAsync().ToArrayAsync();
+        var redelivered = await consumer.PollAsync().ToListAsync();
         await Assert.That(redelivered.Select(record => record.Offset).ToArray()).IsEquivalentTo([0L]);
         await consumer.CommitAsync();
         await Assert.That(cluster.ReadRecords("dead-letters").Count).IsEqualTo(1);
@@ -245,7 +245,7 @@ public sealed class InMemoryShareRecordStateTests
             await admin.AlterShareGroupOffsetsAsync("workers", offsets);
 
         await using var replacement = CreateConsumer(cluster);
-        var replayed = await replacement.PollAsync().ToArrayAsync();
+        var replayed = await replacement.PollAsync().ToListAsync();
         await Assert.That(replayed.Select(record => record.Offset).ToArray()).IsEquivalentTo([0L, 1L]);
         await Assert.That(replayed.Select(record => record.DeliveryCount).ToArray()).IsEquivalentTo([1, 1]);
     }
@@ -262,7 +262,7 @@ public sealed class InMemoryShareRecordStateTests
         if (archiveAll)
         {
             await using var original = CreateConsumer(cluster);
-            await original.PollAsync().ToArrayAsync();
+            await original.PollAsync().ToListAsync();
             await original.CommitAsync();
         }
         else
@@ -273,7 +273,7 @@ public sealed class InMemoryShareRecordStateTests
             cluster.DeleteTopic("shared");
         await ProduceRecords(cluster, 2);
         await using var replacement = CreateConsumer(cluster);
-        var replayed = await replacement.PollAsync().ToArrayAsync();
+        var replayed = await replacement.PollAsync().ToListAsync();
         await Assert.That(replayed.Select(record => record.Offset).ToArray()).IsEquivalentTo([0L, 1L]);
         await Assert.That(replayed.Select(record => record.DeliveryCount).ToArray()).IsEquivalentTo([1, 1]);
     }
@@ -338,7 +338,7 @@ public sealed class InMemoryShareRecordStateTests
             await Assert.That(cluster.GetCommittedShareOffset("workers", new("shared", 0))).IsEqualTo(1);
 
             await using var second = CreateConsumer(cluster);
-            await Assert.That(await second.PollAsync().ToArrayAsync()).IsEmpty();
+            await Assert.That(await second.PollAsync().ToListAsync()).IsEmpty();
             first.Acknowledge(acquired, AcknowledgeType.Release);
             await first.CommitAsync();
             var redelivered = await second.PollAsync().FirstAsync();
@@ -349,7 +349,7 @@ public sealed class InMemoryShareRecordStateTests
             await second.CloseAsync();
             await MutateAsync();
             await using var replacement = CreateConsumer(cluster);
-            var replayed = await replacement.PollAsync().ToArrayAsync();
+            var replayed = await replacement.PollAsync().ToListAsync();
             await Assert.That(replayed.Select(record => record.Offset).ToArray()).IsEquivalentTo([0L, 1L]);
             await Assert.That(replayed.Select(record => record.DeliveryCount).ToArray()).IsEquivalentTo([1, 1]);
         }
@@ -367,7 +367,7 @@ public sealed class InMemoryShareRecordStateTests
     private static async Task LeaveAcknowledgementGap(InMemoryKafkaCluster cluster)
     {
         await using var consumer = CreateConsumer(cluster);
-        var records = await consumer.PollAsync().ToArrayAsync();
+        var records = await consumer.PollAsync().ToListAsync();
         consumer.Acknowledge(records[0], AcknowledgeType.Release);
         consumer.Acknowledge(records[1], AcknowledgeType.Accept);
         await consumer.CommitAsync();

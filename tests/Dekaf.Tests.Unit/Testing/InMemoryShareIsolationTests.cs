@@ -214,6 +214,40 @@ public sealed class InMemoryShareIsolationTests
         await AssertIsolationAsync(admin, Workers, "read_uncommitted", isDefault: true);
     }
 
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task UncommittedCompletion_PreservesNextTransactionalRecord(bool abort, bool withFault)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await using var producer = new InMemoryProducer<string, string>(cluster);
+        await using var transaction = producer.BeginTransaction();
+        await transaction.ProduceAsync("orders", "key", "first");
+        await transaction.ProduceAsync("orders", "key", "second");
+        if (abort)
+            await transaction.AbortAsync();
+        await using var ordinaryProducer = new InMemoryProducer<string, string>(cluster);
+        await ordinaryProducer.ProduceAsync("orders", "key", "ordinary");
+        await using var consumer = new InMemoryShareConsumer<string, string>(cluster,
+            new InMemoryShareConsumerOptions { GroupId = Workers.Name, MaxPollRecords = 1 });
+        consumer.Subscribe("orders");
+        EnableFaultPath(cluster, withFault);
+
+        var first = await consumer.PollAsync().FirstAsync();
+        await Assert.That(first.Offset).IsEqualTo(0);
+        await consumer.CommitAsync();
+        await Assert.That(cluster.GetCommittedShareOffset(Workers.Name, new("orders", 0))).IsEqualTo(1);
+
+        var second = await consumer.PollAsync().FirstAsync();
+        await Assert.That(second.Offset).IsEqualTo(1);
+        await Assert.That(second.Value).IsEqualTo("second");
+        await consumer.CommitAsync();
+        await Assert.That(cluster.GetCommittedShareOffset(Workers.Name, new("orders", 0))).IsEqualTo(2);
+        await Assert.That((await consumer.PollAsync().FirstAsync()).Value).IsEqualTo("ordinary");
+    }
+
     private static async Task AssertIsolationAsync(InMemoryAdminClient admin, ConfigResource resource, string value, bool isDefault)
     {
         var config = (await admin.DescribeConfigsAsync([resource]))[resource].Single(entry => entry.Name == IsolationConfig);

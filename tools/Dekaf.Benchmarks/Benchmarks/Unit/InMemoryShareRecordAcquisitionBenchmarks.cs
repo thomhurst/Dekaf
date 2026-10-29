@@ -11,7 +11,11 @@ public class InMemoryShareRecordAcquisitionBenchmarks
     private const int OperationsPerInvoke = 32768;
     private const string GroupId = "benchmark-group";
     private const string MemberId = "benchmark-member";
-    private readonly InMemoryKafkaCluster _cluster = new();
+    // Keep released records available throughout pilot, warmup, and measurement.
+    private readonly InMemoryKafkaCluster _cluster = new(new InMemoryKafkaClusterOptions
+    {
+        DeliveryCountLimit = int.MaxValue
+    });
     private readonly TopicPartition _topicPartition = new("benchmark-topic", 0);
     private TopicPartitionOffset[] _benchmarkLeases = null!;
     private ShareGroupMemberRegistration _registration = null!;
@@ -43,12 +47,8 @@ public class InMemoryShareRecordAcquisitionBenchmarks
             out _);
     }
 
-    [IterationSetup]
-    public void ResetBenchmarkLease() =>
-        _cluster.ReleaseShareRecords(GroupId, MemberId, _registration, _benchmarkLeases);
-
     [Benchmark(OperationsPerInvoke = OperationsPerInvoke)]
-    public int ActiveMemberSuccessfulAcquisition()
+    public int ActiveMemberSuccessfulAcquisitionAndRelease()
     {
         var acquired = 0;
         for (var i = 0; i < OperationsPerInvoke; i++)
@@ -66,6 +66,10 @@ public class InMemoryShareRecordAcquisitionBenchmarks
             }
         }
 
+        // Include one batch release per invocation so every invocation measures the same workload.
+        _cluster.ReleaseShareRecords(GroupId, MemberId, _registration, _benchmarkLeases);
+        if (acquired != OperationsPerInvoke)
+            throw new InvalidOperationException("Benchmark records must remain available for successful acquisition.");
         return acquired;
     }
 }

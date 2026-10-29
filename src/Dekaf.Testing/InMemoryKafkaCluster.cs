@@ -1843,6 +1843,7 @@ public sealed partial class InMemoryKafkaCluster
         var start = GetCommittedShareOffset(groupId, partition) ?? GetWatermarks(partition).Low;
         var next = start;
         var partitionState = topic.Partitions[partition.Partition];
+        var isolationLevel = GetShareIsolationUnderLock(groupId);
         var lower = 0;
         var upper = partitionState.Records.Count;
         while (lower < upper)
@@ -1857,10 +1858,11 @@ public sealed partial class InMemoryKafkaCluster
         for (var index = lower; index < partitionState.Records.Count; index++)
         {
             var record = partitionState.Records[index];
-            if (record.Offset >= partitionState.FirstUnstableOffset)
+            if (isolationLevel == IsolationLevel.ReadCommitted &&
+                record.Offset >= partitionState.FirstUnstableOffset)
                 break;
             next = record.Offset;
-            if (IsRecordVisibleUnderLock(record))
+            if (isolationLevel == IsolationLevel.ReadUncommitted || IsRecordVisibleUnderLock(record))
             {
                 if (!records.TryGetValue(next, out var state) || !state.Archived)
                     break;
