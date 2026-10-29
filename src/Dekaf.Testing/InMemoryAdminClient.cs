@@ -83,28 +83,21 @@ public sealed partial class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        var topicList = topics.ToArray();
-        if (topicList.Length == 0)
+        var topicList = AdminClient.SnapshotDetailedTopics(topics);
+        if (topicList.Count == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
-        for (var index = 0; index < topicList.Length; index++)
-        {
-            var topic = topicList[index];
-            ArgumentException.ThrowIfNullOrWhiteSpace(topic.Name);
-            ArgumentOutOfRangeException.ThrowIfLessThan(topic.NumPartitions, 1);
-        }
-
         KafkaException? failure = null;
-        for (var index = 0; index < topicList.Length; index++)
+        for (var index = 0; index < topicList.Count; index++)
         {
             var topic = topicList[index];
             await ApplyAdminFaultAsync(
                 cancellationToken,
                 topic: topic.Name).ConfigureAwait(false);
 
-            var error = _cluster.CreateTopicForAdmin(topic, options?.ValidateOnly == true);
+            var error = _cluster.CreateTopicDetailed(topic, options?.ValidateOnly == true);
             if (error != ErrorCode.None)
-                failure ??= new KafkaException(error, $"Topic '{topic.Name}' already exists.");
+                failure ??= new KafkaException(error, $"Topic '{topic.Name}' could not be created: {error}.");
         }
 
         if (failure is not null)
