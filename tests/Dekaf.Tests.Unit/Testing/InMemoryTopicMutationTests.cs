@@ -8,6 +8,135 @@ namespace Dekaf.Tests.Unit.Testing;
 public sealed class InMemoryTopicMutationTests
 {
     [Test]
+    [Arguments(1, 1, false)]
+    [Arguments(-1, -1, false)]
+    [Arguments(8, 3, false)]
+    [Arguments(0, 0, false)]
+    [Arguments(1, 1, true)]
+    [Arguments(-1, -1, true)]
+    public async Task CreateTopics_ManualAssignments_OverrideCounts(int partitions, int replicas, bool validateOnly)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await using var admin = new InMemoryAdminClient(cluster);
+        var topic = new NewTopic
+        {
+            Name = "orders",
+            NumPartitions = partitions,
+            ReplicationFactor = (short)replicas,
+            ReplicaAssignments = new Dictionary<int, IReadOnlyList<int>> { [0] = [0], [1] = [0] }
+        };
+
+        await admin.CreateTopicsAsync([topic], new() { ValidateOnly = validateOnly });
+
+        if (validateOnly)
+        {
+            await Assert.That(cluster.ListTopics()).IsEmpty();
+        }
+        else
+        {
+            var created = (await admin.DescribeTopicsAsync([topic.Name]))[topic.Name];
+            await Assert.That(created.Partitions.Count).IsEqualTo(2);
+            foreach (var partition in created.Partitions)
+                await Assert.That(partition.ReplicaNodes).IsEquivalentTo([0]);
+        }
+        await Assert.That(topic.NumPartitions).IsEqualTo(partitions);
+        await Assert.That(topic.ReplicationFactor).IsEqualTo((short)replicas);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task CreateTopics_EmptyAssignments_UseRequestedPartitionCount(bool empty)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await using var admin = new InMemoryAdminClient(cluster);
+
+        await admin.CreateTopicsAsync([new()
+        {
+            Name = "orders",
+            NumPartitions = 3,
+            ReplicaAssignments = empty ? new Dictionary<int, IReadOnlyList<int>>() : null
+        }]);
+
+        await Assert.That(cluster.GetTopicPartitions("orders").Count).IsEqualTo(3);
+    }
+
+    [Test]
+    [Arguments(1, false)]
+    [Arguments(2, false)]
+    [Arguments(1, true)]
+    [Arguments(2, true)]
+    public async Task CreateTopics_InvalidAssignedPartition_ThrowsWithoutCreatingTopic(int partition, bool validateOnly)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await using var admin = new InMemoryAdminClient(cluster);
+
+        async Task Create() => await admin.CreateTopicsAsync([new()
+        {
+            Name = "orders",
+            ReplicaAssignments = new Dictionary<int, IReadOnlyList<int>> { [partition] = [0] }
+        }], new() { ValidateOnly = validateOnly });
+
+        var exception = await Assert.That(Create).Throws<KafkaException>();
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.InvalidReplicaAssignment);
+        await Assert.That(exception.Message).Contains("orders");
+        await Assert.That(cluster.ListTopics()).IsEmpty();
+    }
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    [Arguments(true, true)]
+    public async Task CreateTopics_InvalidAssignedReplicas_ProcessesSiblingsBeforeThrowing(bool multiple, bool validateOnly)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await using var admin = new InMemoryAdminClient(cluster);
+
+        async Task Create() => await admin.CreateTopicsAsync([
+            new() { Name = "before" },
+            new()
+            {
+                Name = "invalid",
+                ReplicaAssignments = new Dictionary<int, IReadOnlyList<int>> { [0] = multiple ? [0, 1] : [1] }
+            },
+            new() { Name = "after" }
+        ], new() { ValidateOnly = validateOnly });
+
+        var exception = await Assert.That(Create).Throws<KafkaException>();
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.InvalidReplicaAssignment);
+        await Assert.That(exception.Message).Contains("invalid");
+        string[] expected = validateOnly ? [] : ["before", "after"];
+        await Assert.That(cluster.ListTopics()).IsEquivalentTo(expected);
+    }
+
+    [Test]
+    public async Task CreateTopics_AssignmentsAreSnapshottedBeforeFaultPause()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await using var admin = new InMemoryAdminClient(cluster);
+        var replicas = new[] { 0 };
+        var barrier = cluster.FaultPlan.PauseNext(new(KafkaFaultOperation.Admin, topic: "orders"));
+        var pending = admin.CreateTopicsAsync([new()
+        {
+            Name = "orders",
+            ReplicaAssignments = new Dictionary<int, IReadOnlyList<int>> { [0] = replicas, [1] = [0] }
+        }]).AsTask();
+        try
+        {
+            await barrier.WaitUntilEnteredAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+            replicas[0] = 99;
+        }
+        finally
+        {
+            barrier.Release();
+        }
+        await pending.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await Assert.That(cluster.GetTopicPartitions("orders").Count).IsEqualTo(2);
+    }
+
+    [Test]
     [Arguments(1, false)]
     [Arguments(12, false)]
     [Arguments(1, true)]
