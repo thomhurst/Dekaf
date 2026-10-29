@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Internal;
@@ -20,7 +21,13 @@ public static class ServiceCollectionExtensions
     /// are added only for client families with no unkeyed registrations, to avoid duplicate clients
     /// when enumerating services. Register all required unkeyed types before calling this method.
     /// </summary>
-    [RequiresDynamicCode("Replacing closed generic clients requires constructing in-memory client types at runtime.")]
+    /// <remarks>
+    /// Native AOT supports fallbacks, open-generic registrations and admin clients. Replacing an
+    /// existing closed-generic client registration requires dynamic code and is not supported.
+    /// </remarks>
+    /// <exception cref="PlatformNotSupportedException">
+    /// A closed-generic client registration requires replacement, but dynamic code is unavailable.
+    /// </exception>
     public static IServiceCollection AddDekafInMemory(
         this IServiceCollection services,
         Action<InMemoryKafkaClusterOptions>? configure = null)
@@ -57,7 +64,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(serviceType, implementationType);
     }
 
-    [RequiresDynamicCode("Replacing closed generic clients requires constructing in-memory client types at runtime.")]
     private static void ReplaceDekafClientRegistrations(IServiceCollection services)
     {
         for (var i = services.Count - 1; i >= 0; i--)
@@ -84,7 +90,10 @@ public static class ServiceCollectionExtensions
         }
     }
 
-    [RequiresDynamicCode("Replacing closed generic clients requires constructing in-memory client types at runtime.")]
+#if NET8_0
+    [UnconditionalSuppressMessage("AOT", "IL3050",
+        Justification = "MakeGenericType is guarded by RuntimeFeature.IsDynamicCodeSupported; the .NET 8 analyzer does not recognize this guard.")]
+#endif
     [return: DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
     private static Type? GetInMemoryImplementationType(Type serviceType)
     {
@@ -105,8 +114,14 @@ public static class ServiceCollectionExtensions
         else
             return null;
 
-        return serviceType.IsGenericTypeDefinition
-            ? implementationType
-            : implementationType.MakeGenericType(serviceType.GetGenericArguments());
+        if (serviceType.IsGenericTypeDefinition)
+            return implementationType;
+
+        if (RuntimeFeature.IsDynamicCodeSupported)
+            return implementationType.MakeGenericType(serviceType.GetGenericArguments());
+
+        throw new PlatformNotSupportedException(
+            "Replacing closed generic Dekaf client registrations requires dynamic code. " +
+            "For Native AOT, use open-generic in-memory registrations or AddDekafInMemory without existing closed generic clients.");
     }
 }

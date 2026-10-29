@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Dekaf;
 using Dekaf.Admin;
 using Dekaf.Consumer;
@@ -5,6 +6,7 @@ using Dekaf.Extensions.DependencyInjection;
 using Dekaf.Extensions.HealthChecks;
 using Dekaf.Extensions.Hosting;
 using Dekaf.Producer;
+using Dekaf.ShareConsumer;
 using Dekaf.Testing;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.DependencyInjection;
@@ -57,6 +59,7 @@ _ = provider.GetRequiredService<IKafkaConsumer<string, string>>();
 _ = provider.GetRequiredService<IAdminClient>();
 
 await RunTestingAndHealthChecksSmokeAsync();
+RunClosedGenericTestingSmoke();
 RunHostingSmoke();
 RunOpenTelemetrySmoke();
 
@@ -64,6 +67,9 @@ static async Task RunTestingAndHealthChecksSmokeAsync()
 {
     var services = new ServiceCollection();
     services.AddLogging();
+    services.AddKeyedSingleton(typeof(IKafkaConsumer<,>), "aot", typeof(InMemoryConsumer<,>));
+    services.AddKeyedSingleton(typeof(IKafkaShareConsumer<,>), "aot", typeof(InMemoryShareConsumer<,>));
+    services.AddKeyedSingleton<IAdminClient>("aot", static (_, _) => throw new InvalidOperationException("Real admin client was not replaced."));
     services.AddDekafInMemory(options => options.DefaultPartitionCount = 1);
     services.AddHealthChecks()
         .AddDekafProducerHealthCheck<string, string>()
@@ -75,9 +81,32 @@ static async Task RunTestingAndHealthChecksSmokeAsync()
     var producer = provider.GetRequiredService<IKafkaProducer<string, string>>();
     await producer.ProduceAsync("aot-topic", "key", "value");
 
+    _ = provider.GetRequiredKeyedService<IKafkaConsumer<string, string>>("aot");
+    _ = provider.GetRequiredKeyedService<IKafkaShareConsumer<string, string>>("aot");
+    _ = provider.GetRequiredKeyedService<IAdminClient>("aot");
+
     var report = await provider.GetRequiredService<HealthCheckService>().CheckHealthAsync();
     if (report.Entries.Count != 2)
         throw new InvalidOperationException("Health check registration smoke failed.");
+}
+
+static void RunClosedGenericTestingSmoke()
+{
+    if (RuntimeFeature.IsDynamicCodeSupported)
+        return;
+
+    var services = new ServiceCollection();
+    services.AddSingleton<IKafkaConsumer<string, string>>(static _ => throw new InvalidOperationException("Real consumer was not replaced."));
+    try
+    {
+        services.AddDekafInMemory();
+    }
+    catch (PlatformNotSupportedException)
+    {
+        return;
+    }
+
+    throw new InvalidOperationException("Closed generic replacement must report its Native AOT limitation.");
 }
 
 static void RunHostingSmoke()
