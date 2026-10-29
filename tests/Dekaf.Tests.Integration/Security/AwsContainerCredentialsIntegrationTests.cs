@@ -5,6 +5,7 @@ using Dekaf.Security.Sasl;
 
 namespace Dekaf.Tests.Integration.Security;
 
+[Category("Authentication")]
 [NotInParallel("AwsEnvironment")]
 public sealed class AwsContainerCredentialsIntegrationTests
 {

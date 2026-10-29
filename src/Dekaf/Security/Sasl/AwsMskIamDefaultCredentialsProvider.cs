@@ -243,6 +243,7 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
             return false;
 
         return uri.IsLoopback ||
+               string.Equals(uri.DnsSafeHost, "localhost", StringComparison.OrdinalIgnoreCase) ||
                string.Equals(uri.DnsSafeHost, "169.254.170.2", StringComparison.Ordinal) ||
                string.Equals(uri.DnsSafeHost, "169.254.170.23", StringComparison.Ordinal) ||
                string.Equals(uri.DnsSafeHost, "fd00:ec2::23", StringComparison.OrdinalIgnoreCase);

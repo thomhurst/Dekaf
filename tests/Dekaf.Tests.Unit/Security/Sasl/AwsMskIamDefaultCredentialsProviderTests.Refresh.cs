@@ -71,6 +71,8 @@ public sealed partial class AwsMskIamDefaultCredentialsProviderTests
 
     [Test]
     [Arguments("http://localhost:8080/credentials?source=container")]
+    [Arguments("http://LOCALHOST:8080/credentials?source=container")]
+    [Arguments("http://LoCaLhOsT:8080/credentials?source=container")]
     [Arguments("http://127.0.0.1:8080/credentials?source=container")]
     [Arguments("http://[::1]:8080/credentials?source=container")]
     public async Task Container_FullUriUsesHttpLoopbackEndpoint(string endpoint)
