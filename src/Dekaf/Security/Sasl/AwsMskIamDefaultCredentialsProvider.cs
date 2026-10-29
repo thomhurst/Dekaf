@@ -242,7 +242,8 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         if (uri.Scheme != Uri.UriSchemeHttp)
             return false;
 
-        return string.Equals(uri.DnsSafeHost, "169.254.170.2", StringComparison.Ordinal) ||
+        return uri.IsLoopback ||
+               string.Equals(uri.DnsSafeHost, "169.254.170.2", StringComparison.Ordinal) ||
                string.Equals(uri.DnsSafeHost, "169.254.170.23", StringComparison.Ordinal) ||
                string.Equals(uri.DnsSafeHost, "fd00:ec2::23", StringComparison.OrdinalIgnoreCase);
     }
