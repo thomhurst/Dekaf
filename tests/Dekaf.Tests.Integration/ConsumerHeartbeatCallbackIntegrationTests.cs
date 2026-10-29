@@ -66,7 +66,11 @@ public sealed class ConsumerHeartbeatCallbackIntegrationTests(KafkaTestContainer
             await Task.Delay(TimeSpan.FromSeconds(12), cancellationToken);
             var group = (await admin.DescribeConsumerGroupsAsync([groupId], cancellationToken))[groupId];
             var member = group.Members.Single(member => member.MemberId == memberId);
-            await Assert.That(member.Assignment).Count().IsEqualTo(2);
+            // Brokers before 4.3 omit partitions pending revocation from the described assignment,
+            // so check that the member kept a broker assignment and that none of it moved yet.
+            await Assert.That(member.Assignment).IsNotEmpty();
+            var joining = group.Members.Single(member => member.MemberId == second.MemberId);
+            await Assert.That(joining.Assignment ?? []).IsEmpty();
             await Assert.That(first.State).IsEqualTo(CoordinatorState.Stable);
             await Assert.That(listener.LostCount).IsEqualTo(0);
             await Assert.That(second.Assignment).IsEmpty();
