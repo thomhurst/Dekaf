@@ -1343,6 +1343,8 @@ public sealed partial class ShareConsumerRenewalTests
                 .Returns(call => leaseHandler(call.Arg<CancellationToken>()));
         if (secondConnection is not null)
             pool.GetConnectionAsync(2, Arg.Any<CancellationToken>()).Returns(secondConnection);
+        if (connection.SupportsShareGroup)
+            pool.GetConnectionByIndexAsync(1, Arg.Any<int>(), Arg.Any<CancellationToken>()).Returns(connection);
         var metadataManager = new MetadataManager(pool, options.BootstrapServers);
         metadataManager.Metadata.Update(new MetadataResponse
         {
@@ -1720,7 +1722,8 @@ public sealed partial class ShareConsumerRenewalTests
         short maximumVersion,
         int brokerId = 1,
         bool includeShareAcknowledge = false,
-        bool supportShareFetch = false) :
+        bool supportShareFetch = false,
+        bool supportShareGroup = false) :
         IKafkaConnection,
         IKafkaCapabilityProvider,
         IKafkaRequestCancellationConnection,
@@ -1739,12 +1742,23 @@ public sealed partial class ShareConsumerRenewalTests
                     new ApiVersion(apiKey, 0, maximumVersion),
                     .. supportShareFetch ? new[] { new ApiVersion(ApiKey.ShareFetch, 0, 2) } : [],
                     .. includeShareAcknowledge ? new[] { new ApiVersion(ApiKey.ShareAcknowledge, 0, maximumVersion) } : [],
+                    .. supportShareGroup
+                        ? new[]
+                        {
+                            new ApiVersion(ApiKey.FindCoordinator,
+                                FindCoordinatorRequest.LowestSupportedVersion, FindCoordinatorRequest.HighestSupportedVersion),
+                            new ApiVersion(ApiKey.ShareGroupHeartbeat,
+                                ShareGroupHeartbeatRequest.LowestSupportedVersion, ShareGroupHeartbeatRequest.HighestSupportedVersion)
+                        }
+                        : [],
                     new ApiVersion(
                         ApiKey.Metadata,
                         MetadataRequest.LowestSupportedVersion,
                         MetadataRequest.HighestSupportedVersion)
                 ]
             });
+        internal bool SupportsShareGroup => supportShareGroup;
+        internal List<ShareGroupHeartbeatRequest> ShareGroupHeartbeatRequests { get; } = [];
         internal int SendCount { get; private set; }
         internal short LastApiVersion { get; private set; }
         internal ShareFetchRequest? ShareFetchRequest { get; private set; }
@@ -1867,6 +1881,12 @@ public sealed partial class ShareConsumerRenewalTests
                         Responses = [],
                         NodeEndpoints = []
                     }),
+                // The coordinator answers joins with partition 0 of "topic" and leaves with epoch -1.
+                FindCoordinatorRequest => new FindCoordinatorResponse
+                {
+                    Coordinators = [new Coordinator { Key = "share-group", NodeId = brokerId, Host = Host, Port = Port }]
+                },
+                ShareGroupHeartbeatRequest heartbeat => CaptureHeartbeat(heartbeat),
                 MetadataRequest => MetadataResponse ?? new MetadataResponse
                 {
                     Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
@@ -1915,6 +1935,23 @@ public sealed partial class ShareConsumerRenewalTests
 
             static async Task<TResponse> AwaitResponseAsync(Task<ShareAcknowledgeResponse> pending)
                 => (TResponse)(IKafkaResponse)await pending;
+        }
+
+        private ShareGroupHeartbeatResponse CaptureHeartbeat(ShareGroupHeartbeatRequest request)
+        {
+            ShareGroupHeartbeatRequests.Add(request);
+            return new ShareGroupHeartbeatResponse
+            {
+                ErrorCode = ErrorCode.None,
+                MemberId = request.MemberId,
+                MemberEpoch = request.MemberEpoch < 0 ? -1 : request.MemberEpoch + 1,
+                Assignment = request.MemberEpoch == 0
+                    ? new ShareGroupHeartbeatAssignment
+                    {
+                        TopicPartitions = [new ShareGroupHeartbeatTopicPartitions { TopicId = TopicId, Partitions = [0] }]
+                    }
+                    : null
+            };
         }
 
         private static async ValueTask<TResponse> AwaitFetchAsync<TResponse>(ValueTask<ShareFetchResponse> response)

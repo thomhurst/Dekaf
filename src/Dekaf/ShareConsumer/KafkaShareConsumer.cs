@@ -329,7 +329,22 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         _coordinator.UpdateSubscription(subscription);
         _sessionManager.ResetAll();
         ClearRenewedRecords();
+        // Leave after the final acknowledgements close the share sessions, as the Java client does,
+        // so the group can become empty. A later Subscribe rejoins at epoch 0.
+        RunAfterPendingRelease(LeaveGroupAfterUnsubscribeAsync);
         return this;
+    }
+
+    private async Task LeaveGroupAfterUnsubscribeAsync()
+    {
+        try
+        {
+            await _coordinator.LeaveGroupAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LogUnsubscribeLeaveFailed(ex);
+        }
     }
 
     public async IAsyncEnumerable<ShareConsumeResult<TKey, TValue>> PollAsync(
@@ -338,10 +353,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         ThrowIfDisposed();
         ThrowIfNotInitialized();
         SelectConsumptionMode(batch: false);
-        await WaitForPendingReleaseAsync(cancellationToken).ConfigureAwait(false);
 
         while (!cancellationToken.IsCancellationRequested && Volatile.Read(ref _disposed) == 0 && Volatile.Read(ref _closed) == 0)
         {
+            // Checked every round: an Unsubscribe while this iterator is suspended queues the final
+            // acknowledgement and the group leave, which must finish before the next fetch.
+            if (_pendingReleaseTask is not null)
+                await WaitForPendingReleaseAsync(cancellationToken).ConfigureAwait(false);
             using var recordScope = BeginRecordBatchScope();
             if (_subscriptionSnapshot.Count == 0 || Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _disposed) != 0)
                 yield break;
@@ -1132,19 +1150,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             return;
 
         // Send in the background — best effort, don't block the synchronous caller.
-        // Store the task so DisposeAsync can await it before tearing down the connection pool.
-        // Chain after any prior release task so DisposeAsync only needs to await the latest reference.
-        var prior = _pendingReleaseTask;
-        _pendingReleaseTask = ReleaseAsync();
+        RunAfterPendingRelease(ReleaseAsync);
 
         async Task ReleaseAsync()
         {
-            if (prior is not null)
-            {
-                try { await prior.ConfigureAwait(false); }
-                catch { /* already logged inside the prior task */ }
-            }
-
             foreach (var (brokerId, acks) in acksByBroker)
             {
                 try
@@ -1164,6 +1173,27 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     LogAcknowledgeRequestFailed(brokerId, ex);
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Runs <paramref name="work"/> in the background after any earlier pending release. Polls,
+    /// CloseAsync and DisposeAsync await the latest task, so they wait for all of it.
+    /// </summary>
+    private void RunAfterPendingRelease(Func<Task> work)
+    {
+        var prior = _pendingReleaseTask;
+        _pendingReleaseTask = RunAsync();
+
+        async Task RunAsync()
+        {
+            if (prior is not null)
+            {
+                try { await prior.ConfigureAwait(false); }
+                catch { /* already logged inside the prior task */ }
+            }
+
+            await work().ConfigureAwait(false);
         }
     }
 
@@ -3568,6 +3598,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to close share sessions")]
     private partial void LogCloseSessionsFailed(Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to leave the share group after unsubscribe")]
+    private partial void LogUnsubscribeLeaveFailed(Exception exception);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Graceful close timed out after 30s during dispose — broker may be unreachable")]
     private partial void LogDisposeCloseTimedOut();

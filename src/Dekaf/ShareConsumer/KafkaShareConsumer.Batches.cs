@@ -45,11 +45,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         ThrowIfDisposed();
         ThrowIfNotInitialized();
         SelectConsumptionMode(batch: true);
-        await WaitForPendingReleaseAsync(cancellationToken).ConfigureAwait(false);
         var acknowledgements = _batchAcknowledgements!;
 
         while (!cancellationToken.IsCancellationRequested)
         {
+            // Checked every round, as in PollAsync: a pending Unsubscribe release and leave finish first.
+            if (_pendingReleaseTask is not null)
+                await WaitForPendingReleaseAsync(cancellationToken).ConfigureAwait(false);
             if (_subscriptionSnapshot.Count == 0 || Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _disposed) != 0)
                 yield break;
             ShareMetrics?.PollStarted();

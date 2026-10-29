@@ -317,6 +317,7 @@ public class ShareConsumerPollBenchmarks
         if (PendingReleaseTask.GetValue(_borrowed) is Task pending)
             await pending;
         await _batches.DisposeAsync();
+        PublishJoinedMembership(_borrowed);
         return _connection.ReleasedOffsets;
     }
 
@@ -508,15 +509,26 @@ public class ShareConsumerPollBenchmarks
         }, Serializers.Int32, Serializers.Int32, pool, _metadata);
         // Bypass joining a real group only during fixture setup. Fetching, session bookkeeping,
         // inline acknowledgements, parsing, delivery, and iterator cleanup use production code.
+        typeof(KafkaShareConsumer<int, int>).GetField("_initialized", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(consumer, true);
+        PublishJoinedMembership(consumer);
+        consumer.Subscribe(Topic);
+        return consumer;
+    }
+
+    // Models a completed join: Unsubscribe leaves the group, and unsubscribe cycles rejoin through
+    // this bypass instead of a real coordinator discovery and join.
+    private static void PublishJoinedMembership(KafkaShareConsumer<int, int> consumer)
+    {
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
-        typeof(KafkaShareConsumer<int, int>).GetField("_initialized", flags)!.SetValue(consumer, true);
         var coordinator = typeof(KafkaShareConsumer<int, int>).GetField("_coordinator", flags)!.GetValue(consumer)!;
         typeof(ShareConsumerCoordinator).GetField("_memberId", flags)!.SetValue(coordinator, "member-1");
+        typeof(ShareConsumerCoordinator).GetField("_coordinatorId", flags)!.SetValue(coordinator, 1);
+        // Absent before Unsubscribe left the group; the gate also runs this source on that baseline.
+        typeof(ShareConsumerCoordinator).GetField("_leftGroup", flags)?.SetValue(coordinator, false);
         typeof(ShareConsumerCoordinator).GetField("_state", flags)!.SetValue(coordinator, CoordinatorState.Stable);
         typeof(ShareConsumerCoordinator).GetField("_assignedPartitions", flags)!
             .SetValue(coordinator, new HashSet<TopicPartition> { new(Topic, 0) });
-        consumer.Subscribe(Topic);
-        return consumer;
     }
 
     private sealed class Connection(ShareFetchResponse fetch, bool asynchronous)

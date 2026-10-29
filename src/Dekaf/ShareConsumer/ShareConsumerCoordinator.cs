@@ -35,6 +35,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     private volatile int _coordinatorId = -1;
     private volatile string? _memberId;
     private volatile int _memberEpoch;
+    // Set when LeaveGroupAsync ended the membership and cleared by the next heartbeat, so a
+    // second leave (CloseAsync after Unsubscribe) does not send another -1 heartbeat.
+    private volatile bool _leftGroup;
     // Volatile ensures cross-thread visibility of the reference. Thread-safety relies on
     // all writes replacing the reference entirely (never in-place mutation).
     private volatile HashSet<TopicPartition> _assignedPartitions = [];
@@ -369,6 +372,11 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
         lock (_heartbeatGuard)
         {
+            // A leave that took the coordination lock after this join released it left Stable
+            // before stopping the heartbeat loop. Starting one now would outlive the membership.
+            if (_state != CoordinatorState.Stable)
+                return;
+
             oldCts = _heartbeatCts;
             oldTask = _heartbeatTask;
 
@@ -399,11 +407,11 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Resets member identity and assignment to the pre-join state.
+    /// Resets the membership to the pre-join state. The member ID is kept, as in the Java client,
+    /// so a later subscription rejoins at epoch 0 under the same client-generated ID.
     /// </summary>
     private void ResetMemberState()
     {
-        _memberId = null;
         _memberEpoch = 0;
         _assignedPartitions = [];
         DropUnresolvedAssignment();
@@ -440,6 +448,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         // Share groups always use client-generated UUID v4 member IDs.
         // Generate once when _memberId is null; subsequent heartbeats reuse the stored ID.
         _memberId ??= Guid.NewGuid().ToString();
+        _leftGroup = false;
 
         var subscribedTopics = (memberEpoch == 0 || subscriptionVersion != Volatile.Read(ref _acknowledgedSubscriptionVersion))
             ? subscription?.ToList() : null;
@@ -1059,22 +1068,52 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Leaves the share group: sends ShareGroupHeartbeat with MemberEpoch=-1.
+    /// Leaves the share group: stops the heartbeat loop, sends ShareGroupHeartbeat with
+    /// MemberEpoch=-1 and resets the membership. Holds the coordination lock throughout, so a
+    /// join in progress finishes first and cannot publish the membership again afterwards.
     /// </summary>
     public async ValueTask LeaveGroupAsync(CancellationToken cancellationToken = default)
     {
         if (Volatile.Read(ref _disposed) != 0)
             return;
 
-        var memberId = _memberId;
-        if (string.IsNullOrEmpty(memberId))
-            return;
-
-        if (_coordinatorId < 0)
-            return;
-
+        // An uncontended lock is taken even with a cancelled token, so a cancelled close still
+        // stops the heartbeat loop; the -1 heartbeat below is best effort.
+        if (!_lock.Wait(0, CancellationToken.None))
+            await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            var memberId = _memberId;
+            if (memberId is not { Length: > 0 } || _leftGroup)
+                return;
+
+            // Leave Stable before stopping the loop: a join that completed before this took the
+            // lock starts its loop only while Stable, so no heartbeat follows the -1 heartbeat.
+            _state = CoordinatorState.Unjoined;
+            await StopHeartbeatAsync().ConfigureAwait(false);
+
+            await SendLeaveGroupHeartbeatAsync(memberId, cancellationToken).ConfigureAwait(false);
+
+            ResetMemberState();
+            _leftGroup = true;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    private async ValueTask SendLeaveGroupHeartbeatAsync(
+        string memberId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            // A transient heartbeat failure can invalidate the coordinator while the broker
+            // still holds this membership. Rediscover it before attempting the best-effort leave.
+            if (_coordinatorId < 0)
+                await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+
             using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
                 _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
                 .ConfigureAwait(false);
@@ -1083,7 +1122,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             var request = new ShareGroupHeartbeatRequest
             {
                 GroupId = _options.GroupId,
-                MemberId = memberId!,
+                MemberId = memberId,
                 MemberEpoch = -1
             };
 
@@ -1115,18 +1154,6 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         catch (Exception ex)
         {
             LogLeaveGroupRequestFailed(ex);
-        }
-
-        await StopHeartbeatAsync().ConfigureAwait(false);
-
-        await _lock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
-        try
-        {
-            ResetMemberState();
-        }
-        finally
-        {
-            _lock.Release();
         }
     }
 

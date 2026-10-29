@@ -75,12 +75,14 @@ public sealed partial class ShareConsumerRenewalTests
     }
 
     [Test]
-    [Arguments(false)]
-    [Arguments(true)]
-    public async Task Unsubscribe_ResubscribeWaitsForFinalAcknowledgement(bool batches)
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    [Arguments(true, true)]
+    public async Task Unsubscribe_ResubscribeWaitsForFinalAcknowledgement(bool batches, bool resumeOriginal)
     {
         var released = new TaskCompletionSource<ShareAcknowledgeResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var connection = new CapturingConnection(ApiKey.ShareFetch, 2, includeShareAcknowledge: true)
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2, includeShareAcknowledge: true, supportShareGroup: true)
         {
             ShareFetchResponse = CreateFetchResponse(0, 100),
             DelayedFinalAcknowledgement = released
@@ -88,23 +90,17 @@ public sealed partial class ShareConsumerRenewalTests
         await using var fixture = CreateFixture(connection);
         PrepareForPoll(fixture.Consumer);
         fixture.Consumer.Subscribe("topic");
-        if (batches)
-        {
-            await using var initial = fixture.Consumer.PollBatchesAsync().GetAsyncEnumerator();
-            await Assert.That(await initial.MoveNextAsync()).IsTrue();
-            fixture.Consumer.Unsubscribe();
-        }
-        else
-        {
-            await using var initial = fixture.Consumer.PollAsync().GetAsyncEnumerator();
-            await Assert.That(await initial.MoveNextAsync()).IsTrue();
-            fixture.Consumer.Unsubscribe();
-        }
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using var initialBatches = batches ? fixture.Consumer.PollBatchesAsync(timeout.Token).GetAsyncEnumerator() : null;
+        await using var initialRecords = batches ? null : fixture.Consumer.PollAsync(timeout.Token).GetAsyncEnumerator();
+        await Assert.That(await (batches ? initialBatches!.MoveNextAsync() : initialRecords!.MoveNextAsync())).IsTrue();
+        fixture.Consumer.Unsubscribe();
         fixture.Consumer.Subscribe("topic");
         var sendsBefore = connection.SendCount;
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        await using var batchPoll = batches ? fixture.Consumer.PollBatchesAsync(timeout.Token).GetAsyncEnumerator() : null;
-        await using var recordPoll = batches ? null : fixture.Consumer.PollAsync(timeout.Token).GetAsyncEnumerator();
+        // Resuming the suspended iterator must wait like a new one, or its fetch would run
+        // before the queued leave removes the member.
+        await using var batchPoll = batches && !resumeOriginal ? fixture.Consumer.PollBatchesAsync(timeout.Token).GetAsyncEnumerator() : initialBatches;
+        await using var recordPoll = batches || resumeOriginal ? initialRecords : fixture.Consumer.PollAsync(timeout.Token).GetAsyncEnumerator();
         var next = batches ? batchPoll!.MoveNextAsync() : recordPoll!.MoveNextAsync();
         try
         {
@@ -117,6 +113,9 @@ public sealed partial class ShareConsumerRenewalTests
         }
         await Assert.That(await next).IsTrue();
         await Assert.That(connection.ShareFetchRequest!.ShareSessionEpoch).IsEqualTo(0);
+        // Unsubscribe left the group after the final acknowledgement; the poll rejoined at epoch 0.
+        await Assert.That(connection.ShareGroupHeartbeatRequests[0].MemberEpoch).IsEqualTo(-1);
+        await Assert.That(connection.ShareGroupHeartbeatRequests[1].MemberEpoch).IsEqualTo(0);
     }
 
     [Test]

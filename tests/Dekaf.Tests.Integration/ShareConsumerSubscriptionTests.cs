@@ -115,6 +115,54 @@ public sealed class ShareConsumerSubscriptionTests(KafkaTestContainer kafka) : K
     }
 
     [Test]
+    public async Task Unsubscribe_LeavesGroupWhileOpen_AndResubscribeRejoins()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var group = $"share-unsubscribe-{Guid.NewGuid():N}";
+        await using var admin = Kafka.CreateAdminClient()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).Build();
+        await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+        {
+            [new ConfigResource { Type = ConfigResourceType.Group, Name = group }] =
+                [ConfigAlter.Set("share.auto.offset.reset", "earliest")]
+        });
+        await using var consumer = await Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(group)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+        consumer.Subscribe(topic);
+        await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
+        var joined = await admin.DescribeShareGroupsAsync([group]);
+        await Assert.That(joined[group].Members.Count).IsEqualTo(1);
+
+        // The consumer stays open. Its member must leave, or the group never becomes empty.
+        consumer.Unsubscribe();
+        var left = await WaitForConditionAsync(
+            async () => await admin.DescribeShareGroupsAsync([group]),
+            groups => groups[group].Members.Count == 0,
+            maxRetries: 12,
+            initialDelayMs: 250,
+            description: "unsubscribed member to leave the share group");
+        await Assert.That(left[group].Members.Count).IsEqualTo(0);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync();
+        await ShareConsumerTestHelper.ProduceAsync(producer, topic, count: 3);
+        consumer.Subscribe(topic);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var received = 0;
+        await foreach (var record in consumer.PollAsync(timeout.Token))
+        {
+            consumer.Acknowledge(record);
+            if (++received == 3)
+                break;
+        }
+
+        await Assert.That(received).IsEqualTo(3);
+        var rejoined = await admin.DescribeShareGroupsAsync([group]);
+        await Assert.That(rejoined[group].Members.Count).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task TopicCreatedAfterJoin_IsAssignedAndConsumed()
     {
         // The assignment names the new topic by ID before this consumer's metadata knows it: the
