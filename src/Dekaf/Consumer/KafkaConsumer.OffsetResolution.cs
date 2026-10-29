@@ -29,6 +29,8 @@ public sealed partial class KafkaConsumer<TKey, TValue>
         {
             await RetryHelper.WithRetryAsync(async () =>
             {
+                await RefreshMissingOffsetLeadersAsync(resolutions, cancellationToken).ConfigureAwait(false);
+
                 // A successful timestamp lookup can require a Latest fallback. Keep that second
                 // phase batched too, without treating it as a failed attempt or adding backoff.
                 while (true)
@@ -41,8 +43,6 @@ public sealed partial class KafkaConsumer<TKey, TValue>
                         if (!resolution.IsPending)
                             continue;
 
-                        // A retry refreshes metadata once for the whole unresolved set, rather
-                        // than doing a refresh (and a round trip) for every missing leader.
                         var leader = _metadataManager.TryGetCachedPartitionLeader(partition.Topic, partition.Partition);
                         if (leader is null)
                         {
@@ -88,6 +88,39 @@ public sealed partial class KafkaConsumer<TKey, TValue>
                 if (resolution.IsPending)
                     resolution.Error = ex;
             }
+        }
+    }
+
+    private async ValueTask RefreshMissingOffsetLeadersAsync(
+        Dictionary<TopicPartition, OffsetResolution> resolutions,
+        CancellationToken cancellationToken)
+    {
+        HashSet<string>? missingTopics = null;
+        foreach (var (partition, resolution) in resolutions)
+        {
+            if (resolution.IsPending
+                && _metadataManager.TryGetCachedPartitionLeader(partition.Topic, partition.Partition) is null)
+                (missingTopics ??= new HashSet<string>(StringComparer.Ordinal)).Add(partition.Topic);
+        }
+        if (missingTopics is null)
+            return;
+
+        try
+        {
+            // A named request retains auto-creation on a cold assignment. Force it even when
+            // the topic is cached but its partition has no leader. Batch names once per attempt.
+            await _metadataManager.RefreshMetadataAsync(missingTopics, forceRefresh: true, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex) when (ex is not ObjectDisposedException)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            // Match RetryHelper's best-effort refresh: resolve available leaders before retrying.
+        }
+        catch (Exception ex) when (
+            RetryHelper.IsRetriableRequestFailure(ex) && !cancellationToken.IsCancellationRequested)
+        {
+            // Missing leaders below retain their contextual error; other brokers can succeed.
         }
     }
 

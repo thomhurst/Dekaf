@@ -11990,7 +11990,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
             else
             {
-                var reset = resets[partition];
+                // A position present when resets were collected can disappear during the lookup.
+                if (!resets.TryGetValue(partition, out var reset))
+                    continue;
                 if (reset.Error is not null)
                 {
                     resetFailure ??= reset.Error;
@@ -12025,6 +12027,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         CancellationToken cancellationToken)
     {
         var coordinator = _coordinator!;
+        var initializationEpoch = Volatile.Read(ref _fetchBufferEpoch);
         var cacheGeneration = Interlocked.Increment(ref _committedOffsetGeneration);
         List<TopicPartition>? initializedNewPartitions = null;
         try
@@ -12080,36 +12083,47 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 // For a deferred partition neither the committed offset nor the reset policy
                 // decides the position yet; only a seek the rebalance callback staged does.
                 var deferred = committedOffsets is null || unstablePartitions.Contains(partition);
-                if (committedOffsets is not null
-                    && committedOffsets.TryGetValue(partition, out var committedOffset)
-                    && committedOffset.Offset >= 0)
-                {
-                    // Use committed offset
-                    SetPosition(partition, committedOffset.Offset, dirty: false);
-                    if (committedOffset.LeaderEpoch >= 0)
-                        SetLastConsumedLeaderEpoch(partition, committedOffset.LeaderEpoch);
-                    else
-                        ClearLastConsumedLeaderEpoch(partition);
-                    SetFetchPosition(partition, committedOffset.Offset);
+                TopicPartitionOffset committedOffset = default;
+                var hasCommittedOffset = committedOffsets is not null
+                    && committedOffsets.TryGetValue(partition, out committedOffset)
+                    && committedOffset.Offset >= 0;
+                // Cache broker knowledge even when an explicit seek wins the position race.
+                if (hasCommittedOffset)
                     _ = TryCacheCommittedOffset(partition, committedOffset.Offset, cacheGeneration);
-                }
-                else if (!deferred)
-                {
-                    // No committed offset, use auto offset reset
-                    var reset = resets[partition];
-                    if (reset.Error is not null)
-                    {
-                        resetFailure ??= reset.Error;
-                        ApplyPendingRebalanceSeek(partition, untilSyncAcknowledged: true);
-                        continue;
-                    }
-                    var offset = reset.Offset!.Value;
-                    SetPosition(partition, offset, dirty: false);
-                    ClearLastConsumedLeaderEpoch(partition);
-                    SetFetchPosition(partition, offset);
-                }
 
-                ApplyPendingRebalanceSeek(partition, untilSyncAcknowledged: true);
+                // Seek changes this partition's fetch epoch under the same lock. Do not replace
+                // a seek made during either the committed-offset fetch or the batched resets.
+                lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+                {
+                    if (!IsFetchBufferEpochStale(partition, initializationEpoch))
+                    {
+                        if (hasCommittedOffset)
+                        {
+                            SetPosition(partition, committedOffset.Offset, dirty: false);
+                            if (committedOffset.LeaderEpoch >= 0)
+                                SetLastConsumedLeaderEpoch(partition, committedOffset.LeaderEpoch);
+                            else
+                                ClearLastConsumedLeaderEpoch(partition);
+                            SetFetchPosition(partition, committedOffset.Offset);
+                        }
+                        else if (!deferred)
+                        {
+                            var reset = resets[partition];
+                            if (reset.Error is not null)
+                            {
+                                resetFailure ??= reset.Error;
+                                ApplyPendingRebalanceSeek(partition, untilSyncAcknowledged: true);
+                                continue;
+                            }
+                            var offset = reset.Offset!.Value;
+                            SetPosition(partition, offset, dirty: false);
+                            ClearLastConsumedLeaderEpoch(partition);
+                            SetFetchPosition(partition, offset);
+                        }
+
+                        ApplyPendingRebalanceSeek(partition, untilSyncAcknowledged: true);
+                    }
+                }
 
                 // A deferred partition that keeps a position from before this pass (reclassified
                 // as newly expanded) keeps fetching from it.

@@ -7,6 +7,29 @@ namespace Dekaf.Tests.Integration;
 public sealed class ConsumerBatchedOffsetResetTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
+    public async Task ManualAssignment_MissingTopicsAreAutoCreatedBeforeOffsetReset()
+    {
+        var firstTopic = $"batch-auto-create-{Guid.NewGuid():N}";
+        var secondTopic = $"batch-auto-create-{Guid.NewGuid():N}";
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithAllowAutoCreateTopics()
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellation.Token);
+        consumer.Assign(new TopicPartition(firstTopic, 0), new TopicPartition(secondTopic, 0));
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), cancellation.Token);
+
+        await Assert.That(result).IsNull();
+        await using var admin = KafkaContainer.CreateAdminClient();
+        var topics = await admin.ListTopicsAsync(cancellationToken: cancellation.Token);
+        await Assert.That(topics.Select(topic => topic.Name)).Contains(firstTopic);
+        await Assert.That(topics.Select(topic => topic.Name)).Contains(secondTopic);
+    }
+
+    [Test]
     [Arguments(false, false)]
     [Arguments(true, false)]
     [Arguments(false, true)]
