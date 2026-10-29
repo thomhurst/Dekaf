@@ -1162,7 +1162,12 @@ public sealed partial class InMemoryKafkaCluster
     internal void CommitShareOffsets(string groupId, IEnumerable<TopicPartitionOffset> offsets)
     {
         lock (_gate)
+        {
+            var errorCode = GetShareGroupMutationErrorUnderLock(groupId, allowMissing: true);
+            if (errorCode != ErrorCode.None)
+                throw new KafkaException(errorCode, $"Share group '{groupId}' must be empty before altering offsets.");
             CommitShareOffsetsUnderLock(groupId, offsets);
+        }
     }
 
     internal void CommitOffsets(string groupId, IReadOnlyList<TopicPartitionOffset> offsets)
@@ -1367,6 +1372,9 @@ public sealed partial class InMemoryKafkaCluster
     {
         lock (_gate)
         {
+            var errorCode = GetShareGroupMutationErrorUnderLock(groupId, allowMissing: true);
+            if (errorCode != ErrorCode.None)
+                throw new KafkaException(errorCode, $"Share group '{groupId}' must be empty before deleting offsets.");
             if (_shareGroupOffsets.TryGetValue(groupId, out var offsets))
             {
                 RemoveTopicPartitions(offsets, topicName);

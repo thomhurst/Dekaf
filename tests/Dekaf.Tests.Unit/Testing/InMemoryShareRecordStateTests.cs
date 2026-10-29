@@ -1,3 +1,6 @@
+using Dekaf.Admin;
+using Dekaf.Errors;
+using Dekaf.Protocol;
 using Dekaf.ShareConsumer;
 using Dekaf.Testing;
 
@@ -298,6 +301,67 @@ public sealed class InMemoryShareRecordStateTests
         cluster.CompleteShareRecords("workers", "member", registration, completions.ToArray(), completions.Count);
         await Assert.That(cluster.GetCommittedShareOffset("workers", new("shared", 0))).IsEqualTo(3);
         await Assert.That(cluster.GetCommittedShareOffset("workers", new("shared", 1))).IsEqualTo(3);
+    }
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task LegacyAdminOffsetMutation_RejectsActiveGroupAndPreservesLease(bool delete, bool joinsDuringMutation)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await ProduceRecords(cluster, 2);
+        await using var admin = new InMemoryAdminClient(cluster);
+        await admin.AlterShareGroupOffsetsAsync("workers",
+            [new() { TopicPartition = new("shared", 0), StartOffset = 1 }]);
+        var barrier = joinsDuringMutation
+            ? cluster.FaultPlan.PauseNext(new(KafkaFaultOperation.Admin, topic: "shared", groupId: "workers"))
+            : null;
+        Task? pending = null;
+        try
+        {
+            if (barrier is not null)
+            {
+                pending = MutateAsync();
+                await barrier.WaitUntilEnteredAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+            }
+
+            await using var first = CreateConsumer(cluster);
+            var acquired = await first.PollAsync().FirstAsync();
+            await Assert.That(acquired.Offset).IsEqualTo(1);
+            await Assert.That(acquired.DeliveryCount).IsEqualTo(1);
+            pending ??= MutateAsync();
+            barrier?.Release();
+            var exception = await Assert.ThrowsAsync<KafkaException>(() => pending);
+            await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.NonEmptyGroup);
+            await Assert.That(cluster.GetCommittedShareOffset("workers", new("shared", 0))).IsEqualTo(1);
+
+            await using var second = CreateConsumer(cluster);
+            await Assert.That(await second.PollAsync().ToArrayAsync()).IsEmpty();
+            first.Acknowledge(acquired, AcknowledgeType.Release);
+            await first.CommitAsync();
+            var redelivered = await second.PollAsync().FirstAsync();
+            await Assert.That(redelivered.Offset).IsEqualTo(1);
+            await Assert.That(redelivered.DeliveryCount).IsEqualTo(2);
+
+            await first.CloseAsync();
+            await second.CloseAsync();
+            await MutateAsync();
+            await using var replacement = CreateConsumer(cluster);
+            var replayed = await replacement.PollAsync().ToArrayAsync();
+            await Assert.That(replayed.Select(record => record.Offset).ToArray()).IsEquivalentTo([0L, 1L]);
+            await Assert.That(replayed.Select(record => record.DeliveryCount).ToArray()).IsEquivalentTo([1, 1]);
+        }
+        finally
+        {
+            barrier?.Release();
+        }
+
+        Task MutateAsync() => delete
+            ? admin.DeleteShareGroupOffsetsAsync("workers", ["shared"]).AsTask()
+            : admin.AlterShareGroupOffsetsAsync("workers",
+                [new ShareGroupOffsetAlteration { TopicPartition = new("shared", 0), StartOffset = 0 }]).AsTask();
     }
 
     private static async Task LeaveAcknowledgementGap(InMemoryKafkaCluster cluster)
