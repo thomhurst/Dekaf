@@ -233,18 +233,22 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
 
         try
         {
-            var result = _core.GetResult(token);
+            T result;
+            try
+            {
+                result = _core.GetResult(token);
+            }
+            catch (Exception ex)
+            {
+                handler?.Invoke(default!, ex);
+                throw;
+            }
 
-            // Invoke delivery handler if set (for fire-and-forget with callback)
+            // Only operation failures notify the error handler. A success handler's own
+            // exception must propagate without invoking the handler a second time.
             handler?.Invoke(result, null);
 
             return result;
-        }
-        catch (Exception ex)
-        {
-            // Invoke delivery handler with exception (default value for error case)
-            handler?.Invoke(default!, ex);
-            throw;
         }
         finally
         {
