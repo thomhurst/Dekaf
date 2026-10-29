@@ -24,6 +24,7 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
     private readonly string _webIdentitySessionName = "dekaf-" + Guid.NewGuid().ToString("N");
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
     private readonly Func<DateTimeOffset> _utcNow;
+    private readonly string? _userProfileDirectory;
     private CachedCredentials? _cachedCredentials;
 
     /// <summary>
@@ -38,7 +39,8 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         HttpClient httpClient,
         string? profileName = null,
         string? region = null,
-        Func<DateTimeOffset>? utcNow = null)
+        Func<DateTimeOffset>? utcNow = null,
+        string? userProfileDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(httpClient);
 
@@ -46,6 +48,7 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         _profileName = profileName;
         _region = region;
         _utcNow = utcNow ?? (static () => DateTimeOffset.UtcNow);
+        _userProfileDirectory = userProfileDirectory;
     }
 
     /// <inheritdoc />
@@ -352,22 +355,20 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
     private static string RequiredElement(XElement parent, string localName)
         => parent.Elements().First(element => element.Name.LocalName == localName).Value;
 
-    private static IEnumerable<string> GetProfilePaths()
+    private IEnumerable<string> GetProfilePaths()
     {
+        var home = _userProfileDirectory ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var sharedCredentialsFile = Environment.GetEnvironmentVariable("AWS_SHARED_CREDENTIALS_FILE");
         if (!string.IsNullOrWhiteSpace(sharedCredentialsFile))
             yield return sharedCredentialsFile;
+        else if (!string.IsNullOrWhiteSpace(home))
+            yield return Path.Combine(home, ".aws", "credentials");
 
         var configFile = Environment.GetEnvironmentVariable("AWS_CONFIG_FILE");
         if (!string.IsNullOrWhiteSpace(configFile))
             yield return configFile;
-
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (!string.IsNullOrWhiteSpace(home))
-        {
-            yield return Path.Combine(home, ".aws", "credentials");
+        else if (!string.IsNullOrWhiteSpace(home))
             yield return Path.Combine(home, ".aws", "config");
-        }
     }
 
     private static Dictionary<string, Dictionary<string, string>> ReadProfileFile(string path)
