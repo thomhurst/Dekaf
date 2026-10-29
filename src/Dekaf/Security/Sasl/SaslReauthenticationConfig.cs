@@ -37,7 +37,7 @@ public sealed class SaslReauthenticationConfig
     /// </exception>
     public void Validate()
     {
-        if (ReauthenticationThreshold is <= 0.0 or >= 1.0)
+        if (ReauthenticationThreshold is not (> 0.0 and < 1.0))
         {
             throw new ArgumentOutOfRangeException(
                 nameof(ReauthenticationThreshold),
