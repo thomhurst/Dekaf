@@ -1,5 +1,6 @@
-using Dekaf.Networking;
+using Dekaf.Consumer;
 using Dekaf.Errors;
+using Dekaf.Networking;
 using Dekaf.Protocol.Messages;
 using Dekaf.Security.Sasl;
 using Microsoft.Extensions.Logging;
@@ -69,6 +70,74 @@ public sealed class OAuthReauthenticationIntegrationTests(ReauthOAuthKafkaContai
                 new MetadataRequest { Topics = [] }, 9, cancellationToken);
             await Assert.That(metadata.Brokers.Count).IsGreaterThan(0);
         }
+    }
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    [Arguments(true, true)]
+    public async Task FetchAdmissionWait_ReauthenticationDrainsResponsesBeforeHandshake(
+        bool expireBudget, bool cancelFetch, CancellationToken cancellationToken)
+    {
+        var endpoint = BootstrapServerList.Parse(kafka.BootstrapServers);
+        await using var connection = new KafkaConnection(
+            endpoint.Host, endpoint.Port, clientId: null,
+            new ConnectionOptions
+            {
+                SaslMechanism = SaslMechanism.OAuthBearer,
+                OAuthBearerTokenProvider = OAuthBearerKafkaContainer.GetTokenAsync,
+                SaslReauthenticationConfig = new SaslReauthenticationConfig { MinSessionLifetimeMs = long.MaxValue },
+                RequestTimeout = TimeSpan.FromSeconds(2)
+            }, logger: null, ResponseBufferPool.Default, responseMemoryAdmissionsEnabled: true);
+        await connection.ConnectAsync(cancellationToken);
+        using var memoryPool = new FetchBufferMemoryPool(64);
+        await Assert.That(memoryPool.TryReserve(64)).IsTrue();
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var fetch = connection.SendPipelinedAsync<FetchRequest, FetchResponse>(
+            new FetchRequest { ResponseMemoryPool = memoryPool }, 16, caller.Token);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        while (!connection.IsResponseAdmissionWaiting)
+            await Task.Delay(10, deadline.Token);
+
+        var previousSession = connection.SaslSession;
+        var renewal = connection.PerformReauthenticationAsync();
+        await Assert.That(renewal.IsCompleted).IsFalse();
+        var drained = GetPrivateField<TaskCompletionSource>(connection, "_reauthenticationResponsesDrained");
+        await Assert.That(drained).IsNotNull();
+        if (cancelFetch)
+        {
+            await caller.CancelAsync();
+            var exception = await Assert.ThrowsAsync<OperationCanceledException>(async () => await fetch);
+            await Assert.That(exception!.CancellationToken).IsEqualTo(caller.Token);
+            // Removing the final pending request must not release the drain while its
+            // response reader still waits for local memory.
+            await Assert.That(drained.Task.IsCompleted).IsFalse();
+        }
+        if (expireBudget)
+        {
+            // The renewal budget expires before a handshake is written. The current session
+            // stays usable, and renewal can retry after the application releases fetch memory.
+            await renewal.WaitAsync(deadline.Token);
+            await Assert.That(connection.SaslSession).IsSameReferenceAs(previousSession);
+        }
+        await Assert.That(connection.IsConnected).IsTrue();
+        if (!cancelFetch)
+            await Assert.That(fetch.IsCompleted).IsFalse();
+        memoryPool.Release(64);
+        if (!cancelFetch)
+        {
+            var response = await fetch.WaitAsync(deadline.Token);
+            response.PooledMemoryOwner?.Dispose();
+            response.ReturnToPool();
+        }
+        if (expireBudget)
+            await connection.PerformReauthenticationAsync().WaitAsync(deadline.Token);
+        else
+            await renewal.WaitAsync(deadline.Token);
+        await Assert.That(connection.IsConnected).IsTrue();
+        await Assert.That(connection.SaslSession).IsNotSameReferenceAs(previousSession);
     }
 
     [Test]

@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Reflection;
 using BenchmarkDotNet.Attributes;
 using Dekaf.Consumer;
 using Dekaf.Networking;
@@ -32,6 +33,9 @@ public class ResponseFrameReaderBenchmarks
     private ResponseFrameReader _admittedFramesReader = null!;
     private FetchBufferMemoryPool _fetchBufferMemory = null!;
     private Func<int, ResponseFrameAdmission> _fetchAdmission = null!;
+    private KafkaConnection _admissionConnection = null!;
+    private ChunkedReadStream _admittedSmallFramesStream = null!;
+    private ResponseFrameReader _admittedSmallFramesReader = null!;
 
     [GlobalSetup]
     public void Setup()
@@ -49,20 +53,29 @@ public class ResponseFrameReaderBenchmarks
         _largeFramesReader = CreateReader(_largeFramesStream);
 
         // Consumer fetch traffic under KIP-81 admission: each frame reserves fetch-buffer
-        // memory synchronously, so the measured path never waits.
+        // memory synchronously, so the measured path never waits. Bind the real connection
+        // callback once to include admission completion bookkeeping without reflection per frame.
+        _admissionConnection = new KafkaConnection("localhost", 9092);
+        var admissionWait = typeof(KafkaConnection)
+            .GetMethod("OnResponseAdmissionWait", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .CreateDelegate<Action<bool>>(_admissionConnection);
         _admittedFramesStream = new ChunkedReadStream(largeBlob, ReceiveChunkSize);
-        _admittedFramesReader = CreateReader(_admittedFramesStream);
+        _admittedFramesReader = CreateReader(_admittedFramesStream, admissionWait);
+        _admittedSmallFramesStream = new ChunkedReadStream(smallBlob, ReceiveChunkSize);
+        _admittedSmallFramesReader = CreateReader(_admittedSmallFramesStream, admissionWait);
         _fetchBufferMemory = new FetchBufferMemoryPool(100L * 1024 * 1024);
         var admission = new ResponseFrameAdmission(_fetchBufferMemory, Discard: false);
         _fetchAdmission = _ => admission;
     }
 
     [GlobalCleanup]
-    public void Cleanup()
+    public async Task Cleanup()
     {
         _smallFramesReader.Dispose();
         _largeFramesReader.Dispose();
         _admittedFramesReader.Dispose();
+        _admittedSmallFramesReader.Dispose();
+        await _admissionConnection.DisposeAsync();
         _fetchBufferMemory.Dispose();
         _memoryPool.Dispose();
     }
@@ -76,14 +89,21 @@ public class ResponseFrameReaderBenchmarks
         => await ReadAllFramesAsync(_largeFramesStream, _largeFramesReader, _largeFrameCount);
 
     [Benchmark]
-    public async Task<long> AdmittedFetchFrames_1MB()
+    public Task<long> AdmittedFetchFrames_1MB()
+        => ReadAdmittedFramesAsync(_admittedFramesStream, _admittedFramesReader, _largeFrameCount);
+
+    [Benchmark(OperationsPerInvoke = 10_000)]
+    public Task<long> AdmittedFetchFrames_100B()
+        => ReadAdmittedFramesAsync(_admittedSmallFramesStream, _admittedSmallFramesReader, _smallFrameCount);
+
+    private async Task<long> ReadAdmittedFramesAsync(ChunkedReadStream stream, ResponseFrameReader reader, int count)
     {
-        _admittedFramesStream.Reset();
+        stream.Reset();
 
         long totalBytes = 0;
-        for (var i = 0; i < _largeFrameCount; i++)
+        for (var i = 0; i < count; i++)
         {
-            var frame = await _admittedFramesReader.ReadBoundedFrameAsync(_fetchAdmission);
+            var frame = await reader.ReadBoundedFrameAsync(_fetchAdmission);
             if (frame.IsEndOfStream)
                 throw new InvalidOperationException("Unexpected EOF");
 
@@ -95,13 +115,14 @@ public class ResponseFrameReaderBenchmarks
         return totalBytes;
     }
 
-    private ResponseFrameReader CreateReader(ChunkedReadStream stream)
+    private ResponseFrameReader CreateReader(ChunkedReadStream stream, Action<bool>? onAdmissionWait = null)
         => new(
             socket: null,
             stream,
             receiveBufferSize: ReceiveChunkSize,
             ResponseBufferPool.Default,
-            _memoryPool);
+            _memoryPool,
+            onAdmissionWait: onAdmissionWait);
 
     /// <summary>
     /// Reads every frame in the blob. The reader and stream live in <see cref="Setup"/> so

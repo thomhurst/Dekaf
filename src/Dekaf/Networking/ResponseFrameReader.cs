@@ -60,9 +60,9 @@ internal sealed class ResponseFrameReader : IDisposable
     /// May be null in tests that read from a stream only.</param>
     /// <param name="stream">When non-null, reads go through this stream (TLS decryption
     /// requires the Stream abstraction). When null, reads go directly to the socket.</param>
-    /// <param name="onAdmissionWait">Invoked with <see langword="true"/> before and
-    /// <see langword="false"/> after a response-memory admission that waits. No source reads
-    /// happen during the wait.</param>
+    /// <param name="onAdmissionWait">Invoked with <see langword="true"/> before an asynchronous
+    /// admission wait and <see langword="false"/> after every admission, including synchronous
+    /// reservations. No source reads happen during the wait.</param>
     public ResponseFrameReader(
         Socket? socket,
         Stream? stream,
@@ -226,22 +226,22 @@ internal sealed class ResponseFrameReader : IDisposable
 
             if (admission.MemoryPool is not null)
             {
-                var reserveTask = admission.MemoryPool.ReserveAsync(frameSize, _abortCts.Token);
-                if (reserveTask.IsCompleted)
+                try
                 {
-                    _frameReservation = reserveTask.GetAwaiter().GetResult();
-                }
-                else
-                {
-                    _onAdmissionWait?.Invoke(true);
-                    try
+                    var reserveTask = admission.MemoryPool.ReserveAsync(frameSize, _abortCts.Token);
+                    if (reserveTask.IsCompleted)
                     {
+                        _frameReservation = reserveTask.GetAwaiter().GetResult();
+                    }
+                    else
+                    {
+                        _onAdmissionWait?.Invoke(true);
                         _frameReservation = await reserveTask.ConfigureAwait(false);
                     }
-                    finally
-                    {
-                        _onAdmissionWait?.Invoke(false);
-                    }
+                }
+                finally
+                {
+                    _onAdmissionWait?.Invoke(false);
                 }
             }
 

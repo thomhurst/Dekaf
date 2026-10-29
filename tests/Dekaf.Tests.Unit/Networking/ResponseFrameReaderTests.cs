@@ -93,7 +93,7 @@ public sealed class ResponseFrameReaderTests
     }
 
     [Test]
-    public async Task ReadBoundedFrameAsync_ReportsOnlyAdmissionWaitsThatBlock()
+    public async Task ReadBoundedFrameAsync_ReportsEveryAdmissionEndAndOnlyWaitsThatBlock()
     {
         using var pool = new FetchBufferMemoryPool(100);
         var chunk = Concat(
@@ -105,16 +105,16 @@ public sealed class ResponseFrameReaderTests
         ResponseFrameAdmission GetAdmission(int _) => new(pool, Discard: false);
 
         var first = await reader.ReadBoundedFrameAsync(GetAdmission);
-        await Assert.That(waits).IsEmpty();
+        await Assert.That(string.Join(",", waits)).IsEqualTo("False");
 
         var secondRead = reader.ReadBoundedFrameAsync(GetAdmission).AsTask();
         await Assert.That(secondRead.IsCompleted).IsFalse();
-        await Assert.That(string.Join(",", waits)).IsEqualTo("True");
+        await Assert.That(string.Join(",", waits)).IsEqualTo("False,True");
 
         first.Buffer.Dispose();
         first.Reservation?.Dispose();
         var second = await secondRead.WaitAsync(TimeSpan.FromSeconds(5));
-        await Assert.That(string.Join(",", waits)).IsEqualTo("True,False");
+        await Assert.That(string.Join(",", waits)).IsEqualTo("False,True,False");
 
         second.Buffer.Dispose();
         second.Reservation?.Dispose();
