@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
 using Dekaf.ShareConsumer;
 using Dekaf.Telemetry;
@@ -1084,8 +1085,17 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             for (var index = groupStart; index < groupEnd; index++)
             {
                 var record = _commitRecords[index];
-                if (record.NextOffset - 1 != commitOffset ||
-                    record.AcknowledgeType is not (AcknowledgeType.Accept or AcknowledgeType.Reject))
+                if (record.AcknowledgeType is not (AcknowledgeType.Accept or AcknowledgeType.Reject))
+                    break;
+
+                // Control offsets and aborted data do not interrupt contiguous acknowledgments.
+                if (record.NextOffset - 1 != commitOffset &&
+                    (!_cluster.TryRead(
+                        first.TopicPartition,
+                        commitOffset,
+                        IsolationLevel.ReadCommitted,
+                        borrowStoredRecord: true,
+                        out var nextRecord) || nextRecord.Offset != record.Record.Offset))
                 {
                     break;
                 }
