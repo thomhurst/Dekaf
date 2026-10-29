@@ -94,6 +94,7 @@ public sealed partial class InMemoryAdminClient :
             ArgumentOutOfRangeException.ThrowIfLessThan(topic.NumPartitions, 1);
         }
 
+        KafkaException? failure = null;
         for (var index = 0; index < topicList.Length; index++)
         {
             var topic = topicList[index];
@@ -101,9 +102,13 @@ public sealed partial class InMemoryAdminClient :
                 cancellationToken,
                 topic: topic.Name).ConfigureAwait(false);
 
-            if (options?.ValidateOnly != true)
-                _cluster.CreateTopic(topic.Name, topic.NumPartitions, topic.Configs);
+            var error = _cluster.CreateTopicForAdmin(topic, options?.ValidateOnly == true);
+            if (error != ErrorCode.None)
+                failure ??= new KafkaException(error, $"Topic '{topic.Name}' already exists.");
         }
+
+        if (failure is not null)
+            throw failure;
     }
 
     public async ValueTask DeleteTopicsAsync(
@@ -119,14 +124,19 @@ public sealed partial class InMemoryAdminClient :
         ValidateNames(names, nameof(topicNames), requireDistinct: false);
         if (names.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        KafkaException? failure = null;
         for (var index = 0; index < names.Length; index++)
         {
             var topicName = names[index];
             await ApplyAdminFaultAsync(
                 cancellationToken,
                 topic: topicName).ConfigureAwait(false);
-            _cluster.DeleteTopic(topicName);
+            if (!_cluster.DeleteTopic(topicName))
+                failure ??= new KafkaException(ErrorCode.UnknownTopicOrPartition, $"Topic '{topicName}' does not exist.");
         }
+
+        if (failure is not null)
+            throw failure;
     }
 
     public async ValueTask DeleteTopicsAsync(
