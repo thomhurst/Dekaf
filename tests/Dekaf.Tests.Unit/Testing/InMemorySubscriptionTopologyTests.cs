@@ -1,6 +1,8 @@
 using Dekaf.Admin;
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 using Dekaf.Testing;
 
 namespace Dekaf.Tests.Unit.Testing;
@@ -313,7 +315,7 @@ public sealed class InMemorySubscriptionTopologyTests
     }
 
     [Test]
-    public async Task NewPartition_WithoutResetRequiresCommittedOffsetAndCanRetry()
+    public async Task NewPartition_WithoutResetFailsOnConsumeAndRecoversAfterResubscription()
     {
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic("orders");
@@ -321,10 +323,23 @@ public sealed class InMemorySubscriptionTopologyTests
         await using var consumer = CreateConsumer(cluster, AutoOffsetReset.None);
         consumer.Subscribe("orders");
         cluster.CreatePartitions("orders", 2);
-        await Assert.That(() => _ = consumer.Assignment).Throws<InvalidOperationException>();
-        cluster.CommitOffsets("group", (IEnumerable<TopicPartitionOffset>)[new("orders", 1, 0)]);
+        var addedPartition = new TopicPartition("orders", 1);
         await Assert.That(consumer.Assignment).Count().IsEqualTo(2);
-        await Assert.That(consumer.GetPosition(new TopicPartition("orders", 1))).IsEqualTo(0);
+        await Assert.That(consumer.GetPosition(addedPartition)).IsNull();
+        var failure = await Assert.ThrowsAsync<KafkaException>(() => consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask());
+        await Assert.That(failure!.ErrorCode).IsEqualTo(ErrorCode.OffsetOutOfRange);
+        await Assert.That(consumer.GetPosition(addedPartition)).IsNull();
+
+        cluster.CommitOffsets("group", (IEnumerable<TopicPartitionOffset>)[new("orders", 1, 0)]);
+        consumer.Subscribe("orders");
+        await Assert.That(consumer.Assignment).Count().IsEqualTo(2);
+        await Assert.That(consumer.GetPosition(addedPartition)).IsEqualTo(0);
+        await using var producer = new InMemoryProducer<string, string>(cluster);
+        await Produce(producer, "orders", 1, "new");
+        var record = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        await Assert.That(record!.Value.Partition).IsEqualTo(1);
+        await Assert.That(record.Value.Value).IsEqualTo("new");
+        await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.Zero)).IsNull();
     }
 
     private static InMemoryConsumer<string, string> CreateConsumer(InMemoryKafkaCluster cluster, AutoOffsetReset reset = AutoOffsetReset.Earliest) =>
