@@ -166,7 +166,18 @@ The cluster calls `IPartitioner.Partition` only. It does not simulate producer b
 
 ## Admin and offsets
 
-`InMemoryAdminClient` supports common unit-test operations such as creating, deleting, listing, and describing topics, altering/listing group offsets, deleting records, creating partitions, and listing offsets. Broker-only APIs such as ACL, SCRAM, and config mutation are accepted as no-ops or return empty results.
+`InMemoryAdminClient` supports common unit-test operations such as creating, deleting, listing, and describing topics, altering/listing group offsets, deleting records, creating partitions, and listing offsets.
+
+Topic configuration overrides are stored in the shared `InMemoryKafkaCluster`, including configurations supplied when creating a topic:
+
+- `DescribeConfigsAsync` returns the stored overrides with `ConfigSource.DynamicTopicConfig`. It does not include broker defaults.
+- `AlterConfigsAsync` replaces all topic overrides. Omitted entries and entries with null values are removed.
+- `IncrementalAlterConfigsAsync` applies `Set` and `Delete` while preserving unrelated overrides. `Set` requires a non-null value. List operations (`Append` and `Subtract`) are rejected with `ErrorCode.InvalidConfig`, without applying any changes to that resource, even with `ValidateOnly`.
+- `AlterConfigsDetailedAsync` and `IncrementalAlterConfigsDetailedAsync` use the same configuration store and semantics, returning per-resource results. Both simple and detailed mutation APIs honor `ValidateOnly`: they validate without changing stored overrides.
+
+For maintained create/alter/describe examples and assertions on changed overrides, see [InMemoryConfigTests](https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Unit/Testing/InMemoryConfigTests.cs). [InMemoryIncrementalConfigTests](https://github.com/thomhurst/Dekaf/blob/main/tests/Dekaf.Tests.Unit/Testing/InMemoryIncrementalConfigTests.cs) covers incremental operations, validation-only requests, and rejected list operations through both simple and detailed APIs.
+
+Group configuration models only `share.isolation.level` (`read_committed` or `read_uncommitted`, defaulting to `read_uncommitted`); other group settings are ignored. Broker configuration is not modeled: reads return empty results and mutations are accepted as no-ops. Stored topic overrides do not simulate broker behavior such as retention or compaction. ACL and SCRAM APIs also remain no-ops or return empty results.
 
 Use Testcontainers or another real broker for protocol compatibility and integration coverage.
 
