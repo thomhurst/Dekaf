@@ -45,6 +45,12 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
 
     protected virtual KafkaBuilder ConfigureKafkaBuilder(KafkaBuilder builder) => builder;
 
+    protected virtual Task StartKafkaContainerAsync(KafkaContainer container, CancellationToken cancellationToken) =>
+        container.StartAsync(cancellationToken);
+
+    protected virtual Task StartSchemaRegistryContainerAsync(IContainer container, CancellationToken cancellationToken) =>
+        container.StartAsync(cancellationToken);
+
     /// <summary>
     /// Bounds fixture startup. TUnit's <c>[Timeout]</c> covers only the test body, not shared
     /// <see cref="IAsyncInitializer"/> fixtures, so without this deadline a stalled image pull or
@@ -161,7 +167,14 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         }
     }
 
-    private async Task StartLocalContainersAsync(StartupProgress startup, CancellationToken cancellationToken)
+    private Task StartLocalContainersAsync(StartupProgress startup, CancellationToken cancellationToken) =>
+        ContainerStartupRetry.RunAsync(
+            () => StartLocalContainersAttemptAsync(startup, cancellationToken),
+            DisposeLocalContainersAsync,
+            ContainerStartupRetry.IsKnownTransient,
+            delay => Task.Delay(delay, cancellationToken));
+
+    private async Task StartLocalContainersAttemptAsync(StartupProgress startup, CancellationToken cancellationToken)
     {
         startup.Enter("create Docker network");
 
@@ -184,7 +197,7 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
             .WithEnvironment("KAFKA_LOG_CLEANUP_POLICY", "delete"))
             .Build();
 
-        await _kafkaContainer.StartAsync(cancellationToken).ConfigureAwait(false);
+        await StartKafkaContainerAsync(_kafkaContainer, cancellationToken).ConfigureAwait(false);
         _bootstrapServers = _kafkaContainer.GetBootstrapAddress();
         Console.WriteLine($"[KafkaWithSchemaRegistry] Kafka started at {_bootstrapServers}");
 
@@ -211,7 +224,7 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
             .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(r => r.ForPath("/subjects").ForPort(8081)))
             .Build();
 
-        await _schemaRegistryContainer.StartAsync(cancellationToken).ConfigureAwait(false);
+        await StartSchemaRegistryContainerAsync(_schemaRegistryContainer, cancellationToken).ConfigureAwait(false);
 
         var port = _schemaRegistryContainer.GetMappedPublicPort(8081);
         // Hostname honours TESTCONTAINERS_HOST_OVERRIDE and remote Docker hosts, as the wait strategy does.
@@ -395,23 +408,55 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
             }
         }
 
-        if (_schemaRegistryContainer is not null)
-        {
-            await _schemaRegistryContainer.DisposeAsync().ConfigureAwait(false);
-        }
-
-        if (_kafkaContainer is not null)
-        {
-            await _kafkaContainer.DisposeAsync().ConfigureAwait(false);
-        }
-
-        if (_network is not null)
-        {
-            await _network.DeleteAsync().ConfigureAwait(false);
-            await _network.DisposeAsync().ConfigureAwait(false);
-        }
-
+        await DisposeLocalContainersAsync().ConfigureAwait(false);
         GC.SuppressFinalize(this);
+    }
+
+    private async ValueTask DisposeLocalContainersAsync()
+    {
+        var schemaRegistry = _schemaRegistryContainer;
+        var kafka = _kafkaContainer;
+        var network = _network;
+        _schemaRegistryContainer = null;
+        _kafkaContainer = null;
+        _network = null;
+        _bootstrapServers = string.Empty;
+        _registryUrl = string.Empty;
+
+        // Release every resource even if another resource's cleanup fails.
+        Exception? firstError = null;
+        try
+        {
+            if (schemaRegistry is not null)
+                await schemaRegistry.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            firstError = exception;
+        }
+
+        try
+        {
+            if (kafka is not null)
+                await kafka.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            firstError ??= exception;
+        }
+
+        try
+        {
+            if (network is not null)
+                await network.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            firstError ??= exception;
+        }
+
+        if (firstError is not null)
+            throw firstError;
     }
 }
 
