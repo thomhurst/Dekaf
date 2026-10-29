@@ -6472,7 +6472,7 @@ public sealed partial class AdminClient :
         var controllerId = _metadataManager.Metadata.ControllerId;
         if (controllerId < 0)
         {
-            throw new InvalidOperationException("No controller available");
+            throw new Errors.ControllerUnavailableException();
         }
 
         return await _connectionPool.LeaseConnectionAsync(controllerId, cancellationToken).ConfigureAwait(false);

@@ -19,7 +19,7 @@ public sealed class AdminClientCreateTopicsRetryTests
     [Test]
     public async Task CreateTopicsAsync_TopicAlreadyExistsOnRetry_TreatedAsSuccess()
     {
-        var (admin, connection) = CreateAdminWithMockConnection();
+        var (admin, connection, _) = CreateAdminWithMockConnection();
 
         var createCalls = 0;
         connection.SendAsync<CreateTopicsRequest, CreateTopicsResponse>(
@@ -57,7 +57,7 @@ public sealed class AdminClientCreateTopicsRetryTests
     [Test]
     public async Task CreateTopicsAsync_ValidateOnly_TopicAlreadyExistsOnRetry_Throws()
     {
-        var (admin, connection) = CreateAdminWithMockConnection();
+        var (admin, connection, _) = CreateAdminWithMockConnection();
 
         var createCalls = 0;
         connection.SendAsync<CreateTopicsRequest, CreateTopicsResponse>(
@@ -98,7 +98,7 @@ public sealed class AdminClientCreateTopicsRetryTests
     [Test]
     public async Task CreateTopicsAsync_TopicAlreadyExistsAfterNonAmbiguousRetry_Throws()
     {
-        var (admin, connection) = CreateAdminWithMockConnection();
+        var (admin, connection, _) = CreateAdminWithMockConnection();
         var createCalls = 0;
 
         connection.SendAsync<CreateTopicsRequest, CreateTopicsResponse>(
@@ -129,7 +129,7 @@ public sealed class AdminClientCreateTopicsRetryTests
     [Test]
     public async Task CreateTopicsAsync_TopicAlreadyExistsOnFirstAttempt_Throws()
     {
-        var (admin, connection) = CreateAdminWithMockConnection();
+        var (admin, connection, _) = CreateAdminWithMockConnection();
 
         connection.SendAsync<CreateTopicsRequest, CreateTopicsResponse>(
                 Arg.Any<CreateTopicsRequest>(),
@@ -154,7 +154,128 @@ public sealed class AdminClientCreateTopicsRetryTests
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.TopicAlreadyExists);
     }
 
-    private static (AdminClient Admin, IKafkaConnection Connection) CreateAdminWithMockConnection()
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task CreateTopicsAsync_NoController_RefreshesUntilControllerIsElected(bool detailed)
+    {
+        var (admin, connection, metadata) = CreateAdminWithMockConnection();
+        await using var ownedAdmin = admin;
+        metadata.Metadata.Update(CreateMetadataResponse(controllerId: -1));
+        var refreshes = 0;
+        var refreshesWhenSent = 0;
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromResult(CreateMetadataResponse(
+                controllerId: ++refreshes < 5 ? -1 : 1)));
+        connection.SendAsync<CreateTopicsRequest, CreateTopicsResponse>(
+                Arg.Any<CreateTopicsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                refreshesWhenSent = refreshes;
+                return ValueTask.FromResult(new CreateTopicsResponse
+                {
+                    Topics = [new CreateTopicsResponseTopic { Name = TopicName, ErrorCode = ErrorCode.None }]
+                });
+            });
+
+        if (detailed)
+        {
+            var results = await admin.CreateTopicsDetailedAsync([new NewTopic { Name = TopicName, NumPartitions = 1 }]);
+            await Assert.That(results[TopicName].IsSuccess).IsTrue();
+        }
+        else
+        {
+            await admin.CreateTopicsAsync([new NewTopic { Name = TopicName, NumPartitions = 1 }]);
+        }
+
+        // A missing route must not exhaust the three retries for broker error responses.
+        await Assert.That(refreshesWhenSent).IsEqualTo(5);
+        await connection.Received(1).SendAsync<CreateTopicsRequest, CreateTopicsResponse>(
+            Arg.Any<CreateTopicsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task CreateTopicsAsync_NoControllerUntilDeadline_ThrowsKafkaTimeoutWithoutSending(bool detailed)
+    {
+        var (admin, connection, metadata) = CreateAdminWithMockConnection();
+        await using var ownedAdmin = admin;
+        metadata.Metadata.Update(CreateMetadataResponse(controllerId: -1));
+        var refreshes = 0;
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(call => ++refreshes < 5
+                ? ValueTask.FromResult(CreateMetadataResponse(controllerId: -1))
+                : WaitForCancellationAsync(call.ArgAt<CancellationToken>(2)));
+
+        KafkaTimeoutException? exception;
+        if (detailed)
+        {
+            var results = await admin.CreateTopicsDetailedAsync([new NewTopic { Name = TopicName, NumPartitions = 1 }],
+                new CreateTopicsOptions { TimeoutMs = 1000 });
+            await Assert.That(results[TopicName].Outcome).IsEqualTo(AdminMutationOutcome.NotAttempted);
+            exception = results[TopicName].Exception as KafkaTimeoutException;
+            await Assert.That(exception).IsNotNull();
+        }
+        else
+        {
+            exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
+                await admin.CreateTopicsAsync([new NewTopic { Name = TopicName, NumPartitions = 1 }],
+                    new CreateTopicsOptions { TimeoutMs = 1000 }));
+        }
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+        var cause = exception.InnerException as KafkaException;
+        await Assert.That(cause).IsNotNull();
+        await Assert.That(cause!.ErrorCode).IsEqualTo(ErrorCode.BrokerNotAvailable);
+        await Assert.That(cause.IsRetriable).IsTrue();
+        await Assert.That(refreshes).IsEqualTo(5);
+        await connection.DidNotReceive().SendAsync<CreateTopicsRequest, CreateTopicsResponse>(
+            Arg.Any<CreateTopicsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task CreateTopicsAsync_NoController_CallerCancellationStopsRecovery()
+    {
+        var (admin, connection, metadata) = CreateAdminWithMockConnection();
+        await using var ownedAdmin = admin;
+        using var cancellation = new CancellationTokenSource();
+        metadata.Metadata.Update(CreateMetadataResponse(controllerId: -1));
+        var recoveryStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                recoveryStarted.TrySetResult();
+                return WaitForCancellationAsync(call.ArgAt<CancellationToken>(2));
+            });
+
+        var pending = admin.CreateTopicsAsync([new NewTopic { Name = TopicName, NumPartitions = 1 }],
+            cancellationToken: cancellation.Token).AsTask();
+        try
+        {
+            await recoveryStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            cancellation.Cancel();
+        }
+
+        var exception = await Assert.ThrowsAsync<OperationCanceledException>(async () => await pending);
+        await Assert.That(exception!.CancellationToken).IsEqualTo(cancellation.Token);
+        await connection.DidNotReceive().SendAsync<CreateTopicsRequest, CreateTopicsResponse>(
+            Arg.Any<CreateTopicsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
+    }
+
+    private static async ValueTask<MetadataResponse> WaitForCancellationAsync(CancellationToken token)
+    {
+        await Task.Delay(Timeout.Infinite, token);
+        throw new InvalidOperationException("Cancellation was expected.");
+    }
+
+    private static (AdminClient Admin, IKafkaConnection Connection, MetadataManager Metadata) CreateAdminWithMockConnection()
     {
         var connection = Substitute.For<IKafkaConnection>();
         connection.BrokerId.Returns(1);
@@ -197,14 +318,14 @@ public sealed class AdminClientCreateTopicsRetryTests
             }));
 
         var admin = new AdminClient(
-            new AdminClientOptions { BootstrapServers = ["localhost:9092"] },
+            new AdminClientOptions { BootstrapServers = ["localhost:9092"], RetryBackoffMs = 1, RetryBackoffMaxMs = 5 },
             pool,
             metadataManager);
 
-        return (admin, connection);
+        return (admin, connection, metadataManager);
     }
 
-    private static MetadataResponse CreateMetadataResponse() => new()
+    private static MetadataResponse CreateMetadataResponse(int controllerId = 1) => new()
     {
         Brokers =
         [
@@ -216,7 +337,7 @@ public sealed class AdminClientCreateTopicsRetryTests
             }
         ],
         ClusterId = "test-cluster",
-        ControllerId = 1,
+        ControllerId = controllerId,
         Topics =
         [
             new TopicMetadata
