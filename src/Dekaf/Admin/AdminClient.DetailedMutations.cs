@@ -137,11 +137,10 @@ public sealed partial class AdminClient
         if (_controllerMetadataManager is { } controllerMetadataManager)
             return controllerMetadataManager.LeaseActiveControllerAsync(apiKey, cancellationToken);
 
-        // Capture one identity for validation and leasing. Keep the existing convenience
-        // method's exception contract separate from detailed per-entity failure handling.
+        // Capture one identity for validation and leasing.
         var controllerId = _metadataManager.Metadata.ControllerId;
         if (controllerId < 0)
-            throw new KafkaException(ErrorCode.BrokerNotAvailable, "No controller available.");
+            throw new ControllerUnavailableException();
         return _connectionPool.LeaseConnectionAsync(controllerId, cancellationToken);
     }
 

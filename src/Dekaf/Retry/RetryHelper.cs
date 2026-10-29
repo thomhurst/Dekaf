@@ -305,12 +305,14 @@ internal static class RetryHelper
     // True for a transport-level failure and for a Kafka failure that wraps one (a coordinator
     // lookup that exhausted its own attempts against unreachable brokers). NETWORK_EXCEPTION is
     // the connection's own report that the peer went away before a response arrived, so no
-    // broker answered it either.
+    // broker answered it either. Missing controller metadata is also a client-side route miss,
+    // not an error response that should spend the broker-answered retry count.
     private static bool HasTransportCause(Exception exception)
     {
         for (var current = exception; current is not null; current = current.InnerException)
         {
             if (current is ObjectDisposedException
+                or ControllerUnavailableException
                 or KafkaException { ErrorCode: Protocol.ErrorCode.NetworkException }
                 || TransportFailureClassifier.IsSocketLevelFailure(current)
                 || TransportFailureClassifier.IsClientRoutingFailure(current))
