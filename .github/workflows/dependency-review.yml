@@ -29,6 +29,10 @@ jobs:
         with:
           fail-on-severity: high
           fail-on-scopes: runtime, development, unknown
+          # Existing docs build dependency uses CC-BY-4.0 browser data.
+          # Attribution ships in docs/static/third-party-notices.txt; retain
+          # license checks for every other package and vulnerability checks for all.
+          allow-dependencies-licenses: pkg:npm/caniuse-lite
           # Permit only licenses compatible with MIT distribution; additions require review.
           allow-licenses: >-
             0BSD,
