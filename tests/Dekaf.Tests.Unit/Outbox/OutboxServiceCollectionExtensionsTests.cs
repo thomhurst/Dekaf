@@ -33,9 +33,7 @@ public class OutboxServiceCollectionExtensionsTests
         // so pinning it pins the effective partitioning behavior.
         await Assert.That(ReadField<IPartitioner?>(builder, "_customPartitioner"))
             .IsTypeOf<Murmur2RandomPartitioner>();
-        // Also pins that WithTransactionalId(null!) still clears the id - if the builder
-        // ever rejects null there, this enforcement needs a new mechanism. Two-phase commit
-        // must be cleared with it, or Build() rejects the combination at startup.
+        // Both transaction settings must be reset after the caller's delegate.
         await Assert.That(ReadField<string?>(builder, "_transactionalId")).IsNull();
         await Assert.That(ReadField<bool>(builder, "_enableTwoPhaseCommit")).IsFalse();
     }

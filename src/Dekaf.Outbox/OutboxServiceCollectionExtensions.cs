@@ -82,10 +82,8 @@ public static class OutboxServiceCollectionExtensions
         // A transactional id would make the relay producer transactional, but the relay
         // never initializes or drives transactions - produce would fail (or bypass the
         // idempotent sequencing the prefix accounting relies on). Cleared back to the
-        // non-transactional default; the null-forgiveness is deliberate (the setter is a
-        // plain assignment) and the enforcement test pins it. Two-phase commit is cleared
-        // with it - Build() rejects the flag without a transactional id.
-        builder.WithTransactionalId(null!).WithTwoPhaseCommit(false);
+        // non-transactional default together with two-phase commit, which requires an id.
+        builder.WithoutTransactions();
 
         return builder
             .WithAcks(Acks.All)

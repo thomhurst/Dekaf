@@ -253,6 +253,13 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
+    internal ProducerBuilder<TKey, TValue> WithoutTransactions()
+    {
+        _transactionalId = null;
+        _enableTwoPhaseCommit = false;
+        return this;
+    }
+
     /// <summary>
     /// Controls whether transactional produce continuations run inline on the broker sender thread.
     /// </summary>
