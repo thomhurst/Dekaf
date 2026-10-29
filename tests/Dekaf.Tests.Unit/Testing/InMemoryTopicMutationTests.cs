@@ -92,6 +92,36 @@ public sealed class InMemoryTopicMutationTests
     }
 
     [Test]
+    public async Task DeleteTopics_RepeatedNames_DeletesEachDistinctTopicOnce()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders");
+        cluster.CreateTopic("Orders");
+        await using var admin = new InMemoryAdminClient(cluster);
+
+        await admin.DeleteTopicsAsync(["orders", "Orders", "orders", "Orders"]);
+
+        await Assert.That(cluster.ListTopics()).IsEmpty();
+    }
+
+    [Test]
+    public async Task DeleteTopics_RepeatedNamesWithMissingTopic_DeletesSiblingsBeforeThrowingMissingError()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("before");
+        cluster.CreateTopic("after");
+        await using var admin = new InMemoryAdminClient(cluster);
+
+        async Task Delete() => await admin.DeleteTopicsAsync(
+            ["before", "before", "missing", "after", "missing", "after"]);
+
+        var exception = await Assert.That(Delete).Throws<KafkaException>();
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.UnknownTopicOrPartition);
+        await Assert.That(exception.Message).Contains("missing");
+        await Assert.That(cluster.ListTopics()).IsEmpty();
+    }
+
+    [Test]
     public async Task DeleteTopics_MixedBatch_DeletesSiblingsBeforeThrowingFirstError()
     {
         var cluster = new InMemoryKafkaCluster();

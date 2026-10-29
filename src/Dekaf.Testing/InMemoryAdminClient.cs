@@ -120,7 +120,7 @@ public sealed partial class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        var names = topicNames.ToArray();
+        var names = topicNames.Distinct(StringComparer.Ordinal).ToArray();
         ValidateNames(names, nameof(topicNames), requireDistinct: false);
         if (names.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
