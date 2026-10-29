@@ -58,7 +58,7 @@ internal sealed class OutboxDynamoDbCallInterceptor(
     private sealed class InterceptedClient(
         AWSCredentials credentials, AmazonDynamoDBConfig config,
         Func<AmazonWebServiceRequest, ValueTask<OutboxDynamoDbFault>> beforeCall)
-        : AmazonDynamoDBClient(credentials, config)
+        : OutboxDynamoDbLocalClient(credentials, config)
     {
         // Called by the base constructor. A captured primary constructor parameter is stored
         // before the base constructor runs, so beforeCall is already there.
