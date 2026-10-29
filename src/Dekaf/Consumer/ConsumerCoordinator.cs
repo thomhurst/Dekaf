@@ -133,6 +133,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // Guarded by _lock; the subscription stamp belongs to the response that delivered it.
     private ConsumerGroupHeartbeatAssignment? _deferredHeartbeatAssignment;
     private int _deferredHeartbeatAssignmentSubscriptionGeneration;
+    private long _deferredHeartbeatAssignmentStarted = -1;
 
     // Pooled dictionaries to avoid allocations in hot paths (protected by _lock or method-local usage)
     private readonly Dictionary<string, List<OffsetCommitRequestPartition>> _commitTopicGroups = new();
@@ -2674,6 +2675,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private IReadOnlyList<TopicPartition>? ClearAssignment()
     {
         _deferredHeartbeatAssignment = null;
+        _deferredHeartbeatAssignmentStarted = -1;
         Volatile.Write(ref _heartbeatReconciliation, null);
         var revoked = _assignedPartitions.Count != 0 ? _assignedPartitions.ToList() : null;
 
@@ -3075,12 +3077,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     {
                         _deferredHeartbeatAssignment = response.Assignment;
                         _deferredHeartbeatAssignmentSubscriptionGeneration = requestSubscriptionGeneration;
+                        _deferredHeartbeatAssignmentStarted = rebalanceStarted;
                     }
 
                     var canPublish = rebalanceListenerLockHeld && !HasQueuedRebalanceCallbacks();
                     var assignment = canPublish ? _deferredHeartbeatAssignment : null;
                     if (assignment is not null)
+                    {
                         requestSubscriptionGeneration = _deferredHeartbeatAssignmentSubscriptionGeneration;
+                        rebalanceStarted = _deferredHeartbeatAssignmentStarted;
+                    }
                     if (canPublish)
                         _deferredHeartbeatAssignment = null;
 

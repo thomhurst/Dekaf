@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Dekaf.Consumer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Telemetry;
 using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Consumer;
@@ -17,6 +18,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         bool synchronous, bool newerTarget, CancellationToken cancellationToken)
     {
         SetupFindCoordinator();
+        var telemetry = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Consumer);
+        var rebalancePrefix = StandardClientTelemetryMetrics.RebalancePrefix;
+        telemetry.Subscribe([rebalancePrefix]);
         var revoked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var synchronousRelease = new ManualResetEventSlim();
@@ -61,7 +65,10 @@ public sealed partial class ConsumerCoordinatorKip848Tests
                 });
             });
         await using var coordinator = new ConsumerCoordinator(
-            CreateConsumerProtocolOptions(rebalanceListener: listener), _connectionPool, _metadataManager);
+            CreateConsumerProtocolOptions(rebalanceListener: listener), _connectionPool, _metadataManager)
+        {
+            TelemetryMetricCollector = telemetry
+        };
         try
         {
             await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, cancellationToken);
@@ -78,6 +85,13 @@ public sealed partial class ConsumerCoordinatorKip848Tests
             synchronousRelease.Set();
             await acknowledged.Task.WaitAsync(cancellationToken);
             await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("test-topic", newerTarget ? 1 : 0)]);
+            var metrics = telemetry.Collect(new ClientTelemetrySubscription(
+                Guid.NewGuid(), 1, 0, 1000, 10000, false, [rebalancePrefix])).Metrics;
+            var average = metrics.Single(metric => metric.Name == rebalancePrefix + "avg").Value;
+            var total = metrics.Single(metric => metric.Name == rebalancePrefix + "total").Value;
+            await Assert.That(average).IsGreaterThan(0d);
+            // Initial join, first revocation, and (when present) the deferred target each count once.
+            await Assert.That(Math.Round(total / average)).IsEqualTo(newerTarget ? 3d : 2d);
             await listener.Received(newerTarget ? 2 : 1).OnPartitionsRevokedAsync(
                 Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>());
         }
