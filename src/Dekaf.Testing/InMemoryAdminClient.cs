@@ -732,14 +732,18 @@ public sealed partial class InMemoryAdminClient :
         var items = AdminClient.SnapshotDetailedConfigs(configs, static entry => ConfigAlter.Set(entry.Name, entry.Value));
         if (items.Count == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        var firstError = ErrorCode.None;
         foreach (var item in items)
         {
             await ApplyAdminResourceFaultAsync(item.Resource, cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             var error = _cluster.AlterShareIsolation(item.Resource, item.Changes, replace: true, options?.ValidateOnly ?? false);
-            if (error != ErrorCode.None)
-                throw KafkaException.FromErrorCode(error, "Invalid share.isolation.level configuration.");
+            if (firstError == ErrorCode.None)
+                firstError = error;
         }
+
+        if (firstError != ErrorCode.None)
+            throw KafkaException.FromErrorCode(firstError, "Invalid share.isolation.level configuration.");
     }
 
     public async ValueTask IncrementalAlterConfigsAsync(
@@ -754,14 +758,18 @@ public sealed partial class InMemoryAdminClient :
             { Name = change.Name, Value = change.Value, Operation = change.Operation });
         if (items.Count == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        var firstError = ErrorCode.None;
         foreach (var item in items)
         {
             await ApplyAdminResourceFaultAsync(item.Resource, cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             var error = _cluster.AlterShareIsolation(item.Resource, item.Changes, replace: false, options?.ValidateOnly ?? false);
-            if (error != ErrorCode.None)
-                throw KafkaException.FromErrorCode(error, "Invalid share.isolation.level configuration.");
+            if (firstError == ErrorCode.None)
+                firstError = error;
         }
+
+        if (firstError != ErrorCode.None)
+            throw KafkaException.FromErrorCode(firstError, "Invalid share.isolation.level configuration.");
     }
 
     public async ValueTask CreateAclsAsync(

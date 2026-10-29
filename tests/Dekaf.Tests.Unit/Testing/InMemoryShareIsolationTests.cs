@@ -146,6 +146,42 @@ public sealed class InMemoryShareIsolationTests
     }
 
     [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task MixedConfigMutation_AppliesValidGroupsBeforeThrowing(bool incremental, bool invalidFirst)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await using var admin = new InMemoryAdminClient(cluster);
+        await MutateAsync(admin, detailed: false, incremental, "read_committed");
+        var other = new ConfigResource { Type = ConfigResourceType.Group, Name = "other" };
+        var resources = invalidFirst ? new[] { Workers, other } : new[] { other, Workers };
+
+        var error = await Assert.ThrowsAsync<KafkaException>(async () =>
+        {
+            if (incremental)
+            {
+                var configs = new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>();
+                foreach (var resource in resources)
+                    configs.Add(resource, [ConfigAlter.Set(IsolationConfig, resource == Workers ? "invalid" : "read_committed")]);
+                await admin.IncrementalAlterConfigsAsync(configs);
+            }
+            else
+            {
+                var configs = new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>>();
+                foreach (var resource in resources)
+                    configs.Add(resource, [new() { Name = IsolationConfig, Value = resource == Workers ? "invalid" : "read_committed" }]);
+                await admin.AlterConfigsAsync(configs);
+            }
+        });
+
+        await Assert.That(error!.ErrorCode).IsEqualTo(ErrorCode.InvalidConfig);
+        await AssertIsolationAsync(admin, Workers, "read_committed", isDefault: false);
+        await AssertIsolationAsync(admin, other, "read_committed", isDefault: false);
+    }
+
+    [Test]
     [Arguments(ConfigAlterOperation.Append)]
     [Arguments(ConfigAlterOperation.Subtract)]
     public async Task ListOperation_IsRejectedForScalarIsolation(ConfigAlterOperation operation)
