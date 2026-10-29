@@ -85,9 +85,29 @@ internal sealed class LazyConsumeHeaders : IReadOnlyList<Header>
     {
         ThrowIfStale();
 
-        var snapshot = new Header[_count];
-        _pooledHeaders.AsSpan(0, _count).CopyTo(snapshot);
+        // Header values are slices of pooled record storage that the next fetch reuses, so copy
+        // them into one exact-size array owned by the snapshot: one allocation per materialization.
+        var pooledHeaders = _pooledHeaders.AsSpan(0, _count);
+        var valueBytes = 0;
+        foreach (ref readonly var header in pooledHeaders)
+        {
+            if (!header.IsValueNull)
+                valueBytes += header.RawValue.Length;
+        }
 
+        var values = valueBytes == 0 ? Array.Empty<byte>() : GC.AllocateUninitializedArray<byte>(valueBytes);
+        var snapshot = new Header[_count];
+        var offset = 0;
+        for (var index = 0; index < snapshot.Length; index++)
+        {
+            ref readonly var header = ref pooledHeaders[index];
+            var length = header.IsValueNull ? 0 : header.RawValue.Length;
+            header.RawValue.Span[..length].CopyTo(values.AsSpan(offset));
+            snapshot[index] = new Header(header.Key, values.AsMemory(offset, length), header.IsValueNull);
+            offset += length;
+        }
+
+        // A copy that raced with disposal may hold another fetch's bytes; never publish it.
         ThrowIfStale();
 
         var published = Interlocked.CompareExchange(ref _snapshot, snapshot, null);

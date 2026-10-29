@@ -16,6 +16,7 @@ public class RecordHeaderMaterializationBenchmarks
     private IDeserializer<string> _valueDeserializer = null!;
     private Headers _materializedHeaders = null!;
     private RecordHeaderRoutingLookup _headerLookup;
+    private Header[] _pooledHeaders = null!;
 
     [GlobalSetup]
     public void Setup()
@@ -31,6 +32,7 @@ public class RecordHeaderMaterializationBenchmarks
         var headers = new Header[32];
         for (var index = 0; index < headers.Length; index++)
             headers[index] = new Header($"header-{index}", Data);
+        _pooledHeaders = headers;
         _headerLookup = new RecordHeaderRoutingLookup(
             plan,
             headers,
@@ -40,6 +42,7 @@ public class RecordHeaderMaterializationBenchmarks
             routedHeaderTailOffset: RecordHeaderRoutingPlan.FullyIndexedWithoutTail);
 
         _ = TwoDecoratorsWith32Headers();
+        _ = LazyHeadersFirstAccessWith32Headers();
     }
 
     [GlobalCleanup]
@@ -65,6 +68,14 @@ public class RecordHeaderMaterializationBenchmarks
             _materializedHeaders,
             _keyDeserializer,
             _valueDeserializer);
+
+    [Benchmark]
+    public Header LazyHeadersFirstAccessWith32Headers() =>
+        LazyConsumeHeaders.Create(
+            _pooledHeaders,
+            _pooledHeaders.Length,
+            _headerOwner,
+            _headerOwner.HeaderGeneration)[0];
 
     private sealed class HeaderDeserializer : IDeserializer<string>, IRecordHeaderDeserializer
     {
