@@ -1397,6 +1397,68 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         }
     }
 
+    [Test]
+    [Timeout(30_000)]
+    public async Task LeaderHandoff_SourceUnmutesDuringDestinationCoalesce_PreservesForwardedOrder(CancellationToken ct)
+    {
+        var responses = Enumerable.Range(0, 2).Select(index =>
+        {
+            var response = new TaskCompletionSource<ProduceResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+            response.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: index));
+            return response;
+        }).ToArray();
+        var (pool, _) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>(responses));
+        ct = GuardUnscriptedSends(ct);
+        var options = CreateOptions(enableIdempotence: false);
+        await using var accumulator = new RecordAccumulator(options);
+        await using var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        var first = CreateTestBatch(vtPool, "test-topic", 0, messageCount: 1);
+        var second = CreateTestBatch(vtPool, "test-topic", 0, messageCount: 2);
+        var topicPartition = first.TopicPartition;
+        accumulator.MutePartition(topicPartition);
+        var muteReleased = 0;
+        var iterationGate = new TwoIterationGateLogger(onPartitionMuted: () =>
+        {
+            // Model the source finishing its barrier after the destination observes A's
+            // mute, but before the destination examines B in the same coalesce pass.
+            if (Interlocked.Exchange(ref muteReleased, 1) == 0)
+                accumulator.UnmutePartition(topicPartition);
+        });
+        iterationGate.ReleaseSecond();
+        var acknowledgedCounts = new List<int>();
+        var allAcknowledged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var destination = CreateSender(pool, options, accumulator, (_, _, _, count, exception) =>
+        {
+            if (exception is not null)
+            {
+                allAcknowledged.TrySetException(exception);
+                return;
+            }
+
+            acknowledgedCounts.Add(count);
+            if (acknowledgedCounts.Count == 2)
+                allAcknowledged.TrySetResult();
+        }, brokerId: 2, logger: iterationGate);
+
+        try
+        {
+            await iterationGate.FirstIteration.Task.WaitAsync(DiagnosticWaitTimeout, ct);
+            // Rerouting clears IsRetry before publishing to the actual destination sender.
+            destination.EnqueueBulk([first, second]);
+            iterationGate.ReleaseFirst();
+            await allAcknowledged.Task.WaitAsync(DiagnosticWaitTimeout, ct);
+
+            await Assert.That(Volatile.Read(ref muteReleased)).IsEqualTo(1);
+            await Assert.That(acknowledgedCounts).Count().IsEqualTo(2);
+            await Assert.That(acknowledgedCounts[0]).IsEqualTo(1);
+            await Assert.That(acknowledgedCounts[1]).IsEqualTo(2);
+        }
+        finally
+        {
+            iterationGate.ReleaseFirst();
+        }
+    }
+
     /// <summary>
     /// Core muting test: a retriable error on partition 0 should mute it, blocking
     /// subsequent normal batches for partition 0 until the retry succeeds.
@@ -2304,7 +2366,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         }
     }
 
-    private sealed class TwoIterationGateLogger : ILogger
+    private sealed class TwoIterationGateLogger(Action? onPartitionMuted = null) : ILogger
     {
         private readonly TaskCompletionSource _firstRelease =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2333,6 +2395,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
+            if (eventId.Name == "LogPartitionMuted")
+                onPartitionMuted?.Invoke();
+
             if (eventId.Name != "LogSendLoopIteration"
                 && !formatter(state, exception).Contains("send loop iteration", StringComparison.Ordinal))
             {

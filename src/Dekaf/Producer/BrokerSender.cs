@@ -1756,6 +1756,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // multi-partition workloads to fill all partition slots from the channel.
                 // On main, the bounded channel (capacity 10) prevents this naturally;
                 // the unbounded event channel needs an explicit budget instead.
+                // A pending reroute barrier bypasses that budget to reach the marker;
+                // carry-over can temporarily grow with the channel's pre-barrier backlog.
                 {
                     var carryOverBudget = maxCoalesce - carryOver.Count;
                     var channelReads = 0;
@@ -2760,10 +2762,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Normal batch: skip any local retry/recovery mute and crash barriers owned by
         // another sender. The accumulator check closes the handoff gap before the first
         // recovered batch reaches this replacement sender.
-        if (_transactionEnrollmentPendingPartitions.Contains(batch.TopicPartition)
-            || _mutedPartitions.ContainsKey(batch.TopicPartition)
-            || _accumulator.IsMuted(batch.TopicPartition))
+        var locallyMuted = _transactionEnrollmentPendingPartitions.Contains(batch.TopicPartition)
+            || _mutedPartitions.ContainsKey(batch.TopicPartition);
+        if (locallyMuted || _accumulator.IsMuted(batch.TopicPartition))
         {
+            // Another sender can release its handoff mute during this pass. Reserve the
+            // partition so a later channel batch cannot overtake this carried-over batch.
+            if (!locallyMuted)
+                coalescedPartitions.Add(batch.TopicPartition);
+
             LogPartitionMuted(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
             batch.AppendDiag('O');
             RequeueBatch(carryOver, batchRef, fromCarryOver);
