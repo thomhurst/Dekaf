@@ -142,3 +142,5 @@ Dekaf.Testing.InMemoryShareConsumerOptions.DeadLetterQueueTopic.get -> string?
 Dekaf.Testing.InMemoryShareConsumerOptions.DeadLetterQueueTopic.init -> void
 Dekaf.Testing.InMemoryKafkaClusterOptions.Partitioner.get -> Dekaf.Producer.IPartitioner?
 Dekaf.Testing.InMemoryKafkaClusterOptions.Partitioner.set -> void
+Dekaf.Testing.InMemoryKafkaClusterOptions.DeliveryCountLimit.get -> int
+Dekaf.Testing.InMemoryKafkaClusterOptions.DeliveryCountLimit.init -> void

@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Dekaf.Admin;
 using Dekaf.Consumer;
@@ -9,6 +8,7 @@ using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Producer;
 using Dekaf.Serialization;
+using Dekaf.ShareConsumer;
 
 namespace Dekaf.Testing;
 
@@ -30,14 +30,12 @@ public sealed partial class InMemoryKafkaCluster
     private readonly ConcurrentDictionary<string, int> _consumerGroupGenerations = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, int>> _shareGroupMembers = new(StringComparer.Ordinal);
     private readonly HashSet<string> _shareGroupsWithMemberHistory = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, ShareGroupMemberRegistration>>> _shareLeases = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, int>>> _shareDeliveryCounts = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, ShareRecordState>>> _shareRecords = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Exception> _produceFailures = new(StringComparer.Ordinal);
     private readonly Dictionary<PreparedTransactionState, IInMemoryPreparedTransaction> _preparedTransactions = [];
     private readonly Dictionary<InMemoryTransactionMarker, List<PartitionState>> _transactionPartitions = [];
     private readonly InMemoryKafkaClusterOptions _options;
     private TaskCompletionSource _recordsChanged = NewRecordsChangedSource();
-    private long[] _shareDeliveryRemovalOffsets = [];
     private long _topologyVersion;
     private long _nextProducerId;
     private long _nextConsumerGroupRegistrationId;
@@ -67,6 +65,7 @@ public sealed partial class InMemoryKafkaCluster
         ArgumentNullException.ThrowIfNull(faultPlan);
         ArgumentNullException.ThrowIfNull(options.SupportedFeatures);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.DefaultPartitionCount, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(options.DeliveryCountLimit, 1);
         _options = options;
         FaultPlan = faultPlan;
     }
@@ -780,70 +779,15 @@ public sealed partial class InMemoryKafkaCluster
         out InMemoryRecord record,
         out int deliveryCount)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
-
         lock (_gate)
         {
-            if (!registration.IsActive)
+            if (!TryAcquireShareRecordUnderLock(groupId, memberId, registration, topicPartition, offset, out record, out var state))
             {
-                record = null!;
                 deliveryCount = 0;
                 return false;
             }
 
-            if (!TryReadRecordUnderLock(
-                    topicPartition,
-                    offset,
-                    GetShareIsolationUnderLock(groupId),
-                    out var candidate,
-                    out _))
-            {
-                record = null!;
-                deliveryCount = 0;
-                return false;
-            }
-
-            var partitionLeases = GetShareLeasePartition(groupId, topicPartition, create: true)!;
-            var hasLease = partitionLeases.TryGetValue(candidate.Offset, out var leaseRegistration);
-            if (hasLease)
-            {
-                var existingRegistration = leaseRegistration!;
-                if (!StringComparer.Ordinal.Equals(existingRegistration.MemberId, memberId) ||
-                    (!ReferenceEquals(existingRegistration, registration) &&
-                     existingRegistration.IsActive))
-                {
-                    record = null!;
-                    deliveryCount = 0;
-                    return false;
-                }
-
-                if (!ReferenceEquals(existingRegistration, registration))
-                {
-                    partitionLeases[candidate.Offset] = registration;
-                    deliveryCount = RecordShareRedeliveryUnderLock(
-                        groupId,
-                        topicPartition,
-                        candidate.Offset);
-                    record = CloneRecord(candidate);
-                    return true;
-                }
-            }
-
-            var partitionDeliveryCounts = GetShareDeliveryCountPartition(groupId, topicPartition, create: true)!;
-            if (!hasLease)
-            {
-                partitionDeliveryCounts.TryGetValue(candidate.Offset, out deliveryCount);
-                deliveryCount++;
-                partitionDeliveryCounts[candidate.Offset] = deliveryCount;
-                partitionLeases[candidate.Offset] = registration;
-            }
-            else
-            {
-                deliveryCount = partitionDeliveryCounts.GetValueOrDefault(candidate.Offset, 1);
-            }
-
-            record = CloneRecord(candidate);
+            deliveryCount = ++state.DeliveryCount;
             return true;
         }
     }
@@ -856,48 +800,66 @@ public sealed partial class InMemoryKafkaCluster
         long offset,
         out InMemoryRecord record)
     {
+        lock (_gate)
+            return TryAcquireShareRecordUnderLock(groupId, memberId, registration, topicPartition, offset, out record, out _);
+    }
+
+    private bool TryAcquireShareRecordUnderLock(
+        string groupId,
+        string memberId,
+        ShareGroupMemberRegistration registration,
+        TopicPartition topicPartition,
+        long offset,
+        out InMemoryRecord record,
+        out ShareRecordState state)
+    {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
         ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
+        record = null!;
+        state = null!;
+        if (!registration.IsActive ||
+            !_topics.TryGetValue(topicPartition.Topic, out var topic) ||
+            (uint)topicPartition.Partition >= (uint)topic.Partitions.Count)
+            return false;
 
-        lock (_gate)
+        offset = Math.Max(offset, GetCommittedShareOffset(groupId, topicPartition) ?? GetWatermarks(topicPartition).Low);
+        var partition = topic.Partitions[topicPartition.Partition];
+        var records = GetShareRecordPartition(groupId, topicPartition, create: true)!;
+        var isolationLevel = GetShareIsolationUnderLock(groupId);
+        foreach (var candidate in partition.Records)
         {
-            if (!registration.IsActive)
+            if (isolationLevel == IsolationLevel.ReadCommitted &&
+                candidate.Offset >= partition.FirstUnstableOffset)
+                break;
+            if (candidate.Offset < offset ||
+                (isolationLevel == IsolationLevel.ReadCommitted && !IsRecordVisibleUnderLock(candidate)))
+                continue;
+            if (!records.TryGetValue(candidate.Offset, out var candidateState))
             {
-                record = null!;
-                return false;
+                candidateState = new ShareRecordState();
+                records.Add(candidate.Offset, candidateState);
             }
 
-            if (!TryReadRecordUnderLock(
-                    topicPartition,
-                    offset,
-                    GetShareIsolationUnderLock(groupId),
-                    out var candidate,
-                    out _))
+            if (candidateState.Archived || candidateState.Registration is { IsActive: true })
+                continue;
+
+            // An inactive member's lease is available to every member, including a different ID.
+            if (candidateState.DeliveryCount >= _options.DeliveryCountLimit)
             {
-                record = null!;
-                return false;
+                candidateState.Registration = null;
+                candidateState.Archived = true;
+                AdvanceShareStartOffsetUnderLock(groupId, topicPartition, records);
+                offset = Math.Max(offset, GetCommittedShareOffset(groupId, topicPartition) ?? offset);
+                continue;
             }
 
-            var partitionLeases = GetShareLeasePartition(groupId, topicPartition, create: true)!;
-            var hasLease = partitionLeases.TryGetValue(candidate.Offset, out var leaseRegistration);
-            if (hasLease)
-            {
-                var existingRegistration = leaseRegistration!;
-                if (!StringComparer.Ordinal.Equals(existingRegistration.MemberId, memberId) ||
-                    (!ReferenceEquals(existingRegistration, registration) &&
-                     existingRegistration.IsActive))
-                {
-                    record = null!;
-                    return false;
-                }
-            }
-
-            if (!hasLease || !ReferenceEquals(leaseRegistration, registration))
-                partitionLeases[candidate.Offset] = registration;
-
+            candidateState.Registration = registration;
+            state = candidateState;
             record = CloneRecord(candidate);
             return true;
         }
+
+        return false;
     }
 
     internal bool TryCompleteShareRecordAcquisition(
@@ -910,62 +872,17 @@ public sealed partial class InMemoryKafkaCluster
     {
         lock (_gate)
         {
-            if (!registration.IsActive ||
-                !_shareLeases.TryGetValue(groupId, out var groupLeases) ||
-                !groupLeases.TryGetValue(topicPartition, out var partitionLeases) ||
-                !partitionLeases.TryGetValue(offset, out var lease) ||
-                !StringComparer.Ordinal.Equals(lease.MemberId, memberId) ||
-                !ReferenceEquals(lease, registration))
+            var records = GetShareRecordPartition(groupId, topicPartition, create: false);
+            if (!registration.IsActive || records is null ||
+                !records.TryGetValue(offset, out var state) ||
+                !OwnsShareRecord(state, memberId, registration))
             {
                 deliveryCount = 0;
                 return false;
             }
 
-            deliveryCount = RecordShareRedeliveryUnderLock(groupId, topicPartition, offset);
+            deliveryCount = ++state.DeliveryCount;
             return true;
-        }
-    }
-
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private int RecordShareRedeliveryUnderLock(
-        string groupId,
-        TopicPartition topicPartition,
-        long offset)
-    {
-        var partitionDeliveryCounts = GetShareDeliveryCountPartition(
-            groupId,
-            topicPartition,
-            create: true)!;
-        partitionDeliveryCounts.TryGetValue(offset, out var deliveryCount);
-        deliveryCount++;
-        partitionDeliveryCounts[offset] = deliveryCount;
-        return deliveryCount;
-    }
-
-    internal void CompleteShareRecords(
-        string groupId,
-        string memberId,
-        ShareGroupMemberRegistration registration,
-        IEnumerable<TopicPartitionOffset> completedRecords,
-        IEnumerable<TopicPartitionOffset> commitOffsets)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
-        ArgumentNullException.ThrowIfNull(completedRecords);
-        ArgumentNullException.ThrowIfNull(commitOffsets);
-
-        var completed = completedRecords.ToArray();
-        var commits = commitOffsets.ToArray();
-
-        lock (_gate)
-        {
-            ReleaseShareLeasesUnderLock(groupId, memberId, registration, completed);
-            if (commits.Length > 0)
-            {
-                CommitShareOffsetsUnderLock(groupId, commits);
-                foreach (var commitOffset in commits)
-                    RemoveCommittedShareDeliveryCountsUnderLock(groupId, commitOffset);
-            }
         }
     }
 
@@ -978,45 +895,55 @@ public sealed partial class InMemoryKafkaCluster
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
         ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
         ArgumentNullException.ThrowIfNull(records);
-
         lock (_gate)
-            ReleaseShareLeasesUnderLock(groupId, memberId, registration, records);
+        {
+            foreach (var record in records)
+                CompleteShareRecordUnderLock(groupId, memberId, registration, record, AcknowledgeType.Release);
+        }
     }
 
     internal void CompleteShareRecords(
         string groupId,
         string memberId,
         ShareGroupMemberRegistration registration,
-        TopicPartitionOffset[] completedRecords,
-        int completedRecordCount,
-        TopicPartitionOffset[] commitOffsets,
-        int commitOffsetCount)
+        InMemoryShareRecordCompletion[] records,
+        int recordCount)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
         ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
-        ArgumentNullException.ThrowIfNull(completedRecords);
-        ArgumentNullException.ThrowIfNull(commitOffsets);
-        ArgumentOutOfRangeException.ThrowIfNegative(completedRecordCount);
-        ArgumentOutOfRangeException.ThrowIfNegative(commitOffsetCount);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(completedRecordCount, completedRecords.Length);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(commitOffsetCount, commitOffsets.Length);
-
+        ArgumentNullException.ThrowIfNull(records);
+        ArgumentOutOfRangeException.ThrowIfNegative(recordCount);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(recordCount, records.Length);
         lock (_gate)
         {
-            ReleaseShareLeasesUnderLock(
-                groupId,
-                memberId,
-                registration,
-                completedRecords,
-                completedRecordCount);
-            if (commitOffsetCount == 0)
-                return;
-
-            CommitShareOffsetsUnderLock(groupId, commitOffsets, commitOffsetCount);
-            for (var index = 0; index < commitOffsetCount; index++)
-                RemoveCommittedShareDeliveryCountsUnderLock(groupId, commitOffsets[index]);
+            for (var index = 0; index < recordCount; index++)
+                CompleteShareRecordUnderLock(groupId, memberId, registration, records[index].Offset, records[index].Type);
         }
     }
+
+    private void CompleteShareRecordUnderLock(
+        string groupId,
+        string memberId,
+        ShareGroupMemberRegistration registration,
+        TopicPartitionOffset record,
+        AcknowledgeType type)
+    {
+        var partition = new TopicPartition(record.Topic, record.Partition);
+        var records = GetShareRecordPartition(groupId, partition, create: false);
+        if (records is null || !records.TryGetValue(record.Offset, out var state) ||
+            !OwnsShareRecord(state, memberId, registration))
+            return;
+
+        state.Registration = null;
+        state.Archived = type is AcknowledgeType.Accept or AcknowledgeType.Reject ||
+                         state.DeliveryCount >= _options.DeliveryCountLimit;
+        if (state.Archived)
+            AdvanceShareStartOffsetUnderLock(groupId, partition, records);
+    }
+
+    private static bool OwnsShareRecord(ShareRecordState state, string memberId, ShareGroupMemberRegistration registration) =>
+        ReferenceEquals(state.Registration, registration) &&
+        StringComparer.Ordinal.Equals(registration.MemberId, memberId);
 
     internal string? GetTopicName(Guid topicId)
     {
@@ -1042,22 +969,10 @@ public sealed partial class InMemoryKafkaCluster
     {
         lock (_gate)
         {
-            if (!_shareLeases.TryGetValue(groupId, out var groupLeases) ||
-                !groupLeases.TryGetValue(topicPartition, out var partitionLeases) ||
-                !partitionLeases.TryGetValue(offset, out var lease) ||
-                !StringComparer.Ordinal.Equals(lease.MemberId, memberId) ||
-                !ReferenceEquals(lease, registration))
-            {
-                return;
-            }
-
-            partitionLeases.Remove(offset);
-            if (partitionLeases.Count == 0)
-            {
-                groupLeases.Remove(topicPartition);
-                if (groupLeases.Count == 0)
-                    _shareLeases.Remove(groupId);
-            }
+            var records = GetShareRecordPartition(groupId, topicPartition, create: false);
+            if (records is not null && records.TryGetValue(offset, out var state) &&
+                OwnsShareRecord(state, memberId, registration))
+                state.Registration = null;
         }
     }
 
@@ -1293,8 +1208,7 @@ public sealed partial class InMemoryKafkaCluster
             var groupIds = new HashSet<string>(_shareGroupsWithMemberHistory, StringComparer.Ordinal);
             groupIds.UnionWith(_shareGroupOffsets.Keys);
             groupIds.UnionWith(_shareGroupMembers.Keys);
-            groupIds.UnionWith(_shareLeases.Keys);
-            groupIds.UnionWith(_shareDeliveryCounts.Keys);
+            groupIds.UnionWith(_shareRecords.Keys);
             var result = new InMemoryShareGroupListing[groupIds.Count];
             var index = 0;
             foreach (var groupId in groupIds.Order(StringComparer.Ordinal))
@@ -1365,19 +1279,17 @@ public sealed partial class InMemoryKafkaCluster
         {
             var hasOffsets = _shareGroupOffsets.ContainsKey(groupId);
             var hasMembers = _shareGroupMembers.TryGetValue(groupId, out var members);
-            var hasLeases = _shareLeases.TryGetValue(groupId, out var leases);
-            var hasDeliveryCounts = _shareDeliveryCounts.ContainsKey(groupId);
+            var hasRecords = _shareRecords.TryGetValue(groupId, out var records);
             var hasMemberHistory = _shareGroupsWithMemberHistory.Contains(groupId);
-            if (!hasOffsets && !hasMembers && !hasLeases && !hasDeliveryCounts && !hasMemberHistory)
+            if (!hasOffsets && !hasMembers && !hasRecords && !hasMemberHistory)
                 return ErrorCode.GroupIdNotFound;
 
-            if (members is { Count: > 0 } || leases is { Count: > 0 })
+            if (members is { Count: > 0 } || (records is not null && HasShareRecordLeases(records)))
                 return ErrorCode.NonEmptyGroup;
 
             _shareGroupOffsets.Remove(groupId);
             _shareGroupMembers.Remove(groupId);
-            _shareLeases.Remove(groupId);
-            _shareDeliveryCounts.Remove(groupId);
+            _shareRecords.Remove(groupId);
             _shareGroupsWithMemberHistory.Remove(groupId);
             return ErrorCode.None;
         }
@@ -1819,24 +1731,6 @@ public sealed partial class InMemoryKafkaCluster
         while (enumerator.MoveNext());
     }
 
-    private void CommitShareOffsetsUnderLock(
-        string groupId,
-        TopicPartitionOffset[] offsets,
-        int offsetCount)
-    {
-        if (!_shareGroupOffsets.TryGetValue(groupId, out var groupOffsets))
-        {
-            groupOffsets = [];
-            _shareGroupOffsets[groupId] = groupOffsets;
-        }
-
-        for (var index = 0; index < offsetCount; index++)
-        {
-            var offset = offsets[index];
-            groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset;
-        }
-    }
-
     private bool ContainsTopicPartitionUnderLock(TopicPartition topicPartition) =>
         GetTopicPartitionErrorUnderLock(topicPartition) == ErrorCode.None;
 
@@ -1858,145 +1752,86 @@ public sealed partial class InMemoryKafkaCluster
         return hadGeneration || existed || hadStreamsType;
     }
 
-    private Dictionary<long, ShareGroupMemberRegistration>? GetShareLeasePartition(
+    private Dictionary<long, ShareRecordState>? GetShareRecordPartition(
         string groupId,
         TopicPartition topicPartition,
         bool create)
     {
-        if (!_shareLeases.TryGetValue(groupId, out var groupLeases))
+        if (!_shareRecords.TryGetValue(groupId, out var groupRecords))
         {
             if (!create)
                 return null;
-
-            groupLeases = [];
-            _shareLeases[groupId] = groupLeases;
+            groupRecords = [];
+            _shareRecords.Add(groupId, groupRecords);
         }
 
-        if (!groupLeases.TryGetValue(topicPartition, out var partitionLeases))
+        if (!groupRecords.TryGetValue(topicPartition, out var records))
         {
             if (!create)
                 return null;
-
-            partitionLeases = [];
-            groupLeases[topicPartition] = partitionLeases;
+            records = [];
+            groupRecords.Add(topicPartition, records);
         }
-
-        return partitionLeases;
+        return records;
     }
 
-    private Dictionary<long, int>? GetShareDeliveryCountPartition(
+    private void AdvanceShareStartOffsetUnderLock(
         string groupId,
-        TopicPartition topicPartition,
-        bool create)
+        TopicPartition partition,
+        Dictionary<long, ShareRecordState> records)
     {
-        if (!_shareDeliveryCounts.TryGetValue(groupId, out var groupCounts))
-        {
-            if (!create)
-                return null;
-
-            groupCounts = [];
-            _shareDeliveryCounts[groupId] = groupCounts;
-        }
-
-        if (!groupCounts.TryGetValue(topicPartition, out var partitionCounts))
-        {
-            if (!create)
-                return null;
-
-            partitionCounts = [];
-            groupCounts[topicPartition] = partitionCounts;
-        }
-
-        return partitionCounts;
-    }
-
-    private void ReleaseShareLeasesUnderLock(
-        string groupId,
-        string memberId,
-        ShareGroupMemberRegistration registration,
-        IEnumerable<TopicPartitionOffset> records)
-    {
-        if (!_shareLeases.TryGetValue(groupId, out var groupLeases))
+        if (!_topics.TryGetValue(partition.Topic, out var topic) ||
+            (uint)partition.Partition >= (uint)topic.Partitions.Count)
             return;
 
-        foreach (var record in records)
+        var start = GetCommittedShareOffset(groupId, partition) ?? GetWatermarks(partition).Low;
+        var next = start;
+        var partitionState = topic.Partitions[partition.Partition];
+        foreach (var record in partitionState.Records)
         {
-            var topicPartition = new TopicPartition(record.Topic, record.Partition);
-            if (!groupLeases.TryGetValue(topicPartition, out var partitionLeases) ||
-                !partitionLeases.TryGetValue(record.Offset, out var lease) ||
-                !StringComparer.Ordinal.Equals(lease.MemberId, memberId) ||
-                !ReferenceEquals(lease, registration))
-            {
+            if (record.Offset >= partitionState.FirstUnstableOffset)
+                break;
+            if (record.Offset < next)
                 continue;
-            }
-
-            partitionLeases.Remove(record.Offset);
-            if (partitionLeases.Count == 0)
-                groupLeases.Remove(topicPartition);
-        }
-
-        if (groupLeases.Count == 0)
-            _shareLeases.Remove(groupId);
-    }
-
-    private void ReleaseShareLeasesUnderLock(
-        string groupId,
-        string memberId,
-        ShareGroupMemberRegistration registration,
-        TopicPartitionOffset[] records,
-        int recordCount)
-    {
-        if (!_shareLeases.TryGetValue(groupId, out var groupLeases))
-            return;
-
-        for (var index = 0; index < recordCount; index++)
-        {
-            var record = records[index];
-            var topicPartition = new TopicPartition(record.Topic, record.Partition);
-            if (!groupLeases.TryGetValue(topicPartition, out var partitionLeases) ||
-                !partitionLeases.TryGetValue(record.Offset, out var lease) ||
-                !StringComparer.Ordinal.Equals(lease.MemberId, memberId) ||
-                !ReferenceEquals(lease, registration))
+            next = record.Offset;
+            if (IsRecordVisibleUnderLock(record))
             {
-                continue;
+                if (!records.TryGetValue(next, out var state) || !state.Archived)
+                    break;
+                records.Remove(next);
             }
-
-            partitionLeases.Remove(record.Offset);
-            if (partitionLeases.Count == 0)
-                groupLeases.Remove(topicPartition);
+            next++;
         }
 
-        if (groupLeases.Count == 0)
-            _shareLeases.Remove(groupId);
+        if (next <= start)
+            return;
+        if (!_shareGroupOffsets.TryGetValue(groupId, out var offsets))
+        {
+            offsets = [];
+            _shareGroupOffsets.Add(groupId, offsets);
+        }
+        offsets[partition] = new TopicPartitionOffset(partition.Topic, partition.Partition, next);
     }
 
-    private void RemoveCommittedShareDeliveryCountsUnderLock(string groupId, TopicPartitionOffset commitOffset)
+    private static bool HasShareRecordLeases(Dictionary<TopicPartition, Dictionary<long, ShareRecordState>> partitions)
     {
-        var topicPartition = new TopicPartition(commitOffset.Topic, commitOffset.Partition);
-        var partitionCounts = GetShareDeliveryCountPartition(groupId, topicPartition, create: false);
-        if (partitionCounts is null)
-            return;
-
-        if (_shareDeliveryRemovalOffsets.Length < partitionCounts.Count)
-            Array.Resize(ref _shareDeliveryRemovalOffsets, partitionCounts.Count);
-
-        var removalCount = 0;
-        foreach (var pair in partitionCounts)
+        foreach (var records in partitions.Values)
         {
-            if (pair.Key < commitOffset.Offset)
-                _shareDeliveryRemovalOffsets[removalCount++] = pair.Key;
+            foreach (var state in records.Values)
+            {
+                // A closed member can still have an in-flight deserializer releasing its lease.
+                if (state.Registration is not null)
+                    return true;
+            }
         }
+        return false;
+    }
 
-        for (var index = 0; index < removalCount; index++)
-            partitionCounts.Remove(_shareDeliveryRemovalOffsets[index]);
-
-        if (partitionCounts.Count == 0 &&
-            _shareDeliveryCounts.TryGetValue(groupId, out var groupCounts))
-        {
-            groupCounts.Remove(topicPartition);
-            if (groupCounts.Count == 0)
-                _shareDeliveryCounts.Remove(groupId);
-        }
+    private sealed class ShareRecordState
+    {
+        public ShareGroupMemberRegistration? Registration { get; set; }
+        public int DeliveryCount { get; set; }
+        public bool Archived { get; set; }
     }
 
     private TopicState GetTopicForRead(string name)
@@ -2205,3 +2040,5 @@ internal sealed class ShareGroupMemberRegistration
     internal string MemberId { get; }
     internal bool IsActive { get; set; } = true;
 }
+
+internal readonly record struct InMemoryShareRecordCompletion(TopicPartitionOffset Offset, AcknowledgeType Type);

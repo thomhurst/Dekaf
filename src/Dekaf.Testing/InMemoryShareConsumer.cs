@@ -29,8 +29,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     private readonly SemaphoreSlim _commitSemaphore = new(1, 1);
     private KeyValuePair<ShareConsumeResult<TKey, TValue>, PendingShareRecord>[] _commitSnapshot = [];
     private PendingShareRecord[] _commitRecords = [];
-    private TopicPartitionOffset[] _completedRecords = [];
-    private TopicPartitionOffset[] _commitOffsets = [];
+    private InMemoryShareRecordCompletion[] _completedRecords = [];
     private readonly string _memberId;
     private ShareGroupMemberRegistration? _registration;
     private int _shareFaultIndexVersion = -1;
@@ -786,10 +785,6 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         out int deliveryCount,
         out ShareGroupMemberRegistration acquiredRegistration)
     {
-        long offset;
-        lock (_gate)
-            offset = GetNextOffsetUnderLock(partition);
-
         if (registration is null)
         {
             record = null!;
@@ -804,7 +799,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             _memberId,
             registration,
             partition,
-            offset,
+            offset: 0,
             out record,
             out deliveryCount);
     }
@@ -815,10 +810,6 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         out InMemoryRecord record,
         out ShareGroupMemberRegistration acquiredRegistration)
     {
-        long offset;
-        lock (_gate)
-            offset = GetNextOffsetUnderLock(partition);
-
         if (registration is null)
         {
             record = null!;
@@ -832,7 +823,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             _memberId,
             registration,
             partition,
-            offset,
+            offset: 0,
             out record);
     }
 
@@ -974,20 +965,6 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         };
     }
 
-    private long GetNextOffsetUnderLock(TopicPartition partition)
-    {
-        var offset = _cluster.GetCommittedShareOffset(_options.GroupId, partition) ??
-                     _cluster.GetWatermarks(partition).Low;
-
-        foreach (var pending in _pending.Values)
-        {
-            if (pending.TopicPartition == partition && pending.NextOffset > offset)
-                offset = pending.NextOffset;
-        }
-
-        return offset;
-    }
-
     private void ReleasePendingUnderLock()
     {
         if (_pending.Count == 0)
@@ -1022,8 +999,6 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             Array.Resize(ref _commitRecords, count);
         if (_completedRecords.Length < count)
             Array.Resize(ref _completedRecords, count);
-        if (_commitOffsets.Length < count)
-            Array.Resize(ref _commitOffsets, count);
     }
 
     private void CompleteRecords(int recordCount)
@@ -1031,23 +1006,17 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         for (var index = 0; index < recordCount; index++)
         {
             var record = _commitRecords[index];
-            _completedRecords[index] = new TopicPartitionOffset(
-                record.TopicPartition.Topic,
-                record.TopicPartition.Partition,
-                record.Offset);
+            _completedRecords[index] = new InMemoryShareRecordCompletion(
+                new TopicPartitionOffset(record.TopicPartition.Topic, record.TopicPartition.Partition, record.Offset),
+                record.AcknowledgeType);
         }
 
-        if (recordCount > 1)
-            Array.Sort(_commitRecords, 0, recordCount, PendingShareRecordComparer.Instance);
-        var commitCount = BuildCommitOffsets(recordCount);
         _cluster.CompleteShareRecords(
             _options.GroupId,
             _memberId,
             _registration!,
             _completedRecords,
-            recordCount,
-            _commitOffsets,
-            commitCount);
+            recordCount);
 
         if (_options.DeadLetterQueueTopic is not { } deadLetterQueueTopic)
             return;
@@ -1066,52 +1035,6 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         }
     }
 
-    private int BuildCommitOffsets(int recordCount)
-    {
-        var commitCount = 0;
-        var groupStart = 0;
-        while (groupStart < recordCount)
-        {
-            var first = _commitRecords[groupStart];
-            var groupEnd = groupStart + 1;
-            while (groupEnd < recordCount &&
-                   _commitRecords[groupEnd].TopicPartition == first.TopicPartition)
-            {
-                groupEnd++;
-            }
-
-            var commitOffset = first.NextOffset - 1;
-            for (var index = groupStart; index < groupEnd; index++)
-            {
-                var record = _commitRecords[index];
-                if (record.AcknowledgeType is not (AcknowledgeType.Accept or AcknowledgeType.Reject))
-                    break;
-
-                // Offsets invisible to the group do not interrupt contiguous acknowledgments.
-                if (record.NextOffset - 1 != commitOffset &&
-                    (!_cluster.TryReadShareRecord(
-                        _options.GroupId,
-                        first.TopicPartition,
-                        commitOffset,
-                        out var nextRecord) || nextRecord.Offset != record.Record.Offset))
-                {
-                    break;
-                }
-
-                commitOffset = record.NextOffset;
-            }
-
-            if (commitOffset > first.NextOffset - 1)
-                _commitOffsets[commitCount++] = new TopicPartitionOffset(
-                    first.TopicPartition.Topic,
-                    first.TopicPartition.Partition,
-                    commitOffset);
-
-            groupStart = groupEnd;
-        }
-
-        return commitCount;
-    }
 
     private static TopicPartitionOffset[] BuildCompletedRecords(IEnumerable<PendingShareRecord> records)
     {
@@ -1157,7 +1080,6 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         public InMemoryRecord Record { get; }
         public int DeliveryCount { get; }
         public long Offset => Record.Offset;
-        public long NextOffset => Record.Offset + 1;
         // A provisional delivery is accepted by poll/commit, but released by close.
         private const AcknowledgeType ImplicitDelivery = (AcknowledgeType)byte.MaxValue;
         public AcknowledgeType AcknowledgeType { get; set; } = ImplicitDelivery;
@@ -1166,30 +1088,6 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         {
             if (AcknowledgeType == ImplicitDelivery)
                 AcknowledgeType = closing ? AcknowledgeType.Release : AcknowledgeType.Accept;
-        }
-    }
-
-    private sealed class PendingShareRecordComparer : IComparer<PendingShareRecord>
-    {
-        public static PendingShareRecordComparer Instance { get; } = new();
-
-        public int Compare(PendingShareRecord? left, PendingShareRecord? right)
-        {
-            if (ReferenceEquals(left, right))
-                return 0;
-            if (left is null)
-                return -1;
-            if (right is null)
-                return 1;
-
-            var topic = StringComparer.Ordinal.Compare(
-                left.TopicPartition.Topic,
-                right.TopicPartition.Topic);
-            if (topic != 0)
-                return topic;
-
-            var partition = left.TopicPartition.Partition.CompareTo(right.TopicPartition.Partition);
-            return partition != 0 ? partition : left.NextOffset.CompareTo(right.NextOffset);
         }
     }
 }

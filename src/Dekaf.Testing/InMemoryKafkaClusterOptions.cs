@@ -14,6 +14,12 @@ public sealed class InMemoryKafkaClusterOptions
     public int DefaultPartitionCount { get; set; } = 1;
 
     /// <summary>
+    /// Maximum deliveries of a share-group record before it is archived on release. Matches
+    /// the broker's <c>group.share.delivery.count.limit</c> default of 5. Must be positive.
+    /// </summary>
+    public int DeliveryCountLimit { get; init; } = 5;
+
+    /// <summary>
     /// Whether producers and consumers may create missing topics on first use.
     /// </summary>
     public bool AutoCreateTopics { get; set; } = true;
