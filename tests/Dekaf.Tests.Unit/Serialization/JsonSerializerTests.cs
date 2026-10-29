@@ -257,13 +257,19 @@ public class JsonSerializerTests
     }
 
     [Test]
-    public async Task Serialize_AlternatingWriterOptions_DoesNotAllocateAfterWarmup()
+    [Arguments(2)]
+    [Arguments(4)]
+    public async Task Serialize_AlternatingWriterOptions_DoesNotAllocateAfterWarmup(int configurationCount)
     {
         var serializers = new[]
         {
             new JsonSerializer<SourceGeneratedPerson>(JsonSerializerTestsJsonContext.Default.SourceGeneratedPerson),
             new JsonSerializer<SourceGeneratedPerson>(new JsonSerializerTestsJsonContext(
-                new JsonSerializerOptions { WriteIndented = true }).SourceGeneratedPerson)
+                new JsonSerializerOptions { WriteIndented = true }).SourceGeneratedPerson),
+            new JsonSerializer<SourceGeneratedPerson>(new JsonSerializerTestsJsonContext(
+                new JsonSerializerOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }).SourceGeneratedPerson),
+            new JsonSerializer<SourceGeneratedPerson>(new JsonSerializerTestsJsonContext(
+                new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }).SourceGeneratedPerson)
         };
         var person = new SourceGeneratedPerson { Name = "Ava", Age = 42 };
         var buffer = new ArrayBufferWriter<byte>(256);
@@ -271,14 +277,14 @@ public class JsonSerializerTests
         for (var i = 0; i < 16; i++)
         {
             buffer.ResetWrittenCount();
-            serializers[i % 2].Serialize(person, ref buffer, context);
+            serializers[i % configurationCount].Serialize(person, ref buffer, context);
         }
 
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 16; i++)
         {
             buffer.ResetWrittenCount();
-            serializers[i % 2].Serialize(person, ref buffer, context);
+            serializers[i % configurationCount].Serialize(person, ref buffer, context);
         }
 
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;

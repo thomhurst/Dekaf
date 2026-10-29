@@ -15,6 +15,8 @@ internal sealed class JsonWriterCache
     private ConditionalWeakTable<JsonSerializerOptions, Utf8JsonWriter>? _writers;
     private JsonSerializerOptions? _lastOptions;
     private Utf8JsonWriter? _lastWriter;
+    private JsonSerializerOptions? _previousOptions;
+    private Utf8JsonWriter? _previousWriter;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public Utf8JsonWriter GetWriter(IBufferWriter<byte> buffer, JsonSerializerOptions options)
@@ -24,6 +26,17 @@ internal sealed class JsonWriterCache
         {
             writer.Reset(buffer);
             return writer;
+        }
+
+        if (_previousWriter is { } previousWriter && ReferenceEquals(_previousOptions, options) && options.IsReadOnly)
+        {
+            writer?.Reset(DetachedBuffer);
+            _previousOptions = _lastOptions;
+            _previousWriter = writer;
+            _lastOptions = options;
+            _lastWriter = previousWriter;
+            previousWriter.Reset(buffer);
+            return previousWriter;
         }
 
         return GetConfiguredWriter(buffer, options);
@@ -50,6 +63,10 @@ internal sealed class JsonWriterCache
         {
             writer = CreateWriter(options);
         }
+        // Keep two direct entries for interleaved serializers. Other configurations remain
+        // weakly cached, so the number of strongly retained options stays bounded.
+        _previousOptions = _lastOptions;
+        _previousWriter = _lastWriter;
         _lastOptions = options;
         _lastWriter = writer;
         writer.Reset(buffer);
