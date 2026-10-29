@@ -1426,6 +1426,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             ThrowIfAutoCommitAdvancementPendingUnderLock();
+            // Reconcile any unseen handoff before explicit offsets replace the old positions.
+            _ = GetCurrentAssignmentUnderLock();
             // Manual assignment replaces any subscription, as KafkaConsumer.IncrementalAssign does.
             _subscriptionPattern = null;
             _subscriptionRegex = null;

@@ -64,6 +64,45 @@ public sealed class InMemoryConsumerReassignmentTests
     }
 
     [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task IncrementalAssign_AfterReassignment_PreservesRequestedOffset(
+        bool manualAssignment, bool observeRevocation)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("topic", 2);
+        await using var producer = new InMemoryProducer<string, string>(cluster);
+        for (var i = 0; i < 4; i++)
+            await Produce(producer, 1, $"record-{i}");
+        var moved = new TopicPartition("topic", 1);
+        await using var first = CreateConsumer(cluster, "a", OffsetCommitMode.Manual);
+        if (manualAssignment)
+            first.Assign(new TopicPartition("topic", 0), moved);
+        else
+            first.Subscribe("topic");
+        _ = await first.ConsumeOneAsync(TimeSpan.Zero);
+        first.StoreOffset(new TopicPartitionOffset("topic", 1, 1));
+        first.Pause(moved);
+        await using var second = CreateConsumer(cluster, "b", OffsetCommitMode.Manual);
+        second.Subscribe("topic");
+        if (observeRevocation)
+            await Assert.That(first.Assignment.Contains(moved)).IsFalse();
+        await second.CommitAsync([new("topic", 1, 2)]);
+        second.Unsubscribe();
+
+        first.IncrementalAssign([new("topic", 1, 3)]);
+
+        await Assert.That(first.GetPosition(moved)).IsEqualTo(3);
+        await Assert.That(first.Paused.Contains(moved)).IsFalse();
+        await first.CommitAsync();
+        await Assert.That(cluster.GetCommittedOffset("group", moved)).IsEqualTo(2);
+        var record = await first.ConsumeOneAsync(TimeSpan.Zero);
+        await Assert.That(record!.Value.Offset).IsEqualTo(3);
+    }
+
+    [Test]
     public async Task ScaleOut_DoesNotSeedUnownedPartitions_AndPreservesRetainedProgress()
     {
         var cluster = new InMemoryKafkaCluster();
