@@ -7,6 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\Dekaf.Serialization.Json\JsonWriterCache.cs" Link="Serialization\JsonWriterCache.cs" />
     <InternalsVisibleTo Include="Dekaf.Tests.Unit" />
     <InternalsVisibleTo Include="Dekaf.Tests.Aot" />
     <InternalsVisibleTo Include="Dekaf.Benchmarks" />

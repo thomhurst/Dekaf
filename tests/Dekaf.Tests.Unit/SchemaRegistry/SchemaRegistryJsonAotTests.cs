@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dekaf.SchemaRegistry;
@@ -207,6 +208,88 @@ public sealed class SchemaRegistryJsonAotTests
         await Assert.That(buffer.WrittenSpan[0]).IsEqualTo((byte)0);
         await Assert.That(schemaId).IsGreaterThan(0);
         await Assert.That(result).IsEqualTo(payload);
+    }
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1869:Cache and reuse 'JsonSerializerOptions' instances", Justification = "Each configuration is reused across alternating serializer calls.")]
+    public async Task Serialize_AlternatingWriterOptions_MatchesSystemTextJson(bool useTypeInfo, bool prepared)
+    {
+        var registry = new MockSchemaRegistryClient();
+        var compactOptions = new JsonSerializerOptions();
+        var indentedOptions = new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+        };
+#if NET10_0_OR_GREATER
+        indentedOptions.IndentCharacter = '\t';
+        indentedOptions.IndentSize = 1;
+        indentedOptions.NewLine = "\n";
+#endif
+        var compactTypeInfo = new SchemaRegistryAotJsonContext(compactOptions).SchemaRegistryAotPayload;
+        var indentedTypeInfo = new SchemaRegistryAotJsonContext(indentedOptions).SchemaRegistryAotPayload;
+        await using var compact = useTypeInfo
+            ? new JsonSchemaRegistrySerializer<SchemaRegistryAotPayload>(registry, JsonSchema, compactTypeInfo)
+            : new JsonSchemaRegistrySerializer<SchemaRegistryAotPayload>(registry, JsonSchema, compactOptions);
+        await using var indented = useTypeInfo
+            ? new JsonSchemaRegistrySerializer<SchemaRegistryAotPayload>(registry, JsonSchema, indentedTypeInfo)
+            : new JsonSchemaRegistrySerializer<SchemaRegistryAotPayload>(registry, JsonSchema, indentedOptions);
+        var payload = new SchemaRegistryAotPayload(7, "<test> é");
+        var context = new SerializationContext { Topic = "options", Component = SerializationComponent.Value };
+        var compactPrepared = (IAsyncSerializerPreparationAdmission<SchemaRegistryAotPayload>)compact;
+        var indentedPrepared = (IAsyncSerializerPreparationAdmission<SchemaRegistryAotPayload>)indented;
+        var compactAdmission = await compactPrepared.PrepareForSerializationAsync(payload, context);
+        var indentedAdmission = await indentedPrepared.PrepareForSerializationAsync(payload, context);
+        var expected = new[]
+        {
+            useTypeInfo ? JsonSerializer.Serialize(payload, compactTypeInfo) : JsonSerializer.Serialize(payload, compactOptions),
+            useTypeInfo ? JsonSerializer.Serialize(payload, indentedTypeInfo) : JsonSerializer.Serialize(payload, indentedOptions)
+        };
+        var actual = new string[6];
+        var schemaIds = new int[6];
+        var buffer = new ArrayBufferWriter<byte>();
+
+        void SerializeNext(int index)
+        {
+            buffer.ResetWrittenCount();
+            if (prepared)
+            {
+                if (index % 2 == 0)
+                    compactPrepared.SerializePrepared(payload, ref buffer, context, in compactAdmission);
+                else
+                    indentedPrepared.SerializePrepared(payload, ref buffer, context, in indentedAdmission);
+            }
+            else
+            {
+                (index % 2 == 0 ? compact : indented).Serialize(payload, ref buffer, context);
+            }
+        }
+
+        // No awaits while alternating the shared thread-static writer.
+        for (var i = 0; i < actual.Length; i++)
+        {
+            SerializeNext(i);
+            schemaIds[i] = BinaryPrimitives.ReadInt32BigEndian(buffer.WrittenSpan.Slice(1, 4));
+            actual[i] = System.Text.Encoding.UTF8.GetString(buffer.WrittenSpan[5..]);
+        }
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 16; i++)
+        {
+            SerializeNext(i);
+        }
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+        for (var i = 0; i < actual.Length; i++)
+        {
+            await Assert.That(actual[i]).IsEqualTo(expected[i % 2]);
+            await Assert.That(schemaIds[i]).IsEqualTo(compactAdmission.SchemaId);
+        }
     }
 }
 
