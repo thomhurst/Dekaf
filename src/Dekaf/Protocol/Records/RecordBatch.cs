@@ -851,7 +851,8 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     /// </summary>
     /// <param name="compression">The compression type to apply.</param>
     /// <param name="codecs">The codec registry to use.</param>
-    internal void PreCompress(CompressionType compression, CompressionCodecRegistry? codecs)
+    /// <param name="estimatedCompressionRatio">The topic's current compressed-to-uncompressed ratio estimate.</param>
+    internal void PreCompress(CompressionType compression, CompressionCodecRegistry? codecs, double estimatedCompressionRatio = 1.0)
     {
         if (compression == CompressionType.None)
         {
@@ -879,7 +880,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         {
             using var compressedBuffer = DetachableBufferWriter.Rent(
                 ProducerDataPool.BytePool,
-                GetPreEncodedRecordsLength());
+                GetCompressedBufferCapacity(GetPreEncodedRecordsLength(), estimatedCompressionRatio));
             codec.Compress(GetPreEncodedRecordsSequence(), compressedBuffer);
             PreCompressedRecordsCrc = Crc32C.Compute(compressedBuffer.WrittenSpan);
             PreCompressedRecords = compressedBuffer.DetachBuffer(out var compressedLength);
@@ -899,7 +900,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             WriteRecords(records, ref recordsWriter);
             using var serializedCompressedBuffer = DetachableBufferWriter.Rent(
                 ProducerDataPool.BytePool,
-                recordsBuffer.WrittenCount);
+                GetCompressedBufferCapacity(recordsBuffer.WrittenCount, estimatedCompressionRatio));
             codec.Compress(new ReadOnlySequence<byte>(recordsBuffer.WrittenMemory), serializedCompressedBuffer);
             PreCompressedRecordsCrc = Crc32C.Compute(serializedCompressedBuffer.WrittenSpan);
             PreCompressedRecords = serializedCompressedBuffer.DetachBuffer(out var serializedCompressedLength);
@@ -910,6 +911,18 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         {
             ReturnSerializationCache(cache);
         }
+    }
+
+    private static int GetCompressedBufferCapacity(int uncompressedLength, double estimatedCompressionRatio)
+    {
+        if (double.IsNaN(estimatedCompressionRatio) || double.IsInfinity(estimatedCompressionRatio)
+            || estimatedCompressionRatio <= 0)
+            estimatedCompressionRatio = 1.0;
+
+        // Leave room for framing and estimation error, but do not preallocate for expansion.
+        // The writer can grow when a batch compresses worse than the topic's recent history.
+        return (int)Math.Min(uncompressedLength,
+            Math.Ceiling(uncompressedLength * estimatedCompressionRatio * CompressionRatioEstimator.EstimationFactor) + 256);
     }
 
     /// <summary>

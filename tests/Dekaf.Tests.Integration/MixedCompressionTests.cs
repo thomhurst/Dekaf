@@ -1,6 +1,7 @@
 using Dekaf.Compression.Zstd;
 using Dekaf.Consumer;
 using Dekaf.Producer;
+using Dekaf.Protocol.Records;
 
 namespace Dekaf.Tests.Integration;
 
@@ -13,6 +14,41 @@ namespace Dekaf.Tests.Integration;
 [Category("Compression")]
 public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
+    [Test]
+    [Arguments(CompressionType.Zstd)]
+    [Arguments(CompressionType.Lz4)]
+    [Arguments(CompressionType.Snappy)]
+    public async Task Compression_AboveProducerPoolCap_RoundTrips(CompressionType compression)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var value = new string('x', 5 * 1024 * 1024);
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .UseCompression(compression)
+            .WithMaxRequestSize(8 * 1024 * 1024)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "above-pool-cap",
+            Value = value
+        });
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId($"compression-pool-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        consumer.Subscribe(topic);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Value).IsEqualTo(value);
+    }
+
     [Test]
     public async Task MixedCompressionTypes_SameTopic_ConsumerHandlesAll()
     {

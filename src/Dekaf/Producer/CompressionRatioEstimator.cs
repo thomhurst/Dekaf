@@ -45,32 +45,28 @@ internal sealed class CompressionRatioEstimator
         private readonly object _lock = new();
         private double _value = 1.0;
 
-        internal double Value
-        {
-            get
-            {
-                lock (_lock)
-                    return _value;
-            }
-        }
+        // Batch sizing and compression need only a snapshot; updates remain serialized.
+        internal double Value => Volatile.Read(ref _value);
 
         internal double Update(double observedRatio)
         {
             lock (_lock)
             {
-                if (observedRatio > _value)
-                    _value = Math.Max(_value + DeterioratingStep, observedRatio);
-                else if (observedRatio < _value)
-                    _value = Math.Max(_value - ImprovingStep, observedRatio);
+                var value = _value;
+                if (observedRatio > value)
+                    value = Math.Max(value + DeterioratingStep, observedRatio);
+                else if (observedRatio < value)
+                    value = Math.Max(value - ImprovingStep, observedRatio);
 
-                return _value;
+                Volatile.Write(ref _value, value);
+                return value;
             }
         }
 
         internal void Reset(double value)
         {
             lock (_lock)
-                _value = value;
+                Volatile.Write(ref _value, value);
         }
     }
 }

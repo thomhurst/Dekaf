@@ -390,6 +390,45 @@ public class RecordAccumulatorReadyTests
     }
 
     [Test]
+    public async Task Ready_CompressedBatch_UsesLearnedRatioForOutputCapacity()
+    {
+        const string topic = "test-topic";
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            BatchSize = 1024 * 1024,
+            MaxRequestSize = 8 * 1024 * 1024,
+            BufferMemory = 32 * 1024 * 1024,
+            LingerMs = 0,
+            CompressionType = CompressionType.Gzip
+        };
+        var codecs = new CompressionCodecRegistry();
+        await using var accumulator = new RecordAccumulator(options, codecs);
+        await using var metadataManager = CreateMetadataManager(topic, 1, nodeId: 1);
+        var estimator = GetPrivateField<CompressionRatioEstimator>(accumulator, "_compressionRatioEstimator");
+        for (var i = 0; i < 200; i++)
+            estimator.Update(topic, CompressionType.Gzip, observedRatio: 0.1);
+
+        ReadyBatch? batch = null;
+        try
+        {
+            var appended = await accumulator.AppendFromSpansAsync(
+                topic, partition: 0, timestamp: 0, keyData: default, keyIsNull: true,
+                valueData: new byte[5 * 1024 * 1024], valueIsNull: false,
+                headers: null, headerCount: 0, callback: null,
+                CancellationToken.None, partitionCount: 1);
+            await Assert.That(appended).IsTrue();
+            batch = await DrainSingleReadyBatchAsync(accumulator, metadataManager);
+            await Assert.That(batch.RecordBatch.PreEncodedRecordsLength).IsGreaterThan(4 * 1024 * 1024);
+            await Assert.That(batch.RecordBatch.PreCompressedRecords!.Length).IsLessThanOrEqualTo(1024 * 1024);
+        }
+        finally
+        {
+            CompleteAndReturnIfDrained(accumulator, batch);
+        }
+    }
+
+    [Test]
     public async Task Ready_LingerMs0_CompressedAwaitedAppend_StartsPreSerialization()
     {
         var options = CreateTestOptions(batchSize: 100_000, lingerMs: 0, compressionType: CompressionType.Gzip);

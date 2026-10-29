@@ -6978,7 +6978,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             Exception? failure = null;
             try
             {
-                readyBatch.RecordBatch.PreCompress(_options.CompressionType, _compressionCodecs);
+                var estimatedRatio = _compressionRatioEstimator.Get(
+                    readyBatch.TopicPartition.Topic,
+                    _options.CompressionType);
+                readyBatch.RecordBatch.PreCompress(_options.CompressionType, _compressionCodecs, estimatedRatio);
                 readyBatch.SetEncodedSize(readyBatch.RecordBatch.GetEncodedSize(_options.CompressionType));
                 if (_options.CompressionType != CompressionType.None
                     && readyBatch.RecordBatch.PreEncodedRecordsLength > 0)
