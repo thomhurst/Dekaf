@@ -3325,10 +3325,32 @@ public sealed partial class KafkaConnection :
         // constant allocation of new PooledPendingRequest objects.
         foreach (var shard in _pendingRequestShards)
         {
+            PendingRequestEntry[] snapshot;
+            int count;
             lock (shard.Gate)
             {
-                foreach (var slot in shard.Requests.Values)
+                count = shard.Requests.Count;
+                if (count == 0)
+                    continue;
+
+                snapshot = ArrayPool<PendingRequestEntry>.Shared.Rent(count);
+                shard.Requests.Values.CopyTo(snapshot, 0);
+            }
+
+            try
+            {
+                // Pipelined completions run inline and remove their entries. Complete
+                // a snapshot outside the lock so no live enumerator can be invalidated
+                // on .NET Framework, and no continuation runs under the shard lock.
+                for (var i = 0; i < count; i++)
+                {
+                    var slot = snapshot[i];
                     slot.Request.TrySetException(slot.Version, ex);
+                }
+            }
+            finally
+            {
+                ArrayPool<PendingRequestEntry>.Shared.Return(snapshot, clearArray: true);
             }
         }
     }
