@@ -26,13 +26,19 @@ public sealed class AdminControllerRecoveryTests(KafkaTestContainer kafka) : Kaf
             ControllerId = -1,
             Brokers = metadata.Metadata.GetBrokers().Select(broker => new BrokerMetadata
             {
-                NodeId = broker.NodeId, Host = broker.Host, Port = broker.Port
+                NodeId = broker.NodeId,
+                Host = broker.Host,
+                Port = broker.Port
             }).ToList(),
             Topics = []
         });
+        await Assert.That(metadata.Metadata.ControllerId).IsEqualTo(-1);
+
+        // Use production backoff defaults: CreateTopicsAsync also uses this backoff
+        // to poll for partition leaders after the controller accepts topic creation.
         await using var admin = new AdminClient(new AdminClientOptions
         {
-            BootstrapServers = bootstrapServers, RetryBackoffMs = 1, RetryBackoffMaxMs = 5
+            BootstrapServers = bootstrapServers
         }, pool, metadata);
         var topic = $"controller-recovery-{Guid.NewGuid():N}";
 
@@ -42,6 +48,7 @@ public sealed class AdminControllerRecoveryTests(KafkaTestContainer kafka) : Kaf
             await Assert.That(metadata.Metadata.ControllerId).IsGreaterThanOrEqualTo(0);
             var descriptions = await admin.DescribeTopicsAsync([topic]);
             await Assert.That(descriptions[topic].Partitions.Count).IsEqualTo(1);
+            await Assert.That(descriptions[topic].Partitions[0].LeaderId).IsGreaterThanOrEqualTo(0);
         }
         finally
         {
