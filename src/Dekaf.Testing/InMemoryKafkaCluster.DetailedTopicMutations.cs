@@ -1,3 +1,4 @@
+using Dekaf.Admin;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 
@@ -5,6 +6,20 @@ namespace Dekaf.Testing;
 
 public sealed partial class InMemoryKafkaCluster
 {
+    internal ErrorCode CreateTopicForAdmin(NewTopic topic, bool validateOnly)
+    {
+        lock (_gate)
+        {
+            if (_topics.ContainsKey(topic.Name))
+                return ErrorCode.TopicAlreadyExists;
+
+            if (!validateOnly)
+                EnsureTopic(topic.Name, topic.NumPartitions, topic.Configs);
+
+            return ErrorCode.None;
+        }
+    }
+
     internal ErrorCode CreateTopicDetailed(CreateTopicData topic, bool validateOnly)
     {
         lock (_gate)
