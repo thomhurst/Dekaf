@@ -1377,6 +1377,7 @@ public sealed class InMemoryKafkaClusterTests
     public async Task Admin_DeleteShareGroupsDeletesOnlyRequestedGroups()
     {
         var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("shared");
         var admin = new InMemoryAdminClient(cluster);
         var partition = new TopicPartition("shared", 0);
         await admin.AlterShareGroupOffsetsAsync(
@@ -1397,6 +1398,7 @@ public sealed class InMemoryKafkaClusterTests
     public async Task Admin_ListShareGroupsUsesOnlyShareState()
     {
         var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("shared");
         var admin = new InMemoryAdminClient(cluster);
         var partition = new TopicPartition("shared", 0);
         await admin.AlterShareGroupOffsetsAsync(

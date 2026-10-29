@@ -327,14 +327,8 @@ public sealed partial class InMemoryAdminClient :
         for (var index = 0; index < groups.Length; index++)
             await ApplyAdminFaultAsync(cancellationToken, groupId: groups[index]).ConfigureAwait(false);
         var result = groups.ToDictionary(
-            groupId => groupId,
-            groupId => new GroupDescription
-            {
-                GroupId = groupId,
-                ProtocolType = "consumer",
-                State = "Stable",
-                Members = []
-            },
+            static groupId => groupId,
+            _cluster.DescribeConsumerGroup,
             StringComparer.Ordinal);
 
         return result;
@@ -448,6 +442,7 @@ public sealed partial class InMemoryAdminClient :
 
         if (offsetList.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
+        GroupException? firstError = null;
         for (var index = 0; index < offsetList.Length; index++)
         {
             var offset = offsetList[index];
@@ -456,8 +451,18 @@ public sealed partial class InMemoryAdminClient :
                 offset.Topic,
                 offset.Partition,
                 groupId).ConfigureAwait(false);
-            _cluster.CommitOffsets(groupId, [offset]);
+            var errorCode = _cluster.AlterConsumerGroupOffsetDetailed(groupId, offset);
+            if (errorCode != ErrorCode.None && firstError is null)
+            {
+                firstError = new GroupException(errorCode,
+                    $"AlterConsumerGroupOffsets failed for {offset.Topic}-{offset.Partition}: {errorCode}")
+                {
+                    GroupId = groupId
+                };
+            }
         }
+        if (firstError is not null)
+            throw firstError;
     }
 
     public async ValueTask<IReadOnlyDictionary<TopicPartition, long>> DeleteRecordsAsync(
