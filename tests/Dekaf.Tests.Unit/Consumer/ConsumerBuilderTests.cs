@@ -221,14 +221,12 @@ public sealed class ConsumerBuilderTests
     }
 
     [Test]
-    public async Task WithConnectionsPerBroker_AboveMax_AcceptedByBuilder()
+    public async Task WithConnectionsPerBroker_AboveDefaultMaximum_AcceptedByBuilder()
     {
-        // Builder no longer enforces a hard max — validation moved to the constructor
-        // which checks ConnectionsPerBroker <= MaxConnectionsPerBroker at build time.
         var builder = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092");
 
-        var act = () => builder.WithConnectionsPerBroker(3);
+        var act = () => builder.WithConnectionsPerBroker(6);
         await Assert.That(act).ThrowsNothing();
     }
 

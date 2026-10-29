@@ -4,7 +4,7 @@ using Dekaf.Producer;
 namespace Dekaf.Tests.Integration;
 
 /// <summary>
-/// Integration tests for consumer connection scaling with ConnectionsPerBroker = 3.
+/// Integration tests for consumer connection counts with fixed and adaptive scaling.
 /// Verifies that fetch traffic is distributed across multiple connections while
 /// coordination traffic uses a dedicated connection.
 /// </summary>
@@ -12,7 +12,11 @@ namespace Dekaf.Tests.Integration;
 public sealed class ConsumerConnectionScalingIntegrationTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
-    public async Task Consumer_WithConnectionsPerBroker3_ConsumesSuccessfully()
+    [Arguments(3, false)]
+    [Arguments(6, false)]
+    [Arguments(6, true)]
+    public async Task Consumer_WithConnectionsPerBroker_ConsumesSuccessfully(
+        int connectionsPerBroker, bool adaptiveConnections)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         var groupId = $"test-group-{Guid.NewGuid():N}";
@@ -35,18 +39,20 @@ public sealed class ConsumerConnectionScalingIntegrationTests(KafkaTestContainer
             }, CancellationToken.None);
         }
 
-        // Consume with 3 connections (2 fetch + 1 coordination)
-        await using var consumer = await Kafka.CreateConsumer<string, string>()
+        var builder = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-conn-scaling-consumer")
             .WithGroupId(groupId)
-            .WithConnectionsPerBroker(3)
+            .WithConnectionsPerBroker(connectionsPerBroker)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .WithoutAdaptiveConnections()
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory());
+
+        if (!adaptiveConnections)
+            builder.WithoutAdaptiveConnections();
+
+        await using var consumer = await builder.BuildAsync();
 
         consumer.Subscribe(topic);
 
