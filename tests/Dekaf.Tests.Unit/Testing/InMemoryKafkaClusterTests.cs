@@ -1442,6 +1442,7 @@ public sealed class InMemoryKafkaClusterTests
     public async Task Admin_ListShareGroupsHonorsStateFilter()
     {
         var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("shared");
         var admin = new InMemoryAdminClient(cluster);
         var partition = new TopicPartition("shared", 0);
         await admin.AlterShareGroupOffsetsAsync(
@@ -1482,9 +1483,10 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
-    public async Task Admin_DeleteLastShareGroupOffsetRemovesGroupState()
+    public async Task Admin_DeleteLastShareGroupOffsetRetainsEmptyGroup()
     {
         var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("shared");
         var admin = new InMemoryAdminClient(cluster);
         var partition = new TopicPartition("shared", 0);
         await admin.AlterShareGroupOffsetsAsync(
@@ -1493,10 +1495,12 @@ public sealed class InMemoryKafkaClusterTests
 
         await admin.DeleteShareGroupOffsetsAsync("offset-only", [partition.Topic]);
         var groups = await admin.ListShareGroupsAsync();
-        var deletion = await admin.DeleteShareGroupsAsync(["offset-only"]);
 
-        await Assert.That(groups).IsEmpty();
-        await Assert.That(deletion["offset-only"].ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
+        await Assert.That(groups.Select(static group => group.GroupId)).IsEquivalentTo(["offset-only"]);
+        await Assert.That(groups.Single().State).IsEqualTo("Empty");
+        await Assert.That(cluster.GetShareGroupOffsets("offset-only")).IsEmpty();
+        var deletion = await admin.DeleteShareGroupsAsync(["offset-only"]);
+        await Assert.That(deletion["offset-only"].ErrorCode).IsEqualTo(ErrorCode.None);
     }
 
     [Test]
@@ -1557,6 +1561,7 @@ public sealed class InMemoryKafkaClusterTests
     public async Task Admin_DeleteShareGroupsValidatesBatchBeforeDeleting()
     {
         var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("shared");
         var admin = new InMemoryAdminClient(cluster);
         var partition = new TopicPartition("shared", 0);
         await admin.AlterShareGroupOffsetsAsync(
@@ -1574,6 +1579,7 @@ public sealed class InMemoryKafkaClusterTests
     public async Task Admin_DeleteShareGroupsRejectsActiveGroup()
     {
         var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("shared");
         var admin = new InMemoryAdminClient(cluster);
         var partition = new TopicPartition("shared", 0);
         await admin.AlterShareGroupOffsetsAsync(
@@ -1604,6 +1610,7 @@ public sealed class InMemoryKafkaClusterTests
     public async Task Admin_DeleteShareGroupsWaitsForEverySharedMemberRegistration()
     {
         var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("shared");
         var admin = new InMemoryAdminClient(cluster);
         var partition = new TopicPartition("shared", 0);
         await admin.AlterShareGroupOffsetsAsync(
