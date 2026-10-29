@@ -15,9 +15,11 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
     private const int MessageCount = 200;
 
     [Test]
+    [Arguments(true)]
+    [Arguments(false)]
     [Timeout(180_000)]
     public async Task Producer_PartitionLeaderHandoff_ReroutesRetriesWithoutDuplicates(
-        CancellationToken cancellationToken)
+        bool enableIdempotence, CancellationToken cancellationToken)
     {
         var topic = await kafka.CreateReplicatedTopicAsync().ConfigureAwait(false);
         int? stoppedBrokerId = null;
@@ -26,7 +28,8 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId($"leader-failover-producer-{Guid.NewGuid():N}")
             .WithAcks(Acks.All)
-            .WithIdempotence(true)
+            .WithIdempotence(enableIdempotence)
+            .WithMaxInFlightRequestsPerConnection(1)
             .WithRequestTimeout(TimeSpan.FromSeconds(5))
             .WithDeliveryTimeout(TimeSpan.FromSeconds(45))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
