@@ -583,7 +583,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
                     partitions[partitionIndex++] = new SnapshotPartitionBound(
                         partition,
-                        _cluster.GetWatermarks(partition).High);
+                        _cluster.GetWatermarks(partition, _options.IsolationLevel).High);
                 }
 
                 Array.Sort(partitions, static (left, right) =>
@@ -788,7 +788,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        var watermarks = _cluster.GetWatermarks(partition);
+        var watermarks = _cluster.GetWatermarks(partition, _options.IsolationLevel);
         var resolved = new TopicPartitionOffset(
             partition.Topic,
             partition.Partition,
@@ -1333,7 +1333,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             ThrowIfSnapshotActiveUnderLock();
             foreach (var partition in SelectTargetPartitions(partitions))
             {
-                var position = _cluster.GetWatermarks(partition).Low;
+                var position = _cluster.GetWatermarks(partition, _options.IsolationLevel).Low;
                 DiscardInDoubtRecordUnderLock(partition);
                 _positions[partition] = position;
                 if (_options.EnableAutoOffsetStore)
@@ -1352,7 +1352,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             ThrowIfSnapshotActiveUnderLock();
             foreach (var partition in SelectTargetPartitions(partitions))
             {
-                var position = _cluster.GetWatermarks(partition).High;
+                var position = _cluster.GetWatermarks(partition, _options.IsolationLevel).High;
                 DiscardInDoubtRecordUnderLock(partition);
                 _positions[partition] = position;
                 if (_options.EnableAutoOffsetStore)
@@ -1540,7 +1540,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     public WatermarkOffsets? GetWatermarkOffsets(TopicPartition topicPartition)
     {
         ThrowIfDisposed();
-        return _cluster.GetWatermarks(topicPartition);
+        return _cluster.GetWatermarks(topicPartition, _options.IsolationLevel);
     }
 
     public long? GetCurrentLag(TopicPartition partition)
@@ -1584,7 +1584,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        return ValueTask.FromResult(_cluster.GetWatermarks(topicPartition));
+        return ValueTask.FromResult(_cluster.GetWatermarks(topicPartition, _options.IsolationLevel));
     }
 
     private bool TryConsumeOne(
@@ -2446,13 +2446,21 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         var timestamp = AutoOffsetResetStrategy.GetListOffsetsTimestamp(
             _offsetResetOptions, DateTimeOffset.UtcNow, partition);
+        if (timestamp == TopicPartitionTimestamp.Latest)
+        {
+            // Keep Latest unresolved until the partition exists.
+            return _cluster.ContainsTopicPartition(partition)
+                ? _cluster.GetWatermarks(partition, _options.IsolationLevel).High
+                : TopicPartitionTimestamp.Latest;
+        }
+
         var offset = _cluster.GetOffsetForTimestamp(partition, timestamp);
         // A missing topic returns -1 for every timestamp; retain the earliest policy sentinel.
         if (timestamp == TopicPartitionTimestamp.Earliest && offset == TopicPartitionTimestamp.Latest)
             return TopicPartitionTimestamp.Earliest;
 
         return timestamp >= 0 && offset == TopicPartitionTimestamp.Latest
-            ? _cluster.GetWatermarks(partition).High
+            ? _cluster.GetWatermarks(partition, _options.IsolationLevel).High
             : offset;
     }
 
@@ -2465,7 +2473,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         var resolved = position switch
         {
-            TopicPartitionTimestamp.Latest => watermarks.High,
+            TopicPartitionTimestamp.Latest => _cluster.GetWatermarks(partition, _options.IsolationLevel).High,
             TopicPartitionTimestamp.Earliest => watermarks.Low,
             _ => GetResetOffset(partition)
         };

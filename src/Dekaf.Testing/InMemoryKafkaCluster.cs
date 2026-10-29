@@ -1102,7 +1102,8 @@ public sealed partial class InMemoryKafkaCluster
                 && partition.FirstUnstableOffset != long.MaxValue
                     ? Math.Min(partition.HighWatermark, partition.FirstUnstableOffset)
                     : partition.HighWatermark;
-            return new WatermarkOffsets(partition.LogStartOffset, highWatermark);
+            // Deletion can move the log start past an open transaction's first offset.
+            return new WatermarkOffsets(partition.LogStartOffset, Math.Max(partition.LogStartOffset, highWatermark));
         }
     }
 
