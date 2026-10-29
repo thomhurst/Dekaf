@@ -141,6 +141,54 @@ public sealed class InMemoryConsumerWatermarkTests
     }
 
     [Test]
+    [Arguments(IsolationLevel.ReadCommitted, false)]
+    [Arguments(IsolationLevel.ReadCommitted, true)]
+    [Arguments(IsolationLevel.ReadUncommitted, false)]
+    [Arguments(IsolationLevel.ReadUncommitted, true)]
+    public async Task LatestReset_MissingPartition_ResolvesAfterCreation(IsolationLevel isolationLevel, bool missingTopic)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var partition = new TopicPartition(Partition.Topic, missingTopic ? 0 : 1);
+        if (!missingTopic)
+            cluster.CreateTopic(partition.Topic);
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                AutoOffsetReset = AutoOffsetReset.Latest,
+                IsolationLevel = isolationLevel
+            });
+        consumer.Assign(partition);
+
+        if (missingTopic)
+            cluster.CreateTopic(partition.Topic);
+        else
+            cluster.CreatePartitions(partition.Topic, 2);
+        await using var producer = new InMemoryProducer<string, string>(cluster);
+        var message = new ProducerMessage<string, string>
+        {
+            Topic = partition.Topic,
+            Partition = partition.Partition,
+            Key = "key",
+            Value = "value"
+        };
+        await producer.ProduceAsync(message);
+        await using var transaction = producer.BeginTransaction();
+        await transaction.ProduceAsync(message);
+
+        await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.Zero)).IsNull();
+        await Assert.That(consumer.GetPosition(partition))
+            .IsEqualTo(isolationLevel == IsolationLevel.ReadCommitted ? 1L : 2L);
+
+        await transaction.CommitAsync();
+        var record = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        if (isolationLevel == IsolationLevel.ReadCommitted)
+            await Assert.That(record!.Value.Offset).IsEqualTo(1L);
+        else
+            await Assert.That(record).IsNull();
+    }
+
+    [Test]
     [Arguments(IsolationLevel.ReadCommitted, TopicPartitionTimestamp.Latest)]
     [Arguments(IsolationLevel.ReadUncommitted, TopicPartitionTimestamp.Latest)]
     [Arguments(IsolationLevel.ReadCommitted, 100L)]

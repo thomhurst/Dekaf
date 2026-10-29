@@ -2447,7 +2447,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         var timestamp = AutoOffsetResetStrategy.GetListOffsetsTimestamp(
             _offsetResetOptions, DateTimeOffset.UtcNow, partition);
         if (timestamp == TopicPartitionTimestamp.Latest)
-            return _cluster.GetWatermarks(partition, _options.IsolationLevel).High;
+        {
+            // Keep Latest unresolved until the partition exists.
+            return _cluster.ContainsTopicPartition(partition)
+                ? _cluster.GetWatermarks(partition, _options.IsolationLevel).High
+                : TopicPartitionTimestamp.Latest;
+        }
 
         var offset = _cluster.GetOffsetForTimestamp(partition, timestamp);
         // A missing topic returns -1 for every timestamp; retain the earliest policy sentinel.
