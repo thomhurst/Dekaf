@@ -59,6 +59,21 @@ internal sealed class ShareSessionManager
         => _sessionEpochs.TryGetValue(brokerId, out var slot) && Volatile.Read(ref slot.Opened);
 
     /// <summary>
+    /// Snapshots brokers whose sessions may still exist, including sessions reset after a failure.
+    /// Used only during teardown; a slot created before the first successful response is excluded.
+    /// </summary>
+    internal List<int> GetSessionBrokers()
+    {
+        var brokers = new List<int>();
+        foreach (var (brokerId, slot) in _sessionEpochs)
+        {
+            if (Volatile.Read(ref slot.Opened))
+                brokers.Add(brokerId);
+        }
+        return brokers;
+    }
+
+    /// <summary>
     /// Gets the partitions of a broker's current share session, each keyed to the topic ID it was
     /// added with. A request captures the set before it reads the epoch and updates that set after
     /// its reply: <see cref="ResetAll"/> replaces every session, so a reply to a request sent before

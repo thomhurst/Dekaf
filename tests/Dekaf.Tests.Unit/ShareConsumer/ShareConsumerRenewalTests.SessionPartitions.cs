@@ -190,6 +190,90 @@ public sealed partial class ShareConsumerRenewalTests
         await Assert.That(ForgottenPartitions(retried)).IsEmpty();
     }
 
+    [Test]
+    [Arguments("close")]
+    [Arguments("dispose")]
+    [Arguments("unsubscribe")]
+    public async Task Teardown_AllPartitionLeadersMove_ClosesOldBrokerSession(string operation)
+    {
+        var oldLeader = new CapturingConnection(ApiKey.ShareFetch, 2, includeShareAcknowledge: true)
+        {
+            ShareFetchHandler = (_, _) => new(CreateFetchResponse(0, 100))
+        };
+        var newLeader = new CapturingConnection(ApiKey.ShareFetch, 2, brokerId: 2,
+            includeShareAcknowledge: true)
+        {
+            ShareFetchHandler = (_, _) => new(CreateFetchResponse(0, 200))
+        };
+        await using var fixture = CreateFixture(oldLeader, secondConnection: newLeader,
+            valueDeserializer: Serializers.String);
+        fixture.MetadataManager.Metadata.Update(SessionMetadata(partition1Leader: 1));
+        PrepareForPoll(fixture.Consumer, new TopicPartition("topic", 0), new TopicPartition("topic", 1));
+        fixture.Consumer.Subscribe("topic");
+        await PollUntilFetchCountAsync(fixture.Consumer, oldLeader, 1);
+
+        fixture.MetadataManager.Metadata.Update(SessionMetadata(partition1Leader: 2, partition0Leader: 2));
+        await PollUntilFetchCountAsync(fixture.Consumer, newLeader, 1);
+        await Assert.That(oldLeader.ShareFetchRequests.Count).IsEqualTo(1);
+
+        await TeardownAsync(fixture.Consumer, operation);
+
+        await AssertSessionClosedAsync(oldLeader, operation);
+        await AssertSessionClosedAsync(newLeader, operation);
+    }
+
+    [Test]
+    [Arguments("close")]
+    [Arguments("dispose")]
+    [Arguments("unsubscribe")]
+    public async Task Teardown_NoAssignment_ClosesResetBrokerSession(string operation)
+    {
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2, includeShareAcknowledge: true)
+        {
+            ShareFetchHandler = (_, _) => new(CreateFetchResponse(0, 100))
+        };
+        await using var fixture = CreateFixture(connection, valueDeserializer: Serializers.String);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Subscribe("topic");
+        await PollUntilFetchCountAsync(fixture.Consumer, connection, 1);
+        // A revocation or topic deletion leaves no current leader to route teardown to.
+        typeof(KafkaShareConsumer<string, string>)
+            .GetField("_assignmentSnapshot", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(fixture.Consumer, new HashSet<TopicPartition>());
+        var sessions = (ShareSessionManager)typeof(KafkaShareConsumer<string, string>)
+            .GetField("_sessionManager", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(fixture.Consumer)!;
+        sessions.ResetSession(1);
+
+        await TeardownAsync(fixture.Consumer, operation);
+
+        await AssertSessionClosedAsync(connection, operation);
+    }
+
+    private static async Task TeardownAsync(KafkaShareConsumer<string, string> consumer, string operation)
+    {
+        if (operation == "close")
+            await consumer.CloseAsync();
+        else if (operation == "dispose")
+            await consumer.DisposeAsync();
+        else
+        {
+            consumer.Unsubscribe();
+            // Unsubscribe queues final acknowledgements. Close waits for that queue.
+            await consumer.CloseAsync();
+        }
+    }
+
+    private static async Task AssertSessionClosedAsync(CapturingConnection connection, string operation)
+    {
+        if (operation == "unsubscribe")
+            await Assert.That(connection.ShareAcknowledgeRequests.Count(static request =>
+                request.ShareSessionEpoch == ShareSessionManager.CloseEpoch)).IsEqualTo(1);
+        else
+            await Assert.That(connection.ShareFetchRequests.Count(static request =>
+                request.ShareSessionEpoch == ShareSessionManager.CloseEpoch)).IsEqualTo(1);
+    }
+
     private static async Task PollUntilFetchCountAsync(
         KafkaShareConsumer<string, string> consumer,
         CapturingConnection connection,
@@ -208,7 +292,7 @@ public sealed partial class ShareConsumerRenewalTests
     private static int[] ForgottenPartitions(ShareFetchRequest request)
         => request.ForgottenTopicsData?.SelectMany(static topic => topic.Partitions).ToArray() ?? [];
 
-    private static MetadataResponse SessionMetadata(int partition1Leader) => new()
+    private static MetadataResponse SessionMetadata(int partition1Leader, int partition0Leader = 1) => new()
     {
         Brokers =
         [
@@ -226,8 +310,8 @@ public sealed partial class ShareConsumerRenewalTests
                 [
                     new PartitionMetadata
                     {
-                        ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1,
-                        ReplicaNodes = [1], IsrNodes = [1]
+                        ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = partition0Leader,
+                        ReplicaNodes = [partition0Leader], IsrNodes = [partition0Leader]
                     },
                     new PartitionMetadata
                     {

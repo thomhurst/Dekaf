@@ -315,10 +315,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         ClearBufferedRecords(releaseAcquisitions: true);
         // Release any pending acks back to the group so other members can claim them,
         // rather than waiting for the broker's acquisition lock timeout to expire.
-        if (HasPendingAcknowledgements || _assignmentSnapshot.Count != 0)
-        {
-            ReleasePendingAcks();
-        }
+        // Sessions can outlive the assignment, even with no local acknowledgements left.
+        ReleasePendingAcks();
 
         _activeShareBatch?.Dispose();
         _activeShareBatch = null;
@@ -1146,6 +1144,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             if (leader is not null && !acksByBroker.ContainsKey(leader.NodeId))
                 acksByBroker.Add(leader.NodeId, new Dictionary<TopicPartition, List<AcknowledgementBatchData>>());
         }
+        // Snapshot before Unsubscribe resets the session manager. Brokers that lost all
+        // their leaders still hold this member's session and acquisitions.
+        foreach (var brokerId in _sessionManager.GetSessionBrokers())
+        {
+            if (!acksByBroker.ContainsKey(brokerId))
+                acksByBroker.Add(brokerId, new Dictionary<TopicPartition, List<AcknowledgementBatchData>>());
+        }
         if (acksByBroker.Count == 0)
             return;
 
@@ -1403,11 +1408,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
     private async ValueTask CloseShareSessionsAsync(CancellationToken cancellationToken)
     {
-        var assignment = _assignmentSnapshot;
-        if (assignment.Count == 0)
-            return;
-
-        var partitionsByBroker = GroupPartitionsByLeader(assignment);
+        var partitionsByBroker = GroupPartitionsByLeader(_assignmentSnapshot);
+        // A broker can retain a session after every partition moved or was revoked.
+        // An empty topic list closes that session without depending on current metadata.
+        foreach (var brokerId in _sessionManager.GetSessionBrokers())
+        {
+            if (!partitionsByBroker.ContainsKey(brokerId))
+                partitionsByBroker.Add(brokerId, []);
+        }
 
         // Send close requests to all brokers in parallel — these are fire-and-forget
         // with MaxWaitMs=0, so there's no reason to wait for each sequentially.

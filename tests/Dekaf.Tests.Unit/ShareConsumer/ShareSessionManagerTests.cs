@@ -252,6 +252,23 @@ public class ShareSessionManagerTests
         await Assert.That(manager.HadSession(1)).IsTrue();
     }
 
+    [Test]
+    public async Task GetSessionBrokers_IncludesResetSessionsButNotUnopenedSlots()
+    {
+        var manager = new ShareSessionManager();
+        manager.IncrementEpoch(1);
+        manager.IncrementEpoch(2);
+        manager.ResetSession(1);
+        manager.GetSessionPartitions(3);
+
+        var brokers = manager.GetSessionBrokers();
+
+        await Assert.That(brokers).IsEquivalentTo([1, 2]);
+        manager.ResetAll();
+        await Assert.That(manager.GetSessionBrokers()).IsEmpty();
+        await Assert.That(brokers).IsEquivalentTo([1, 2]);
+    }
+
     private static Dictionary<string, (Guid TopicId, List<ShareFetchRequestPartition> Partitions)> SentTopics(
         params (string Topic, Guid TopicId, int[] Partitions)[] topics)
         => topics.ToDictionary(

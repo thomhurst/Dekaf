@@ -1,6 +1,9 @@
 using Dekaf.Admin;
+using Dekaf.Networking;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 using Dekaf.ShareConsumer;
+using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Tests.Integration;
 
@@ -18,8 +21,11 @@ public sealed class ShareConsumerLeadershipTests(RackAwareKafkaContainer kafka)
     private static readonly TimeSpan ResumeTimeout = TimeSpan.FromSeconds(30);
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
     [Timeout(240_000)]
-    public async Task LeaderMove_DuringConsumption_ResumesPromptly(CancellationToken cancellationToken)
+    public async Task LeaderMove_DuringConsumption_ResumesPromptly_AndClosesOldSession(
+        bool unsubscribe, CancellationToken cancellationToken)
     {
         if (!RackAwareKafkaContainer.SupportsShareGroups)
             Skip.Test($"Share groups need Kafka 4.2 or later; this run uses {KafkaContainerDefault.ImageTag}.");
@@ -32,8 +38,14 @@ public sealed class ShareConsumerLeadershipTests(RackAwareKafkaContainer kafka)
             .ConfigureAwait(false);
         await using var producer = await ShareConsumerPartitionErrorHelper
             .CreateProducerAsync(kafka.BootstrapServers, cancellationToken).ConfigureAwait(false);
+        using var logs = new CapturingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder =>
+        {
+            builder.SetMinimumLevel(LogLevel.Debug);
+            builder.AddProvider(logs);
+        });
         await using var consumer = await ShareConsumerPartitionErrorHelper
-            .CreateConsumerAsync(kafka.BootstrapServers, group, cancellationToken).ConfigureAwait(false);
+            .CreateConsumerAsync(kafka.BootstrapServers, group, cancellationToken, loggerFactory).ConfigureAwait(false);
         consumer.Subscribe(topic);
 
         var received = new HashSet<string>();
@@ -41,6 +53,11 @@ public sealed class ShareConsumerLeadershipTests(RackAwareKafkaContainer kafka)
             .ConfigureAwait(false);
         await ShareConsumerPartitionErrorHelper.ConsumeAsync(consumer, received, 10, TimeSpan.FromSeconds(60),
             cancellationToken).ConfigureAwait(false);
+
+        var firstFetch = logs.Entries.First(static entry =>
+            entry.EventId.Id == KafkaConnection.SendingRequestEventId
+            && entry.TryGetProperty<ApiKey>("ApiKey", out var apiKey) && apiKey == ApiKey.ShareFetch);
+        await Assert.That(firstFetch.TryGetProperty<int>("Port", out var oldLeaderPort)).IsTrue();
 
         // Move leadership from broker 1 to broker 2 while the consumer's metadata still names broker 1.
         await kafka.WaitForInSyncReplicasAsync(topic, expectedCount: 2, cancellationToken).ConfigureAwait(false);
@@ -60,6 +77,25 @@ public sealed class ShareConsumerLeadershipTests(RackAwareKafkaContainer kafka)
 
         await Assert.That(received.Count(static key => key.StartsWith("after-", StringComparison.Ordinal)))
             .IsEqualTo(10);
+
+        // Broker 1 no longer leads any assigned partition, but its share session still exists.
+        var closeApi = unsubscribe ? ApiKey.ShareAcknowledge : ApiKey.ShareFetch;
+        var beforeClose = CountOldLeaderRequests(closeApi);
+        if (unsubscribe)
+        {
+            consumer.Unsubscribe();
+            await consumer.CloseAsync(cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            await consumer.DisposeAsync().ConfigureAwait(false);
+        }
+        await Assert.That(CountOldLeaderRequests(closeApi)).IsEqualTo(beforeClose + 1);
+
+        int CountOldLeaderRequests(ApiKey expectedApi) => logs.Entries.Count(entry =>
+            entry.EventId.Id == KafkaConnection.SendingRequestEventId
+            && entry.TryGetProperty<ApiKey>("ApiKey", out var apiKey) && apiKey == expectedApi
+            && entry.TryGetProperty<int>("Port", out var port) && port == oldLeaderPort);
     }
 
     [Test]
@@ -209,12 +245,12 @@ internal static class ShareConsumerPartitionErrorHelper
             .ConfigureAwait(false);
 
     internal static async Task<IKafkaShareConsumer<string, string>> CreateConsumerAsync(
-        string bootstrapServers, string group, CancellationToken cancellationToken)
+        string bootstrapServers, string group, CancellationToken cancellationToken, ILoggerFactory? loggerFactory = null)
         => await Kafka.CreateShareConsumer<string, string>()
             .WithBootstrapServers(bootstrapServers)
             .WithGroupId(group)
             .WithAcknowledgementMode(ShareAcknowledgementMode.Implicit)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .WithLoggerFactory(loggerFactory ?? GlobalTestSetup.GetLoggerFactory())
             .BuildAsync(cancellationToken)
             .ConfigureAwait(false);
 
