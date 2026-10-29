@@ -14,15 +14,26 @@ namespace Dekaf.Tests.Integration;
 public sealed class OutboxDynamoDbTransportTests
 {
     [Test]
-    [Arguments(false)]
-    [Arguments(true)]
-    public async Task LocalClient_RetriesTransportFailures(bool httpRequestException, CancellationToken cancellationToken)
+    [Arguments(nameof(QueryRequest), false)]
+    [Arguments(nameof(QueryRequest), true)]
+    [Arguments(nameof(GetItemRequest), false)]
+    [Arguments(nameof(GetItemRequest), true)]
+    [Arguments(nameof(BatchGetItemRequest), false)]
+    [Arguments(nameof(BatchGetItemRequest), true)]
+    [Arguments(nameof(ScanRequest), false)]
+    [Arguments(nameof(ScanRequest), true)]
+    [Arguments(nameof(DescribeTableRequest), false)]
+    [Arguments(nameof(DescribeTableRequest), true)]
+    [Arguments(nameof(ListTablesRequest), false)]
+    [Arguments(nameof(ListTablesRequest), true)]
+    public async Task LocalClient_RetriesReadTransportFailures(
+        string operation, bool httpRequestException, CancellationToken cancellationToken)
     {
         await using var endpoint = new DynamoDbEndpoint();
         var transport = new FailingTransport(TransportError(httpRequestException), failures: 1);
         using var client = new FaultingClient(DynamoDbLocalContainer.CreateConfig(endpoint.ServiceUrl), transport);
 
-        await WriteAsync(client, cancellationToken);
+        await ReadAsync(client, cancellationToken, operation);
 
         await Assert.That(transport.Attempts).IsEqualTo(2);
         await Assert.That(endpoint.RequestCount).IsEqualTo(1);
@@ -38,9 +49,9 @@ public sealed class OutboxDynamoDbTransportTests
         using var client = new FaultingClient(DynamoDbLocalContainer.CreateConfig(endpoint.ServiceUrl), transport);
 
         if (httpRequestException)
-            await Assert.That(async () => await WriteAsync(client, cancellationToken)).Throws<HttpRequestException>();
+            await Assert.That(async () => await ReadAsync(client, cancellationToken)).Throws<HttpRequestException>();
         else
-            await Assert.That(async () => await WriteAsync(client, cancellationToken)).Throws<IOException>();
+            await Assert.That(async () => await ReadAsync(client, cancellationToken)).Throws<IOException>();
 
         await Assert.That(transport.Attempts).IsEqualTo(3);
         await Assert.That(endpoint.RequestCount).IsEqualTo(0);
@@ -53,7 +64,7 @@ public sealed class OutboxDynamoDbTransportTests
         var transport = new FailingTransport(new OperationCanceledException(cancellationToken), failures: int.MaxValue);
         using var client = new FaultingClient(DynamoDbLocalContainer.CreateConfig(endpoint.ServiceUrl), transport);
 
-        await Assert.That(async () => await WriteAsync(client, cancellationToken)).Throws<OperationCanceledException>();
+        await Assert.That(async () => await ReadAsync(client, cancellationToken)).Throws<OperationCanceledException>();
 
         await Assert.That(transport.Attempts).IsEqualTo(1);
         await Assert.That(endpoint.RequestCount).IsEqualTo(0);
@@ -72,9 +83,9 @@ public sealed class OutboxDynamoDbTransportTests
         using var client = new FaultingClient(DynamoDbLocalContainer.CreateConfig(endpoint.ServiceUrl), transport);
 
         if (httpRequestException)
-            await Assert.That(async () => await WriteAsync(client, cancelled.Token)).Throws<HttpRequestException>();
+            await Assert.That(async () => await ReadAsync(client, cancelled.Token)).Throws<HttpRequestException>();
         else
-            await Assert.That(async () => await WriteAsync(client, cancelled.Token)).Throws<IOException>();
+            await Assert.That(async () => await ReadAsync(client, cancelled.Token)).Throws<IOException>();
 
         await Assert.That(cancelled.IsCancellationRequested).IsTrue();
         await Assert.That(transport.Attempts).IsEqualTo(1);
@@ -89,7 +100,7 @@ public sealed class OutboxDynamoDbTransportTests
             new HttpRequestException("Service failure.", null, HttpStatusCode.ServiceUnavailable), failures: int.MaxValue);
         using var client = new FaultingClient(DynamoDbLocalContainer.CreateConfig(endpoint.ServiceUrl), transport);
 
-        await Assert.That(async () => await WriteAsync(client, cancellationToken)).Throws<HttpRequestException>();
+        await Assert.That(async () => await ReadAsync(client, cancellationToken)).Throws<HttpRequestException>();
 
         await Assert.That(transport.Attempts).IsEqualTo(1);
         await Assert.That(endpoint.RequestCount).IsEqualTo(0);
@@ -102,7 +113,7 @@ public sealed class OutboxDynamoDbTransportTests
         using var client = new OutboxDynamoDbLocalClient(
             new BasicAWSCredentials("dekaf", "dekaf"), DynamoDbLocalContainer.CreateConfig(endpoint.ServiceUrl));
 
-        await Assert.That(async () => await WriteAsync(client, cancellationToken)).ThrowsException();
+        await Assert.That(async () => await ReadAsync(client, cancellationToken)).ThrowsException();
 
         await Assert.That(endpoint.RequestCount).IsEqualTo(1);
     }
@@ -120,7 +131,7 @@ public sealed class OutboxDynamoDbTransportTests
             await Assert.That(async () => await WriteAsync(client, cancellationToken))
                 .Throws<ConditionalCheckFailedException>();
         else
-            await Assert.That(async () => await WriteAsync(client, cancellationToken))
+            await Assert.That(async () => await ReadAsync(client, cancellationToken))
                 .Throws<ProvisionedThroughputExceededException>();
 
         await Assert.That(endpoint.RequestCount).IsEqualTo(1);
@@ -151,10 +162,105 @@ public sealed class OutboxDynamoDbTransportTests
         await Assert.That(endpoint.RequestCount).IsEqualTo(appliedThenLost ? 1 : 0);
     }
 
-    private static Task<PutItemResponse> WriteAsync(IAmazonDynamoDB client, CancellationToken cancellationToken) =>
+    [Test]
+    public async Task LocalClient_DoesNotReplayAppliedConditionalWriteWithoutResponseHeaders(
+        CancellationToken cancellationToken)
+    {
+        // The endpoint consumes the write, then closes before sending any headers. A replay
+        // gets a conditional refusal: no response does not mean the write was not applied.
+        await using var endpoint = new DynamoDbEndpoint(
+            nameof(ConditionalCheckFailedException), dropFirstResponse: true);
+        using var client = new OutboxDynamoDbLocalClient(
+            new BasicAWSCredentials("dekaf", "dekaf"), DynamoDbLocalContainer.CreateConfig(endpoint.ServiceUrl));
+
+        await Assert.That(async () => await WriteAsync(client, cancellationToken, conditional: true))
+            .Throws<IOException>();
+
+        await Assert.That(endpoint.RequestCount).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(nameof(PutItemRequest))]
+    [Arguments(nameof(UpdateItemRequest))]
+    [Arguments(nameof(DeleteItemRequest))]
+    [Arguments(nameof(BatchWriteItemRequest))]
+    [Arguments(nameof(TransactWriteItemsRequest))]
+    public async Task LocalClient_DoesNotRetryMutations(string operation, CancellationToken cancellationToken)
+    {
+        await using var endpoint = new DynamoDbEndpoint();
+        var transport = new FailingTransport(new IOException("Ambiguous write."), failures: int.MaxValue);
+        using var client = new FaultingClient(DynamoDbLocalContainer.CreateConfig(endpoint.ServiceUrl), transport);
+
+        await Assert.That(async () => await MutateAsync(client, operation, cancellationToken)).Throws<IOException>();
+
+        await Assert.That(transport.Attempts).IsEqualTo(1);
+        await Assert.That(endpoint.RequestCount).IsEqualTo(0);
+    }
+
+    private static Task MutateAsync(IAmazonDynamoDB client, string operation, CancellationToken cancellationToken) =>
+        operation switch
+        {
+            nameof(PutItemRequest) => WriteAsync(client, cancellationToken),
+            nameof(UpdateItemRequest) => client.UpdateItemAsync(new UpdateItemRequest
+            {
+                TableName = "outbox", Key = new() { ["id"] = new() { S = "one" } },
+                UpdateExpression = "ADD counter :one",
+                ExpressionAttributeValues = new() { [":one"] = new() { N = "1" } }
+            }, cancellationToken),
+            nameof(DeleteItemRequest) => client.DeleteItemAsync(new DeleteItemRequest
+            {
+                TableName = "outbox", Key = new() { ["id"] = new() { S = "one" } }
+            }, cancellationToken),
+            nameof(BatchWriteItemRequest) => client.BatchWriteItemAsync(new BatchWriteItemRequest
+            {
+                RequestItems = new() { ["outbox"] = [new WriteRequest
+                {
+                    DeleteRequest = new() { Key = new() { ["id"] = new() { S = "one" } } }
+                }] }
+            }, cancellationToken),
+            nameof(TransactWriteItemsRequest) => client.TransactWriteItemsAsync(new TransactWriteItemsRequest
+            {
+                TransactItems = [new TransactWriteItem
+                {
+                    Delete = new() { TableName = "outbox", Key = new() { ["id"] = new() { S = "one" } } }
+                }]
+            }, cancellationToken),
+            _ => throw new ArgumentOutOfRangeException(nameof(operation))
+        };
+
+    private static Task ReadAsync(
+        IAmazonDynamoDB client, CancellationToken cancellationToken, string operation = nameof(QueryRequest)) =>
+        operation switch
+        {
+            nameof(QueryRequest) => client.QueryAsync(new QueryRequest
+            {
+                TableName = "outbox",
+                KeyConditionExpression = "id = :id",
+                ExpressionAttributeValues = new() { [":id"] = new() { S = "one" } }
+            }, cancellationToken),
+            nameof(GetItemRequest) => client.GetItemAsync(new GetItemRequest
+            {
+                TableName = "outbox", Key = new() { ["id"] = new() { S = "one" } }
+            }, cancellationToken),
+            nameof(BatchGetItemRequest) => client.BatchGetItemAsync(new BatchGetItemRequest
+            {
+                RequestItems = new() { ["outbox"] = new KeysAndAttributes
+                {
+                    Keys = [new() { ["id"] = new() { S = "one" } }]
+                } }
+            }, cancellationToken),
+            nameof(ScanRequest) => client.ScanAsync(new ScanRequest { TableName = "outbox" }, cancellationToken),
+            nameof(DescribeTableRequest) => client.DescribeTableAsync("outbox", cancellationToken),
+            nameof(ListTablesRequest) => client.ListTablesAsync(new ListTablesRequest(), cancellationToken),
+            _ => throw new ArgumentOutOfRangeException(nameof(operation))
+        };
+
+    private static Task<PutItemResponse> WriteAsync(
+        IAmazonDynamoDB client, CancellationToken cancellationToken, bool conditional = false) =>
         client.PutItemAsync(new PutItemRequest
         {
             TableName = "outbox",
+            ConditionExpression = conditional ? "attribute_not_exists(id)" : null,
             Item = new() { ["id"] = new AttributeValue { S = "one" } }
         }, cancellationToken);
 
@@ -197,11 +303,13 @@ public sealed class OutboxDynamoDbTransportTests
         private readonly Task _serving;
         private readonly byte[] _response;
         private readonly bool _truncateResponse;
+        private readonly bool _dropFirstResponse;
         private int _requestCount;
 
-        public DynamoDbEndpoint(string? error = null, bool truncateResponse = false)
+        public DynamoDbEndpoint(string? error = null, bool truncateResponse = false, bool dropFirstResponse = false)
         {
             _truncateResponse = truncateResponse;
+            _dropFirstResponse = dropFirstResponse;
             var body = error is null ? "{}" : $"{{\"__type\":\"{error}\",\"message\":\"Refused\"}}";
             _response = Encoding.UTF8.GetBytes(
                 $"HTTP/1.1 {(error is null ? "200 OK" : "400 Bad Request")}\r\nContent-Type: application/x-amz-json-1.0\r\nContent-Length: {Encoding.UTF8.GetByteCount(body) + (truncateResponse ? 1 : 0)}\r\n\r\n{body}");
@@ -233,7 +341,9 @@ public sealed class OutboxDynamoDbTransportTests
                         var body = new char[contentLength];
                         if (await reader.ReadBlockAsync(body, _stopping.Token) != body.Length)
                             throw new EndOfStreamException("Incomplete DynamoDB request.");
-                        Interlocked.Increment(ref _requestCount);
+                        var requestCount = Interlocked.Increment(ref _requestCount);
+                        if (_dropFirstResponse && requestCount == 1)
+                            break;
                         await stream.WriteAsync(_response, _stopping.Token);
                         if (_truncateResponse)
                             break;

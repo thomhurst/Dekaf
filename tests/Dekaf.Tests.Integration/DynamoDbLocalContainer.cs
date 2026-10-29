@@ -41,7 +41,8 @@ public sealed class DynamoDbLocalContainer : IAsyncInitializer, IAsyncDisposable
     /// <summary>
     /// A client that never retries service errors: a refused conditional write must be seen
     /// once, and a throttled local instance is a test failure, not something to mask.
-    /// Only transport failures before a response arrives can be retried.
+    /// Only read transport failures before a response arrives can be retried. Writes may
+    /// already be applied when the connection fails, so they are never replayed.
     /// </summary>
     public AmazonDynamoDBClient CreateClient() => new OutboxDynamoDbLocalClient(Credentials, CreateConfig(ServiceUrl));
 
