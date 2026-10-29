@@ -770,7 +770,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
     private sealed class CsfleTestRegistryClient(SchemaRegistryClient inner) : ISchemaRegistryClient
     {
         private readonly ConcurrentDictionary<string, Kek> _keks = new(StringComparer.Ordinal);
-        private readonly ConcurrentDictionary<(string Kek, string Subject, DekAlgorithm Algorithm), Dek> _deks = new();
+        private readonly ConcurrentDictionary<(string Kek, string Subject, int Version, DekAlgorithm Algorithm), Dek> _deks = new();
 
         public int LatestCacheTtlSecs => inner.LatestCacheTtlSecs;
 
@@ -877,7 +877,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
                     : null,
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
             };
-            _deks[(kekName, request.Subject, algorithm)] = dek;
+            _deks[(kekName, request.Subject, dek.Version, algorithm)] = dek;
             return Task.FromResult(dek);
         }
 
@@ -886,13 +886,8 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             string subject,
             DekAlgorithm? algorithm = null,
             bool deleted = false,
-            CancellationToken cancellationToken = default)
-        {
-            var resolvedAlgorithm = algorithm ?? DekAlgorithm.Aes256Gcm;
-            return _deks.TryGetValue((kekName, subject, resolvedAlgorithm), out var dek)
-                ? Task.FromResult(dek)
-                : Task.FromException<Dek>(new SchemaRegistryException(40471, $"DEK for '{subject}' not found"));
-        }
+            CancellationToken cancellationToken = default) =>
+            GetDekAsync(kekName, subject, 1, algorithm ?? DekAlgorithm.Aes256Gcm, deleted, cancellationToken);
 
         public Task<Dek> GetDekAsync(
             string kekName,
@@ -900,7 +895,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             int version,
             bool deleted = false,
             CancellationToken cancellationToken = default) =>
-            GetDekAsync(kekName, subject, DekAlgorithm.Aes256Gcm, deleted, cancellationToken);
+            GetDekAsync(kekName, subject, version, DekAlgorithm.Aes256Gcm, deleted, cancellationToken);
 
         public Task<Dek> GetDekAsync(
             string kekName,
@@ -908,8 +903,20 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             int version,
             DekAlgorithm algorithm,
             bool deleted = false,
-            CancellationToken cancellationToken = default) =>
-            GetDekAsync(kekName, subject, algorithm, deleted, cancellationToken);
+            CancellationToken cancellationToken = default)
+        {
+            if (version == -1)
+            {
+                version = _deks.Keys
+                    .Where(key => key.Kek == kekName && key.Subject == subject && key.Algorithm == algorithm)
+                    .Select(key => key.Version)
+                    .DefaultIfEmpty(1)
+                    .Max();
+            }
+            return _deks.TryGetValue((kekName, subject, version, algorithm), out var dek)
+                ? Task.FromResult(dek)
+                : Task.FromException<Dek>(new SchemaRegistryException(40471, $"DEK version '{version}' for '{subject}' not found"));
+        }
 
         public void Dispose() => inner.Dispose();
     }

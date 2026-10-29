@@ -2703,7 +2703,6 @@ public sealed partial class SchemaRegistryCsfleRuleTests
         private readonly Dictionary<(string KekName, string Subject, int Version, DekAlgorithm Algorithm), Dek> _deksByVersion = new();
         private readonly Dictionary<(string KekName, string Subject, DekAlgorithm Algorithm), Dek> _latestDeks = new();
         private int _nextSchemaId = 1;
-        private int _nextDekVersion = 1;
         private int _getKekCallCount;
         private int _getDekCallCount;
         private int _registerDekCallCount;
@@ -2780,8 +2779,9 @@ public sealed partial class SchemaRegistryCsfleRuleTests
         private void AddDekCore(Dek dek)
         {
             _deksByVersion[(dek.KekName, dek.Subject, dek.Version, dek.Algorithm)] = dek;
-            _latestDeks[(dek.KekName, dek.Subject, dek.Algorithm)] = dek;
-            _nextDekVersion = Math.Max(_nextDekVersion, dek.Version + 1);
+            var key = (dek.KekName, dek.Subject, dek.Algorithm);
+            if (!_latestDeks.TryGetValue(key, out var latest) || dek.Version >= latest.Version)
+                _latestDeks[key] = dek;
         }
 
         public Task<Kek> GetKekAsync(
@@ -2827,41 +2827,16 @@ public sealed partial class SchemaRegistryCsfleRuleTests
             string subject,
             DekAlgorithm? algorithm = null,
             bool deleted = false,
-            CancellationToken cancellationToken = default)
-        {
-            if (GetDekDelay > TimeSpan.Zero)
-                Thread.Sleep(GetDekDelay);
-
-            lock (_gate)
-            {
-                _getDekCallCount++;
-                var resolvedAlgorithm = algorithm ?? DekAlgorithm.Aes256Gcm;
-                if (_latestDeks.TryGetValue((kekName, subject, resolvedAlgorithm), out var dek))
-                    return Task.FromResult(dek);
-            }
-
-            throw new SchemaRegistryException(40471, $"DEK for subject '{subject}' not found");
-        }
+            CancellationToken cancellationToken = default) =>
+            GetDekAsync(kekName, subject, 1, algorithm ?? DekAlgorithm.Aes256Gcm, deleted, cancellationToken);
 
         public Task<Dek> GetDekAsync(
             string kekName,
             string subject,
             int version,
             bool deleted = false,
-            CancellationToken cancellationToken = default)
-        {
-            if (GetDekDelay > TimeSpan.Zero)
-                Thread.Sleep(GetDekDelay);
-
-            lock (_gate)
-            {
-                _getDekCallCount++;
-                if (_deksByVersion.TryGetValue((kekName, subject, version, DekAlgorithm.Aes256Gcm), out var dek))
-                    return Task.FromResult(dek);
-            }
-
-            throw new SchemaRegistryException(40471, $"DEK version '{version}' not found");
-        }
+            CancellationToken cancellationToken = default) =>
+            GetDekAsync(kekName, subject, version, DekAlgorithm.Aes256Gcm, deleted, cancellationToken);
 
         public Task<Dek> GetDekAsync(
             string kekName,
@@ -2877,8 +2852,11 @@ public sealed partial class SchemaRegistryCsfleRuleTests
             lock (_gate)
             {
                 _getDekCallCount++;
-                if (_deksByVersion.TryGetValue((kekName, subject, version, algorithm), out var dek))
-                    return Task.FromResult(dek);
+                var found = version == -1
+                    ? _latestDeks.TryGetValue((kekName, subject, algorithm), out var dek)
+                    : _deksByVersion.TryGetValue((kekName, subject, version, algorithm), out dek);
+                if (found)
+                    return Task.FromResult(dek!);
             }
 
             throw new SchemaRegistryException(40471, $"DEK version '{version}' not found for algorithm '{algorithm}'");
@@ -2898,9 +2876,7 @@ public sealed partial class SchemaRegistryCsfleRuleTests
             {
                 _registerDekCallCount++;
                 var algorithm = request.Algorithm ?? DekAlgorithm.Aes256Gcm;
-                if (request.Version is { } version
-                        ? _deksByVersion.ContainsKey((kekName, request.Subject, version, algorithm))
-                        : _latestDeks.ContainsKey((kekName, request.Subject, algorithm)))
+                if (_deksByVersion.ContainsKey((kekName, request.Subject, request.Version ?? 1, algorithm)))
                 {
                     throw new SchemaRegistryException(40972, $"DEK for subject '{request.Subject}' already exists");
                 }
@@ -2909,7 +2885,7 @@ public sealed partial class SchemaRegistryCsfleRuleTests
                 {
                     KekName = kekName,
                     Subject = request.Subject,
-                    Version = request.Version ?? _nextDekVersion++,
+                    Version = request.Version ?? 1,
                     Algorithm = algorithm,
                     EncryptedKeyMaterial = request.EncryptedKeyMaterial,
                     KeyMaterial = RegisteredDekKeyMaterial,

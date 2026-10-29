@@ -341,7 +341,7 @@ public interface ISchemaRegistryClient : IDisposable
         => throw new NotSupportedException("This Schema Registry client does not support DEK Registry DEK operations.");
 
     /// <summary>
-    /// Gets the latest Data Encryption Key (DEK) for a KEK and subject.
+    /// Gets version 1 of the Data Encryption Key (DEK) for a KEK and subject.
     /// </summary>
     /// <param name="kekName">KEK name.</param>
     /// <param name="subject">DEK subject.</param>
@@ -362,7 +362,7 @@ public interface ISchemaRegistryClient : IDisposable
     /// </summary>
     /// <param name="kekName">KEK name.</param>
     /// <param name="subject">DEK subject.</param>
-    /// <param name="version">DEK version.</param>
+    /// <param name="version">DEK version, or -1 for the latest version.</param>
     /// <param name="deleted">Whether to include soft-deleted DEKs.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The DEK.</returns>
@@ -379,7 +379,7 @@ public interface ISchemaRegistryClient : IDisposable
     /// </summary>
     /// <param name="kekName">KEK name.</param>
     /// <param name="subject">DEK subject.</param>
-    /// <param name="version">DEK version.</param>
+    /// <param name="version">DEK version, or -1 for the latest version.</param>
     /// <param name="algorithm">DEK algorithm.</param>
     /// <param name="deleted">Whether to include soft-deleted DEKs.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
