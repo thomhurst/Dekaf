@@ -7,6 +7,37 @@ namespace Dekaf.Tests.Integration;
 public class AdminDetailedMutationTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task CreateTopics_ManualAssignmentsWithDefaultCounts_CreateAssignedPartitions(bool detailed)
+    {
+        var name = $"assigned-create-{Guid.NewGuid():N}";
+        await using var admin = new AdminClientBuilder().WithBootstrapServers(KafkaContainer.BootstrapServers).Build();
+        var brokerId = (await admin.DescribeClusterAsync()).Nodes[0].NodeId;
+        NewTopic[] topics = [new()
+        {
+            Name = name,
+            ReplicaAssignments = new Dictionary<int, IReadOnlyList<int>> { [0] = [brokerId], [1] = [brokerId] }
+        }];
+        try
+        {
+            if (detailed)
+                await Assert.That((await admin.CreateTopicsDetailedAsync(topics))[name].IsSuccess).IsTrue();
+            else
+                await admin.CreateTopicsAsync(topics);
+
+            var description = await WaitForConditionAsync(async () => (await admin.DescribeTopicsAsync([name]))[name],
+                topic => topic.Partitions.Count == 2, description: "manually assigned topic metadata");
+            foreach (var partition in description.Partitions)
+                await Assert.That(partition.ReplicaNodes).IsEquivalentTo([brokerId]);
+        }
+        finally
+        {
+            await admin.DeleteTopicsDetailedAsync([name]);
+        }
+    }
+
+    [Test]
     public async Task TopicMutations_PreserveMixedBrokerOutcomesAndTopicIds()
     {
         var existing = await KafkaContainer.CreateTestTopicAsync(partitions: 1);

@@ -556,6 +556,12 @@ public sealed class NewTopic
     public int NumPartitions { get; init; } = 1;
     public short ReplicationFactor { get; init; } = 1;
     public IReadOnlyDictionary<string, string>? Configs { get; init; }
+
+    /// <summary>
+    /// Manual partition-to-broker assignments. When non-empty, these determine the partition count
+    /// and replica placement; <see cref="NumPartitions"/> and <see cref="ReplicationFactor"/> are
+    /// ignored and sent as -1. Null or empty assignments use the configured counts.
+    /// </summary>
     public IReadOnlyDictionary<int, IReadOnlyList<int>>? ReplicaAssignments { get; init; }
 }
 

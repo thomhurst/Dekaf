@@ -152,9 +152,10 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
             ArgumentNullException.ThrowIfNull(topic);
             ArgumentException.ThrowIfNullOrWhiteSpace(topic.Name);
             if (!names.Add(topic.Name)) throw new ArgumentException("Topic names must be distinct.", nameof(topics));
-            if (topic.NumPartitions < -1 || topic.NumPartitions == 0)
+            var hasAssignments = topic.ReplicaAssignments is { Count: > 0 };
+            if (!hasAssignments && (topic.NumPartitions < -1 || topic.NumPartitions == 0))
                 throw new ArgumentOutOfRangeException(nameof(topics), "Partition count must be positive or -1 for broker defaults.");
-            if (topic.ReplicationFactor < -1 || topic.ReplicationFactor == 0)
+            if (!hasAssignments && (topic.ReplicationFactor < -1 || topic.ReplicationFactor == 0))
                 throw new ArgumentOutOfRangeException(nameof(topics), "Replication factor must be positive or -1 for broker defaults.");
             List<CreateTopicAssignment>? assignments = null;
             if (topic.ReplicaAssignments is { } requested)
@@ -169,8 +170,8 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
             result.Add(new()
             {
                 Name = topic.Name,
-                NumPartitions = topic.NumPartitions,
-                ReplicationFactor = topic.ReplicationFactor,
+                NumPartitions = hasAssignments ? -1 : topic.NumPartitions,
+                ReplicationFactor = hasAssignments ? (short)-1 : topic.ReplicationFactor,
                 Assignments = assignments,
                 Configs = topic.Configs?.Select(static pair => new CreateTopicConfig { Name = pair.Key, Value = pair.Value }).ToArray()
             });

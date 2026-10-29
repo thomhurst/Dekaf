@@ -354,8 +354,8 @@ public sealed partial class AdminClient :
         var topicData = topics.Select(t => new CreateTopicData
         {
             Name = t.Name,
-            NumPartitions = t.NumPartitions,
-            ReplicationFactor = t.ReplicationFactor,
+            NumPartitions = t.ReplicaAssignments is { Count: > 0 } ? -1 : t.NumPartitions,
+            ReplicationFactor = t.ReplicaAssignments is { Count: > 0 } ? (short)-1 : t.ReplicationFactor,
             Assignments = t.ReplicaAssignments?.Select(a => new CreateTopicAssignment
             {
                 PartitionIndex = a.Key,

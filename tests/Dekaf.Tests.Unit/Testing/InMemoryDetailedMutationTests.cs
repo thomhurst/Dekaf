@@ -34,7 +34,7 @@ public sealed class InMemoryDetailedMutationTests
     {
         var cluster = new InMemoryKafkaCluster();
         await using var admin = new InMemoryAdminClient(cluster);
-        NewTopic[] topics = [new() { Name = "orders", NumPartitions = -1, ReplicationFactor = -1,
+        NewTopic[] topics = [new() { Name = "orders",
             ReplicaAssignments = new Dictionary<int, IReadOnlyList<int>> { [0] = [0] } }];
         await Assert.That((await admin.CreateTopicsDetailedAsync(topics, new() { ValidateOnly = true }))["orders"].IsSuccess).IsTrue();
         await Assert.That(cluster.ListTopics()).IsEmpty();
