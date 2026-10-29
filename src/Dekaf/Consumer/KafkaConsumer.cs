@@ -2276,7 +2276,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         IAsyncDeserializer<TValue>? asyncValueDeserializer = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(options.ConnectionsPerBroker, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(options.ConnectionsPerBroker, options.MaxConnectionsPerBroker);
+        if (options.EnableAdaptiveConnections)
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(options.ConnectionsPerBroker, options.MaxConnectionsPerBroker);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPollRecords, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPollIntervalMs, 1);
         ValidateFetchBufferMemory(options);

@@ -1725,6 +1725,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int _connectionsPerBroker = 2;
     private bool _enableAdaptiveConnections = true;
     private int _maxConnectionsPerBroker = ConsumerOptions.DefaultMaxConnectionsPerBroker;
+    private bool _isMaxConnectionsPerBrokerConfigured;
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
     private bool _reconnectBackoffConfigured;
@@ -1754,6 +1755,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _loggerFactory = clientInfrastructure.LoggerFactory;
         _connectionsPerBroker = clientInfrastructure.ConnectionsPerBroker;
         _maxConnectionsPerBroker = clientInfrastructure.MaxConnectionsPerBroker;
+        _isMaxConnectionsPerBrokerConfigured = true;
         _retryBackoffMs = clientInfrastructure.RetryBackoffMs;
         _retryBackoffMaxMs = clientInfrastructure.RetryBackoffMaxMs;
         _bootstrapResolveTimeoutMs = clientInfrastructure.BootstrapResolveTimeoutMs;
@@ -2690,6 +2692,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// The initial number of connections per broker.
     /// The consumer uses one connection for fetch requests and one for coordination traffic.
     /// With adaptive connections enabled, additional connections may be added up to <see cref="WithAdaptiveConnections"/>.
+    /// Raises the default adaptive maximum to this value unless a maximum was explicitly configured.
     /// </param>
     /// <exception cref="ArgumentOutOfRangeException">
     /// Thrown when <paramref name="connectionsPerBroker"/> is less than 1.
@@ -2699,6 +2702,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
         ThrowIfClientOwnedConnectionSettings();
         ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
         _connectionsPerBroker = connectionsPerBroker;
+        if (!_isMaxConnectionsPerBrokerConfigured)
+            _maxConnectionsPerBroker = Math.Max(_maxConnectionsPerBroker, connectionsPerBroker);
         return this;
     }
 
@@ -2715,6 +2720,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         ArgumentOutOfRangeException.ThrowIfLessThan(maxConnections, 1);
         _enableAdaptiveConnections = true;
         _maxConnectionsPerBroker = maxConnections;
+        _isMaxConnectionsPerBrokerConfigured = true;
         return this;
     }
 
