@@ -1,3 +1,5 @@
+using Dekaf.ShareConsumer;
+
 namespace Dekaf.Testing;
 
 /// <summary>
@@ -19,6 +21,12 @@ public sealed class InMemoryShareConsumerOptions
     /// Maximum records returned by each poll.
     /// </summary>
     public int MaxPollRecords { get; init; } = 500;
+
+    /// <summary>
+    /// Controls whether delivered records are accepted automatically or require Acknowledge.
+    /// Renew requires explicit acknowledgement mode.
+    /// </summary>
+    public ShareAcknowledgementMode AcknowledgementMode { get; init; } = ShareAcknowledgementMode.Implicit;
 
     /// <summary>
     /// Member ID reported by the fake share consumer.

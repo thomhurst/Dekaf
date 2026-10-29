@@ -144,3 +144,5 @@ Dekaf.Testing.InMemoryKafkaClusterOptions.Partitioner.get -> Dekaf.Producer.IPar
 Dekaf.Testing.InMemoryKafkaClusterOptions.Partitioner.set -> void
 Dekaf.Testing.InMemoryKafkaClusterOptions.DeliveryCountLimit.get -> int
 Dekaf.Testing.InMemoryKafkaClusterOptions.DeliveryCountLimit.init -> void
+Dekaf.Testing.InMemoryShareConsumerOptions.AcknowledgementMode.get -> Dekaf.ShareConsumer.ShareAcknowledgementMode
+Dekaf.Testing.InMemoryShareConsumerOptions.AcknowledgementMode.init -> void

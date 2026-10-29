@@ -978,10 +978,29 @@ public sealed partial class InMemoryKafkaCluster
             !OwnsShareRecord(state, memberId, registration, record.ShareAcquisitionId))
             return false;
 
+        // Renewal keeps the current acquisition, including at the delivery count limit.
+        if (type == AcknowledgeType.Renew)
+            return false;
+
         state.Registration = null;
         state.Archived = type is AcknowledgeType.Accept or AcknowledgeType.Reject ||
                          state.DeliveryCount >= _options.DeliveryCountLimit;
         return state.Archived;
+    }
+
+    internal bool IsCurrentShareRecord(
+        string groupId,
+        ShareGroupMemberRegistration registration,
+        InMemoryRecord record)
+    {
+        lock (_gate)
+        {
+            var partition = new TopicPartition(record.Topic, record.Partition);
+            var records = GetShareRecordPartition(groupId, partition, create: false);
+            return registration.IsActive && records is not null &&
+                   records.TryGetValue(record.Offset, out var state) &&
+                   OwnsShareRecord(state, registration.MemberId, registration, record.ShareAcquisitionId);
+        }
     }
 
     private static bool OwnsShareRecord(
