@@ -30,7 +30,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         long Position,
         bool ResumePartition,
         TaskCompletionSource<CapturedAutoCommitProof> Completion,
-        CapturedCommitOffsets CapturedCommit);
+        CapturedCommitOffsets CapturedCommit,
+        bool Invalidated = false);
 
     private readonly record struct CapturedCommitOffsets(
         TopicPartitionOffset[] Offsets,
@@ -1992,15 +1993,17 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         lock (_gate)
         {
-            if (_pendingAutoCommitAdvancements is null ||
-                !_pendingAutoCommitAdvancements.TryGetValue(partition, out var pending) ||
-                pending.Position != expectedPosition)
-            {
-                return false;
-            }
-
             try
             {
+                RefreshSubscriptionUnderLock();
+                if (_pendingAutoCommitAdvancements is null ||
+                    !_pendingAutoCommitAdvancements.TryGetValue(partition, out var pending) ||
+                    pending.Position != expectedPosition ||
+                    pending.Invalidated)
+                {
+                    return false;
+                }
+
                 if (!IsReservedRecordSelectionCurrentUnderLock(
                         partition,
                         expectedPosition,
@@ -3411,7 +3414,16 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             foreach (var partition in removed)
             {
                 _assignment.Remove(partition);
-                _paused.Remove(partition);
+                if (_pendingAutoCommitAdvancements is not null &&
+                    _pendingAutoCommitAdvancements.TryGetValue(partition, out var pending))
+                {
+                    // Keep the reservation until its fault completes, but never deliver the removed topic's record.
+                    _pendingAutoCommitAdvancements[partition] = pending with { Invalidated = true };
+                }
+                else
+                {
+                    _paused.Remove(partition);
+                }
                 _positions.Remove(partition);
                 if (_storedOffsets.Remove(partition))
                     _storedOffsetsVersion++;

@@ -150,6 +150,98 @@ public sealed class InMemorySubscriptionTopologyTests
     }
 
     [Test]
+    [Arguments(false, false, false)]
+    [Arguments(false, true, false)]
+    [Arguments(false, true, true)]
+    [Arguments(true, true, false)]
+    public async Task RecreatedTopic_PendingAutoCommitDoesNotDeliverOldRecord(
+        bool observeDeletion, bool observeRecreation, bool resume)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders");
+        await using var producer = new InMemoryProducer<string, string>(cluster);
+        await using var consumer = new InMemoryConsumer<string, string>(cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "group",
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                OffsetCommitMode = OffsetCommitMode.Auto,
+                OffsetStoreTiming = OffsetStoreTiming.OnDelivery
+            });
+        consumer.Subscribe("orders");
+        await Produce(producer, "orders", 0, "old");
+        var partition = new TopicPartition("orders", 0);
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: "group"));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var consume = consumer.ConsumeOneAsync(TimeSpan.Zero, cancellation.Token).AsTask();
+        await barrier.WaitUntilEnteredAsync(cancellation.Token);
+        try
+        {
+            cluster.DeleteTopic("orders");
+            if (observeDeletion)
+                await Assert.That(consumer.Assignment).IsEmpty();
+            cluster.CreateTopic("orders");
+            await Produce(producer, "orders", 0, "new");
+            if (observeRecreation)
+            {
+                await Assert.That(consumer.Assignment).Contains(partition);
+                await Assert.That(consumer.GetPosition(partition)).IsEqualTo(0);
+                if (resume)
+                    consumer.Resume(partition);
+                // A concurrent poll must not take over the invalidated reservation before its owner completes.
+                await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.Zero, cancellation.Token)).IsNull();
+            }
+        }
+        finally
+        {
+            barrier.Release();
+        }
+
+        var record = await consume;
+        await Assert.That(record).IsNotNull();
+        await Assert.That(record!.Value.Value).IsEqualTo("new");
+        await Assert.That(record.Value.Offset).IsEqualTo(0);
+        await Assert.That(cluster.GetCommittedOffset("group", partition)).IsEqualTo(1);
+        await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.Zero)).IsNull();
+    }
+
+    [Test]
+    public async Task UnrelatedTopicCreation_PreservesPendingAutoCommit()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders");
+        await using var producer = new InMemoryProducer<string, string>(cluster);
+        await using var consumer = new InMemoryConsumer<string, string>(cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "group",
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                OffsetCommitMode = OffsetCommitMode.Auto,
+                OffsetStoreTiming = OffsetStoreTiming.OnDelivery
+            });
+        consumer.Subscribe("orders");
+        await Produce(producer, "orders", 0, "old");
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: "group"));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var consume = consumer.ConsumeOneAsync(TimeSpan.Zero, cancellation.Token).AsTask();
+        await barrier.WaitUntilEnteredAsync(cancellation.Token);
+        try
+        {
+            cluster.CreateTopic("unrelated");
+            await Assert.That(consumer.Assignment).Count().IsEqualTo(1);
+        }
+        finally
+        {
+            barrier.Release();
+        }
+
+        await Assert.That((await consume)!.Value.Value).IsEqualTo("old");
+        await Assert.That(cluster.GetCommittedOffset("group", new TopicPartition("orders", 0))).IsEqualTo(1);
+    }
+
+    [Test]
     [Arguments("assign")]
     [Arguments("incremental")]
     [Arguments("unsubscribe")]
