@@ -1,0 +1,13 @@
+Documentation build dependency: caniuse-lite
+
+The documentation build uses caniuse-lite, a compressed version of the
+Can I Use browser support data, to select browser compatibility transforms.
+
+Credit: Can I Use and caniuse-lite contributors.
+Original data: https://github.com/Fyrd/caniuse
+Compressed data and package: https://github.com/browserslist/caniuse-lite
+License: Creative Commons Attribution 4.0 International (CC-BY-4.0)
+License text: https://creativecommons.org/licenses/by/4.0/legalcode
+
+Dekaf uses the published caniuse-lite package without modifying its data.
+This notice attributes that dependency; it does not change Dekaf's MIT license.
