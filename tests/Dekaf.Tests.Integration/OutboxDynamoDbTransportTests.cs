@@ -60,6 +60,28 @@ public sealed class OutboxDynamoDbTransportTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task LocalClient_DoesNotRetryTransportFailureAfterCancellation(
+        bool httpRequestException, CancellationToken cancellationToken)
+    {
+        using var cancelled = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        await using var endpoint = new DynamoDbEndpoint();
+        var transport = new FailingTransport(
+            TransportError(httpRequestException), failures: int.MaxValue, cancelBeforeFailure: cancelled);
+        using var client = new FaultingClient(DynamoDbLocalContainer.CreateConfig(endpoint.ServiceUrl), transport);
+
+        if (httpRequestException)
+            await Assert.That(async () => await WriteAsync(client, cancelled.Token)).Throws<HttpRequestException>();
+        else
+            await Assert.That(async () => await WriteAsync(client, cancelled.Token)).Throws<IOException>();
+
+        await Assert.That(cancelled.IsCancellationRequested).IsTrue();
+        await Assert.That(transport.Attempts).IsEqualTo(1);
+        await Assert.That(endpoint.RequestCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task LocalClient_DoesNotRetryHttpStatusExceptions(CancellationToken cancellationToken)
     {
         await using var endpoint = new DynamoDbEndpoint();
@@ -152,14 +174,18 @@ public sealed class OutboxDynamoDbTransportTests
 
     // Fail inside the SDK retry handler, before any HTTP response. This also covers IOException
     // directly, without depending on HttpClient's own reconnect behavior or a flaky Docker socket.
-    private sealed class FailingTransport(Exception error, int failures) : PipelineHandler
+    private sealed class FailingTransport(
+        Exception error, int failures, CancellationTokenSource? cancelBeforeFailure = null) : PipelineHandler
     {
         public int Attempts { get; private set; }
 
         public override Task<T> InvokeAsync<T>(IExecutionContext executionContext)
         {
             if (++Attempts <= failures)
+            {
+                cancelBeforeFailure?.Cancel();
                 return Task.FromException<T>(error);
+            }
             return base.InvokeAsync<T>(executionContext);
         }
     }
