@@ -8,6 +8,33 @@ public sealed partial class InMemoryKafkaCluster
     {
         lock (_gate)
         {
+            if (_classicGroupDescriptions?.TryGetValue(groupId, out var snapshot) == true)
+            {
+                var classicMembers = new MemberDescription[snapshot.Members.Count];
+                for (var i = 0; i < classicMembers.Length; i++)
+                {
+                    var member = snapshot.Members[i];
+                    classicMembers[i] = new MemberDescription
+                    {
+                        MemberId = member.MemberId,
+                        GroupInstanceId = member.GroupInstanceId,
+                        ClientId = member.ClientId,
+                        ClientHost = member.ClientHost,
+                        Assignment = member.Assignment?.ToArray()
+                    };
+                }
+                return new GroupDescription
+                {
+                    GroupId = groupId,
+                    ProtocolType = snapshot.ProtocolType,
+                    ProtocolData = snapshot.ProtocolData,
+                    State = snapshot.State,
+                    CoordinatorId = snapshot.CoordinatorId,
+                    AuthorizedOperations = snapshot.AuthorizedOperations ?? int.MinValue,
+                    Members = classicMembers
+                };
+            }
+
             var hasGeneration = _consumerGroupGenerations.TryGetValue(groupId, out var generation);
             var exists = hasGeneration || _consumerGroupOffsets.ContainsKey(groupId);
             var state = exists ? "Empty" : "Dead";

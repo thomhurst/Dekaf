@@ -1,6 +1,7 @@
 using Dekaf.Errors;
 using Dekaf.Protocol;
 using Dekaf.Testing;
+using Dekaf.Tests.Unit.Admin;
 
 namespace Dekaf.Tests.Unit.Testing;
 
@@ -69,6 +70,57 @@ public sealed class InMemoryConsumerGroupAdminTests
         await Assert.That(description.Members.Count).IsEqualTo(2);
         await Assert.That(description.Members.SelectMany(static member => member.Assignment!).ToArray())
             .IsEquivalentTo(partitions);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task DescribeSeededClassicGroup_PreservesSnapshotAndOverridesLiveMembership(bool liveMembership)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        if (liveMembership)
+            cluster.RegisterConsumerGroupMember("group", "live", [], out _);
+        cluster.SetClassicGroupDescription(new()
+        {
+            GroupId = "group", ProtocolType = "consumer", ProtocolData = "range", State = "Stable",
+            CoordinatorId = 12, AuthorizedOperations = 123,
+            Members = [new()
+            {
+                MemberId = "seeded", GroupInstanceId = "instance", ClientId = "client", ClientHost = "host",
+                AssignmentData = AdminClientClassicGroupDescriptionTests.AssignmentBytes()
+            }]
+        });
+        await using var admin = new InMemoryAdminClient(cluster);
+
+        var description = (await admin.DescribeConsumerGroupsAsync(["group"]))["group"];
+
+        await Assert.That(description.State).IsEqualTo("Stable");
+        await Assert.That(description.GroupId).IsEqualTo("group");
+        await Assert.That(description.ProtocolType).IsEqualTo("consumer");
+        await Assert.That(description.ProtocolData).IsEqualTo("range");
+        await Assert.That(description.CoordinatorId).IsEqualTo(12);
+        await Assert.That(description.AuthorizedOperations).IsEqualTo(123);
+        await Assert.That(description.GroupEpoch).IsNull();
+        await Assert.That(description.AssignmentEpoch).IsNull();
+        await Assert.That(description.Members.Count).IsEqualTo(1);
+        var member = description.Members[0];
+        await Assert.That(member.MemberId).IsEqualTo("seeded");
+        await Assert.That(member.GroupInstanceId).IsEqualTo("instance");
+        await Assert.That(member.ClientId).IsEqualTo("client");
+        await Assert.That(member.ClientHost).IsEqualTo("host");
+        await Assert.That(member.MemberEpoch).IsNull();
+        await Assert.That(member.Assignment!).IsEquivalentTo(new TopicPartition[] { new("topic", 2) });
+
+        // Mutating a returned assignment must not change the seeded snapshot.
+        ((TopicPartition[])member.Assignment!)[0] = new("changed", 0);
+        var next = (await admin.DescribeConsumerGroupsAsync(["group"]))["group"];
+        await Assert.That(next.Members[0].Assignment!).IsEquivalentTo(new TopicPartition[] { new("topic", 2) });
+        cluster.SetClassicGroupDescription(new() { GroupId = "group", State = "Empty", Members = [] });
+        var empty = (await admin.DescribeConsumerGroupsAsync(["group"]))["group"];
+        await Assert.That(empty.State).IsEqualTo("Empty");
+        await Assert.That(empty.Members).IsEmpty();
+        await Assert.That(description.State).IsEqualTo("Stable");
+        await Assert.That(description.Members.Count).IsEqualTo(1);
     }
 
     [Test]
