@@ -720,11 +720,13 @@ public sealed partial class InMemoryAdminClient :
         ValidateConfigResources(resourceList, nameof(resources), requireDistinct: true);
         if (resourceList.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
-        for (var index = 0; index < resourceList.Length; index++)
-            await ApplyAdminResourceFaultAsync(resourceList[index], cancellationToken).ConfigureAwait(false);
-        var result = resourceList.ToDictionary(
-            resource => resource,
-            resource => _cluster.DescribeShareIsolation(resource));
+        var result = new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>>(resourceList.Length);
+        foreach (var resource in resourceList)
+        {
+            await ApplyAdminResourceFaultAsync(resource, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            result.Add(resource, _cluster.DescribeConfigs(resource));
+        }
 
         return result;
     }
@@ -740,18 +742,18 @@ public sealed partial class InMemoryAdminClient :
         var items = AdminClient.SnapshotDetailedConfigs(configs, static entry => ConfigAlter.Set(entry.Name, entry.Value));
         if (items.Count == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
-        var firstError = ErrorCode.None;
+        KafkaException? failure = null;
         foreach (var item in items)
         {
             await ApplyAdminResourceFaultAsync(item.Resource, cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
-            var error = _cluster.AlterShareIsolation(item.Resource, item.Changes, replace: true, options?.ValidateOnly ?? false);
-            if (firstError == ErrorCode.None)
-                firstError = error;
+            var error = _cluster.ReplaceConfigs(item.Resource, item.Changes, options?.ValidateOnly ?? false);
+            if (error != ErrorCode.None)
+                failure ??= KafkaException.FromErrorCode(error, $"Failed to alter configs for {item.Resource}.");
         }
 
-        if (firstError != ErrorCode.None)
-            throw KafkaException.FromErrorCode(firstError, "Invalid share.isolation.level configuration.");
+        if (failure is not null)
+            throw failure;
     }
 
     public async ValueTask IncrementalAlterConfigsAsync(
