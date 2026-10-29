@@ -122,12 +122,7 @@ public sealed partial class InMemoryKafkaCluster
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
         lock (_gate)
-        {
-            if (!_topics.Remove(name))
-                return false;
-            OnTopologyChangedUnderLock();
-            return true;
-        }
+            return DeleteTopicUnderLock(name);
     }
 
     internal bool DeleteTopic(Guid topicId)
@@ -147,8 +142,28 @@ public sealed partial class InMemoryKafkaCluster
                 }
             }
 
-            return topicName is not null && DeleteTopic(topicName);
+            return topicName is not null && DeleteTopicUnderLock(topicName);
         }
+    }
+
+    private bool DeleteTopicUnderLock(string name)
+    {
+        if (!_topics.Remove(name))
+            return false;
+
+        foreach (var records in _shareRecords.Values)
+            RemoveTopicPartitions(records, name);
+        foreach (var offsets in _shareGroupOffsets.Values)
+            RemoveTopicPartitions(offsets, name);
+        OnTopologyChangedUnderLock();
+        return true;
+    }
+
+    private static void RemoveTopicPartitions<T>(Dictionary<TopicPartition, T> partitions, string topicName)
+    {
+        var removed = partitions.Keys.Where(partition => StringComparer.Ordinal.Equals(partition.Topic, topicName)).ToArray();
+        foreach (var partition in removed)
+            partitions.Remove(partition);
     }
 
     public IReadOnlyList<string> ListTopics()
@@ -897,8 +912,13 @@ public sealed partial class InMemoryKafkaCluster
         ArgumentNullException.ThrowIfNull(records);
         lock (_gate)
         {
+            HashSet<TopicPartition>? archivedPartitions = null;
             foreach (var record in records)
-                CompleteShareRecordUnderLock(groupId, memberId, registration, record, AcknowledgeType.Release);
+            {
+                if (CompleteShareRecordUnderLock(groupId, memberId, registration, record, AcknowledgeType.Release))
+                    (archivedPartitions ??= []).Add(new TopicPartition(record.Topic, record.Partition));
+            }
+            AdvanceShareStartOffsetsUnderLock(groupId, archivedPartitions);
         }
     }
 
@@ -916,12 +936,26 @@ public sealed partial class InMemoryKafkaCluster
         ArgumentOutOfRangeException.ThrowIfGreaterThan(recordCount, records.Length);
         lock (_gate)
         {
+            HashSet<TopicPartition>? archivedPartitions = null;
             for (var index = 0; index < recordCount; index++)
-                CompleteShareRecordUnderLock(groupId, memberId, registration, records[index].Offset, records[index].Type);
+            {
+                var record = records[index];
+                if (CompleteShareRecordUnderLock(groupId, memberId, registration, record.Offset, record.Type))
+                    (archivedPartitions ??= []).Add(new TopicPartition(record.Offset.Topic, record.Offset.Partition));
+            }
+            AdvanceShareStartOffsetsUnderLock(groupId, archivedPartitions);
         }
     }
 
-    private void CompleteShareRecordUnderLock(
+    private void AdvanceShareStartOffsetsUnderLock(string groupId, HashSet<TopicPartition>? partitions)
+    {
+        if (partitions is null)
+            return;
+        foreach (var partition in partitions)
+            AdvanceShareStartOffsetUnderLock(groupId, partition, GetShareRecordPartition(groupId, partition, create: false)!);
+    }
+
+    private bool CompleteShareRecordUnderLock(
         string groupId,
         string memberId,
         ShareGroupMemberRegistration registration,
@@ -932,13 +966,12 @@ public sealed partial class InMemoryKafkaCluster
         var records = GetShareRecordPartition(groupId, partition, create: false);
         if (records is null || !records.TryGetValue(record.Offset, out var state) ||
             !OwnsShareRecord(state, memberId, registration))
-            return;
+            return false;
 
         state.Registration = null;
         state.Archived = type is AcknowledgeType.Accept or AcknowledgeType.Reject ||
                          state.DeliveryCount >= _options.DeliveryCountLimit;
-        if (state.Archived)
-            AdvanceShareStartOffsetUnderLock(groupId, partition, records);
+        return state.Archived;
     }
 
     private static bool OwnsShareRecord(ShareRecordState state, string memberId, ShareGroupMemberRegistration registration) =>
@@ -1330,19 +1363,24 @@ public sealed partial class InMemoryKafkaCluster
         }
     }
 
-    internal void DeleteShareGroupOffsets(string groupId, IEnumerable<TopicPartition> partitions)
+    internal void DeleteShareGroupOffsets(string groupId, string topicName)
     {
         lock (_gate)
         {
-            if (!_shareGroupOffsets.TryGetValue(groupId, out var offsets))
-                return;
-
-            foreach (var partition in partitions)
-                offsets.Remove(partition);
-
-            if (offsets.Count == 0)
-                _shareGroupOffsets.Remove(groupId);
+            if (_shareGroupOffsets.TryGetValue(groupId, out var offsets))
+            {
+                RemoveTopicPartitions(offsets, topicName);
+                if (offsets.Count == 0)
+                    _shareGroupOffsets.Remove(groupId);
+            }
+            ClearShareTopicRecordsUnderLock(groupId, topicName);
         }
+    }
+
+    private void ClearShareTopicRecordsUnderLock(string groupId, string topicName)
+    {
+        if (_shareRecords.TryGetValue(groupId, out var records))
+            RemoveTopicPartitions(records, topicName);
     }
 
     internal IReadOnlyDictionary<TopicPartition, ErrorCode> AlterStreamsGroupOffsets(
@@ -1726,7 +1764,10 @@ public sealed partial class InMemoryKafkaCluster
         do
         {
             var offset = enumerator.Current;
-            groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset;
+            var partition = new TopicPartition(offset.Topic, offset.Partition);
+            groupOffsets[partition] = offset;
+            if (_shareRecords.TryGetValue(groupId, out var records))
+                records.Remove(partition);
         }
         while (enumerator.MoveNext());
     }
@@ -1787,12 +1828,22 @@ public sealed partial class InMemoryKafkaCluster
         var start = GetCommittedShareOffset(groupId, partition) ?? GetWatermarks(partition).Low;
         var next = start;
         var partitionState = topic.Partitions[partition.Partition];
-        foreach (var record in partitionState.Records)
+        var lower = 0;
+        var upper = partitionState.Records.Count;
+        while (lower < upper)
         {
+            var middle = lower + (upper - lower) / 2;
+            if (partitionState.Records[middle].Offset < start)
+                lower = middle + 1;
+            else
+                upper = middle;
+        }
+
+        for (var index = lower; index < partitionState.Records.Count; index++)
+        {
+            var record = partitionState.Records[index];
             if (record.Offset >= partitionState.FirstUnstableOffset)
                 break;
-            if (record.Offset < next)
-                continue;
             next = record.Offset;
             if (IsRecordVisibleUnderLock(record))
             {

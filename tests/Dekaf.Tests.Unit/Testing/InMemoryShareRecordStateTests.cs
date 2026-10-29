@@ -216,6 +216,99 @@ public sealed class InMemoryShareRecordStateTests
         await Assert.That(deleted["workers"].ErrorCode).IsEqualTo(Dekaf.Protocol.ErrorCode.None);
     }
 
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task AdminOffsetMutation_ClearsArchivedRecordsAndDeliveryCounts(bool delete, bool detailed)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await ProduceRecords(cluster, 2);
+        await LeaveAcknowledgementGap(cluster);
+        await using var admin = new InMemoryAdminClient(cluster);
+        Dekaf.Admin.ShareGroupOffsetAlteration[] offsets =
+            [new() { TopicPartition = new("shared", 0), StartOffset = 0 }];
+        if (delete)
+        {
+            if (detailed)
+                await admin.DeleteShareGroupOffsetsDetailedAsync("workers", ["shared"]);
+            else
+                await admin.DeleteShareGroupOffsetsAsync("workers", ["shared"]);
+        }
+        else if (detailed)
+            await admin.AlterShareGroupOffsetsDetailedAsync("workers", offsets);
+        else
+            await admin.AlterShareGroupOffsetsAsync("workers", offsets);
+
+        await using var replacement = CreateConsumer(cluster);
+        var replayed = await replacement.PollAsync().ToArrayAsync();
+        await Assert.That(replayed.Select(record => record.Offset).ToArray()).IsEquivalentTo([0L, 1L]);
+        await Assert.That(replayed.Select(record => record.DeliveryCount).ToArray()).IsEquivalentTo([1, 1]);
+    }
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task RecreatedTopic_DoesNotInheritShareState(bool deleteById, bool archiveAll)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await ProduceRecords(cluster, 2);
+        if (archiveAll)
+        {
+            await using var original = CreateConsumer(cluster);
+            await original.PollAsync().ToArrayAsync();
+            await original.CommitAsync();
+        }
+        else
+            await LeaveAcknowledgementGap(cluster);
+        if (deleteById)
+            cluster.DeleteTopic(cluster.DescribeTopics(["shared"])["shared"].TopicId);
+        else
+            cluster.DeleteTopic("shared");
+        await ProduceRecords(cluster, 2);
+        await using var replacement = CreateConsumer(cluster);
+        var replayed = await replacement.PollAsync().ToArrayAsync();
+        await Assert.That(replayed.Select(record => record.Offset).ToArray()).IsEquivalentTo([0L, 1L]);
+        await Assert.That(replayed.Select(record => record.DeliveryCount).ToArray()).IsEquivalentTo([1, 1]);
+    }
+
+    [Test]
+    public async Task Commit_AdvancesEachPartitionAcrossUnorderedAcknowledgements()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("shared", 2);
+        await using var producer = new InMemoryProducer<string, string>(cluster);
+        var registration = cluster.RegisterShareGroupMember("workers", "member");
+        var completions = new List<InMemoryShareRecordCompletion>();
+        for (var partition = 0; partition < 2; partition++)
+        {
+            var topicPartition = new TopicPartition("shared", partition);
+            for (var offset = 0; offset < 3; offset++)
+            {
+                await producer.ProduceAsync(new Dekaf.Producer.ProducerMessage<string, string>
+                    { Topic = "shared", Partition = partition, Key = "key", Value = "value" });
+                cluster.TryAcquireShareRecord("workers", "member", registration, topicPartition, offset, out _, out _);
+                completions.Add(new(new("shared", partition, offset), AcknowledgeType.Accept));
+            }
+        }
+        completions.Reverse();
+        cluster.CompleteShareRecords("workers", "member", registration, completions.ToArray(), completions.Count);
+        await Assert.That(cluster.GetCommittedShareOffset("workers", new("shared", 0))).IsEqualTo(3);
+        await Assert.That(cluster.GetCommittedShareOffset("workers", new("shared", 1))).IsEqualTo(3);
+    }
+
+    private static async Task LeaveAcknowledgementGap(InMemoryKafkaCluster cluster)
+    {
+        await using var consumer = CreateConsumer(cluster);
+        var records = await consumer.PollAsync().ToArrayAsync();
+        consumer.Acknowledge(records[0], AcknowledgeType.Release);
+        consumer.Acknowledge(records[1], AcknowledgeType.Accept);
+        await consumer.CommitAsync();
+    }
+
     private static InMemoryShareConsumer<string, string> CreateConsumer(InMemoryKafkaCluster cluster)
     {
         var consumer = new InMemoryShareConsumer<string, string>(cluster,

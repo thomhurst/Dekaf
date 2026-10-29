@@ -44,9 +44,9 @@ public sealed partial class InMemoryKafkaCluster
             if (_shareGroupOffsets.TryGetValue(groupId, out var offsets))
             {
                 // Keep the group identity after deleting its final offset, as the broker does.
-                var removed = offsets.Keys.Where(partition => StringComparer.Ordinal.Equals(partition.Topic, topicName)).ToArray();
-                foreach (var partition in removed) offsets.Remove(partition);
+                RemoveTopicPartitions(offsets, topicName);
             }
+            ClearShareTopicRecordsUnderLock(groupId, topicName);
             return ErrorCode.None;
         }
     }

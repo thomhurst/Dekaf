@@ -1616,11 +1616,7 @@ public sealed partial class InMemoryAdminClient :
         foreach (var topic in topicSet)
         {
             await ApplyAdminFaultAsync(cancellationToken, topic, groupId: groupId).ConfigureAwait(false);
-            var partitions = _cluster.GetShareGroupOffsets(groupId)
-                .Keys
-                .Where(partition => StringComparer.Ordinal.Equals(partition.Topic, topic))
-                .ToArray();
-            _cluster.DeleteShareGroupOffsets(groupId, partitions);
+            _cluster.DeleteShareGroupOffsets(groupId, topic);
         }
     }
 
