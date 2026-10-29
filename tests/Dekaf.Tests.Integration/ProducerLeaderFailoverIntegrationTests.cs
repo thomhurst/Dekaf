@@ -18,7 +18,7 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
     [Arguments(true)]
     [Arguments(false)]
     [Timeout(180_000)]
-    public async Task Producer_PartitionLeaderHandoff_ReroutesRetriesWithoutDuplicates(
+    public async Task Producer_PartitionLeaderHandoff_PreservesOrderAndDelivery(
         bool enableIdempotence, CancellationToken cancellationToken)
     {
         var topic = await kafka.CreateReplicatedTopicAsync().ConfigureAwait(false);
@@ -77,8 +77,8 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
                 .ConfigureAwait(false);
             await producer.FlushAsync(cancellationToken).ConfigureAwait(false);
 
-            AssertAcknowledgementOrder(acknowledgements);
-            await AssertBrokerRecordsAsync(topic, cancellationToken).ConfigureAwait(false);
+            var oracle = new LeaderHandoffSequenceOracle(acknowledgements, MessageCount, enableIdempotence);
+            await AssertBrokerRecordsAsync(topic, oracle, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -356,25 +356,8 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
         }
     }
 
-    private static void AssertAcknowledgementOrder(IReadOnlyList<RecordMetadata> acknowledgements)
-    {
-        if (acknowledgements.Count != MessageCount)
-            throw new InvalidOperationException(
-                $"Expected {MessageCount} acknowledgements, actual {acknowledgements.Count}.");
-
-        for (var index = 0; index < acknowledgements.Count; index++)
-        {
-            var acknowledgement = acknowledgements[index];
-            if (acknowledgement.Offset != index)
-            {
-                throw new InvalidOperationException(
-                    $"Acknowledgement offset mismatch at index {index}: expected {index}, " +
-                    $"actual {acknowledgement.Offset}.");
-            }
-        }
-    }
-
-    private async Task AssertBrokerRecordsAsync(string topic, CancellationToken cancellationToken)
+    private async Task AssertBrokerRecordsAsync(
+        string topic, LeaderHandoffSequenceOracle oracle, CancellationToken cancellationToken)
     {
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
@@ -384,28 +367,25 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
             .ConfigureAwait(false);
         consumer.Assign(new TopicPartition(topic, 0));
 
-        for (var index = 0; index < MessageCount; index++)
+        while (!oracle.IsComplete)
         {
             var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), cancellationToken)
                 .ConfigureAwait(false);
             if (consumed is null)
-                throw new InvalidOperationException($"Timed out after consuming {index} of {MessageCount} records.");
+            {
+                oracle.EnsureComplete();
+                break;
+            }
 
             var result = consumed.Value;
-            var expected = index.ToString();
-            if (result.Offset != index || result.Key != expected || result.Value != expected)
-            {
-                throw new InvalidOperationException(
-                    $"Record mismatch at index {index}: offset={result.Offset}, key={result.Key}, value={result.Value}.");
-            }
+            oracle.Observe(result.Partition, result.Offset, result.Key, result.Value);
         }
 
         var extra = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(2), cancellationToken)
             .ConfigureAwait(false);
         if (extra is not null)
         {
-            throw new InvalidOperationException(
-                $"Unexpected duplicate record at offset {extra.Value.Offset}: {extra.Value.Value}.");
+            oracle.Observe(extra.Value.Partition, extra.Value.Offset, extra.Value.Key, extra.Value.Value);
         }
     }
 
