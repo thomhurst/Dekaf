@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Producer;
+using Dekaf.Serialization;
 using Dekaf.ShareConsumer;
 
 namespace Dekaf.Tests.Integration;
@@ -20,12 +21,14 @@ public class ShareConsumerTransactionalTests(KafkaTestContainer kafka) : Transac
     private static readonly string[] ExpectedValues = ["a", "b", "c", "d", "e"];
 
     [Test]
-    [Arguments(false, ShareAcknowledgementMode.Implicit)]
-    [Arguments(false, ShareAcknowledgementMode.Explicit)]
-    [Arguments(true, ShareAcknowledgementMode.Implicit)]
-    [Arguments(true, ShareAcknowledgementMode.Explicit)]
+    [Arguments(false, ShareAcknowledgementMode.Implicit, false)]
+    [Arguments(false, ShareAcknowledgementMode.Explicit, false)]
+    [Arguments(true, ShareAcknowledgementMode.Implicit, false)]
+    [Arguments(true, ShareAcknowledgementMode.Explicit, false)]
+    [Arguments(false, ShareAcknowledgementMode.Implicit, true)]
+    [Arguments(false, ShareAcknowledgementMode.Explicit, true)]
     public async Task ShareConsumer_TransactionalTopic_DeliversOnlyDataAndAdvancesPastMarkers(
-        bool batches, ShareAcknowledgementMode mode, CancellationToken cancellationToken)
+        bool batches, ShareAcknowledgementMode mode, bool prepared, CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
         var group = $"share-txn-{Guid.NewGuid():N}";
@@ -43,6 +46,8 @@ public class ShareConsumerTransactionalTests(KafkaTestContainer kafka) : Transac
         await using var consumer = await Kafka.CreateShareConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(group)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest).WithAcknowledgementMode(mode)
+            .WithValueDeserializer(prepared ? new PreparingStringDeserializer() : Serializers.String)
+            .WithMaxPollRecords(1)
             .BuildAsync(cancellationToken);
         consumer.Subscribe(topic);
         var received = new ConcurrentQueue<string>();
@@ -75,6 +80,27 @@ public class ShareConsumerTransactionalTests(KafkaTestContainer kafka) : Transac
         }
 
         await Assert.That(received.Order()).IsEquivalentTo(ExpectedValues);
+    }
+
+    private sealed class PreparingStringDeserializer : IDeserializer<string>, IAsyncDeserializerPreparer<string>
+    {
+        private bool _prepared;
+
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+            => Serializers.String.Deserialize(data, context);
+
+        public bool TryDeserialize(ReadOnlyMemory<byte> data, SerializationContext context, out string value)
+        {
+            value = _prepared ? Deserialize(data, context) : string.Empty;
+            return _prepared;
+        }
+
+        public ValueTask PrepareAsync(ReadOnlyMemory<byte> data, SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            _prepared = true;
+            return ValueTask.CompletedTask;
+        }
     }
 
     private static async Task ProduceTransactionAsync(IKafkaProducer<string, string> producer, string topic,

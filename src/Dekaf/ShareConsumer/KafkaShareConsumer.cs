@@ -1878,7 +1878,20 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             var records = batch.Records;
             while (parserState.RecordIndex < records.Count && results.Count < maxRecords)
             {
-                var record = records[parserState.RecordIndex];
+                Record record;
+                try
+                {
+                    record = records[parserState.RecordIndex];
+                }
+                catch (ArgumentOutOfRangeException) when (parserState.RecordIndex >= records.Count)
+                {
+                    // Lazy parsing shortened the count at a truncated record. Preserve the
+                    // complete prefix, but never acknowledge offsets beyond the cut as gaps.
+                    if (parserState.RecordIndex == 0)
+                        AdvanceGapCursor(topicInfo, partition, batch.BaseOffset, ref parserState);
+                    parserState.NextGapOffset = long.MaxValue;
+                    break;
+                }
                 var offset = batch.BaseOffset + record.OffsetDelta;
                 AdvanceGapCursor(topicInfo, partition, offset, ref parserState);
                 var deliveryCount = FindDeliveryCount(
@@ -2057,7 +2070,20 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 var records = batch.Records;
                 while (parserState.RecordIndex < records.Count && results.Count < maxRecords)
                 {
-                    var record = records[parserState.RecordIndex];
+                    Record record;
+                    try
+                    {
+                        record = records[parserState.RecordIndex];
+                    }
+                    catch (ArgumentOutOfRangeException) when (parserState.RecordIndex >= records.Count)
+                    {
+                        // Lazy parsing shortened the count at a truncated record. Preserve the
+                        // complete prefix, but never acknowledge offsets beyond the cut as gaps.
+                        if (parserState.RecordIndex == 0)
+                            AdvanceGapCursor(topicInfo, partition, batch.BaseOffset, ref parserState);
+                        parserState.NextGapOffset = long.MaxValue;
+                        break;
+                    }
                     var offset = batch.BaseOffset + record.OffsetDelta;
                     AdvanceGapCursor(topicInfo, partition, offset, ref parserState);
 

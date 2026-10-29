@@ -37,39 +37,67 @@ public sealed partial class ShareConsumerRenewalTests
         => tail == GapResponseTail.TruncatedFirstRecord ? [0, 2] : GapResponseDataOffsets;
 
     [Test]
-    [Arguments(false, ShareAcknowledgementMode.Implicit, GapResponseTail.None)]
-    [Arguments(true, ShareAcknowledgementMode.Implicit, GapResponseTail.None)]
-    [Arguments(false, ShareAcknowledgementMode.Explicit, GapResponseTail.None)]
-    [Arguments(true, ShareAcknowledgementMode.Explicit, GapResponseTail.None)]
-    [Arguments(false, ShareAcknowledgementMode.Implicit, GapResponseTail.TruncatedBatch)]
-    [Arguments(true, ShareAcknowledgementMode.Implicit, GapResponseTail.TruncatedBatch)]
+    [Arguments(false, ShareAcknowledgementMode.Implicit, GapResponseTail.None, 500)]
+    [Arguments(true, ShareAcknowledgementMode.Implicit, GapResponseTail.None, 500)]
+    [Arguments(false, ShareAcknowledgementMode.Explicit, GapResponseTail.None, 500)]
+    [Arguments(true, ShareAcknowledgementMode.Explicit, GapResponseTail.None, 500)]
+    [Arguments(false, ShareAcknowledgementMode.Implicit, GapResponseTail.TruncatedBatch, 500)]
+    [Arguments(true, ShareAcknowledgementMode.Implicit, GapResponseTail.TruncatedBatch, 500)]
+    [Arguments(false, ShareAcknowledgementMode.Implicit, GapResponseTail.TruncatedRecord, 500)]
+    [Arguments(true, ShareAcknowledgementMode.Implicit, GapResponseTail.TruncatedRecord, 500)]
+    [Arguments(false, ShareAcknowledgementMode.Implicit, GapResponseTail.TruncatedFirstRecord, 500)]
+    [Arguments(true, ShareAcknowledgementMode.Implicit, GapResponseTail.TruncatedFirstRecord, 500)]
+    [Arguments(false, ShareAcknowledgementMode.Explicit, GapResponseTail.TruncatedRecord, 500)]
+    [Arguments(true, ShareAcknowledgementMode.Explicit, GapResponseTail.TruncatedRecord, 500)]
+    [Arguments(false, ShareAcknowledgementMode.Explicit, GapResponseTail.TruncatedFirstRecord, 500)]
+    [Arguments(true, ShareAcknowledgementMode.Explicit, GapResponseTail.TruncatedFirstRecord, 500)]
+    [Arguments(false, ShareAcknowledgementMode.Implicit, GapResponseTail.TruncatedRecord, 1)]
+    [Arguments(true, ShareAcknowledgementMode.Implicit, GapResponseTail.TruncatedRecord, 1)]
+    [Arguments(false, ShareAcknowledgementMode.Implicit, GapResponseTail.TruncatedFirstRecord, 1)]
+    [Arguments(true, ShareAcknowledgementMode.Implicit, GapResponseTail.TruncatedFirstRecord, 1)]
     public async Task Poll_ControlRecordsAndAcquiredGaps_AreNotDeliveredAndAcknowledgedAsGaps(
-        bool prepared, ShareAcknowledgementMode mode, GapResponseTail tail)
+        bool prepared, ShareAcknowledgementMode mode, GapResponseTail tail, int maxPollRecords)
     {
-        var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2, includeShareAcknowledge: true)
         {
-            ShareFetchResponses = new([CreateGapFetchResponse(tail)])
+            ShareFetchResponses = new([CreateGapFetchResponse(tail), CreateFetchResponse(0, 100)]),
+            ShareAcknowledgeResponse = CreateAcknowledgeResponse((0, ErrorCode.None))
         };
         IDeserializer<string> deserializer = prepared
             ? new PreparedWindowCountingDeserializer(int.MaxValue)
             : Serializers.String;
-        await using var fixture = CreateFixture(connection, mode, valueDeserializer: deserializer);
+        await using var fixture = CreateFixture(connection, mode, maxPollRecords: maxPollRecords,
+            valueDeserializer: deserializer);
         PrepareForPoll(fixture.Consumer);
+        EstablishSessions(fixture.Consumer, 1);
         fixture.Consumer.Subscribe("topic");
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await using var poll = fixture.Consumer.PollAsync(stop.Token).GetAsyncEnumerator();
+        var expectedDelivered = DeliveredOffsets(tail);
         var delivered = new List<long>();
-        for (var index = 0; index < GapResponseDataOffsets.Length; index++)
+        for (var index = 0; index < expectedDelivered.Length; index++)
         {
             await Assert.That(await poll.MoveNextAsync()).IsTrue();
             await Assert.That(poll.Current.Value).IsEqualTo("new-value");
             delivered.Add(poll.Current.Offset);
         }
 
-        await Assert.That(delivered).IsEquivalentTo(GapResponseDataOffsets);
-        var types = ExpandFlushedTypes(FlushPendingAcknowledgements(fixture.Consumer)[new("topic", 0)]);
+        // Continue through the cut record, including when the complete prefix ended a
+        // poll window. The next fetch must carry only the safe dispositions.
+        await Assert.That(await poll.MoveNextAsync()).IsTrue();
+        await Assert.That(poll.Current.Offset).IsEqualTo(100L);
+        await Assert.That(delivered).IsEquivalentTo(expectedDelivered);
+        await Assert.That(connection.ShareFetchRequests.Count).IsEqualTo(2);
+        var sent = new List<AcknowledgementBatchData>();
+        foreach (var request in connection.ShareAcknowledgeRequests)
+            foreach (var batch in request.Topics[0].Partitions[0].AcknowledgementBatches)
+                sent.Add(new(batch.FirstOffset, batch.LastOffset, batch.AcknowledgeTypes.ToArray()));
+        if (connection.ShareFetchRequests[1].Topics[0].Partitions[0].AcknowledgementBatches is { } inline)
+            foreach (var batch in inline)
+                sent.Add(new(batch.FirstOffset, batch.LastOffset, batch.AcknowledgeTypes.ToArray()));
+        var types = ExpandFlushedTypes(sent);
         await AssertGapTypes(types, mode == ShareAcknowledgementMode.Implicit ? AcknowledgeType.Accept : null,
-            tail == GapResponseTail.None ? GapResponseGaps : TruncatedResponseGaps);
+            tail == GapResponseTail.None ? GapResponseGaps : TruncatedResponseGaps, expectedDelivered);
     }
 
     [Test]
