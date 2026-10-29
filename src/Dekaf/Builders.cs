@@ -1570,15 +1570,11 @@ public sealed class ProducerBuilder<TKey, TValue>
                 asyncKeySerializer: _asyncKeySerializer,
                 asyncValueSerializer: _asyncValueSerializer);
 
-        // The BufferMemory above is seeded from PreviewProducerLimit(), which assumes N producers.
-        // RegisterProducer rebalances to N+1 and synchronously fires OnBudgetChanged on every
-        // registered instance (including this new one) via snapshot.Dispatch() before returning.
-        // While existing instances' callbacks run, this producer's accumulator briefly holds the
-        // stale preview value, but the new producer has not been returned from Build() yet and is
-        // therefore not used for production. The final OnBudgetChanged on the new producer — the
-        // last step of RegisterProducer — corrects the accumulator before control returns to the
-        // caller. No code path today couples existing producers to the new producer's limit, so
-        // this ordering is safe in practice.
+        // BufferMemory is seeded from PreviewProducerLimit(), including this producer's share.
+        // Concurrent budget changes can invalidate that preview. RegisterProducer publishes a
+        // new snapshot and applies it inline when no dispatcher is active. Otherwise Build() can
+        // return with the preview limit; the active dispatcher applies the latest snapshot after
+        // its current callbacks finish. Auto-tuned limits are eventually consistent in that case.
         if (options.IsAutoTuned)
             memoryBudget.RegisterProducer(producer);
         else
@@ -3417,11 +3413,10 @@ public sealed class ConsumerBuilder<TKey, TValue>
                 asyncKeyDeserializer: _asyncKeyDeserializer,
                 asyncValueDeserializer: _asyncValueDeserializer);
 
-        // QueuedMaxMessagesKbytes above is seeded from PreviewConsumerLimit() assuming N consumers.
-        // RegisterConsumer rebalances to N+1 and synchronously dispatches OnBudgetChanged on every
-        // registered consumer (including this one) before returning. The new consumer is not used
-        // until Build() returns, and its final OnBudgetChanged applies the confirmed limit before
-        // that happens. See the matching note in the producer builder above.
+        // QueuedMaxMessagesKbytes is seeded from PreviewConsumerLimit(), including this consumer's
+        // share. RegisterConsumer publishes the updated snapshot, but concurrent changes can make
+        // the preview stale. If a dispatcher is active, it applies the latest limit after its
+        // current callbacks finish, potentially after Build() returns. See the producer note.
         if (options.IsAutoTuned)
             memoryBudget.RegisterConsumer(consumer);
         else

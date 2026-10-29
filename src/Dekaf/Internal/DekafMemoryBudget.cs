@@ -55,6 +55,7 @@ public static class DekafMemoryBudget
     private const ulong FallbackBudgetBytes = 320UL * 1024 * 1024;
 
     private static readonly object _lock = new();
+    private static readonly MemoryBudgetDispatcher _dispatcher = new();
     private static ulong? _explicitBudget;
     private static double _percentOfAvailable = DefaultPercentOfAvailable;
     private static ulong _explicitlyReserved;
@@ -87,7 +88,7 @@ public static class DekafMemoryBudget
     /// Diagnostics hook invoked when budget bookkeeping throws during disposal.
     /// Bookkeeping failures are swallowed so that disposal cannot fail, but callers
     /// wiring a logger here can observe otherwise-silent regressions. Invoked on the
-    /// disposing thread; handlers must not throw.
+    /// thread performing bookkeeping or dispatching budget updates; handlers must not throw.
     /// </summary>
     public static Action<Exception>? OnBookkeepingError { get; set; }
 
@@ -98,13 +99,12 @@ public static class DekafMemoryBudget
     public static void SetBudget(ulong bytes)
     {
         ArgumentOutOfRangeException.ThrowIfZero(bytes);
-        RebalanceSnapshot snapshot;
         lock (_lock)
         {
             _explicitBudget = bytes;
-            snapshot = SnapshotRebalanceUnlocked();
+            ScheduleRebalanceUnlocked();
         }
-        snapshot.Dispatch();
+        _dispatcher.Dispatch();
     }
 
     /// <summary>
@@ -116,39 +116,36 @@ public static class DekafMemoryBudget
             throw new ArgumentOutOfRangeException(nameof(percentOfAvailable),
                 "Must be in the range (0.0, 1.0].");
 
-        RebalanceSnapshot snapshot;
         lock (_lock)
         {
             _explicitBudget = null;
             _percentOfAvailable = percentOfAvailable;
-            snapshot = SnapshotRebalanceUnlocked();
+            ScheduleRebalanceUnlocked();
         }
-        snapshot.Dispatch();
+        _dispatcher.Dispatch();
     }
 
     internal static void RegisterProducer(IBudgetedInstance instance)
     {
-        RebalanceSnapshot snapshot;
         lock (_lock)
         {
             _producers.Add(instance);
-            snapshot = SnapshotRebalanceUnlocked();
+            ScheduleRebalanceUnlocked();
         }
-        snapshot.Dispatch();
+        _dispatcher.Dispatch();
     }
 
     internal static void UnregisterProducer(IBudgetedInstance instance)
     {
         try
         {
-            RebalanceSnapshot snapshot;
             lock (_lock)
             {
                 if (!_producers.Remove(instance))
                     return;
-                snapshot = SnapshotRebalanceUnlocked();
+                ScheduleRebalanceUnlocked();
             }
-            snapshot.Dispatch();
+            _dispatcher.Dispatch();
         }
         catch (Exception ex)
         {
@@ -160,27 +157,25 @@ public static class DekafMemoryBudget
 
     internal static void RegisterConsumer(IBudgetedInstance instance)
     {
-        RebalanceSnapshot snapshot;
         lock (_lock)
         {
             _consumers.Add(instance);
-            snapshot = SnapshotRebalanceUnlocked();
+            ScheduleRebalanceUnlocked();
         }
-        snapshot.Dispatch();
+        _dispatcher.Dispatch();
     }
 
     internal static void UnregisterConsumer(IBudgetedInstance instance)
     {
         try
         {
-            RebalanceSnapshot snapshot;
             lock (_lock)
             {
                 if (!_consumers.Remove(instance))
                     return;
-                snapshot = SnapshotRebalanceUnlocked();
+                ScheduleRebalanceUnlocked();
             }
-            snapshot.Dispatch();
+            _dispatcher.Dispatch();
         }
         catch (Exception ex)
         {
@@ -196,28 +191,26 @@ public static class DekafMemoryBudget
     /// </summary>
     internal static void ReserveExplicit(ulong bytes)
     {
-        RebalanceSnapshot snapshot;
         lock (_lock)
         {
             _explicitlyReserved += bytes;
-            snapshot = SnapshotRebalanceUnlocked();
+            ScheduleRebalanceUnlocked();
         }
-        snapshot.Dispatch();
+        _dispatcher.Dispatch();
     }
 
     internal static void ReleaseExplicit(ulong bytes)
     {
         try
         {
-            RebalanceSnapshot snapshot;
             lock (_lock)
             {
                 _explicitlyReserved = _explicitlyReserved >= bytes
                     ? _explicitlyReserved - bytes
                     : 0;
-                snapshot = SnapshotRebalanceUnlocked();
+                ScheduleRebalanceUnlocked();
             }
-            snapshot.Dispatch();
+            _dispatcher.Dispatch();
         }
         catch (Exception ex)
         {
@@ -314,46 +307,14 @@ public static class DekafMemoryBudget
         return Math.Max(perInstance, ConsumerFloorBytes);
     }
 
-    /// <summary>
-    /// Snapshot of the current per-instance limits and the instances to notify.
-    /// Callers must invoke <see cref="Dispatch"/> AFTER releasing <see cref="_lock"/>
-    /// so that budget callbacks never run with the global lock held.
-    /// </summary>
-    private readonly struct RebalanceSnapshot
+    private static void ScheduleRebalanceUnlocked()
     {
-        public required IBudgetedInstance[] Producers { get; init; }
-        public required IBudgetedInstance[] Consumers { get; init; }
-        public required ulong ProducerLimit { get; init; }
-        public required ulong ConsumerLimit { get; init; }
-
-        public void Dispatch()
-        {
-            // Isolate per-instance failures so one bad callback cannot block sibling
-            // notifications or escape Register*/Build(). Callbacks are contracted to
-            // be lock-free atomic writes; anything that throws here is a bug that
-            // should surface via OnBookkeepingError rather than corrupting the budget.
-            foreach (var p in Producers)
-            {
-                try { p.OnBudgetChanged(ProducerLimit); }
-                catch (Exception ex) { try { OnBookkeepingError?.Invoke(ex); } catch { } }
-            }
-            foreach (var c in Consumers)
-            {
-                try { c.OnBudgetChanged(ConsumerLimit); }
-                catch (Exception ex) { try { OnBookkeepingError?.Invoke(ex); } catch { } }
-            }
-        }
-    }
-
-    private static RebalanceSnapshot SnapshotRebalanceUnlocked()
-    {
-        return new RebalanceSnapshot
-        {
-            Producers = _producers.ToArray(),
-            Consumers = _consumers.ToArray(),
-            ProducerLimit = ComputePerProducerLimitUnlocked(),
-            ConsumerLimit = ComputePerConsumerLimitUnlocked(),
-        };
+        // Publish while holding the budget lock so snapshot order matches state changes.
+        _dispatcher.Schedule(
+            _producers.ToArray(),
+            _consumers.ToArray(),
+            ComputePerProducerLimitUnlocked(),
+            ComputePerConsumerLimitUnlocked());
     }
 
     private sealed class GlobalDekafMemoryBudget : IDekafMemoryBudget
