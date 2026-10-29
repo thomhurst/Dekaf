@@ -1,6 +1,5 @@
 using System.Buffers.Binary;
 using System.Net;
-using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using Dekaf.SchemaRegistry;
@@ -45,17 +44,17 @@ public sealed class SchemaRegistryCsfleRotationIntegrationTests
     [Arguments(DekAlgorithm.Aes256Siv, true)]
     public async Task SecondRotation_RegistersVersionThree(DekAlgorithm algorithm, bool reuseWriter)
     {
-        using var endpoint = new DekRegistryEndpoint(algorithm);
+        // v2 is valid under the first policy, then expires when the policy tightens.
+        // This exercises cached-key expiry without reflection or clock waits under NativeAOT too.
+        using var endpoint = new DekRegistryEndpoint(algorithm) { VersionTwoAge = TimeSpan.FromHours(36) };
         using var client = CreateClient(endpoint);
-        var context = CreateContext(algorithm, rotate: true);
+        var context = CreateContext(algorithm, rotate: true, expiryDays: 2);
         var payload = "rotating payload"u8.ToArray();
         var writer = CreateHandler(client);
         var versionTwo = writer.TransformSerializedPayload(payload, context).ToArray();
         await Assert.That(BinaryPrimitives.ReadInt32BigEndian(versionTwo.AsSpan(1, 4))).IsEqualTo(2);
-        endpoint.ExpireLatestVersion();
-        if (reuseWriter)
-            ExpireCachedDek(writer);
-        else
+        context = CreateContext(algorithm, rotate: true);
+        if (!reuseWriter)
             writer = CreateHandler(client);
 
         var versionThree = writer.TransformSerializedPayload(payload, context).ToArray();
@@ -77,7 +76,7 @@ public sealed class SchemaRegistryCsfleRotationIntegrationTests
             ["local://payments"] = new byte[32]
         })]);
 
-    private static SchemaRegistryRuleHandlerContext CreateContext(DekAlgorithm algorithm, bool rotate) => new()
+    private static SchemaRegistryRuleHandlerContext CreateContext(DekAlgorithm algorithm, bool rotate, int expiryDays = 1) => new()
     {
         Rule = new SchemaRule
         {
@@ -89,7 +88,7 @@ public sealed class SchemaRegistryCsfleRotationIntegrationTests
             {
                 ["encrypt.kek.name"] = "payments-kek",
                 ["encrypt.dek.algorithm"] = algorithm == DekAlgorithm.Aes256Siv ? "AES256_SIV" : "AES256_GCM",
-                ["encrypt.dek.expiry.days"] = rotate ? "1" : "0"
+                ["encrypt.dek.expiry.days"] = rotate ? expiryDays.ToString(System.Globalization.CultureInfo.InvariantCulture) : "0"
             }
         },
         Direction = SchemaRegistryRuleDirection.Write,
@@ -102,19 +101,6 @@ public sealed class SchemaRegistryCsfleRotationIntegrationTests
             PayloadFormat = SchemaRegistryPayloadFormat.Custom
         }
     };
-
-    private static void ExpireCachedDek(SchemaRegistryCsfleRuleHandler handler)
-    {
-        // Expire the populated cache deterministically instead of waiting for a day.
-        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
-        var cache = typeof(SchemaRegistryCsfleRuleHandler).GetField("_writeDeks", flags)!.GetValue(handler)!;
-        var values = (System.Collections.IEnumerable)cache.GetType().GetProperty("Values")!.GetValue(cache)!;
-        var entry = values.Cast<object>().Single();
-        var lazy = entry.GetType().GetField("_value", flags)!.GetValue(entry)!;
-        var dek = lazy.GetType().GetProperty("Value")!.GetValue(lazy)!;
-        dek.GetType().GetField("<Timestamp>k__BackingField", flags)!
-            .SetValue(dek, DateTimeOffset.UtcNow.AddDays(-2).ToUnixTimeMilliseconds());
-    }
 
     private sealed class DekRegistryEndpoint : HttpMessageHandler
     {
@@ -132,6 +118,7 @@ public sealed class SchemaRegistryCsfleRotationIntegrationTests
         internal List<string> Requests { get; } = [];
         internal List<int> RegisteredVersions { get; } = [];
         internal int RegistrationAttempts { get; private set; }
+        internal TimeSpan VersionTwoAge { get; init; }
 
         internal void AddVersion(int version) => _versions.Add(version,
             (Convert.ToBase64String(Enumerable.Repeat((byte)version, AlgorithmName == "AES256_SIV" ? 64 : 32).ToArray()),
@@ -162,7 +149,8 @@ public sealed class SchemaRegistryCsfleRotationIntegrationTests
                 version = root.TryGetProperty("version", out var requestedVersion) ? requestedVersion.GetInt32() : 1;
                 if (_versions.ContainsKey(version))
                     return Json(HttpStatusCode.Conflict, """{"error_code":40972,"message":"DEK already exists"}""");
-                _versions.Add(version, (null, root.GetProperty("encryptedKeyMaterial").GetString(), DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+                var timestamp = DateTimeOffset.UtcNow.Subtract(version == 2 ? VersionTwoAge : TimeSpan.Zero).ToUnixTimeMilliseconds();
+                _versions.Add(version, (null, root.GetProperty("encryptedKeyMaterial").GetString(), timestamp));
                 RegisteredVersions.Add(version);
             }
             else if (request.Method == HttpMethod.Get && uri.AbsolutePath == DekPath)
