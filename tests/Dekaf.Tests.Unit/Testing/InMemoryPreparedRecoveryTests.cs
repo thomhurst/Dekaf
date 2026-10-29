@@ -115,6 +115,41 @@ public sealed class InMemoryPreparedRecoveryTests
     }
 
     [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Init_WithActiveTransaction_RejectsRecoveryWithoutChangingEitherTransaction(bool keepPreparedTransaction)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await using var original = new InMemoryProducer<string, string>(cluster, Writer);
+        await using var preparedTransaction = original.BeginTransaction();
+        _ = await preparedTransaction.ProduceAsync("prepared", "k", "pending");
+        var state = await preparedTransaction.PrepareAsync();
+        await original.DisposeAsync();
+        await using var replacement = new InMemoryProducer<string, string>(cluster, Writer);
+        await using var activeTransaction = replacement.BeginTransaction();
+
+        await Assert.That(async () => await replacement.InitTransactionsAsync(keepPreparedTransaction))
+            .Throws<InvalidOperationException>();
+        await AssertInvalidStateAsync(replacement, state);
+        await Assert.That(cluster.TryRead(new TopicPartition("prepared", 0), 0, out _, out var blocked)).IsFalse();
+        await Assert.That(blocked).IsTrue();
+        _ = await activeTransaction.ProduceAsync("active", "k", "committed");
+        await activeTransaction.CommitAsync();
+        await Assert.That(cluster.ReadRecords("active")).Count().IsEqualTo(1);
+
+        await replacement.InitTransactionsAsync(keepPreparedTransaction);
+        if (keepPreparedTransaction)
+        {
+            await Assert.That(() => replacement.BeginTransaction()).Throws<InvalidOperationException>();
+            await replacement.CompletePreparedTransactionAsync(state, committed: true);
+        }
+
+        await Assert.That(cluster.ReadRecords("prepared")).Count().IsEqualTo(keepPreparedTransaction ? 1 : 0);
+        await using var next = replacement.BeginTransaction();
+        await next.AbortAsync();
+    }
+
+    [Test]
     public async Task Recovery_RequiresAdoptionDuringInit()
     {
         var cluster = new InMemoryKafkaCluster();

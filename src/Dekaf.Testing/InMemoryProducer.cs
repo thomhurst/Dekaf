@@ -447,6 +447,8 @@ public sealed class InMemoryProducer<TKey, TValue> :
         lock (_transactionGate)
         {
             ThrowIfDisposingOrDisposed();
+            if (_activeTransaction is { IsCompleted: false, IsPrepared: false })
+                throw new InvalidOperationException("A transaction is already active. Commit or abort it before initializing transactions.");
             recoveryCompletion = StartPreparedRecovery();
         }
 
