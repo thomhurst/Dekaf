@@ -297,7 +297,7 @@ public sealed class InMemoryConsumerFaultTests
         await Assert.That(firstResult!.Value.Partition).IsEqualTo(1);
         await Assert.That(secondResult).IsNotNull();
         await Assert.That(secondResult!.Value.Partition).IsEqualTo(0);
-        await Assert.That(first.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(0);
+        await Assert.That(first.GetPosition(new TopicPartition(Topic, 0))).IsNull();
     }
 
     [Test]
@@ -1541,7 +1541,7 @@ public sealed class InMemoryConsumerFaultTests
         var result = await consumer.ConsumeOneAsync(TimeSpan.Zero);
 
         await Assert.That(result).IsNull();
-        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(0);
+        await Assert.That(consumer.GetPosition(Partition)).IsNull();
         await Assert.That(joiningConsumer).IsNotNull();
         await Assert.That(innerPlan.Count).IsEqualTo(1);
         await Assert.That(innerPlan.Clear(commitScope)).IsEqualTo(1);
@@ -1674,7 +1674,9 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
-    public async Task Snapshot_GroupChangeDuringCommitBarrierThrowsBeforePublishingRecord()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Snapshot_GroupChangeDuringCommitBarrierThrowsBeforePublishingRecord(bool retainsOwnership)
     {
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
@@ -1682,7 +1684,8 @@ public sealed class InMemoryConsumerFaultTests
         await using var consumer = CreateConsumer(
             cluster,
             enableAutoOffsetStore: true,
-            offsetCommitMode: OffsetCommitMode.Auto);
+            offsetCommitMode: OffsetCommitMode.Auto,
+            memberId: retainsOwnership ? "a-member" : "z-member");
         consumer.Subscribe(Topic);
         var barrier = cluster.FaultPlan.PauseNext(
             new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
@@ -1690,14 +1693,14 @@ public sealed class InMemoryConsumerFaultTests
 
         var moveNext = snapshot.MoveNextAsync().AsTask();
         await barrier.WaitUntilEnteredAsync();
-        await using var joiningConsumer = CreateConsumer(cluster);
+        await using var joiningConsumer = CreateConsumer(cluster, memberId: retainsOwnership ? "z-member" : "a-member");
         joiningConsumer.Subscribe(Topic);
         await Assert.That(barrier.Release()).IsTrue();
 
         var actual = await Assert.ThrowsAsync<InvalidOperationException>(() => moveNext);
 
         await Assert.That(actual!.Message).Contains("snapshot enumeration");
-        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(0);
+        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(retainsOwnership ? (long?)0 : null);
         await Assert.That(cluster.FaultPlan.Count).IsEqualTo(0);
     }
 
