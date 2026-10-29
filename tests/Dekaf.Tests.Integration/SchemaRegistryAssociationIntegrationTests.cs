@@ -215,9 +215,16 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
         {
             var cleanup = new Task[associatedTopics.Count];
             for (var i = 0; i < associatedTopics.Count; i++)
-                cleanup[i] = DeleteAssociationAsync(client, associatedTopics[i]);
+                cleanup[i] = DeleteAssociationAsync(client, associatedTopics[i], CancellationToken.None);
             await Task.WhenAll(cleanup);
         }
+    }
+
+    [Test]
+    public async Task AssociationCleanup_MissingAssociation_Completes(CancellationToken cancellationToken)
+    {
+        using var client = new SchemaRegistryClient(new SchemaRegistryConfig { Url = testInfra.RegistryUrl });
+        await DeleteAssociationAsync(client, $"uncreated-{Guid.NewGuid():N}", cancellationToken);
     }
 
     private async Task RegisterAssociatedSchemaAsync(
@@ -241,6 +248,8 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
             throw;
         }
 
+        // The server may commit even if cancellation or a lost response makes creation throw.
+        associatedTopics.Add(topic);
         _ = await client.CreateAssociationAsync(new AssociationCreateOrUpdateRequest
         {
             ResourceName = topic,
@@ -257,11 +266,20 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
                 }
             ]
         }, cancellationToken);
-        associatedTopics.Add(topic);
     }
 
-    private static Task DeleteAssociationAsync(ISchemaRegistryClient client, string topic) =>
-        client.DeleteAssociationsAsync(topic, "topic", ["value"]);
+    private static async Task DeleteAssociationAsync(
+        ISchemaRegistryClient client, string topic, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await client.DeleteAssociationsAsync(topic, "topic", ["value"], cancellationToken: cancellationToken);
+        }
+        catch (SchemaRegistryException exception) when (exception.ErrorCode is 404 or >= 40400 and < 40500)
+        {
+            // An interrupted create may not have reached the server.
+        }
+    }
 
     private sealed class AssociatedJsonRecord
     {
