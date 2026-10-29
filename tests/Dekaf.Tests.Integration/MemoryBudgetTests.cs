@@ -23,8 +23,8 @@ public class MemoryBudgetTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
 
-        // Pin the budget so rebalance is deterministic. BufferMemory = share / 4 (overhead
-        // divisor), so 512 MiB → 128 MiB for one producer, 64 MiB for two. Both are above
+        // Pin the budget so rebalance is deterministic. BufferMemory = share / 6 (overhead
+        // divisor), so 512 MiB gives about 85 MiB for one producer, 42 MiB for two. Both are above
         // the 32 MiB producer floor so the "rebalanced < initial" assertion is meaningful.
         DekafMemoryBudget.SetBudget(512UL * 1024 * 1024);
         try
@@ -84,6 +84,61 @@ public class MemoryBudgetTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         }
         finally
         {
+            DekafMemoryBudget.ResetForTesting();
+        }
+    }
+
+    [Test]
+    [NotInParallel]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ConcurrentProducers_RebalanceAfterBuildAndDisposal(bool useClientBudget)
+    {
+        const ulong budget = 1200UL * 1024 * 1024;
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        DekafMemoryBudget.ResetForTesting();
+        DekafMemoryBudget.SetBudget(budget);
+        await using var client = useClientBudget
+            ? Kafka.Connect(KafkaContainer.BootstrapServers, builder => builder.WithMemoryBudget(budget))
+            : null;
+
+        async Task<KafkaProducer<string, string>> BuildProducerAsync(int index)
+        {
+            var builder = client is null
+                ? Kafka.CreateProducer<string, string>().WithBootstrapServers(KafkaContainer.BootstrapServers)
+                : client.CreateProducer<string, string>();
+            return (KafkaProducer<string, string>)await builder
+                .WithClientId($"concurrent-budget-{index}")
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+                .BuildAsync();
+        }
+
+        var builds = new[] { BuildProducerAsync(1), BuildProducerAsync(2), BuildProducerAsync(3) };
+        try
+        {
+            var producers = await Task.WhenAll(builds);
+            var sharedLimit = budget / 3 / DekafMemoryBudget.ProducerOverheadDivisor;
+            foreach (var producer in producers)
+            {
+                await Assert.That(producer.RecordAccumulator.MaxBufferMemory).IsEqualTo(sharedLimit);
+                var result = await producer.ProduceAsync(topic, "shared", "value");
+                await Assert.That(result.Offset).IsGreaterThanOrEqualTo(0);
+            }
+
+            await Task.WhenAll(producers[1].DisposeAsync().AsTask(), producers[2].DisposeAsync().AsTask());
+
+            await Assert.That(producers[0].RecordAccumulator.MaxBufferMemory)
+                .IsEqualTo(budget / DekafMemoryBudget.ProducerOverheadDivisor);
+            var finalResult = await producers[0].ProduceAsync(topic, "survivor", "value");
+            await Assert.That(finalResult.Offset).IsGreaterThanOrEqualTo(0);
+        }
+        finally
+        {
+            foreach (var build in builds)
+            {
+                if (build.IsCompletedSuccessfully)
+                    await (await build).DisposeAsync();
+            }
             DekafMemoryBudget.ResetForTesting();
         }
     }

@@ -10,6 +10,7 @@ internal sealed class ClientMemoryBudget : IDekafMemoryBudget
     private const ulong FallbackBudgetBytes = 320UL * 1024 * 1024;
 
     private readonly object _lock = new();
+    private readonly MemoryBudgetDispatcher _dispatcher = new();
     private readonly ulong? _explicitBudget;
     private readonly double _percentOfAvailable;
     private ulong _explicitlyReserved;
@@ -53,27 +54,25 @@ internal sealed class ClientMemoryBudget : IDekafMemoryBudget
 
     public void RegisterProducer(IBudgetedInstance instance)
     {
-        RebalanceSnapshot snapshot;
         lock (_lock)
         {
             _producers.Add(instance);
-            snapshot = SnapshotRebalanceUnlocked();
+            ScheduleRebalanceUnlocked();
         }
-        snapshot.Dispatch();
+        _dispatcher.Dispatch();
     }
 
     public void UnregisterProducer(IBudgetedInstance instance)
     {
         try
         {
-            RebalanceSnapshot snapshot;
             lock (_lock)
             {
                 if (!_producers.Remove(instance))
                     return;
-                snapshot = SnapshotRebalanceUnlocked();
+                ScheduleRebalanceUnlocked();
             }
-            snapshot.Dispatch();
+            _dispatcher.Dispatch();
         }
         catch (Exception ex)
         {
@@ -83,27 +82,25 @@ internal sealed class ClientMemoryBudget : IDekafMemoryBudget
 
     public void RegisterConsumer(IBudgetedInstance instance)
     {
-        RebalanceSnapshot snapshot;
         lock (_lock)
         {
             _consumers.Add(instance);
-            snapshot = SnapshotRebalanceUnlocked();
+            ScheduleRebalanceUnlocked();
         }
-        snapshot.Dispatch();
+        _dispatcher.Dispatch();
     }
 
     public void UnregisterConsumer(IBudgetedInstance instance)
     {
         try
         {
-            RebalanceSnapshot snapshot;
             lock (_lock)
             {
                 if (!_consumers.Remove(instance))
                     return;
-                snapshot = SnapshotRebalanceUnlocked();
+                ScheduleRebalanceUnlocked();
             }
-            snapshot.Dispatch();
+            _dispatcher.Dispatch();
         }
         catch (Exception ex)
         {
@@ -113,28 +110,26 @@ internal sealed class ClientMemoryBudget : IDekafMemoryBudget
 
     public void ReserveExplicit(ulong bytes)
     {
-        RebalanceSnapshot snapshot;
         lock (_lock)
         {
             _explicitlyReserved += bytes;
-            snapshot = SnapshotRebalanceUnlocked();
+            ScheduleRebalanceUnlocked();
         }
-        snapshot.Dispatch();
+        _dispatcher.Dispatch();
     }
 
     public void ReleaseExplicit(ulong bytes)
     {
         try
         {
-            RebalanceSnapshot snapshot;
             lock (_lock)
             {
                 _explicitlyReserved = _explicitlyReserved >= bytes
                     ? _explicitlyReserved - bytes
                     : 0;
-                snapshot = SnapshotRebalanceUnlocked();
+                ScheduleRebalanceUnlocked();
             }
-            snapshot.Dispatch();
+            _dispatcher.Dispatch();
         }
         catch (Exception ex)
         {
@@ -182,37 +177,14 @@ internal sealed class ClientMemoryBudget : IDekafMemoryBudget
         return Math.Max(perInstance, ConsumerFloorBytes);
     }
 
-    private RebalanceSnapshot SnapshotRebalanceUnlocked()
+    private void ScheduleRebalanceUnlocked()
     {
-        return new RebalanceSnapshot
-        {
-            Producers = _producers.ToArray(),
-            Consumers = _consumers.ToArray(),
-            ProducerLimit = ComputePerProducerLimitUnlocked(),
-            ConsumerLimit = ComputePerConsumerLimitUnlocked(),
-        };
-    }
-
-    private readonly struct RebalanceSnapshot
-    {
-        public required IBudgetedInstance[] Producers { get; init; }
-        public required IBudgetedInstance[] Consumers { get; init; }
-        public required ulong ProducerLimit { get; init; }
-        public required ulong ConsumerLimit { get; init; }
-
-        public void Dispatch()
-        {
-            foreach (var p in Producers)
-            {
-                try { p.OnBudgetChanged(ProducerLimit); }
-                catch (Exception ex) { ReportBookkeepingError(ex); }
-            }
-            foreach (var c in Consumers)
-            {
-                try { c.OnBudgetChanged(ConsumerLimit); }
-                catch (Exception ex) { ReportBookkeepingError(ex); }
-            }
-        }
+        // Publish while holding the budget lock so snapshot order matches state changes.
+        _dispatcher.Schedule(
+            _producers.ToArray(),
+            _consumers.ToArray(),
+            ComputePerProducerLimitUnlocked(),
+            ComputePerConsumerLimitUnlocked());
     }
 
     private static void ReportBookkeepingError(Exception exception)
