@@ -1,5 +1,8 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using Dekaf.Admin;
 using Dekaf.Consumer;
+using Dekaf.Internal;
 using Dekaf.Producer;
 using Dekaf.ShareConsumer;
 using Microsoft.Extensions.DependencyInjection;
@@ -13,8 +16,18 @@ namespace Dekaf.Testing;
 public static class ServiceCollectionExtensions
 {
     /// <summary>
-    /// Replaces Dekaf client registrations with in-memory test doubles backed by one shared cluster.
+    /// Replaces Dekaf client registrations with in-memory test doubles backed by one shared cluster,
+    /// preserving their service keys, lifetimes and hosted aliases. Singleton open-generic fallbacks
+    /// are added only for client families with no unkeyed registrations, to avoid duplicate clients
+    /// when enumerating services. Register all required unkeyed types before calling this method.
     /// </summary>
+    /// <remarks>
+    /// Native AOT supports fallbacks, open-generic registrations and admin clients. Replacing an
+    /// existing closed-generic client registration requires dynamic code and is not supported.
+    /// </remarks>
+    /// <exception cref="PlatformNotSupportedException">
+    /// A closed-generic client registration requires replacement, but dynamic code is unavailable.
+    /// </exception>
     public static IServiceCollection AddDekafInMemory(
         this IServiceCollection services,
         Action<InMemoryKafkaClusterOptions>? configure = null)
@@ -24,43 +37,91 @@ public static class ServiceCollectionExtensions
         var options = new InMemoryKafkaClusterOptions();
         configure?.Invoke(options);
 
-        RemoveDekafClientRegistrations(services);
+        ReplaceDekafClientRegistrations(services);
 
         services.AddSingleton(options);
         services.TryAddSingleton(new InMemoryConsumerOptions());
         services.TryAddSingleton(new InMemoryShareConsumerOptions());
         services.AddSingleton<InMemoryKafkaCluster>();
-        services.AddTransient(typeof(IKafkaProducer<,>), typeof(InMemoryProducer<,>));
-        services.AddTransient(typeof(IKafkaConsumer<,>), typeof(InMemoryConsumer<,>));
-        services.AddTransient(typeof(IKafkaShareConsumer<,>), typeof(InMemoryShareConsumer<,>));
-        services.AddSingleton<IAdminClient, InMemoryAdminClient>();
+        AddFallback(services, typeof(IKafkaProducer<,>), typeof(InMemoryProducer<,>));
+        AddFallback(services, typeof(IKafkaConsumer<,>), typeof(InMemoryConsumer<,>));
+        AddFallback(services, typeof(IKafkaShareConsumer<,>), typeof(InMemoryShareConsumer<,>));
+        services.TryAddSingleton<IAdminClient, InMemoryAdminClient>();
 
         return services;
     }
 
-    private static void RemoveDekafClientRegistrations(IServiceCollection services)
+    private static void AddFallback(IServiceCollection services, Type serviceType,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] Type implementationType)
+    {
+        foreach (var descriptor in services)
+        {
+            if (!descriptor.IsKeyedService && descriptor.ServiceType.IsGenericType &&
+                descriptor.ServiceType.GetGenericTypeDefinition() == serviceType)
+                return;
+        }
+
+        services.AddSingleton(serviceType, implementationType);
+    }
+
+    private static void ReplaceDekafClientRegistrations(IServiceCollection services)
     {
         for (var i = services.Count - 1; i >= 0; i--)
         {
-            if (IsDekafClientServiceType(services[i].ServiceType))
+            var descriptor = services[i];
+            // In-memory clients need no eager broker initialization.
+            if (descriptor.ServiceType == typeof(IInitializableKafkaClient))
+            {
                 services.RemoveAt(i);
+                continue;
+            }
+
+            // Hosted aliases must keep forwarding to the replaced private keyed client.
+            if (descriptor is IKafkaClientAliasRegistration)
+                continue;
+
+            var implementationType = GetInMemoryImplementationType(descriptor.ServiceType);
+            if (implementationType is null)
+                continue;
+
+            services[i] = descriptor.IsKeyedService
+                ? ServiceDescriptor.DescribeKeyed(descriptor.ServiceType, descriptor.ServiceKey, implementationType, descriptor.Lifetime)
+                : ServiceDescriptor.Describe(descriptor.ServiceType, implementationType, descriptor.Lifetime);
         }
     }
 
-    private static bool IsDekafClientServiceType(Type serviceType)
+#if NET8_0
+    [UnconditionalSuppressMessage("AOT", "IL3050",
+        Justification = "MakeGenericType is guarded by RuntimeFeature.IsDynamicCodeSupported; the .NET 8 analyzer does not recognize this guard.")]
+#endif
+    [return: DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
+    private static Type? GetInMemoryImplementationType(Type serviceType)
     {
-        if (serviceType == typeof(IAdminClient) ||
-            serviceType == typeof(IInitializableKafkaClient))
-        {
-            return true;
-        }
+        if (serviceType == typeof(IAdminClient))
+            return typeof(InMemoryAdminClient);
 
         if (!serviceType.IsGenericType)
-            return false;
+            return null;
 
         var definition = serviceType.GetGenericTypeDefinition();
-        return definition == typeof(IKafkaProducer<,>) ||
-               definition == typeof(IKafkaConsumer<,>) ||
-               definition == typeof(IKafkaShareConsumer<,>);
+        Type implementationType;
+        if (definition == typeof(IKafkaProducer<,>))
+            implementationType = typeof(InMemoryProducer<,>);
+        else if (definition == typeof(IKafkaConsumer<,>))
+            implementationType = typeof(InMemoryConsumer<,>);
+        else if (definition == typeof(IKafkaShareConsumer<,>))
+            implementationType = typeof(InMemoryShareConsumer<,>);
+        else
+            return null;
+
+        if (serviceType.IsGenericTypeDefinition)
+            return implementationType;
+
+        if (RuntimeFeature.IsDynamicCodeSupported)
+            return implementationType.MakeGenericType(serviceType.GetGenericArguments());
+
+        throw new PlatformNotSupportedException(
+            "Replacing closed generic Dekaf client registrations requires dynamic code. " +
+            "For Native AOT, use open-generic in-memory registrations or AddDekafInMemory without existing closed generic clients.");
     }
 }
