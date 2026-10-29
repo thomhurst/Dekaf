@@ -198,6 +198,44 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
     }
 
+    [Test]
+    [Timeout(60_000)]
+    public async Task Producer_ReusedBuilder_PreservesLeaderAcksAfterDisablingIdempotence(
+        CancellationToken cancellationToken)
+    {
+        var topic = $"test-builder-acks-{Guid.NewGuid():N}";
+        await using var admin = Kafka.CreateAdminClient()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .Build();
+        await admin.CreateTopicsAsync([
+            new NewTopic
+            {
+                Name = topic,
+                NumPartitions = 1,
+                ReplicationFactor = 1,
+                Configs = new Dictionary<string, string> { ["min.insync.replicas"] = "2" }
+            }
+        ], cancellationToken: cancellationToken);
+
+        var builder = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithAcks(Acks.Leader)
+            .WithRequestTimeout(TimeSpan.FromSeconds(2))
+            .WithDeliveryTimeout(TimeSpan.FromSeconds(5))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory());
+
+        // The first build uses Acks.All for idempotence without changing the requested Acks.Leader.
+        await using var idempotent = builder.Build();
+        await using var producer = await builder.WithIdempotence(false).BuildAsync(cancellationToken);
+
+        // Acks.All would fail: this topic requires two replicas but has only one.
+        var metadata = await producer.ProduceAsync(topic, "key", "value", cancellationToken);
+
+        await Assert.That(metadata.Topic).IsEqualTo(topic);
+        await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
+    }
+
     [Test, NotInParallel]
     [Timeout(60_000)]
     public async Task Producer_AcknowledgedResponses_ReleasePooledOwnership(

@@ -159,6 +159,30 @@ public class ProducerBuilderValidationTests
     }
 
     [Test]
+    public async Task WithLinger_OutsideMillisecondRange_ThrowsArgumentOutOfRangeException()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+
+        await Assert.That(() => builder.WithLinger(TimeSpan.FromMilliseconds(-1)))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => builder.WithLinger(TimeSpan.FromTicks(-1)))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => builder.WithLinger(TimeSpan.FromMilliseconds((double)int.MaxValue + 1)))
+            .Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    public async Task WithLinger_Zero_SetsZeroLinger()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithLinger(TimeSpan.Zero)
+            .Build();
+
+        await Assert.That(GetOptions(producer).LingerMs).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Build_DeliveryTimeoutEqualToRequestTimeoutPlusLinger_Succeeds()
     {
         await using var producer = Kafka.CreateProducer<string, string>()
@@ -583,6 +607,57 @@ public class ProducerBuilderValidationTests
             .Build();
 
         await Assert.That(producer).IsNotNull();
+    }
+
+    [Test]
+    public async Task Build_IdempotentAcksOverride_DoesNotChangeSubsequentBuilds()
+    {
+        var builder = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithAcks(Acks.Leader);
+
+        await using var first = builder.Build();
+        await using var repeated = builder.Build();
+        await using var nonIdempotent = builder.WithIdempotence(false).Build();
+        await using var idempotentAgain = builder.WithIdempotence(true).Build();
+
+        await Assert.That(GetOptions(first).Acks).IsEqualTo(Acks.All);
+        await Assert.That(GetOptions(repeated).Acks).IsEqualTo(Acks.All);
+        await Assert.That(GetOptions(nonIdempotent).Acks).IsEqualTo(Acks.Leader);
+        await Assert.That(GetOptions(idempotentAgain).Acks).IsEqualTo(Acks.All);
+        await Assert.That(GetOptions(nonIdempotent).EnableIdempotence).IsFalse();
+    }
+
+    [Test]
+    public async Task Build_FailedAfterIdempotentAcksOverride_DoesNotChangeSubsequentBuild()
+    {
+        var builder = Kafka.CreateProducer<DateTime, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithAcks(Acks.Leader);
+
+        await Assert.That(() => builder.Build()).Throws<InvalidOperationException>();
+
+        await using var producer = builder
+            .WithKeySerializer(NSubstitute.Substitute.For<Dekaf.Serialization.ISerializer<DateTime>>())
+            .WithIdempotence(false)
+            .Build();
+
+        await Assert.That(GetOptions(producer).Acks).IsEqualTo(Acks.Leader);
+    }
+
+    [Test]
+    public async Task ForReliability_WithIdempotenceDisabled_PreservesIdempotenceSetting()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithIdempotence(false)
+            .WithAcks(Acks.Leader)
+            .ForReliability()
+            .Build();
+
+        var options = GetOptions(producer);
+        await Assert.That(options.Acks).IsEqualTo(Acks.All);
+        await Assert.That(options.EnableIdempotence).IsFalse();
     }
 
     [Test]

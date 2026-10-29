@@ -456,6 +456,34 @@ public class ConsumerBuilderValidationTests
     }
 
     [Test]
+    public async Task WithSessionTimeout_OutsideMillisecondRange_ThrowsArgumentOutOfRangeException()
+    {
+        var builder = Kafka.CreateConsumer<string, string>();
+
+        await Assert.That(() => builder.WithSessionTimeout(TimeSpan.Zero))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => builder.WithSessionTimeout(TimeSpan.FromMilliseconds(-1)))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => builder.WithSessionTimeout(TimeSpan.FromTicks(1)))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => builder.WithSessionTimeout(TimeSpan.FromMilliseconds((double)int.MaxValue + 1)))
+            .Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    [Arguments(1)]
+    [Arguments(int.MaxValue)]
+    public async Task WithSessionTimeout_ValidBoundary_SetsOptions(int milliseconds)
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithSessionTimeout(TimeSpan.FromMilliseconds(milliseconds))
+            .Build();
+
+        await Assert.That(GetConsumerOptions(consumer).SessionTimeoutMs).IsEqualTo(milliseconds);
+    }
+
+    [Test]
     public async Task WithDefaultApiTimeout_SetsOptions()
     {
         await using var consumer = Kafka.CreateConsumer<string, string>()

@@ -155,9 +155,10 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <summary>
     /// Sets the linger time for batching messages.
     /// </summary>
-    /// <param name="linger">The time to wait before sending a batch.</param>
+    /// <param name="linger">The time to wait before sending a batch. Must not be negative.</param>
     public ProducerBuilder<TKey, TValue> WithLinger(TimeSpan linger)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(linger.TotalMilliseconds, nameof(linger));
         ArgumentOutOfRangeException.ThrowIfGreaterThan(linger.TotalMilliseconds, int.MaxValue, nameof(linger));
         _lingerMs = (int)linger.TotalMilliseconds;
         return this;
@@ -1072,7 +1073,8 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <list type="bullet">
     /// <item><description>Acks: All (wait for all in-sync replicas)</description></item>
     /// </list>
-    /// <para>Idempotence is always enabled. These settings can be overridden by calling other builder methods after this one.</para>
+    /// <para>Idempotence is enabled by default; this method preserves the current idempotence setting.
+    /// The acknowledgement setting can be overridden by calling other builder methods after this one.</para>
     /// </remarks>
     /// <returns>The builder instance for method chaining.</returns>
     public ProducerBuilder<TKey, TValue> ForReliability()
@@ -1441,13 +1443,14 @@ public sealed class ProducerBuilder<TKey, TValue>
         // With acks=leader, the leader acknowledges before ISR replication completes,
         // which can cause OutOfOrderSequenceNumber on leader failover and makes the
         // idempotent guarantee weaker. Override to match Java client behavior.
-        if (_enableIdempotence && _acks != Acks.All)
+        var effectiveAcks = _acks;
+        if (_enableIdempotence && effectiveAcks != Acks.All)
         {
             _loggerFactory?.CreateLogger<KafkaProducer<TKey, TValue>>()
                 .LogWarning("Idempotence is enabled but acks was set to {Acks}. " +
                             "Overriding to Acks.All as required by the Kafka protocol for idempotent producers.",
                             _acks);
-            _acks = Acks.All;
+            effectiveAcks = Acks.All;
         }
 
         if (_clientInfrastructure is null)
@@ -1481,7 +1484,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         {
             BootstrapServers = _bootstrapServers,
             ClientId = _clientId ?? ProducerOptions.DefaultClientId,
-            Acks = _acks,
+            Acks = effectiveAcks,
             LingerMs = _lingerMs,
             BatchSize = _batchSize,
             BufferMemory = _bufferMemory ?? memoryBudget.PreviewProducerLimit(),
@@ -2169,11 +2172,18 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
-    /// Sets the session timeout for consumer group membership.
+    /// Sets how long the client tolerates transient heartbeat failures before rejoining the group.
+    /// Default is 45 seconds.
     /// </summary>
-    /// <param name="timeout">The session timeout duration.</param>
+    /// <remarks>
+    /// Dekaf uses the KIP-848 consumer protocol. The broker's <c>group.consumer.session.timeout.ms</c>
+    /// controls member eviction; this client timeout is not sent to the broker.
+    /// </remarks>
+    /// <param name="timeout">The local heartbeat retry timeout. Must be at least one millisecond.</param>
     public ConsumerBuilder<TKey, TValue> WithSessionTimeout(TimeSpan timeout)
     {
+        if (timeout < TimeSpan.FromMilliseconds(1))
+            throw new ArgumentOutOfRangeException(nameof(timeout), "Session timeout must be at least one millisecond");
         ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
         _sessionTimeoutMs = (int)timeout.TotalMilliseconds;
         return this;
@@ -2197,12 +2207,15 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
-    /// Sets the heartbeat interval for consumer group membership.
-    /// The consumer sends heartbeats to the group coordinator at this interval to indicate
-    /// it is alive. Must be lower than <see cref="WithSessionTimeout"/>.
-    /// Equivalent to Kafka's <c>heartbeat.interval.ms</c>.
+    /// Sets the fallback heartbeat interval until the broker supplies an interval.
     /// Default is 3 seconds.
     /// </summary>
+    /// <remarks>
+    /// Dekaf uses the KIP-848 consumer protocol. The broker controls the heartbeat cadence
+    /// through <c>group.consumer.heartbeat.interval.ms</c> and returns it in heartbeat responses.
+    /// This value is not sent to the broker and does not need to be lower than
+    /// <see cref="WithSessionTimeout"/>.
+    /// </remarks>
     /// <param name="interval">The heartbeat interval. Must be positive.</param>
     public ConsumerBuilder<TKey, TValue> WithHeartbeatInterval(TimeSpan interval)
     {
@@ -2689,7 +2702,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// which would saturate broker connections and increase memory usage from buffered
     /// responses without proportional throughput gain.
     /// </summary>
-    /// <param name="depth">The pipeline depth (1-8). Default is 2.</param>
+    /// <param name="depth">The pipeline depth (1-8). Default is 3.</param>
     /// <returns>The builder instance for method chaining.</returns>
     public ConsumerBuilder<TKey, TValue> WithPrefetchPipelineDepth(int depth)
     {

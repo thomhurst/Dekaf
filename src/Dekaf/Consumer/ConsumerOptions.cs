@@ -193,12 +193,16 @@ public sealed class ConsumerOptions
     public int MaxPollIntervalMs { get; init; } = 300000;
 
     /// <summary>
-    /// Session timeout in milliseconds.
+    /// Local tolerance for transient heartbeat failures in milliseconds before rejoining the group.
+    /// Default is 45000. With the KIP-848 consumer protocol, broker setting
+    /// <c>group.consumer.session.timeout.ms</c> controls member eviction; this value is not sent to the broker.
     /// </summary>
     public int SessionTimeoutMs { get; init; } = 45000;
 
     /// <summary>
-    /// Heartbeat interval in milliseconds.
+    /// Fallback heartbeat interval in milliseconds until the broker supplies an interval. Default is 3000.
+    /// With the KIP-848 consumer protocol, the broker controls the heartbeat cadence through
+    /// <c>group.consumer.heartbeat.interval.ms</c> and returns it in heartbeat responses.
     /// </summary>
     public int HeartbeatIntervalMs { get; init; } = 3000;
 
