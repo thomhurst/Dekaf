@@ -1,4 +1,5 @@
 name: Stress Tests
+# Dedicated release comparison. Product checkouts and build inputs remain pinned.
 run-name: Stress Tests (${{ github.event.inputs.full_run == 'true' && 'all / full' || github.event.inputs.lane || 'all' }}${{ github.event_name == 'workflow_dispatch' && github.event.inputs.full_run != 'true' && ' / dekaf only' || '' }}${{ github.event.inputs.full_run != 'true' && github.event.inputs.dispatch_shape != 'lane-default' && github.event.inputs.dispatch_shape && format(' / {0}', github.event.inputs.dispatch_shape) || '' }}${{ github.event.inputs.baseline_sha && ' / exact-SHA A-B-A' || '' }})
 
 on:
@@ -441,6 +442,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          ref: f716b14ba1d154e40c1ecb44c2c948839cbd48db
 
       - name: Checkout exact baseline
         if: matrix.baseline_sha != ''
@@ -454,19 +456,27 @@ jobs:
         with:
           global-json-file: global.json
 
+      - name: Setup baseline .NET SDK
+        if: matrix.baseline_sha != ''
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: baseline-source/global.json
+
       - name: Pin products and use identical comparison fixtures
         if: matrix.baseline_sha != ''
         env:
           BASELINE_SHA: ${{ matrix.baseline_sha }}
         run: |
           git fetch origin main
-          test "$(git rev-parse origin/main)" = "$BASELINE_SHA"
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$BASELINE_SHA" = "5023f164b088cc2dddf5c59ff20c10f4a921f369"
+          test "$(git rev-parse HEAD)" = "f716b14ba1d154e40c1ecb44c2c948839cbd48db"
           test "$(git -C baseline-source rev-parse HEAD)" = "$BASELINE_SHA"
-          git merge-base --is-ancestor "$BASELINE_SHA" "$GITHUB_SHA"
-          # Keep the baseline's package/compiler/SDK inputs intact. If they differ,
-          # stop for a dedicated fixture instead of silently rebuilding A as B.
-          python3 .github/scripts/stress_fixtures.py . baseline-source
+          git merge-base --is-ancestor "$BASELINE_SHA" "f716b14ba1d154e40c1ecb44c2c948839cbd48db"
+          # Dedicated release comparison: each checkout retains its original SDK
+          # and package versions. Record their differences instead of replacing them.
+          mkdir -p aba-results
+          git diff "$BASELINE_SHA" HEAD -- Directory.Build.props Directory.Build.targets Directory.Packages.props global.json NuGet.Config nuget.config > aba-results/build-input-differences.patch
+          git rev-parse origin/main > aba-results/main-at-start.txt
           # Only the harness/shared sources and tools-scoped props are overlaid.
           # API incompatibilities must fail the build; never silently use older fixtures.
           for directory in tools/Dekaf.StressTests tools/Shared; do
@@ -476,9 +486,9 @@ jobs:
           git -C baseline-source diff --exit-code -- src Directory.Build.props Directory.Build.targets Directory.Packages.props global.json
           mkdir -p aba-results
           {
-            echo "baseline=$BASELINE_SHA candidate=$GITHUB_SHA harness=$GITHUB_SHA"
+            echo "baseline=$BASELINE_SHA candidate=f716b14ba1d154e40c1ecb44c2c948839cbd48db harness=f716b14ba1d154e40c1ecb44c2c948839cbd48db"
             echo "image=$ImageOS/$ImageVersion broker_cpus=$BROKER_CPUS client_cpus=$CLIENT_CPUS"
-            echo 'Fixture adaptation: candidate stress harness/shared sources/tools props; matching root build inputs remain pinned and unchanged.'
+            echo 'Fixture adaptation: candidate stress harness/shared sources/tools props; differing root build inputs remain pinned and unchanged in each product checkout.'
             dotnet --info
             lscpu
             env | sort | grep -E '^(DOTNET_|COMPlus_)' || true
@@ -861,7 +871,7 @@ jobs:
             --baseline-a2 aba-results/baseline-a2 \
             "${extra[@]}" \
             --baseline-sha "${{ matrix.baseline_sha }}" \
-            --candidate-sha "${{ github.sha }}" \
+            --candidate-sha "f716b14ba1d154e40c1ecb44c2c948839cbd48db" \
             --output aba-results/comparison.json \
             --summary "$GITHUB_STEP_SUMMARY"
 
