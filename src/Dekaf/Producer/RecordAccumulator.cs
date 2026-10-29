@@ -1567,6 +1567,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // batch, so the linger loop must be woken after the sweep raises the hint.
     private int _lingerSweepVersion;
 
+    // Deferred batches are excluded from the oldest-batch hint. Reactivation must force
+    // a sweep even when that hint describes a younger batch on another partition.
+    private int _lingerReactivationPending;
+
     // Push-based notification queue for partitions with sealed batches ready to send.
     // Populated by append rotation, SealBatchesAsync, and Reenqueue when a batch
     // enters a partition deque. Drained by Ready() instead of scanning all _partitionDeques,
@@ -3509,6 +3513,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     internal int GetMillisUntilEarliestLingerDeadline(int maxWaitMs)
     {
+        if (Volatile.Read(ref _lingerReactivationPending) != 0)
+            return 1;
+
         // Any batch holding an awaited produce seals on the shorter awaited window,
         // so the wait horizon must shrink to it while such a batch is pending.
         var effectiveLingerMs = Volatile.Read(ref _pendingAwaitedProduceCount) > 0
@@ -4775,6 +4782,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         QueueLingerPartition(pd, topicPartition, signalLingerLoop: false);
+        Volatile.Write(ref _lingerReactivationPending, 1);
         _lingerWakeupSignal.Signal();
     }
 
@@ -7483,9 +7491,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         // Fast path 2: if the oldest batch hasn't reached linger time yet AND there are no
-        // pending awaited produces, skip active queue checks. Awaited produces (ProduceAsync)
-        // use a short linger (min(2ms, LingerMs/2)) so they need more frequent checks.
-        if (Volatile.Read(ref _pendingAwaitedProduceCount) == 0)
+        // pending awaited produces or reactivated deferred batches, skip active queue checks.
+        // Awaited produces (ProduceAsync) use a short linger (min(2ms, LingerMs/2)).
+        // Reactivated batches may already be expired but absent from the oldest-batch hint.
+        if (Volatile.Read(ref _pendingAwaitedProduceCount) == 0
+            && Volatile.Read(ref _lingerReactivationPending) == 0)
         {
             var oldestTicks = Volatile.Read(ref _oldestBatchCreatedTicks);
             if (oldestTicks == long.MaxValue && _lingerPartitions.IsEmpty)
@@ -7567,6 +7577,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         try
         {
+            // Consume only after acquiring the sweep lock and before taking its snapshot.
+            // A reactivation queued later must remain pending for the following pass.
+            if (Volatile.Read(ref _lingerReactivationPending) != 0)
+                Interlocked.Exchange(ref _lingerReactivationPending, 0);
+
             var now = Stopwatch.GetTimestamp();
             var newOldestTicks = long.MaxValue;
             var anySealed = false;

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -36,6 +37,92 @@ public class LingerDeadlineWaitTests
 
     private static int GetUnsealedBatchCount(RecordAccumulator accumulator) =>
         AccumulatorTestHelpers.GetPrivateField<int>(accumulator, "_unsealedBatchCount");
+
+    private static void ExpireCurrentBatch(RecordAccumulator accumulator, int partition)
+    {
+        if (!accumulator.TryGetBatch("test-topic", partition, out var batch))
+            throw new InvalidOperationException("Expected an open batch.");
+
+        var expiredTicks = Stopwatch.GetTimestamp() - Stopwatch.Frequency * 120;
+        AccumulatorTestHelpers.SetPrivateField(batch!, "_createdStopwatchTimestamp", expiredTicks);
+        AccumulatorTestHelpers.SetPrivateField(accumulator, "_oldestBatchCreatedTicks", expiredTicks);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ReactivatedDeferredBatch_WithYoungerBatch_SealsOnNextSweep(bool unmute)
+    {
+        await using var accumulator = new RecordAccumulator(CreateOptions(lingerMs: 60_000));
+        var topicPartition = new TopicPartition("test-topic", 0);
+        ReadyBatch? predecessor = null;
+        if (unmute)
+        {
+            accumulator.MutePartition(topicPartition);
+        }
+        else
+        {
+            await AppendAsync(accumulator);
+            await AccumulatorTestHelpers.SealAllAsync(accumulator);
+            await Assert.That(accumulator.TryDrainBatch(out predecessor)).IsTrue();
+        }
+
+        await AppendAsync(accumulator);
+        ExpireCurrentBatch(accumulator, partition: 0);
+        await AppendAsync(accumulator, partition: 1);
+        await accumulator.ExpireLingerAsync(CancellationToken.None);
+        await Assert.That(GetUnsealedBatchCount(accumulator)).IsEqualTo(2);
+        await Assert.That(accumulator.GetMillisUntilEarliestLingerDeadline(120_000)).IsGreaterThan(30_000);
+        await Assert.That(await accumulator.WaitForLingerWakeupAsync(5_000)).IsTrue();
+
+        if (unmute)
+            accumulator.UnmutePartition(topicPartition);
+        else
+            LeakGateHarness.RetireBatch(accumulator, predecessor!, offset: 0);
+
+        await Assert.That(await accumulator.WaitForLingerWakeupAsync(5_000)).IsTrue();
+        await accumulator.ExpireLingerAsync(CancellationToken.None);
+
+        await Assert.That(accumulator.TryGetBatch("test-topic", 0, out _)).IsFalse();
+        await Assert.That(accumulator.TryGetBatch("test-topic", 1, out _)).IsTrue();
+        await Assert.That(accumulator.GetMillisUntilEarliestLingerDeadline(120_000)).IsGreaterThan(30_000);
+        await Assert.That(accumulator.TryDrainBatch(out var reactivated)).IsTrue();
+        LeakGateHarness.RetireBatch(accumulator, reactivated!, offset: 1);
+    }
+
+    [Test]
+    public async Task DeferredBatchReactivatedAfterSweepSnapshot_IsNotSkippedByNextSweep()
+    {
+        await using var accumulator = new RecordAccumulator(CreateOptions(lingerMs: 60_000));
+        await AppendAsync(accumulator);
+        await AccumulatorTestHelpers.SealAllAsync(accumulator);
+        await Assert.That(accumulator.TryDrainBatch(out var predecessor)).IsTrue();
+        await AppendAsync(accumulator);
+        ExpireCurrentBatch(accumulator, partition: 0);
+        await AppendAsync(accumulator, partition: 1);
+        await accumulator.ExpireLingerAsync(CancellationToken.None);
+
+        // A third expired batch forces a sweep while partition 0 is absent from its snapshot.
+        await AppendAsync(accumulator, partition: 2);
+        ExpireCurrentBatch(accumulator, partition: 2);
+        accumulator.AfterLingerQueueSnapshotForTest = () => LeakGateHarness.RetireBatch(accumulator, predecessor!, offset: 0);
+        try
+        {
+            await accumulator.ExpireLingerAsync(CancellationToken.None);
+        }
+        finally
+        {
+            accumulator.AfterLingerQueueSnapshotForTest = null;
+        }
+
+        await Assert.That(accumulator.TryGetBatch("test-topic", 0, out _)).IsTrue();
+        await Assert.That(accumulator.GetMillisUntilEarliestLingerDeadline(120_000)).IsEqualTo(1);
+        await accumulator.ExpireLingerAsync(CancellationToken.None);
+        await Assert.That(accumulator.TryGetBatch("test-topic", 0, out _)).IsFalse();
+        await Assert.That(accumulator.TryGetBatch("test-topic", 1, out _)).IsTrue();
+        while (accumulator.TryDrainBatch(out var batch))
+            LeakGateHarness.RetireBatch(accumulator, batch!, offset: 0);
+    }
 
     [Test]
     public async Task NoBatches_WaitClampedToMaxAndLinger()
