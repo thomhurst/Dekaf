@@ -63,6 +63,7 @@ public class KafkaFaultPlanBenchmarks
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic("orders");
         _transactionProducer = new InMemoryProducer<byte[], byte[]>(cluster);
+        _transactionProducer.InitTransactionsAsync().GetAwaiter().GetResult();
         _transaction = _transactionProducer.BeginTransaction();
     }
 
@@ -85,6 +86,7 @@ public class KafkaFaultPlanBenchmarks
             new KafkaFaultScope(KafkaFaultOperation.TransactionProduce, "other-topic"),
             new InvalidOperationException("other transaction topic"));
         _unrelatedTransactionProducer = new InMemoryProducer<byte[], byte[]>(cluster);
+        _unrelatedTransactionProducer.InitTransactionsAsync().GetAwaiter().GetResult();
         _unrelatedTransaction = _unrelatedTransactionProducer.BeginTransaction();
     }
 

@@ -123,6 +123,7 @@ public sealed class InMemoryConsumerLagTests
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic(Partition.Topic);
         await using var transactionalProducer = new InMemoryProducer<string, string>(cluster);
+        await transactionalProducer.InitTransactionsAsync();
         await using var transaction = transactionalProducer.BeginTransaction();
         _ = await transaction.ProduceAsync(Partition.Topic, "key", "pending");
         await using var ordinaryProducer = new InMemoryProducer<string, string>(cluster);
@@ -155,6 +156,7 @@ public sealed class InMemoryConsumerLagTests
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic(Partition.Topic);
         await using var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         await using (var transaction = producer.BeginTransaction())
         {
             _ = await transaction.ProduceAsync(Partition.Topic, "key", "aborted");

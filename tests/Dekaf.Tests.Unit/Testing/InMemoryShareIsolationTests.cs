@@ -22,6 +22,7 @@ public sealed class InMemoryShareIsolationTests
         var cluster = new InMemoryKafkaCluster();
         await ConfigureAsync(cluster, isolation);
         await using var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         await using (var transaction = producer.BeginTransaction())
         {
             await transaction.ProduceAsync("orders", "key", "aborted");
@@ -49,6 +50,7 @@ public sealed class InMemoryShareIsolationTests
         var cluster = new InMemoryKafkaCluster();
         await ConfigureAsync(cluster, isolation);
         await using var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await transaction.ProduceAsync("orders", "key", "transactional");
         await using var ordinaryProducer = new InMemoryProducer<string, string>(cluster);
@@ -75,6 +77,7 @@ public sealed class InMemoryShareIsolationTests
         var cluster = new InMemoryKafkaCluster();
         await ConfigureAsync(cluster, "read_committed");
         await using var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await transaction.ProduceAsync("orders", "key", "pending");
         EnableFaultPath(cluster, withFault);
@@ -223,6 +226,7 @@ public sealed class InMemoryShareIsolationTests
     {
         var cluster = new InMemoryKafkaCluster();
         await using var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await transaction.ProduceAsync("orders", "key", "first");
         await transaction.ProduceAsync("orders", "key", "second");

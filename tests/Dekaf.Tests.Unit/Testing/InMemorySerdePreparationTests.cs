@@ -32,6 +32,7 @@ public sealed class InMemorySerdePreparationTests
 
         if (transactional)
         {
+            await producer.InitTransactionsAsync();
             await using var transaction = producer.BeginTransaction();
             await transaction.ProduceAsync(message);
             await transaction.CommitAsync();
@@ -74,6 +75,8 @@ public sealed class InMemorySerdePreparationTests
         var serializer = new PreparingSerializer { Block = true };
         await using var producer = new InMemoryProducer<string, string>(cluster, Serializers.String, serializer);
         using var cancellation = new CancellationTokenSource();
+        if (transactional)
+            await producer.InitTransactionsAsync();
         await using var transaction = transactional ? producer.BeginTransaction() : null;
         var pending = transactional
             ? transaction!.ProduceAsync("prepared", "key", "value", cancellation.Token).AsTask()

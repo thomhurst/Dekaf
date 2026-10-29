@@ -314,6 +314,7 @@ public static class TransactionFencingScenario
             fenced);
 
         await using var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         FatalTransactionException? produceFailure = null;
         try

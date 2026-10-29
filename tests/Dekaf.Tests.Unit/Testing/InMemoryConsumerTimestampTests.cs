@@ -22,6 +22,7 @@ public sealed class InMemoryConsumerTimestampTests
         await using var producer = new InMemoryProducer<string, string>(cluster);
         for (var i = 0; i < 10; i++)
             await producer.ProduceAsync(Message(1000 + i));
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         for (var i = 0; i < 5; i++)
             await transaction.ProduceAsync(Message(2000 + i));
@@ -83,6 +84,7 @@ public sealed class InMemoryConsumerTimestampTests
         var cluster = new InMemoryKafkaCluster();
         await using var producer = new InMemoryProducer<string, string>(cluster);
         await producer.ProduceAsync(Message(1000));
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await transaction.ProduceAsync(Message(2000));
         await transaction.ProduceAsync(Message(3000));
@@ -104,6 +106,7 @@ public sealed class InMemoryConsumerTimestampTests
         var cluster = new InMemoryKafkaCluster();
         await using var producer = new InMemoryProducer<string, string>(cluster);
         await producer.ProduceAsync(Message(1000));
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await transaction.ProduceAsync(Message(2000));
         await transaction.ProduceAsync(Message(DateTimeOffset.UtcNow.AddYears(10).ToUnixTimeMilliseconds()));
@@ -126,6 +129,7 @@ public sealed class InMemoryConsumerTimestampTests
         var cluster = new InMemoryKafkaCluster();
         await using var producer = new InMemoryProducer<string, string>(cluster);
         await producer.ProduceAsync(Message(1000));
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await transaction.ProduceAsync(Message(2000));
         await using var admin = new InMemoryAdminClient(cluster);

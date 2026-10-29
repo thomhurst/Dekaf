@@ -23,6 +23,7 @@ public sealed class InMemoryConsumerGroupOffsetQueryTests
         consumer.Subscribe("orders");
         await using var producer = new InMemoryProducer<string, string>(cluster,
             new InMemoryProducerOptions { TransactionalId = "writer" });
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await transaction.SendOffsetsToTransactionAsync([new("orders", 0, 19)], consumer.ConsumerGroupMetadata!);
         var state = prepared ? await transaction.PrepareAsync() : default;
@@ -86,6 +87,7 @@ public sealed class InMemoryConsumerGroupOffsetQueryTests
         await using var admin = new InMemoryAdminClient(cluster);
         await admin.AlterConsumerGroupOffsetsAsync("group", [new("orders", 0, 7, 2) { Metadata = "old" }]);
         await using var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await transaction.SendOffsetsToTransactionAsync([new("orders", 0, 19, 5) { Metadata = "new" }], "group");
         var partition = new TopicPartition("orders", 0);
@@ -119,7 +121,9 @@ public sealed class InMemoryConsumerGroupOffsetQueryTests
         await using var admin = new InMemoryAdminClient(cluster);
         await using var firstProducer = new InMemoryProducer<string, string>(cluster);
         await using var secondProducer = new InMemoryProducer<string, string>(cluster);
+        await firstProducer.InitTransactionsAsync();
         await using var first = firstProducer.BeginTransaction();
+        await secondProducer.InitTransactionsAsync();
         await using var second = secondProducer.BeginTransaction();
         await first.SendOffsetsToTransactionAsync([new("orders", 0, 10)], "group");
         await first.SendOffsetsToTransactionAsync([new("orders", 0, 11)], "group");
@@ -144,6 +148,7 @@ public sealed class InMemoryConsumerGroupOffsetQueryTests
         await using var admin = new InMemoryAdminClient(cluster);
         await admin.AlterConsumerGroupOffsetsAsync("ready", [new("orders", 0, 7)]);
         await using var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await transaction.SendOffsetsToTransactionAsync([new("orders", 0, 19)], "waiting");
         var requests = Query("waiting");
@@ -170,6 +175,7 @@ public sealed class InMemoryConsumerGroupOffsetQueryTests
         CancellationTokenSource? timeoutSource = null;
         admin.ConfigureTimeoutSourceTestHook = source => timeoutSource = source;
         await using var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await transaction.SendOffsetsToTransactionAsync([new("orders", 0, 19)], "group");
         var pending = admin.ListConsumerGroupOffsetsAsync(Query("group"), new() { RequireStable = true, TimeoutMs = 1234 }, caller.Token).AsTask();
@@ -222,6 +228,7 @@ public sealed class InMemoryConsumerGroupOffsetQueryTests
         await using var admin = new InMemoryAdminClient(cluster);
         await using var original = new InMemoryProducer<string, string>(cluster,
             new InMemoryProducerOptions { TransactionalId = "writer" });
+        await original.InitTransactionsAsync();
         await using var transaction = original.BeginTransaction();
         await transaction.SendOffsetsToTransactionAsync([new("orders", 0, 19)], "group");
         var prepared = await transaction.PrepareAsync();
@@ -292,6 +299,7 @@ public sealed class InMemoryConsumerGroupOffsetQueryTests
         cluster.CreateTopic("orders");
         await using var admin = new InMemoryAdminClient(cluster);
         await using var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         var partition = new TopicPartition("orders", 0);
         await transaction.SendOffsetsToTransactionAsync([new TopicPartitionOffset("orders", 0, 19, 5)], "group");

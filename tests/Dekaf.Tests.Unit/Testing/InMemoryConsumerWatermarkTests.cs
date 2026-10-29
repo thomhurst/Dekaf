@@ -19,6 +19,7 @@ public sealed class InMemoryConsumerWatermarkTests
         var cluster = new InMemoryKafkaCluster();
         await using var producer = new InMemoryProducer<string, string>(cluster);
         await ProduceCommittedAsync(producer);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await ProducePendingAsync(transaction);
         await using var consumer = CreateConsumer(cluster, isolationLevel);
@@ -56,6 +57,7 @@ public sealed class InMemoryConsumerWatermarkTests
         var cluster = new InMemoryKafkaCluster();
         await using var producer = new InMemoryProducer<string, string>(cluster);
         await ProduceCommittedAsync(producer);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await ProducePendingAsync(transaction);
         await using var consumer = CreateConsumer(cluster, isolationLevel);
@@ -84,6 +86,7 @@ public sealed class InMemoryConsumerWatermarkTests
         var cluster = new InMemoryKafkaCluster();
         await using var producer = new InMemoryProducer<string, string>(cluster);
         await ProduceCommittedAsync(producer);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await ProducePendingAsync(transaction);
         await using var consumer = CreateConsumer(cluster, isolationLevel);
@@ -115,6 +118,7 @@ public sealed class InMemoryConsumerWatermarkTests
         var cluster = new InMemoryKafkaCluster();
         await using var producer = new InMemoryProducer<string, string>(cluster);
         await ProduceCommittedAsync(producer);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await ProducePendingAsync(transaction);
         await using var consumer = new InMemoryConsumer<string, string>(
@@ -174,6 +178,7 @@ public sealed class InMemoryConsumerWatermarkTests
             Value = "value"
         };
         await producer.ProduceAsync(message);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await transaction.ProduceAsync(message);
 
@@ -199,6 +204,7 @@ public sealed class InMemoryConsumerWatermarkTests
         var cluster = new InMemoryKafkaCluster();
         await using var producer = new InMemoryProducer<string, string>(cluster);
         await ProduceCommittedAsync(producer);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await ProducePendingAsync(transaction);
         await using var consumer = new InMemoryConsumer<string, string>(
@@ -239,6 +245,7 @@ public sealed class InMemoryConsumerWatermarkTests
             Timestamp = DateTimeOffset.UnixEpoch
         };
         await producer.ProduceAsync(message);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await transaction.ProduceAsync(message);
         await using var consumer = new InMemoryConsumer<string, string>(
@@ -265,6 +272,7 @@ public sealed class InMemoryConsumerWatermarkTests
         var cluster = new InMemoryKafkaCluster();
         await using var producer = new InMemoryProducer<string, string>(cluster);
         await ProduceCommittedAsync(producer);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await ProducePendingAsync(transaction);
         await using var consumer = CreateConsumer(cluster, isolationLevel);
@@ -298,6 +306,7 @@ public sealed class InMemoryConsumerWatermarkTests
         var cluster = new InMemoryKafkaCluster();
         await using var producer = new InMemoryProducer<string, string>(cluster);
         await ProduceCommittedAsync(producer);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await ProducePendingAsync(transaction);
         await using var admin = new InMemoryAdminClient(cluster);
@@ -324,7 +333,8 @@ public sealed class InMemoryConsumerWatermarkTests
         await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.Zero)).IsNull();
 
         await transaction.CommitAsync();
-        var produced = await producer.ProduceAsync(Partition.Topic, "after", "after");
+        await using var ordinaryProducer = new InMemoryProducer<string, string>(cluster);
+        var produced = await ordinaryProducer.ProduceAsync(Partition.Topic, "after", "after");
         var record = await consumer.ConsumeOneAsync(TimeSpan.Zero);
         var expectedNext = expectedEnd < 15 ? expectedEnd : produced.Offset;
         await Assert.That(record!.Value.Offset).IsEqualTo(expectedNext);

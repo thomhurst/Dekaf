@@ -1339,6 +1339,7 @@ public sealed class InMemoryKafkaClusterTests
     {
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
 
         await producer.PurgeAsync(PurgeOptions.None);

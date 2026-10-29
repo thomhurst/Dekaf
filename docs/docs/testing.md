@@ -57,6 +57,18 @@ consumer.Subscribe("orders");
 var record = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
 ```
 
+## Transactions
+
+Call `InitTransactionsAsync()` successfully on each in-memory producer before `BeginTransaction()`.
+Failed or canceled initialization does not enable transactions. This matches the production
+producer's initialization requirement, including producers without an explicit transactional identity.
+
+Setting `InMemoryProducerOptions.TransactionalId` or successfully initializing transactions puts
+an in-memory producer in transactional mode. Use the transaction handle to produce records;
+producer-level `ProduceAsync`, `ProduceAllAsync`, and `FireAsync` reject sends with
+`TransactionException` and `ErrorCode.InvalidTxnState`. The `FireAsync` delivery handler receives
+the error when supplied. Use a separate producer for ordinary records.
+
 ## Prepared transaction recovery
 
 Set `InMemoryProducerOptions.TransactionalId` when testing prepared transaction recovery (KIP-939).

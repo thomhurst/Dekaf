@@ -23,6 +23,7 @@ public sealed class InMemoryProducerFaultTests
         await Assert.That(produce.IsCompletedSuccessfully).IsTrue();
         _ = await produce;
 
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         var transactionProduce = transaction.ProduceAsync("orders", "k", "v");
         await Assert.That(transactionProduce.IsCompletedSuccessfully).IsTrue();
@@ -46,6 +47,7 @@ public sealed class InMemoryProducerFaultTests
         await using var producer = new InMemoryProducer<string, string>(cluster);
 
         var produce = producer.ProduceAsync("orders", "k", "v");
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         var transactionProduce = transaction.ProduceAsync("orders", "k", "v");
 
@@ -230,6 +232,7 @@ public sealed class InMemoryProducerFaultTests
         cluster.FaultPlan.Fail(
             new KafkaFaultScope(KafkaFaultOperation.TransactionProduce, "orders", partition: 1),
             failure);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         var message = new ProducerMessage<string, string>
         {
@@ -259,6 +262,7 @@ public sealed class InMemoryProducerFaultTests
         cluster.FaultPlan.Fail(
             new KafkaFaultScope(KafkaFaultOperation.TransactionProduce, "orders"),
             abortable);
+        await producer.InitTransactionsAsync();
         var transaction = producer.BeginTransaction();
 
         var initial = await Assert.ThrowsAsync<AbortableTransactionException>(() =>
@@ -290,6 +294,7 @@ public sealed class InMemoryProducerFaultTests
     {
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         var transaction = producer.BeginTransaction();
         var barrier = cluster.FaultPlan.PauseNext(
             new KafkaFaultScope(KafkaFaultOperation.TransactionProduce, "orders"));
@@ -310,6 +315,7 @@ public sealed class InMemoryProducerFaultTests
     {
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         var transaction = producer.BeginTransaction();
         var barrier = cluster.FaultPlan.PauseNext(
             new KafkaFaultScope(KafkaFaultOperation.SendOffsetsToTransaction, groupId: "billing"));
@@ -342,6 +348,7 @@ public sealed class InMemoryProducerFaultTests
         plan.Fail(new KafkaFaultScope(KafkaFaultOperation.CommitTransaction), commitFailure);
         plan.Fail(new KafkaFaultScope(KafkaFaultOperation.AbortTransaction), abortFailure);
 
+        await producer.InitTransactionsAsync();
         await using (var transaction = producer.BeginTransaction())
         {
             var offsets = new[] { new TopicPartitionOffset("orders", 0, 17) };
@@ -377,6 +384,7 @@ public sealed class InMemoryProducerFaultTests
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
 
+        await producer.InitTransactionsAsync();
         await using (var committed = producer.BeginTransaction())
         {
             _ = await committed.ProduceAsync("orders", "k", "committed");
@@ -391,7 +399,8 @@ public sealed class InMemoryProducerFaultTests
             await aborted.AbortAsync();
         }
 
-        _ = await producer.ProduceAsync("orders", "k", "ordinary");
+        await using var ordinaryProducer = new InMemoryProducer<string, string>(cluster);
+        _ = await ordinaryProducer.ProduceAsync("orders", "k", "ordinary");
         var visible = cluster.ReadRecords("orders");
 
         await Assert.That(visible.Select(static record => Encoding.UTF8.GetString(record.Value)))
@@ -419,12 +428,14 @@ public sealed class InMemoryProducerFaultTests
     {
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         var transaction = producer.BeginTransaction();
 
-        _ = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        _ = await Assert.ThrowsAsync<TransactionException>(() =>
             producer.ProduceAsync("orders", "k", "outside").AsTask());
         await transaction.AbortAsync();
-        var metadata = await producer.ProduceAsync("orders", "k", "after");
+        await using var ordinaryProducer = new InMemoryProducer<string, string>(cluster);
+        var metadata = await ordinaryProducer.ProduceAsync("orders", "k", "after");
 
         await Assert.That(metadata.Offset).IsEqualTo(0);
     }
@@ -435,6 +446,7 @@ public sealed class InMemoryProducerFaultTests
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
         _ = await producer.ProduceAsync("orders", "k", "before");
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         _ = await transaction.ProduceAsync("orders", "k", "pending");
         var otherProducer = new InMemoryProducer<string, string>(cluster);
@@ -455,6 +467,7 @@ public sealed class InMemoryProducerFaultTests
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic("orders");
         await using var transactionalProducer = new InMemoryProducer<string, string>(cluster);
+        await transactionalProducer.InitTransactionsAsync();
         await using var transaction = transactionalProducer.BeginTransaction();
         _ = await transaction.ProduceAsync("orders", "k", "pending");
         await using var ordinaryProducer = new InMemoryProducer<string, string>(cluster);
@@ -479,6 +492,7 @@ public sealed class InMemoryProducerFaultTests
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic("orders");
         await using var transactionalProducer = new InMemoryProducer<string, string>(cluster);
+        await transactionalProducer.InitTransactionsAsync();
         await using var transaction = transactionalProducer.BeginTransaction();
         _ = await transaction.ProduceAsync("orders", "k", "pending");
         await using var ordinaryProducer = new InMemoryProducer<string, string>(cluster);
@@ -509,6 +523,7 @@ public sealed class InMemoryProducerFaultTests
     {
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         var transaction = producer.BeginTransaction();
         cluster.FaultPlan.Fail(
             new KafkaFaultScope(KafkaFaultOperation.AbortTransaction),
@@ -525,6 +540,7 @@ public sealed class InMemoryProducerFaultTests
     {
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         _ = producer.BeginTransaction();
         var barrier = cluster.FaultPlan.PauseNext(
             new KafkaFaultScope(KafkaFaultOperation.AbortTransaction));
@@ -543,6 +559,7 @@ public sealed class InMemoryProducerFaultTests
     {
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         var transaction = producer.BeginTransaction();
         var barrier = cluster.FaultPlan.PauseNext(
             new KafkaFaultScope(KafkaFaultOperation.SendOffsetsToTransaction, groupId: "billing"));
@@ -565,6 +582,7 @@ public sealed class InMemoryProducerFaultTests
     {
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         var transaction = producer.BeginTransaction();
         var barrier = cluster.FaultPlan.PauseNext(
             new KafkaFaultScope(KafkaFaultOperation.TransactionProduce, "orders"));
@@ -585,6 +603,7 @@ public sealed class InMemoryProducerFaultTests
     {
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         var transaction = producer.BeginTransaction();
         _ = await transaction.ProduceAsync("orders", "k", "committed");
         var barrier = cluster.FaultPlan.PauseNext(
@@ -608,6 +627,7 @@ public sealed class InMemoryProducerFaultTests
     {
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         var transaction = producer.BeginTransaction();
         var completionPublished = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -652,6 +672,7 @@ public sealed class InMemoryProducerFaultTests
     public async Task TransactionProduce_AfterCompletion_ReturnsFaultedValueTask()
     {
         var producer = new InMemoryProducer<string, string>(new InMemoryKafkaCluster());
+        await producer.InitTransactionsAsync();
         var transaction = producer.BeginTransaction();
         await transaction.AbortAsync();
 
@@ -673,6 +694,7 @@ public sealed class InMemoryProducerFaultTests
     public async Task TransactionProduce_SynchronousCancellation_ReturnsCanceledValueTask()
     {
         var producer = new InMemoryProducer<string, string>(new InMemoryKafkaCluster());
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
@@ -702,6 +724,7 @@ public sealed class InMemoryProducerFaultTests
             new InMemoryKafkaCluster(),
             Serializers.String,
             ThrowingSerializer<string>.Instance);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
 
         var componentwiseOperation = transaction.ProduceAsync("orders", "k", "v");
@@ -729,6 +752,7 @@ public sealed class InMemoryProducerFaultTests
         consumer.Subscribe("orders");
         var metadata = consumer.ConsumerGroupMetadata!;
         await using var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await transaction.SendOffsetsToTransactionAsync(
             [new TopicPartitionOffset("orders", 0, 17)],
@@ -761,6 +785,7 @@ public sealed class InMemoryProducerFaultTests
         firstConsumer.Subscribe("orders");
         var staleMetadata = firstConsumer.ConsumerGroupMetadata!;
         await using var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await transaction.SendOffsetsToTransactionAsync(
             [new TopicPartitionOffset("orders", 0, 17)],
@@ -799,6 +824,7 @@ public sealed class InMemoryProducerFaultTests
         replacement.Subscribe("orders");
         var currentMetadata = replacement.ConsumerGroupMetadata!;
         await using var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await transaction.SendOffsetsToTransactionAsync(
             [new TopicPartitionOffset("orders", 0, 17)],
@@ -872,6 +898,7 @@ public sealed class InMemoryProducerFaultTests
         const int operationCount = 32;
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         var scope = new KafkaFaultScope(
             KafkaFaultOperation.SendOffsetsToTransaction,
@@ -943,7 +970,9 @@ public sealed class InMemoryProducerFaultTests
         var firstTransactionalProducer = new InMemoryProducer<string, string>(cluster);
         var secondTransactionalProducer = new InMemoryProducer<string, string>(cluster);
         var ordinaryProducer = new InMemoryProducer<string, string>(cluster);
+        await firstTransactionalProducer.InitTransactionsAsync();
         await using var firstTransaction = firstTransactionalProducer.BeginTransaction();
+        await secondTransactionalProducer.InitTransactionsAsync();
         await using var secondTransaction = secondTransactionalProducer.BeginTransaction();
         _ = await firstTransaction.ProduceAsync("orders", "k", "first-pending");
         _ = await secondTransaction.ProduceAsync("orders", "k", "second-pending");
@@ -996,6 +1025,7 @@ public sealed class InMemoryProducerFaultTests
             GroupInstanceId = "billing-worker-1"
         };
         var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await transaction.SendOffsetsToTransactionAsync(
             [new TopicPartitionOffset("orders", 0, 17)],
@@ -1012,6 +1042,7 @@ public sealed class InMemoryProducerFaultTests
     {
         var producer = new InMemoryProducer<string, string>(new InMemoryKafkaCluster());
 
+        await producer.InitTransactionsAsync();
         await using (var transaction = producer.BeginTransaction())
         {
             var prepared = await transaction.PrepareAsync();
@@ -1035,6 +1066,7 @@ public sealed class InMemoryProducerFaultTests
         var cluster = new InMemoryKafkaCluster();
         var original = new InMemoryProducer<string, string>(cluster,
             new InMemoryProducerOptions { TransactionalId = "orders-writer" });
+        await original.InitTransactionsAsync();
         var committedTransaction = original.BeginTransaction();
         _ = await committedTransaction.ProduceAsync("orders", "k", "committed");
         var committedState = await committedTransaction.PrepareAsync();
@@ -1067,6 +1099,7 @@ public sealed class InMemoryProducerFaultTests
     {
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         var transaction = producer.BeginTransaction();
         _ = await transaction.ProduceAsync("orders", "k", "prepared");
         var prepared = await transaction.PrepareAsync();
@@ -1083,6 +1116,7 @@ public sealed class InMemoryProducerFaultTests
         var cluster = new InMemoryKafkaCluster();
         var original = new InMemoryProducer<string, string>(cluster,
             new InMemoryProducerOptions { TransactionalId = "orders-writer" });
+        await original.InitTransactionsAsync();
         var preparedTransaction = original.BeginTransaction();
         _ = await preparedTransaction.ProduceAsync("orders", "k", "prepared");
         var prepared = await preparedTransaction.PrepareAsync();
@@ -1104,6 +1138,7 @@ public sealed class InMemoryProducerFaultTests
         var cluster = new InMemoryKafkaCluster();
         var original = new InMemoryProducer<string, string>(cluster,
             new InMemoryProducerOptions { TransactionalId = "orders-writer" });
+        await original.InitTransactionsAsync();
         var transaction = original.BeginTransaction();
         _ = await transaction.ProduceAsync("orders", "k", "prepared");
         var prepared = await transaction.PrepareAsync();
@@ -1134,6 +1169,7 @@ public sealed class InMemoryProducerFaultTests
         var cluster = new InMemoryKafkaCluster();
         var original = new InMemoryProducer<string, string>(cluster,
             new InMemoryProducerOptions { TransactionalId = "orders-writer" });
+        await original.InitTransactionsAsync();
         var transaction = original.BeginTransaction();
         _ = await transaction.ProduceAsync("orders", "k", "prepared");
         var prepared = await transaction.PrepareAsync();
@@ -1177,7 +1213,9 @@ public sealed class InMemoryProducerFaultTests
             ProducerKeySerializer<ProducerKeyB>.Instance,
             Serializers.String,
             new InMemoryProducerOptions { TransactionalId = "second-writer" });
+        await firstProducer.InitTransactionsAsync();
         var firstTransaction = firstProducer.BeginTransaction();
+        await secondProducer.InitTransactionsAsync();
         var secondTransaction = secondProducer.BeginTransaction();
         _ = await firstTransaction.ProduceAsync("strings", new ProducerKeyA(), "value");
         _ = await secondTransaction.ProduceAsync("ints", new ProducerKeyB(), "value");
@@ -1215,6 +1253,7 @@ public sealed class InMemoryProducerFaultTests
         var cluster = new InMemoryKafkaCluster();
         var original = new InMemoryProducer<string, string>(cluster,
             new InMemoryProducerOptions { TransactionalId = "orders-writer" });
+        await original.InitTransactionsAsync();
         var transaction = original.BeginTransaction();
         _ = await transaction.ProduceAsync("orders", "k", "committed");
         var prepared = await transaction.PrepareAsync();
@@ -1237,6 +1276,7 @@ public sealed class InMemoryProducerFaultTests
         var cluster = new InMemoryKafkaCluster();
         var original = new InMemoryProducer<string, string>(cluster,
             new InMemoryProducerOptions { TransactionalId = "orders-writer" });
+        await original.InitTransactionsAsync();
         var transaction = original.BeginTransaction();
         _ = await transaction.ProduceAsync("orders", "k", "v");
         var prepared = await transaction.PrepareAsync();
@@ -1266,6 +1306,7 @@ public sealed class InMemoryProducerFaultTests
         cluster.FaultPlan.Fail(
             new KafkaFaultScope(KafkaFaultOperation.TransactionProduce, "orders"),
             fenced);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
 
         var initial = await Assert.ThrowsAsync<FatalTransactionException>(

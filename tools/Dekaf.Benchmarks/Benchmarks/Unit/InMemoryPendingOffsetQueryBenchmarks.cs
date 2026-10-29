@@ -39,6 +39,7 @@ public class InMemoryPendingOffsetQueryBenchmarks
         for (var i = 0; i < Transactions; i++)
         {
             _producers[i] = new(cluster);
+            _producers[i].InitTransactionsAsync().GetAwaiter().GetResult();
             _transactions[i] = _producers[i].BeginTransaction();
             _transactions[i].SendOffsetsToTransactionAsync(offsets, "group").GetAwaiter().GetResult();
         }

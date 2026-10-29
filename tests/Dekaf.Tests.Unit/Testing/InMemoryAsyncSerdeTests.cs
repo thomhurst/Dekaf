@@ -284,6 +284,7 @@ public sealed class InMemoryAsyncSerdeTests
             cluster,
             Serializers.String,
             serde);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         _ = await transaction.ProduceAsync("orders", "key", "pending");
         await using var consumer = new InMemoryConsumer<string, string>(

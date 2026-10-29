@@ -226,6 +226,7 @@ public sealed class InMemoryConsumerOffsetResetTests
     {
         var cluster = new InMemoryKafkaCluster();
         await using var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.InitTransactionsAsync();
         await using var transaction = producer.BeginTransaction();
         await transaction.ProduceAsync("events", "key", "pending");
         await ProduceAsync(cluster, DateTimeOffset.UtcNow);
