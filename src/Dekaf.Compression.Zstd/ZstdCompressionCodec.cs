@@ -10,6 +10,9 @@ namespace Dekaf.Compression.Zstd;
 /// </summary>
 public sealed class ZstdCompressionCodec : ICompressionCodecWithLevel
 {
+    // Zstd streams in 128 KiB blocks. Output requests must not scale with an arena segment.
+    private const int CompressionBlockSize = 128 * 1024;
+
     [ThreadStatic]
     private static Compressor? s_compressor;
 
@@ -60,7 +63,7 @@ public sealed class ZstdCompressionCodec : ICompressionCodecWithLevel
             while (sourceSpan.Length > 0)
             {
                 outputSizeHint = outputSizeHint == 0
-                    ? Compressor.GetCompressBound(sourceSpan.Length)
+                    ? Compressor.GetCompressBound(Math.Min(sourceSpan.Length, CompressionBlockSize))
                     : outputSizeHint;
                 var destSpan = destination.GetSpan(outputSizeHint);
 
@@ -71,7 +74,7 @@ public sealed class ZstdCompressionCodec : ICompressionCodecWithLevel
                 if (status == OperationStatus.InvalidData)
                     throw new InvalidOperationException("Zstd compression failed: invalid data");
 
-                if (status == OperationStatus.DestinationTooSmall && bytesConsumed == 0)
+                if (status == OperationStatus.DestinationTooSmall && bytesConsumed == 0 && bytesWritten == 0)
                 {
                     outputSizeHint = GrowDestinationSizeHint(outputSizeHint);
                     continue;

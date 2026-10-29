@@ -165,6 +165,44 @@ public class ZstdCompressionCodecTests
     #region Context Reuse Tests
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ZstdCompressionCodec_LargeSegment_UsesBoundedOutputRequests(bool segmented)
+    {
+        var data = new byte[5 * 1024 * 1024];
+        new Random(3827).NextBytes(data);
+        var source = new ReadOnlySequence<byte>(data);
+        if (segmented)
+        {
+            var first = new TestMemorySegment(data.AsMemory(0, 2 * 1024 * 1024));
+            var last = first.Append(data.AsMemory(2 * 1024 * 1024));
+            source = new ReadOnlySequence<byte>(first, 0, last, last.Memory.Length);
+        }
+        var codec = new ZstdCompressionCodec();
+        var destination = new BoundedBufferWriter();
+
+        codec.Compress(source, destination);
+
+        var decoded = new ArrayBufferWriter<byte>();
+        codec.Decompress(new ReadOnlySequence<byte>(destination.Buffer.WrittenMemory), decoded);
+        await Assert.That(decoded.WrittenSpan.SequenceEqual(data)).IsTrue();
+    }
+
+    private sealed class BoundedBufferWriter : IBufferWriter<byte>
+    {
+        public ArrayBufferWriter<byte> Buffer { get; } = new();
+        public void Advance(int count) => Buffer.Advance(count);
+        public Memory<byte> GetMemory(int sizeHint = 0)
+        {
+            if (sizeHint > 256 * 1024)
+                throw new InvalidOperationException($"Unbounded output request: {sizeHint}");
+            var memory = Buffer.GetMemory(sizeHint);
+            return memory[..Math.Min(256 * 1024, memory.Length)];
+        }
+        public Span<byte> GetSpan(int sizeHint = 0) => GetMemory(sizeHint).Span;
+    }
+
+    [Test]
     public async Task ZstdCompressionCodec_Compress_ReusesThreadStaticCompressorForSameLevel()
     {
         var codec = new ZstdCompressionCodec();
