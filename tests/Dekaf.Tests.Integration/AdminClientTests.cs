@@ -1011,14 +1011,58 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
 
             await Assert.That(deleted).IsTrue();
         }
-        catch (KafkaException ex) when (
-            ex.ErrorCode == ErrorCode.UnsupportedVersion ||
-            ex.Message.Contains("does not exist") ||
-            ex.Message.Contains("SCRAM"))
+        catch (KafkaException ex) when (ex.ErrorCode == ErrorCode.UnsupportedVersion)
         {
-            // UnsupportedVersion or SCRAM-related errors are acceptable
-            // Not all Kafka configurations support SCRAM credential management
-            await Assert.That(ex).IsNotNull();
+            // Older brokers may not support SCRAM credential management.
+            await Assert.That(ex.ErrorCode).IsEqualTo(ErrorCode.UnsupportedVersion);
+        }
+    }
+
+    [Test]
+    public async Task DescribeUserScramCredentialsAsync_ExistingAndMissingUsers_ReturnsExistingCredentials()
+    {
+        await using var admin = CreateAdminClient();
+        var existingUser = $"test-scram-existing-{Guid.NewGuid():N}";
+        var missingUser = $"test-scram-missing-{Guid.NewGuid():N}";
+
+        await admin.AlterUserScramCredentialsAsync(
+        [
+            new UserScramCredentialUpsertion
+            {
+                User = existingUser,
+                Mechanism = ScramMechanism.ScramSha256,
+                Iterations = 4096,
+                Password = "test-password-123"
+            }
+        ]).ConfigureAwait(false);
+
+        try
+        {
+            var credentials = await WaitForConditionAsync(
+                () => admin.DescribeUserScramCredentialsAsync([missingUser, existingUser]).AsTask(),
+                result => result.ContainsKey(existingUser)).ConfigureAwait(false);
+
+            await Assert.That(credentials.Count).IsEqualTo(1);
+            await Assert.That(credentials).ContainsKey(existingUser);
+            await Assert.That(credentials.ContainsKey(missingUser)).IsFalse();
+            await Assert.That(credentials[existingUser].Count).IsEqualTo(1);
+            await Assert.That(credentials[existingUser][0].Mechanism).IsEqualTo(ScramMechanism.ScramSha256);
+            await Assert.That(credentials[existingUser][0].Iterations).IsEqualTo(4096);
+
+            var missingCredentials = await admin.DescribeUserScramCredentialsAsync([missingUser])
+                .ConfigureAwait(false);
+            await Assert.That(missingCredentials).IsEmpty();
+        }
+        finally
+        {
+            await admin.AlterUserScramCredentialsAsync(
+            [
+                new UserScramCredentialDeletion
+                {
+                    User = existingUser,
+                    Mechanism = ScramMechanism.ScramSha256
+                }
+            ]).ConfigureAwait(false);
         }
     }
 

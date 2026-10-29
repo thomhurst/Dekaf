@@ -2988,6 +2988,12 @@ public sealed partial class AdminClient :
 
             foreach (var userResult in response.Results)
             {
+                // A named user without credentials is absent from the result, not a failed request.
+                if (userResult.ErrorCode == Protocol.ErrorCode.ResourceNotFound)
+                {
+                    continue;
+                }
+
                 if (userResult.ErrorCode != Protocol.ErrorCode.None)
                 {
                     throw new KafkaException(userResult.ErrorCode,
