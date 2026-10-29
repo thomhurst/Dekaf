@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Amazon;
 using Amazon.KeyManagementService;
 using Amazon.Runtime;
@@ -112,7 +113,9 @@ public sealed class AwsKmsRegionRoutingIntegrationTests
                     var encrypt = headers["X-Amz-Target"].EndsWith(".Encrypt", StringComparison.Ordinal);
                     var material = document.RootElement.GetProperty(encrypt ? "Plaintext" : "CiphertextBlob").GetString();
                     var responseBody = routedCorrectly
-                        ? JsonSerializer.Serialize(new Dictionary<string, string?> { [encrypt ? "CiphertextBlob" : "Plaintext"] = material })
+                        ? JsonSerializer.Serialize(
+                            new Dictionary<string, string?> { [encrypt ? "CiphertextBlob" : "Plaintext"] = material },
+                            AwsKmsRegionRoutingJsonContext.Default.DictionaryStringString)
                         : "{\"__type\":\"NotFoundException\",\"message\":\"Key is in another region\"}";
                     Interlocked.Increment(ref _requestCount);
                     var response = Encoding.UTF8.GetBytes(
@@ -134,3 +137,6 @@ public sealed class AwsKmsRegionRoutingIntegrationTests
         }
     }
 }
+
+[JsonSerializable(typeof(Dictionary<string, string?>))]
+internal sealed partial class AwsKmsRegionRoutingJsonContext : JsonSerializerContext;
