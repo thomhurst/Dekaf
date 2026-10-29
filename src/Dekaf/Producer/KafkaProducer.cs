@@ -2408,7 +2408,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // Restore the caller's Current: the span still parents to the caller's span.
         var callerActivity = Activity.Current;
         var parentContext = Diagnostics.DekafDiagnostics.SendParentContext.Value;
-        var activity = parentContext == default
+        var hasParentContext = parentContext != default;
+        var activity = !hasParentContext
             ? Diagnostics.DekafDiagnostics.Source.StartActivity(
                 GetPublishActivityName(message.Topic), ActivityKind.Producer)
             : Diagnostics.DekafDiagnostics.Source.StartActivity(
@@ -2431,6 +2432,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageKey, message.Key.ToString());
             if (message.Value is null)
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingKafkaTombstone, Diagnostics.DekafDiagnostics.BoxedTrue);
+            // The outbox keeps its stored headers as a fallback when sampling declines
+            // this send, or its listener disappears. Only remove them once a replacement
+            // activity exists. Ordinary caller headers retain their existing append behavior.
+            if (hasParentContext)
+            {
+                headers?.Remove(Diagnostics.TraceContextPropagator.TraceparentHeader);
+                headers?.Remove(Diagnostics.TraceContextPropagator.TracestateHeader);
+            }
             headers = Diagnostics.TraceContextPropagator.InjectTraceContext(headers, activity);
         }
 

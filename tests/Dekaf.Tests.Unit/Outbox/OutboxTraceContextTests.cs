@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Reflection;
 using Dekaf.Diagnostics;
 using Dekaf.Outbox;
 using Dekaf.Producer;
@@ -8,7 +9,7 @@ using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Outbox;
 
-[NotInParallel("ActivityListener")]
+[NotInParallel]
 public sealed class OutboxTraceContextTests
 {
     private const string HeaderName = "x-outbox-message-id";
@@ -77,7 +78,7 @@ public sealed class OutboxTraceContextTests
     }
 
     [Test]
-    public async Task Publish_WithListener_ParentsRelaySpanToStoredContextAndDropsStoredHeaders()
+    public async Task Publish_WithListener_ParentsRelaySpanToStoredContextAndPreservesStoredHeadersUntilInjection()
     {
         var row = Row(new Headers()
             .Add("traceparent", StoredTraceparent)
@@ -121,9 +122,9 @@ public sealed class OutboxTraceContextTests
         await Assert.That(sendParentDuringProduce == relay.Context).IsTrue();
         await Assert.That(DekafDiagnostics.SendParentContext.Value == default).IsTrue();
 
-        // The producer injects its send span; the stored context must not be published twice.
-        await Assert.That(producedHeaders!.GetFirst("traceparent")).IsNull();
-        await Assert.That(producedHeaders.GetFirst("tracestate")).IsNull();
+        // Keep the fallback until the producer actually creates a replacement send span.
+        await Assert.That(producedHeaders!.GetFirstAsString("traceparent")).IsEqualTo(StoredTraceparent);
+        await Assert.That(producedHeaders.GetFirstAsString("tracestate")).IsEqualTo("vendor=value");
         await Assert.That(producedHeaders.GetFirstAsString("tenant")).IsEqualTo("a");
     }
 
@@ -166,8 +167,8 @@ public sealed class OutboxTraceContextTests
         await Assert.That(relay.ParentSpanId.ToHexString()).IsEqualTo("00f067aa0ba902b7");
         await Assert.That(relay.TraceStateString).IsEqualTo("last=2");
         await Assert.That(sendParentDuringProduce == relay.Context).IsTrue();
-        await Assert.That(producedHeaders!.GetFirst("traceparent")).IsNull();
-        await Assert.That(producedHeaders.GetFirst("tracestate")).IsNull();
+        await Assert.That(producedHeaders!.GetAll("traceparent").Last().GetValueAsString()).IsEqualTo(lastTraceparent);
+        await Assert.That(producedHeaders.GetAll("tracestate").Last().GetValueAsString()).IsEqualTo("last=2");
     }
 
     [Test]
@@ -221,6 +222,91 @@ public sealed class OutboxTraceContextTests
         await Assert.That(producedHeaders!.GetFirstAsString("traceparent")).IsEqualTo("garbage");
     }
 
+    [Test]
+    [Arguments(ActivitySamplingResult.None, ActivitySamplingResult.None, false)]
+    [Arguments(ActivitySamplingResult.AllDataAndRecorded, ActivitySamplingResult.None, false)]
+    [Arguments(ActivitySamplingResult.None, ActivitySamplingResult.AllDataAndRecorded, false)]
+    [Arguments(ActivitySamplingResult.AllDataAndRecorded, ActivitySamplingResult.AllDataAndRecorded, false)]
+    [Arguments(ActivitySamplingResult.AllDataAndRecorded, ActivitySamplingResult.AllDataAndRecorded, true)]
+    public async Task Publish_ReplacesStoredHeadersOnlyWhenSendActivityExists(
+        ActivitySamplingResult relaySampling, ActivitySamplingResult sendSampling, bool removeListener)
+    {
+        using var isolation = new ActivityListenerIsolation();
+        var callerHeaders = new Headers()
+            .Add("traceparent", "invalid-earlier-parent")
+            .Add("tracestate", "earlier=value")
+            .Add("traceparent", StoredTraceparent)
+            .Add("tracestate", "vendor=value")
+            .Add("tenant", "a");
+        var row = Row(callerHeaders);
+        var originalBlob = row.Headers!.ToArray();
+        Activity? relay = null;
+        Activity? send = null;
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> options) =>
+                options.Kind == ActivityKind.Producer ? sendSampling : relaySampling
+        };
+        listener.ActivityStarted = activity =>
+        {
+            if (activity.Kind == ActivityKind.Internal)
+            {
+                relay = activity;
+                if (removeListener)
+                    listener.Dispose();
+            }
+        };
+        ActivitySource.AddActivityListener(listener);
+        await using var realProducer = (KafkaProducer<byte[]?, byte[]?>)Kafka.CreateProducer<byte[]?, byte[]?>()
+            .WithBootstrapServers("localhost:9092").Build();
+        var start = typeof(KafkaProducer<byte[]?, byte[]?>)
+            .GetMethod("StartPublishActivity", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .CreateDelegate<StartPublishActivityDelegate>(realProducer);
+        Headers? published = null;
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                send = start(call.Arg<ProducerMessage<byte[]?, byte[]?>>(), out published);
+                send?.Stop();
+                return new ValueTask<RecordMetadata>(Metadata);
+            });
+        await using var publisher = new DekafOutboxPublisher(producer, ownsProducer: false);
+        var callerActivity = Activity.Current;
+
+        var result = await publisher.PublishAsync([row], HeaderName);
+
+        await Assert.That(result.FirstError).IsNull();
+        await Assert.That(result.AckedCount).IsEqualTo(1);
+        await Assert.That(Activity.Current).IsEqualTo(callerActivity);
+        await Assert.That(DekafDiagnostics.SendParentContext.Value == default).IsTrue();
+        await Assert.That(row.Headers!.SequenceEqual(originalBlob)).IsTrue();
+        await Assert.That(callerHeaders.Count).IsEqualTo(5);
+        await Assert.That(callerHeaders.GetAll("traceparent").Last().GetValueAsString()).IsEqualTo(StoredTraceparent);
+        await Assert.That(published!.GetFirstAsString("tenant")).IsEqualTo("a");
+        if (sendSampling != ActivitySamplingResult.None && !removeListener)
+        {
+            await Assert.That(send).IsNotNull();
+            await Assert.That(send!.ParentSpanId).IsEqualTo(relay?.SpanId ?? ActivitySpanId.CreateFromString("b7ad6b7169203331"));
+            await Assert.That(send.TraceId.ToHexString()).IsEqualTo("0af7651916cd43dd8448eb211c80319c");
+            await Assert.That(published.GetAll("traceparent").Count()).IsEqualTo(1);
+            await Assert.That(published.GetAll("tracestate").Count()).IsEqualTo(1);
+            await Assert.That(published.GetFirstAsString("traceparent")).IsEqualTo(send.Id);
+            await Assert.That(published.GetFirstAsString("tracestate")).IsEqualTo("vendor=value");
+        }
+        else
+        {
+            await Assert.That(send).IsNull();
+            await Assert.That(published.GetAll("traceparent").Count()).IsEqualTo(2);
+            await Assert.That(published.GetAll("traceparent").Last().GetValueAsString()).IsEqualTo(StoredTraceparent);
+            await Assert.That(published.GetAll("tracestate").Last().GetValueAsString()).IsEqualTo("vendor=value");
+        }
+    }
+
+    private delegate Activity? StartPublishActivityDelegate(
+        ProducerMessage<byte[]?, byte[]?> message, out Headers? headers);
+
     private static OutboxMessage Row(Headers headers) => new()
     {
         Id = 1,
@@ -233,9 +319,8 @@ public sealed class OutboxTraceContextTests
         CreatedAtUtc = new DateTimeOffset(2026, 7, 22, 0, 0, 0, TimeSpan.Zero)
     };
 
-    // [NotInParallel] only orders this class: producer tests in other classes stop Dekaf spans
-    // on other threads while these tests run. Keep only this row's relay span, in a thread-safe
-    // collection, so a parallel stop can neither add to the count nor mutate it mid-assertion.
+    // Completion callbacks can stop spans on background threads. Keep only this row's
+    // relay span in a thread-safe collection.
     private static ActivityListener ListenForStoppedRelaySpans(OutboxMessage row, ConcurrentQueue<Activity> stopped)
     {
         var messageId = row.MessageId.ToString("D");
