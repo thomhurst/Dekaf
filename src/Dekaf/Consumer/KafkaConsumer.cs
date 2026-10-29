@@ -11953,6 +11953,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     partitions,
                     rejoinOnMembershipLoss: false,
                     unstablePartitions: null,
+                    retryOnFailure: true,
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -12017,23 +12018,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // other partition is initialized and fetched. A later poll retries them.
             var unstablePartitions = new HashSet<TopicPartition>();
             IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>? committedOffsets;
-            KafkaException? lookupFailure = null;
+            Exception? lookupFailure = null;
             try
             {
                 committedOffsets = await coordinator.FetchOffsetsAsync(
                         partitions,
                         rejoinOnMembershipLoss: false,
                         unstablePartitions,
+                        retryOnFailure: false,
                         cancellationToken)
                     .ConfigureAwait(false);
             }
-            catch (KafkaException ex) when (
-                !cancellationToken.IsCancellationRequested
-                && (ex.IsRetriable || ex is KafkaTimeoutException))
+            catch (Exception ex) when (
+                ex is KafkaTimeoutException || TransportFailureClassifier.IsRetriable(
+                    ex, TransportRetryPolicy.Request, ownerDisposed: Volatile.Read(ref _consumerDisposed) != 0))
             {
-                // The retry loop surfaces a non-retriable error at once, so a timeout also means
-                // the lookup kept failing for a retriable reason, for example a coordinator that
-                // is still loading its offsets after a failover.
+                cancellationToken.ThrowIfCancellationRequested();
+                // One request failed or timed out. Release the assignment lock before any retry
+                // delay, so partitions with positions can keep delivering records.
                 committedOffsets = null;
                 lookupFailure = ex;
             }

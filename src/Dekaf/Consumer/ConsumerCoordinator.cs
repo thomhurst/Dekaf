@@ -116,7 +116,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // Names of _unresolvedAssignment's topics that resolved at least once, so a snapshot that
     // briefly leaves one out does not revoke its partitions; null while nothing is pending.
     private IReadOnlyDictionary<Guid, string>? _unresolvedResolvedNames;
-    // Refreshes metadata for an unresolved assignment off the heartbeat path, rate-limited.
+    // Coalesces metadata recovery for unresolved assignments and deferred offset lookups.
     private readonly UnresolvedAssignmentMetadataRefresher _unresolvedRefresher;
     private volatile HashSet<TopicPartition> _newlyExpandedPartitions = [];
     private readonly SemaphoreSlim _lock = new(1, 1);
@@ -1347,7 +1347,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
     }
 
-    private async ValueTask FindCoordinatorAsync(CancellationToken cancellationToken)
+    private ValueTask FindCoordinatorAsync(CancellationToken cancellationToken)
+        => FindCoordinatorCoreAsync(retryOnFailure: true, cancellationToken);
+
+    private async ValueTask FindCoordinatorCoreAsync(bool retryOnFailure, CancellationToken cancellationToken)
     {
         var brokers = _metadataManager.Metadata.GetBrokers();
         if (brokers.Count == 0)
@@ -1362,7 +1365,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         };
 
         // Retry loop for transient errors (CoordinatorNotAvailable, CoordinatorLoadInProgress)
-        const int maxRetries = 5;
+        var maxRetries = retryOnFailure ? 5 : 1;
         var cursor = Volatile.Read(ref _coordinatorLookupCursor);
         var failedLookups = 0;
 
@@ -2222,7 +2225,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     public ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> FetchOffsetsAsync(
         IEnumerable<TopicPartition> partitions,
         CancellationToken cancellationToken)
-        => FetchOffsetsAsync(partitions, rejoinOnMembershipLoss: true, unstablePartitions: null, cancellationToken);
+        => FetchOffsetsAsync(partitions, rejoinOnMembershipLoss: true, unstablePartitions: null, retryOnFailure: true, cancellationToken);
 
     /// <summary>
     /// Fetches committed offsets for the group. With <paramref name="rejoinOnMembershipLoss"/>
@@ -2232,11 +2235,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// With <paramref name="unstablePartitions"/> set, a partition whose offset a pending
     /// transaction committed (KIP-447 <c>UNSTABLE_OFFSET_COMMIT</c>) is added to it and left out of
     /// the result instead of being waited out, so the caller can retry it later.
+    /// With <paramref name="retryOnFailure"/> false, discovery and offset fetch each make one
+    /// attempt. The poll caller defers retriable failures until its next position retry, without
+    /// holding the assignment lock across recovery or backoff.
     /// </summary>
     internal async ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> FetchOffsetsAsync(
         IEnumerable<TopicPartition> partitions,
         bool rejoinOnMembershipLoss,
         HashSet<TopicPartition>? unstablePartitions,
+        bool retryOnFailure,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrEmpty(_options.GroupId))
@@ -2268,7 +2275,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             // A retried pass reports the partitions its own response found unstable.
                             unstablePartitions?.Clear();
                             if (_coordinatorId < 0)
-                                await FindCoordinatorAsync(operationToken).ConfigureAwait(false);
+                                await FindCoordinatorCoreAsync(retryOnFailure, operationToken).ConfigureAwait(false);
 
                             var coordinatorId = _coordinatorId;
                             if (coordinatorId < 0)
@@ -2495,16 +2502,42 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             await _fetchLock.WaitAsync(retryToken).ConfigureAwait(false);
                             fetchLockHeld = true;
                         },
+                        maxRetries: retryOnFailure ? RetryHelper.MaxRetries : 0,
                         shouldRefreshMetadata: ShouldRefreshMetadataForGroupRetry,
-                        // Position initialization runs on the application's poll: a coordinator that
-                        // refuses connections while cluster metadata still names it is retried for the
-                        // aggregate deadline above instead of three quick attempts.
-                        deadline: new RetryDeadline(
+                        // Public lookups keep their aggregate deadline for transport retries.
+                        // Poll initialization leaves retries to its deferred-position backoff.
+                        deadline: retryOnFailure ? new RetryDeadline(
                             "OffsetFetch",
                             Timeout.InfiniteTimeSpan,
-                            _isDisposed)).ConfigureAwait(false);
+                            _isDisposed) : null).ConfigureAwait(false);
                     }
-                    catch (GroupException ex) when (ex.ErrorCode == ErrorCode.UnstableOffsetCommit)
+                    catch (Exception ex) when (!retryOnFailure && IsRetriableLookupFailure(ex))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        // Queue metadata recovery without waiting under the assignment lock. Share
+                        // the assignment refresher's coalescing, backoff and disposal drain; a slow
+                        // refresh must not block delivery from already positioned partitions.
+                        if (ex is not KafkaException failure || ShouldRefreshMetadataForGroupRetry(failure))
+                            _unresolvedRefresher.Request();
+
+                        // No recovery callback runs in single-attempt mode. Preserve its rejoin
+                        // signal, so membership recovery still happens outside the assignment lock.
+                        if (_state == CoordinatorState.Unjoined
+                            && _subscriptionState.Topics is not null
+                            && Volatile.Read(ref _leaveRequested) == 0)
+                            throw new GroupRejoinRequiredException(_options.GroupId);
+
+                        // Rediscover on the next poll, without a network wait in this failure pass.
+                        if (ex is KafkaException
+                            {
+                                ErrorCode: ErrorCode.NotCoordinator or ErrorCode.CoordinatorNotAvailable or ErrorCode.NetworkException
+                            }
+                            || TransportFailureClassifier.IsSocketLevelFailure(ex)
+                            || TransportFailureClassifier.IsClientRoutingFailure(ex))
+                            _coordinatorId = -1;
+                        throw;
+                    }
+                    catch (GroupException ex) when (retryOnFailure && ex.ErrorCode == ErrorCode.UnstableOffsetCommit)
                     {
                         // A transaction that committed offsets has not written its markers yet
                         // (KIP-447). It can outlive the request retry count, so the fetch waits
@@ -3386,7 +3419,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     };
 
     /// <summary>
-    /// The latest background refresh for an unresolved assignment. Lets tests wait for it.
+    /// The latest background refresh for assignment or deferred-offset recovery. Lets tests wait for it.
     /// </summary>
     internal Task UnresolvedAssignmentRefreshTask => _unresolvedRefresher.Current;
 
