@@ -2510,7 +2510,9 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
-    public async Task CloseAsync_AutoCommitFailureStillDisposesWithoutCommitting()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task CloseAsync_AutoCommitFailureStillDisposesWithoutCommitting(bool dispose)
     {
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic(Topic);
@@ -2520,15 +2522,106 @@ public sealed class InMemoryConsumerFaultTests
             offsetCommitMode: OffsetCommitMode.Auto);
         consumer.Subscribe(Topic);
         consumer.StoreOffset(new TopicPartitionOffset(Topic, 0, 1));
-        var failure = new InvalidOperationException("commit failed");
+        var attempts = 0;
+        cluster.FaultPlan.FaultConsumed += _ => attempts++;
         cluster.FaultPlan.Fail(
             new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId),
-            failure);
+            new InvalidOperationException("commit failed"),
+            occurrenceCount: 4);
 
-        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            consumer.CloseAsync().AsTask());
+        if (dispose)
+            await consumer.DisposeAsync();
+        else
+            await consumer.CloseAsync();
 
-        await Assert.That(actual).IsSameReferenceAs(failure);
+        await Assert.That(attempts).IsEqualTo(3);
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
+        await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsNull();
+        _ = await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+            consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask());
+        await consumer.DisposeAsync();
+        await Assert.That(attempts).IsEqualTo(3);
+    }
+
+    [Test]
+    [Arguments(false, 1)]
+    [Arguments(false, 2)]
+    [Arguments(true, 1)]
+    [Arguments(true, 2)]
+    public async Task CloseAsync_TransientAutoCommitFailureRetriesAndCommits(bool dispose, int failures)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic(Topic);
+        var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: false,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe(Topic);
+        consumer.StoreOffset(new TopicPartitionOffset(Topic, 0, 1));
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId),
+            new InvalidOperationException("commit failed"),
+            occurrenceCount: failures);
+
+        if (dispose)
+            await consumer.DisposeAsync();
+        else
+            await consumer.CloseAsync();
+
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(0);
+        await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsEqualTo(1);
+        _ = await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+            consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask());
+    }
+
+    [Test]
+    public async Task CloseAsync_AutoCommitCancellationStillDisposesWithoutCommitting()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic(Topic);
+        var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: false,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe(Topic);
+        consumer.StoreOffset(new TopicPartitionOffset(Topic, 0, 1));
+        var scope = new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId);
+        cluster.FaultPlan.Fail(scope, new InvalidOperationException("commit failed"));
+        var barrier = cluster.FaultPlan.PauseNext(scope);
+        cluster.FaultPlan.Fail(scope, new InvalidOperationException("must not retry cancellation"));
+        using var cancellation = new CancellationTokenSource();
+
+        var close = consumer.CloseAsync(cancellation.Token).AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        cancellation.Cancel();
+        var failure = await Assert.ThrowsAsync<OperationCanceledException>(() => close);
+
+        await Assert.That(failure!.CancellationToken).IsEqualTo(cancellation.Token);
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
+        await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsNull();
+        _ = await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+            consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask());
+        await consumer.DisposeAsync();
+    }
+
+    [Test]
+    public async Task CloseAsync_InjectedAutoCommitCancellationStopsRetriesWithoutThrowing()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic(Topic);
+        var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: false,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe(Topic);
+        consumer.StoreOffset(new TopicPartitionOffset(Topic, 0, 1));
+        var scope = new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId);
+        cluster.FaultPlan.Fail(scope, new OperationCanceledException("commit canceled"));
+        cluster.FaultPlan.Fail(scope, new InvalidOperationException("must not retry cancellation"));
+
+        await consumer.CloseAsync();
+
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
         await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsNull();
         _ = await Assert.ThrowsAsync<ObjectDisposedException>(() =>
             consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask());

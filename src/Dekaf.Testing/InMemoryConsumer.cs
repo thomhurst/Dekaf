@@ -1204,21 +1204,42 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         CapturedCommitOffsets? capturedCommit = null;
         Exception? failure = null;
-        try
+        // Match the production close's bounded, best-effort commit. The fake retries
+        // immediately because it has no broker recovery or retry backoff to wait for.
+        const int maxAttempts = 3;
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
-            ValueTask commitFaultApplication;
-            lock (_gate)
+            try
             {
-                capturedCommit = CaptureStoredAutoCommitOffsetsUnderLock(
-                    cancellationToken,
-                    out commitFaultApplication);
-            }
+                cancellationToken.ThrowIfCancellationRequested();
+                ValueTask commitFaultApplication;
+                lock (_gate)
+                {
+                    capturedCommit = CaptureStoredAutoCommitOffsetsUnderLock(
+                        cancellationToken,
+                        out commitFaultApplication);
+                }
 
-            await commitFaultApplication.ConfigureAwait(false);
+                await commitFaultApplication.ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                break;
+            }
+            catch (OperationCanceledException)
+            {
+                capturedCommit = null;
+                break;
+            }
+            catch (Exception)
+            {
+                capturedCommit = null;
+            }
         }
-        catch (Exception ex)
+
+        // An injected commit cancellation ends the attempts, but only the caller's
+        // cancellation cancels close. Cleanup still runs in either case.
+        if (cancellationToken.IsCancellationRequested)
         {
-            failure = ex;
+            failure = new OperationCanceledException(cancellationToken);
             capturedCommit = null;
         }
 
