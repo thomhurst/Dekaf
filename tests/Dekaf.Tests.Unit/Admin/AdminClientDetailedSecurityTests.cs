@@ -10,6 +10,46 @@ namespace Dekaf.Tests.Unit.Admin;
 public sealed class AdminClientDetailedSecurityTests
 {
     [Test]
+    [Arguments(AclOperation.CreateTokens)]
+    [Arguments(AclOperation.DescribeTokens)]
+    [Arguments(AclOperation.TwoPhaseCommit)]
+    public async Task Acls_Kafka4ValuesReachBroker(AclOperation operation)
+    {
+        var (admin, connection) = CreateAdmin();
+        await using var client = admin;
+        var binding = AclBinding.Allow(ResourcePattern.User("alice"), "User:svc-gateway", operation);
+        CreateAclsRequest? sent = null;
+        connection.SendAsync<CreateAclsRequest, CreateAclsResponse>(Arg.Any<CreateAclsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                sent = call.Arg<CreateAclsRequest>();
+                return ValueTask.FromResult(new CreateAclsResponse { Results = [new()] });
+            });
+
+        var results = await admin.CreateAclsDetailedAsync([binding]);
+
+        await Assert.That(results.Single().Result.IsSuccess).IsTrue();
+        await Assert.That(results.Single().Binding).IsSameReferenceAs(binding);
+        await Assert.That(sent!.Creations.Single().ResourceType).IsEqualTo((sbyte)7);
+        await Assert.That(sent.Creations.Single().Operation).IsEqualTo((sbyte)operation);
+    }
+
+    [Test]
+    [Arguments(8, 13)]
+    [Arguments(7, 16)]
+    [Arguments(1, 13)]
+    [Arguments(7, 1)]
+    public async Task Acls_InvalidTypesStillRejected(int resourceType, int operation)
+    {
+        var (admin, _) = CreateAdmin();
+        await using var client = admin;
+        var binding = AclBinding.Allow(new ResourcePattern { Type = (ResourceType)resourceType, Name = "alice" },
+            "User:svc-gateway", (AclOperation)operation);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => admin.CreateAclsDetailedAsync([binding]).AsTask());
+    }
+
+    [Test]
     public async Task Acls_PreserveDuplicateOccurrencesAndRetryPositions()
     {
         var (admin, connection) = CreateAdmin();

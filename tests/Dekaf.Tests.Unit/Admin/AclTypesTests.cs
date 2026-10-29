@@ -59,6 +59,26 @@ public class AclTypesTests
         await Assert.That(pattern.PatternType).IsEqualTo(PatternType.Literal);
     }
 
+    [Test]
+    public async Task ResourcePattern_User_DefaultsToLiteral()
+    {
+        var pattern = ResourcePattern.User("alice");
+
+        await Assert.That(pattern.Type).IsEqualTo(ResourceType.User);
+        await Assert.That(pattern.Name).IsEqualTo("alice");
+        await Assert.That(pattern.PatternType).IsEqualTo(PatternType.Literal);
+    }
+
+    [Test]
+    public async Task ResourcePattern_User_WithPrefixedPattern()
+    {
+        var pattern = ResourcePattern.User("service-", PatternType.Prefixed);
+
+        await Assert.That(pattern.Type).IsEqualTo(ResourceType.User);
+        await Assert.That(pattern.Name).IsEqualTo("service-");
+        await Assert.That(pattern.PatternType).IsEqualTo(PatternType.Prefixed);
+    }
+
     #endregion
 
     #region AclBinding Tests
@@ -162,6 +182,7 @@ public class AclTypesTests
         var cluster = ResourceType.Cluster;
         var transactionalId = ResourceType.TransactionalId;
         var delegationToken = ResourceType.DelegationToken;
+        var user = ResourceType.User;
 
         await Assert.That((sbyte)unknown).IsEqualTo((sbyte)0);
         await Assert.That((sbyte)any).IsEqualTo((sbyte)1);
@@ -170,6 +191,7 @@ public class AclTypesTests
         await Assert.That((sbyte)cluster).IsEqualTo((sbyte)4);
         await Assert.That((sbyte)transactionalId).IsEqualTo((sbyte)5);
         await Assert.That((sbyte)delegationToken).IsEqualTo((sbyte)6);
+        await Assert.That((sbyte)user).IsEqualTo((sbyte)7);
     }
 
     [Test]
@@ -204,6 +226,9 @@ public class AclTypesTests
         var describeConfigs = AclOperation.DescribeConfigs;
         var alterConfigs = AclOperation.AlterConfigs;
         var idempotentWrite = AclOperation.IdempotentWrite;
+        var createTokens = AclOperation.CreateTokens;
+        var describeTokens = AclOperation.DescribeTokens;
+        var twoPhaseCommit = AclOperation.TwoPhaseCommit;
 
         await Assert.That((sbyte)unknown).IsEqualTo((sbyte)0);
         await Assert.That((sbyte)any).IsEqualTo((sbyte)1);
@@ -218,6 +243,9 @@ public class AclTypesTests
         await Assert.That((sbyte)describeConfigs).IsEqualTo((sbyte)10);
         await Assert.That((sbyte)alterConfigs).IsEqualTo((sbyte)11);
         await Assert.That((sbyte)idempotentWrite).IsEqualTo((sbyte)12);
+        await Assert.That((sbyte)createTokens).IsEqualTo((sbyte)13);
+        await Assert.That((sbyte)describeTokens).IsEqualTo((sbyte)14);
+        await Assert.That((sbyte)twoPhaseCommit).IsEqualTo((sbyte)15);
     }
 
     [Test]
