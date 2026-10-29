@@ -128,7 +128,8 @@ public sealed partial class ConnectionPool :
         ClientTelemetryMetricCollector? telemetryMetricCollector = null,
         TimeSpan? idleReapDrainTimeout = null,
         Func<double>? randomDouble = null,
-        bool responseMemoryAdmissionsEnabled = false)
+        bool responseMemoryAdmissionsEnabled = false,
+        bool startIdleConnectionReaper = true)
     {
         _clientId = clientId;
         _connectionOptions = ConfigureSharedOAuthBearerProvider(
@@ -148,7 +149,9 @@ public sealed partial class ConnectionPool :
         var bucketCapacity = pipeMemoryBucketCapacity ?? ScaledBucketCapacity(_connectionsPerBroker);
         _sharedPipeMemoryPool = PipeMemoryPool.Create(maxArraysPerBucket: bucketCapacity);
         _currentPipeMemoryBucketCapacity = bucketCapacity;
-        StartIdleConnectionReaper();
+        // Tests that drive reap passes explicitly must not race the background timer.
+        if (startIdleConnectionReaper)
+            StartIdleConnectionReaper();
     }
 
     /// <summary>
