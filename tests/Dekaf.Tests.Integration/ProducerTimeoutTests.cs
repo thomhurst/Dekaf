@@ -63,6 +63,63 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
     }
 
     [Test]
+    public async Task FireAndForget_MultiplePartitions_DeliversAfterLingerWithoutFlush()
+    {
+        const int partitionCount = 2;
+        const int recordsPerPartition = 256;
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: partitionCount);
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-deferred-linger-multiple-partitions")
+            .WithLinger(TimeSpan.FromMilliseconds(50))
+            .WithBatchSize(8_192)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        var delivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var remaining = partitionCount * recordsPerPartition;
+        var value = new string('x', 128);
+        for (var i = 0; i < recordsPerPartition; i++)
+        {
+            for (var partition = 0; partition < partitionCount; partition++)
+            {
+                await producer.FireAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Partition = partition,
+                    Key = $"key-{i}",
+                    Value = value
+                }, (_, error) =>
+                {
+                    if (error is not null)
+                        delivered.TrySetException(error);
+                    else if (Interlocked.Decrement(ref remaining) == 0)
+                        delivered.TrySetResult();
+                });
+            }
+        }
+
+        // No FlushAsync: partially filled tails must be delivered by the linger loop.
+        await delivered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await Assert.That(Volatile.Read(ref remaining)).IsEqualTo(0);
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+        consumer.Assign(Enumerable.Range(0, partitionCount).Select(p => new TopicPartition(topic, p)).ToArray());
+        var messages = await ConsumeMessagesAsync(consumer, partitionCount * recordsPerPartition);
+        for (var partition = 0; partition < partitionCount; partition++)
+        {
+            var keys = messages.Where(message => message.Partition == partition)
+                .Select(message => message.Key!).ToArray();
+            await Assert.That(keys.Length).IsEqualTo(recordsPerPartition);
+            for (var i = 0; i < recordsPerPartition; i++)
+                await Assert.That(keys[i]).IsEqualTo($"key-{i}");
+        }
+    }
+
+    [Test]
     public async Task BootstrapResolveTimeout_ExceededWaitingForMetadata_ErrorPropagated()
     {
         // Arrange & Act - Resolve the invalid bootstrap server deterministically so metadata lookup will fail.
