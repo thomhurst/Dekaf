@@ -690,7 +690,7 @@ public sealed class Kek
     public string? Doc { get; init; }
 
     /// <summary>
-    /// Whether this KEK is shared across multiple subjects.
+    /// Whether the DEK Registry has shared access to the KMS.
     /// </summary>
     public bool Shared { get; init; }
 
@@ -736,7 +736,7 @@ public sealed class RegisterKekRequest
     public string? Doc { get; init; }
 
     /// <summary>
-    /// Whether this KEK is shared across multiple subjects.
+    /// Whether the DEK Registry has shared access to the KMS.
     /// </summary>
     public bool? Shared { get; init; }
 
