@@ -105,8 +105,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private int _consumerGroupGeneration = -1;
     private long _consumerGroupRegistrationId;
     private string? _subscriptionPattern;
-    // A filter subscription stays a group subscription even when it matches no topics.
-    private bool _subscribedWithTopicFilter;
+    private Regex? _subscriptionRegex;
+    private Func<string, bool>? _topicFilter;
+    private long _subscriptionTopologyVersion = -1;
+    private Dictionary<string, Guid> _subscriptionTopicIds = new(StringComparer.Ordinal);
     private TaskCompletionSource? _autoCommitAdvancementWaiterEntered;
     private Task? _closeTask;
     private bool _disposed;
@@ -300,7 +302,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         get
         {
             lock (_gate)
+            {
+                RefreshSubscriptionUnderLock();
                 return _subscription.ToHashSet(StringComparer.Ordinal);
+            }
         }
     }
 
@@ -408,10 +413,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     public void Subscribe(params string[] topics)
     {
         ArgumentNullException.ThrowIfNull(topics);
-        SubscribeTopics(topics, subscribedWithTopicFilter: false);
+        SubscribeTopics(topics, topicFilter: null);
     }
 
-    private void SubscribeTopics(string[] topics, bool subscribedWithTopicFilter)
+    private void SubscribeTopics(string[] topics, Func<string, bool>? topicFilter)
     {
         ThrowIfDisposed();
         var subscription = topics
@@ -424,16 +429,14 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             ThrowIfAutoCommitAdvancementPendingUnderLock();
             ApplyGroupTransitionFaults();
             ThrowIfDisposed();
-            var topicPartitions = subscription
-                .SelectMany(topic => _cluster.GetTopicPartitions(topic))
-                .ToArray();
             _subscriptionPattern = null;
-            _subscribedWithTopicFilter = subscribedWithTopicFilter;
+            _subscriptionRegex = null;
+            _topicFilter = topicFilter;
             _subscription.Clear();
             foreach (var topic in subscription)
                 _subscription.Add(topic);
 
-            ReplaceAssignment(topicPartitions);
+            RefreshSubscriptionUnderLock(replaceAssignment: true);
             RegisterConsumerGroupMemberUnderLock();
         }
     }
@@ -443,11 +446,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         ArgumentNullException.ThrowIfNull(topicFilter);
         ThrowIfDisposed();
 
-        var topics = _cluster.ListTopics()
-            .Where(topicFilter)
-            .ToArray();
-
-        SubscribeTopics(topics, subscribedWithTopicFilter: true);
+        SubscribeTopics([], topicFilter);
     }
 
     public void SubscribePattern(string pattern)
@@ -462,20 +461,16 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         ThrowIfDisposed();
 
         var regex = new Regex(pattern, RegexOptions.CultureInvariant);
-        var topicPartitions = _cluster.ListTopics()
-            .Where(topic => IsFullMatch(regex, topic))
-            .SelectMany(topic => _cluster.GetTopicPartitions(topic))
-            .ToArray();
-
         lock (_gate)
         {
             ThrowIfAutoCommitAdvancementPendingUnderLock();
             ApplyGroupTransitionFaults();
             ThrowIfDisposed();
             _subscriptionPattern = pattern;
-            _subscribedWithTopicFilter = false;
+            _subscriptionRegex = regex;
+            _topicFilter = null;
             _subscription.Clear();
-            ReplaceAssignment(topicPartitions);
+            RefreshSubscriptionUnderLock(replaceAssignment: true);
             RegisterConsumerGroupMemberUnderLock();
         }
     }
@@ -491,7 +486,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 ApplyGroupTransitionFaultUnderLock(KafkaFaultOperation.Rebalance);
 
             _subscriptionPattern = null;
-            _subscribedWithTopicFilter = false;
+            _subscriptionRegex = null;
+            _topicFilter = null;
+            _subscriptionTopologyVersion = -1;
+            _subscriptionTopicIds.Clear();
             _subscription.Clear();
             _assignment.Clear();
             _paused.Clear();
@@ -1363,7 +1361,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             ThrowIfAutoCommitAdvancementPendingUnderLock();
             _subscriptionPattern = null;
-            _subscribedWithTopicFilter = false;
+            _subscriptionRegex = null;
+            _topicFilter = null;
+            _subscriptionTopologyVersion = -1;
+            _subscriptionTopicIds.Clear();
             _subscription.Clear();
             ReplaceAssignment(partitions);
             RegisterConsumerGroupMemberUnderLock();
@@ -1377,6 +1378,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             ThrowIfAutoCommitAdvancementPendingUnderLock();
+            _subscriptionTopologyVersion = -1;
+            _subscriptionTopicIds.Clear();
             _assignment.Clear();
             _paused.Clear();
             _positions.Clear();
@@ -1398,7 +1401,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             ThrowIfAutoCommitAdvancementPendingUnderLock();
             // Manual assignment replaces any subscription, as KafkaConsumer.IncrementalAssign does.
             _subscriptionPattern = null;
-            _subscribedWithTopicFilter = false;
+            _subscriptionRegex = null;
+            _topicFilter = null;
+            _subscriptionTopologyVersion = -1;
+            _subscriptionTopicIds.Clear();
             _subscription.Clear();
             var changed = false;
             foreach (var offset in partitions)
@@ -1429,7 +1435,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             ThrowIfAutoCommitAdvancementPendingUnderLock();
-            if (_subscriptionPattern is not null || _subscribedWithTopicFilter || _subscription.Count != 0)
+            if (_subscriptionPattern is not null || _topicFilter is not null || _subscription.Count != 0)
             {
                 throw new InvalidOperationException(
                     $"{nameof(IncrementalUnassign)} applies only to manually assigned partitions and cannot be used " +
@@ -3101,6 +3107,13 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         int expectedConsumerStateVersion,
         int expectedConsumerGroupGeneration)
     {
+        var subscriptionTopologyVersion = Volatile.Read(ref _subscriptionTopologyVersion);
+        if (subscriptionTopologyVersion >= 0 && subscriptionTopologyVersion != _cluster.TopologyVersion)
+        {
+            lock (_gate)
+                RefreshSubscriptionUnderLock();
+        }
+
         var faultPlan = _cluster.FaultPlan;
         var indexedPlan = _indexedFaultPlan;
         var planVersion = indexedPlan is null ? faultPlan.Version : indexedPlan.Version;
@@ -3188,6 +3201,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         out IReadOnlySet<TopicPartition> activeResources,
         out int consumerGroupGeneration)
     {
+        RefreshSubscriptionUnderLock();
         while (true)
         {
             consumerGroupGeneration = _groupId is null
@@ -3323,6 +3337,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     private IReadOnlySet<TopicPartition> GetCurrentAssignmentUnderLock(out int consumerGroupGeneration)
     {
+        RefreshSubscriptionUnderLock();
         if (_groupId is null || _memberId is null)
         {
             consumerGroupGeneration = -1;
@@ -3342,6 +3357,88 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             out consumerGroupGeneration);
         _consumerGroupGeneration = consumerGroupGeneration;
         return owned.Where(_assignment.Contains).ToHashSet();
+    }
+
+    private void RefreshSubscriptionUnderLock(bool replaceAssignment = false)
+    {
+        if (!replaceAssignment &&
+            (_subscriptionTopologyVersion < 0 || _subscriptionTopologyVersion == _cluster.TopologyVersion))
+        {
+            return;
+        }
+
+        var (version, topics) = _cluster.GetTopologySnapshot();
+        var partitions = new HashSet<TopicPartition>();
+        var topicIds = new Dictionary<string, Guid>(StringComparer.Ordinal);
+        foreach (var topic in topics)
+        {
+            bool matches;
+            if (_subscriptionRegex is not null)
+                matches = IsFullMatch(_subscriptionRegex, topic.Name);
+            else if (_topicFilter is not null)
+                matches = _topicFilter(topic.Name);
+            else
+                matches = _subscription.Contains(topic.Name);
+            if (!matches)
+                continue;
+
+            topicIds.Add(topic.Name, topic.Id);
+            for (var partition = 0; partition < topic.PartitionCount; partition++)
+                partitions.Add(new TopicPartition(topic.Name, partition));
+        }
+
+        if (replaceAssignment)
+        {
+            ReplaceAssignment(partitions);
+        }
+        else
+        {
+            // Resolve every new offset before changing state so a reset failure leaves a retryable subscription.
+            var addedPositions = new Dictionary<TopicPartition, long>();
+            foreach (var partition in partitions)
+            {
+                if (!_assignment.Contains(partition) ||
+                    !_subscriptionTopicIds.TryGetValue(partition.Topic, out var previousId) ||
+                    previousId != topicIds[partition.Topic])
+                {
+                    addedPositions.Add(partition, GetStartOffset(partition));
+                }
+            }
+
+            var removed = _assignment
+                .Where(partition => !partitions.Contains(partition) || addedPositions.ContainsKey(partition))
+                .ToArray();
+            foreach (var partition in removed)
+            {
+                _assignment.Remove(partition);
+                _paused.Remove(partition);
+                _positions.Remove(partition);
+                if (_storedOffsets.Remove(partition))
+                    _storedOffsetsVersion++;
+                DiscardInDoubtRecordUnderLock(partition);
+            }
+            foreach (var (partition, position) in addedPositions)
+            {
+                _assignment.Add(partition);
+                _positions[partition] = position;
+            }
+
+            if (removed.Length != 0 || addedPositions.Count != 0)
+            {
+                EnsureCommitOffsetCapacity(_assignment.Count);
+                _consumerStateVersion++;
+                if (_groupId is not null && _memberId is not null && _consumerGroupRegistrationId != 0)
+                    _cluster.UpdateConsumerGroupSubscription(_groupId, _memberId, _consumerGroupRegistrationId, _assignment);
+            }
+        }
+
+        if (_topicFilter is not null)
+        {
+            _subscription.Clear();
+            _subscription.UnionWith(topicIds.Keys);
+        }
+        _subscriptionTopicIds = topicIds;
+        Volatile.Write(ref _subscriptionTopologyVersion, version);
     }
 
     private void RegisterConsumerGroupMemberUnderLock()
