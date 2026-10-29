@@ -131,9 +131,16 @@ public sealed class AwsKmsRegionRoutingIntegrationTests
         public async ValueTask DisposeAsync()
         {
             await _stopping.CancelAsync();
-            _listener.Stop();
-            await _serving;
-            _stopping.Dispose();
+            try
+            {
+                // Keep the listener active until cancellation ends the accept loop.
+                await _serving;
+            }
+            finally
+            {
+                _listener.Stop();
+                _stopping.Dispose();
+            }
         }
     }
 }
