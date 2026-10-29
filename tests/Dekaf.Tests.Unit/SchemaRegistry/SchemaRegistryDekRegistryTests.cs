@@ -207,7 +207,9 @@ public sealed class SchemaRegistryDekRegistryTests
     }
 
     [Test]
-    public async Task GetDekAsync_ByVersionAndAlgorithm_UsesAlgorithmQuery()
+    [Arguments(5)]
+    [Arguments(-1)]
+    public async Task GetDekAsync_ByVersionAndAlgorithm_UsesAlgorithmQuery(int version)
     {
         using var handler = new CapturingSchemaRegistryHandler()
             .Enqueue(HttpStatusCode.OK, DekJson("payments-kek", "orders-value", 5, "AES256_SIV"));
@@ -216,14 +218,14 @@ public sealed class SchemaRegistryDekRegistryTests
         var dek = await client.GetDekAsync(
             "payments-kek",
             "orders-value",
-            version: 5,
+            version: version,
             algorithm: DekAlgorithm.Aes256Siv,
             deleted: true);
 
         await Assert.That(dek.Version).IsEqualTo(5);
         await Assert.That(dek.Algorithm).IsEqualTo(DekAlgorithm.Aes256Siv);
         await Assert.That(handler.Requests[0].Uri.PathAndQuery)
-            .IsEqualTo("/dek-registry/v1/keks/payments-kek/deks/orders-value/versions/5?algorithm=AES256_SIV&deleted=true");
+            .IsEqualTo($"/dek-registry/v1/keks/payments-kek/deks/orders-value/versions/{version}?algorithm=AES256_SIV&deleted=true");
     }
 
     [Test]

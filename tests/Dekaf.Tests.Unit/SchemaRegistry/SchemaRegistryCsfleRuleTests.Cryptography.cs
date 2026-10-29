@@ -221,6 +221,30 @@ public sealed partial class SchemaRegistryCsfleRuleTests
             throw new InvalidOperationException("Server plaintext keys must not be unwrapped locally.");
     }
 
+    [Test]
+    [Arguments(DekAlgorithm.Aes256Gcm)]
+    [Arguments(DekAlgorithm.Aes256Siv)]
+    public async Task FreshRotatingWriter_ReusesLatestDek(DekAlgorithm algorithm)
+    {
+        var client = CreateDekClient();
+        var key = new byte[algorithm == DekAlgorithm.Aes256Siv ? 64 : 32];
+        client.AddDek(new Dek
+        {
+            KekName = "payments-kek", Subject = "orders-value", Version = 2,
+            Algorithm = algorithm, KeyMaterial = Convert.ToBase64String(key),
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        });
+        client.AddDek(TestDek(algorithm, key, DateTimeOffset.UtcNow.AddDays(-2).ToUnixTimeMilliseconds()));
+        var context = CreateHandlerContext(AlgorithmRule(algorithm, rotate: true));
+        var payload = "latest key"u8.ToArray();
+
+        var encrypted = CreateHandler(client).TransformSerializedPayload(payload, context).ToArray();
+
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(encrypted.AsSpan(1, 4))).IsEqualTo(2);
+        await Assert.That(client.RegisterDekCallCount).IsEqualTo(0);
+        await Assert.That(CreateHandler(client).TransformDeserializedPayload(encrypted, context).Span.SequenceEqual(payload)).IsTrue();
+    }
+
     // Ciphertexts from the original Dekaf S2V construction (CMAC(empty), no AD item).
     [Test]
     [Arguments(0, "64699f564e16f177875ad70d35a153b3")]

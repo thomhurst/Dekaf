@@ -715,8 +715,11 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         Dek? existing = null;
         try
         {
-            existing = WaitFor(
-                _schemaRegistryClient.GetDekAsync(settings.KekName, settings.Subject, settings.Algorithm));
+            // The versionless endpoint returns v1. Rotated writes need the latest version.
+            existing = settings.IsDekRotated
+                ? WaitFor(_schemaRegistryClient.GetDekAsync(
+                    settings.KekName, settings.Subject, -1, settings.Algorithm))
+                : WaitFor(_schemaRegistryClient.GetDekAsync(settings.KekName, settings.Subject, settings.Algorithm));
             if (!IsExpired(settings, existing))
                 return ResolveDekMaterial(existing, kek, settings.Subject, settings.RuleName, settings.Algorithm);
         }
