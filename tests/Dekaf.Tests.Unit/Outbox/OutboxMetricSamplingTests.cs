@@ -46,7 +46,6 @@ public partial class OutboxMetricTests
     public async Task SamplingCadence_IsBoundedAndFailureClearsCachedValues()
     {
         using var capture = new MetricCapture("cadence");
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var time = new ManualTimeProvider();
         var store = new SamplingStore
         {
@@ -58,14 +57,16 @@ public partial class OutboxMetricTests
             }
         };
         using var relay = Relay(store, new MetricPublisher(), "cadence", time);
-        await relay.StartAsync(timeout.Token);
+        await relay.StartAsync(CancellationToken.None);
         try
         {
             // The sampler can start before or after the relay's first lease, so it may also
             // have armed and cancelled a wait for that lease. Each step waits for the wait the
             // sampler arms after its query, which it arms only once the query's result is
-            // cached, rather than for any 30 second schedule.
-            await store.Started.Reader.ReadAsync(timeout.Token);
+            // cached, rather than for any 30 second schedule. Each wait has its own wall-clock
+            // budget: this test runs among the first of the suite, while CI's thread pool is
+            // starved, so one budget for the whole test can run out between healthy steps.
+            await store.WaitForQueryAsync();
             await time.WaitForArmedTimerAsync(TimeSpan.FromSeconds(30));
             capture.Observe();
             await Assert.That(capture.Gauge("dekaf.outbox.pending.messages")).IsEqualTo(7);
@@ -76,7 +77,7 @@ public partial class OutboxMetricTests
             capture.Observe();
             await Assert.That(capture.Gauge("dekaf.outbox.pending.oldest_age")).IsEqualTo(149);
             time.Advance(TimeSpan.FromSeconds(1));
-            await store.Started.Reader.ReadAsync(timeout.Token);
+            await store.WaitForQueryAsync();
             await time.WaitForArmedTimerAsync(TimeSpan.FromSeconds(30));
             capture.Observe();
             await Assert.That(store.Calls).IsEqualTo(2);
@@ -85,7 +86,7 @@ public partial class OutboxMetricTests
             await Assert.That(capture.Gauge("dekaf.outbox.pending.oldest_age")).IsNull();
             await Assert.That(relay.ExecuteTask!.IsCompleted).IsFalse();
             time.Advance(TimeSpan.FromSeconds(30));
-            await store.Started.Reader.ReadAsync(timeout.Token);
+            await store.WaitForQueryAsync();
             await time.WaitForArmedTimerAsync(TimeSpan.FromSeconds(30));
             capture.Observe();
             await Assert.That(capture.Gauge("dekaf.outbox.pending.available")).IsEqualTo(1);
@@ -93,7 +94,7 @@ public partial class OutboxMetricTests
         }
         finally
         {
-            await relay.StopAsync(timeout.Token);
+            await relay.StopAsync(CancellationToken.None);
         }
     }
 
@@ -175,6 +176,11 @@ public partial class OutboxMetricTests
         internal int Calls;
         internal bool QueryCancelled;
         internal Channel<int> Started { get; } = Channel.CreateUnbounded<int>();
+        internal async Task WaitForQueryAsync()
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await Started.Reader.ReadAsync(timeout.Token);
+        }
         public async ValueTask<OutboxPendingMetrics?> GetPendingMetricsAsync(CancellationToken cancellationToken = default)
         {
             var call = Interlocked.Increment(ref Calls);
