@@ -417,12 +417,14 @@ public class AppendWorkerAffinityTests
         await using var producer = (KafkaProducer<string, string>)Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithClientId("append-worker-disposal-test")
-            .WithBufferMemory(1)
+            .WithBufferMemory(4_096)
             .WithBatchSize(4_096)
             .WithCloseTimeout(TimeSpan.FromMilliseconds(100))
             .Build();
 
         var accumulator = producer.RecordAccumulator;
+        // Fill a valid buffer so records queue without exceeding the total limit.
+        await Assert.That(accumulator.TryReserveMemoryForTest(4_096)).IsTrue();
         var firstCompletion = pool.Rent();
         var firstTask = firstCompletion.Task.AsTask();
         accumulator.EnqueueAppend(
@@ -455,6 +457,7 @@ public class AppendWorkerAffinityTests
             cancellationToken: CancellationToken.None);
 
         await producer.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+        accumulator.ReleaseMemory(4_096); // The synthetic reservation belongs to this test.
 
         await Assert.That(async () => await firstTask).Throws<ObjectDisposedException>();
         await Assert.That(async () => await secondTask).Throws<ObjectDisposedException>();

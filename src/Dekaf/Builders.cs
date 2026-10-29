@@ -174,8 +174,9 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <param name="bufferMemory">The buffer memory limit in bytes.</param>
     /// <remarks>
     /// When the buffer is full, <see cref="KafkaProducer{TKey,TValue}.ProduceAsync(ProducerMessage{TKey,TValue}, CancellationToken)"/>
-    /// will block until space becomes available or the delivery timeout expires.
-    /// Default is 256 MB.
+    /// will block until space becomes available or <see cref="ProducerOptions.MaxBlockMs"/> expires.
+    /// Records larger than the current limit fail immediately. By default, the limit is auto-tuned
+    /// from the global memory budget; an explicit value overrides auto-tuning.
     /// </remarks>
     public ProducerBuilder<TKey, TValue> WithBufferMemory(ulong bufferMemory)
     {

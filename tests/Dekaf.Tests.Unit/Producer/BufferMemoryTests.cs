@@ -1,6 +1,7 @@
 using System.Buffers;
 using Dekaf.Errors;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 
 namespace Dekaf.Tests.Unit.Producer;
 
@@ -353,76 +354,31 @@ public class BufferMemoryTests
     [Test]
     public async Task BufferMemory_MessageLargerThanLimit_ThrowsImmediately()
     {
-        // Arrange: Buffer limit 1KB, message 2KB
-        var options = CreateTestOptions(1000, maxBlockMs: 100); // 1KB limit, short timeout
-        var accumulator = new RecordAccumulator(options);
+        await using var accumulator = new RecordAccumulator(CreateTestOptions(1000));
+        var value = ProducerDataPool.BytePool.Rent(2000);
+        var append = accumulator.AppendAsync(
+            "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            PooledMemory.Null, new PooledMemory(value, 2000), null, 0, null, null, CancellationToken.None);
 
-        try
-        {
-            // Act: Try to append message larger than total buffer
-            var largeValue = ArrayPool<byte>.Shared.Rent(2000);
-            try
-            {
-                var pooledKey = new PooledMemory(null, 0, isNull: true);
-                var pooledValue = new PooledMemory(largeValue, 2000);
-
-                var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
-                {
-                    await accumulator.AppendAsync(
-                        "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                        pooledKey, pooledValue, null, 0, null, null, CancellationToken.None);
-                    await Task.CompletedTask.ConfigureAwait(false);
-                });
-
-                // Assert: Should throw with descriptive message about max.block.ms
-                await Assert.That(exception!.Message).Contains("max.block.ms");
-                await Assert.That(exception.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
-                await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromMilliseconds(100));
-                // Elapsed is informational. Asserting a wall-clock upper bound on it measures
-                // the thread-pool scheduler, not the code under test, and flakes under load.
-                await Assert.That(exception.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(largeValue);
-            }
-        }
-        finally
-        {
-            await accumulator.DisposeAsync().ConfigureAwait(false);
-        }
+        await Assert.That(append.IsCompleted).IsTrue();
+        var exception = await Assert.ThrowsAsync<ProduceException>(async () => await append);
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.MessageTooLarge);
+        await Assert.That(exception.Message).Contains("BufferMemory");
+        await Assert.That(accumulator.PendingAppendCountForTest).IsEqualTo(0);
     }
-
 
     [Test]
     public async Task BufferMemory_ZeroLimit_AllAppendsThrowImmediately()
     {
-        // Arrange: Zero buffer memory (edge case)
-        var options = CreateTestOptions(0, maxBlockMs: 100);
-        var accumulator = new RecordAccumulator(options);
+        await using var accumulator = new RecordAccumulator(CreateTestOptions(0));
+        var append = accumulator.AppendAsync(
+            "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            PooledMemory.Null, PooledMemory.Null, null, 0, null, null, CancellationToken.None);
 
-        try
-        {
-            // Act & Assert: Any append should fail immediately
-            var pooledKey = new PooledMemory(null, 0, isNull: true);
-            var pooledValue = new PooledMemory(null, 0, isNull: true);
-
-            var ex = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
-            {
-                await accumulator.AppendAsync(
-                    "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, 0, null, null, CancellationToken.None);
-                await Task.CompletedTask.ConfigureAwait(false);
-            });
-
-            await Assert.That(ex!.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
-            await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(100));
-            await Assert.That(ex.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
-        }
-        finally
-        {
-            await accumulator.DisposeAsync().ConfigureAwait(false);
-        }
+        await Assert.That(append.IsCompleted).IsTrue();
+        var exception = await Assert.ThrowsAsync<ProduceException>(async () => await append);
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.MessageTooLarge);
+        await Assert.That(exception.Message).Contains("BufferMemory of 0 bytes");
     }
 
     [Test]
