@@ -33,7 +33,8 @@ public sealed partial class InMemoryKafkaCluster
             offsets.TryGetValue(partition, out var existing))
             return existing.Offset;
 
-        var watermarks = GetWatermarks(partition);
+        var isolationLevel = GetShareIsolationUnderLock(groupId);
+        var watermarks = GetWatermarks(partition, isolationLevel);
         _shareOffsetResetOptions.TryGetValue(groupId, out var options);
         var offset = watermarks.High;
         switch (options?.AutoOffsetReset)
@@ -44,7 +45,7 @@ public sealed partial class InMemoryKafkaCluster
             case AutoOffsetReset.ByDuration:
                 var timestamp = AutoOffsetResetStrategy.GetByDurationTimestamp(
                     options.AutoOffsetResetDuration, DateTimeOffset.UtcNow);
-                var timestampOffset = GetOffsetForTimestamp(partition, timestamp);
+                var timestampOffset = GetOffsetForTimestamp(partition, timestamp, isolationLevel);
                 if (timestampOffset >= 0)
                     offset = timestampOffset;
                 break;

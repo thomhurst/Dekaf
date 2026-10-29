@@ -114,10 +114,13 @@ polls reuse that offset. To replay records produced before the first poll, set
 `InMemoryShareConsumerOptions.AutoOffsetReset` to `AutoOffsetReset.Earliest`.
 For a timestamp lookback, use `AutoOffsetReset.ByDuration` and set `AutoOffsetResetDuration`.
 An explicit policy applies to every member of the group and does not rewind initialized partitions.
+The most recently configured explicit policy applies to partitions that have not yet been initialized.
 Leaving the policy null preserves the group's existing policy.
 
 `AddDekafInMemory` preserves the group ID and reset policy configured through
-`ShareConsumerBuilder`, including keyed and hosted registrations.
+`ShareConsumerBuilder`, including keyed and hosted registrations. Builder registrations still require
+bootstrap servers and a group ID, even though the in-memory client does not connect to a broker.
+A registered `InMemoryShareConsumerOptions.MemberId` is preserved alongside these builder settings.
 
 ## Dependency Injection
 

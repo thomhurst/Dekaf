@@ -109,6 +109,7 @@ public static class ServiceCollectionExtensions
         var inMemoryOptions = new InMemoryShareConsumerOptions
         {
             GroupId = options.GroupId,
+            MemberId = provider.GetRequiredService<InMemoryShareConsumerOptions>().MemberId,
             AutoOffsetReset = options.AutoOffsetReset,
             AutoOffsetResetDuration = options.AutoOffsetResetDuration,
             MaxPollRecords = options.MaxPollRecords,

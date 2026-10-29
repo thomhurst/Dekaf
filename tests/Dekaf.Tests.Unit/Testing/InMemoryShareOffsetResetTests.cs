@@ -100,6 +100,59 @@ public sealed class InMemoryShareOffsetResetTests
     }
 
     [Test]
+    [Arguments(null, false, false)]
+    [Arguments(null, true, false)]
+    [Arguments(AutoOffsetReset.Latest, false, false)]
+    [Arguments(AutoOffsetReset.Latest, true, false)]
+    [Arguments(AutoOffsetReset.ByDuration, false, false)]
+    [Arguments(AutoOffsetReset.ByDuration, true, false)]
+    [Arguments(AutoOffsetReset.ByDuration, false, true)]
+    [Arguments(AutoOffsetReset.ByDuration, true, true)]
+    public async Task ReadCommittedReset_PreservesRecordsBeyondStableOffset(
+        AutoOffsetReset? policy, bool withFault, bool matchingTimestamp)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await using var admin = new InMemoryAdminClient(cluster);
+        var group = new ConfigResource { Type = ConfigResourceType.Group, Name = "workers" };
+        await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+        {
+            [group] = [ConfigAlter.Set("share.isolation.level", "read_committed")]
+        });
+        await using var producer = new InMemoryProducer<string, string>(cluster);
+        var oldTimestamp = DateTimeOffset.UtcNow.AddHours(-2);
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "jobs", Key = "key", Value = "before", Timestamp = oldTimestamp
+        });
+        await using var transactionalProducer = new InMemoryProducer<string, string>(cluster);
+        await using var transaction = transactionalProducer.BeginTransaction();
+        await transaction.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "jobs", Key = "key", Value = "transactional", Timestamp = oldTimestamp
+        });
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "jobs", Key = "key", Value = "ordinary",
+            Timestamp = matchingTimestamp ? DateTimeOffset.UtcNow.AddHours(1) : oldTimestamp
+        });
+        await using var consumer = new InMemoryShareConsumer<string, string>(cluster, new()
+        {
+            GroupId = "workers", AutoOffsetReset = policy,
+            AutoOffsetResetDuration = policy == AutoOffsetReset.ByDuration ? TimeSpan.FromHours(1) : null
+        });
+        consumer.Subscribe("jobs");
+        if (withFault)
+            cluster.FaultPlan.PauseNext(new(KafkaFaultOperation.ShareConsume, "jobs", 0, "workers")).Release();
+
+        await Assert.That(await consumer.PollAsync().ToListAsync()).IsEmpty();
+        var offsets = await admin.ListShareGroupOffsetsAsync(new Dictionary<string, ListShareGroupOffsetsSpec> { ["workers"] = new() });
+        await Assert.That(offsets["workers"].Offsets[new TopicPartition("jobs", 0)].StartOffset).IsEqualTo(1);
+        await transaction.CommitAsync();
+        var records = await consumer.PollAsync().ToListAsync();
+        await Assert.That(records.Select(record => record.Value)).IsEquivalentTo(["transactional", "ordinary"]);
+    }
+
+    [Test]
     public async Task ResetChange_AppliesOnlyToUninitializedPartitions()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -184,6 +237,7 @@ public sealed class InMemoryShareOffsetResetTests
             else
                 dekaf.AddShareConsumer<string, string>(Configure);
         });
+        services.AddSingleton(new InMemoryShareConsumerOptions { MemberId = "configured-member" });
         services.AddDekafInMemory();
         await using var provider = services.BuildServiceProvider();
         var cluster = provider.GetRequiredService<InMemoryKafkaCluster>();
@@ -200,6 +254,7 @@ public sealed class InMemoryShareOffsetResetTests
             ? provider.GetRequiredKeyedService<IKafkaShareConsumer<string, string>>("worker")
             : provider.GetRequiredService<IKafkaShareConsumer<string, string>>();
         consumer.Subscribe("jobs");
+        await Assert.That(consumer.MemberId).IsEqualTo("configured-member");
         var records = await consumer.PollAsync().ToListAsync();
         await Assert.That(records.Count).IsEqualTo(policy == AutoOffsetReset.Earliest ? 2 : policy == AutoOffsetReset.ByDuration ? 1 : 0);
         if (policy == AutoOffsetReset.ByDuration)
@@ -233,6 +288,7 @@ public sealed class InMemoryShareOffsetResetTests
                 dekaf.AddShareConsumerService<ResetWorker, string, string>(builder => builder
                     .WithBootstrapServers("unused:9092").WithGroupId("workers").WithAutoOffsetReset(AutoOffsetReset.Earliest));
         });
+        services.AddSingleton(new InMemoryShareConsumerOptions { MemberId = "configured-member" });
         services.AddDekafInMemory();
         await using var provider = services.BuildServiceProvider();
         var cluster = provider.GetRequiredService<InMemoryKafkaCluster>();
@@ -240,6 +296,7 @@ public sealed class InMemoryShareOffsetResetTests
         await producer.ProduceAsync("jobs", "key", "before-poll");
         var consumer = provider.GetRequiredKeyedService<IKafkaShareConsumer<string, string>>(keyed ? "worker" : null);
         consumer.Subscribe("jobs");
+        await Assert.That(consumer.MemberId).IsEqualTo("configured-member");
         var record = await consumer.PollAsync().FirstAsync();
         await Assert.That(record.Value).IsEqualTo("before-poll");
         consumer.Acknowledge(record, AcknowledgeType.Renew);
