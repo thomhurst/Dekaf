@@ -39,8 +39,9 @@ public sealed class InMemoryConsumerWatermarkTests
         else
             await transaction.AbortAsync();
 
-        await Assert.That((await consumer.QueryWatermarkOffsetsAsync(Partition)).High).IsEqualTo(15L);
-        await Assert.That(consumer.GetWatermarkOffsets(Partition)!.Value.High).IsEqualTo(15L);
+        // Completion reserves one invisible COMMIT/ABORT control offset after the five pending records.
+        await Assert.That((await consumer.QueryWatermarkOffsetsAsync(Partition)).High).IsEqualTo(16L);
+        await Assert.That(consumer.GetWatermarkOffsets(Partition)!.Value.High).IsEqualTo(16L);
     }
 
     [Test]
