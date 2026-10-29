@@ -69,7 +69,10 @@ public sealed partial class InMemoryKafkaCluster
                     _consumerGroupGenerations[groupId] = 0;
                 }
                 else
+                {
                     _consumerGroupGenerations[groupId] = ++_nextConsumerGroupGeneration;
+                    RefreshConsumerGroupOwnershipUnderLock(groupId);
+                }
             }
             return new RemoveMembersFromConsumerGroupResult { GroupId = groupId, Members = results };
         }

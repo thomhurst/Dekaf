@@ -238,7 +238,7 @@ public sealed partial class InMemoryKafkaCluster
         string groupId,
         string memberId,
         IEnumerable<TopicPartition> subscribedPartitions,
-        out long registrationId, string? groupInstanceId = null)
+        out long registrationId, string? groupInstanceId = null, long previousRegistrationId = 0)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
         ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
@@ -258,8 +258,12 @@ public sealed partial class InMemoryKafkaCluster
                 _consumerGroupMembers[groupId] = members;
             }
 
+            var hasPreviousMember = members.TryGetValue(memberId, out var replaced);
+            var ownership = hasPreviousMember && replaced.RegistrationId == previousRegistrationId
+                ? replaced.Ownership
+                : new Dictionary<TopicPartition, int>();
             registrationId = ++_nextConsumerGroupRegistrationId;
-            if (_staticConsumerGroupMembers is not null && members.TryGetValue(memberId, out var replaced) &&
+            if (_staticConsumerGroupMembers is not null && hasPreviousMember &&
                 replaced.GroupInstanceId is { } replacedInstance)
                 _staticConsumerGroupMembers.Remove((groupId, replacedInstance));
             if (groupInstanceId is not null)
@@ -271,9 +275,10 @@ public sealed partial class InMemoryKafkaCluster
                     members.Remove(previousMember!);
                 previousMember = memberId;
             }
-            members[memberId] = new ConsumerGroupMemberState(registrationId, partitions);
+            members[memberId] = new ConsumerGroupMemberState(registrationId, partitions, ownership);
             var generation = ++_nextConsumerGroupGeneration;
             _consumerGroupGenerations[groupId] = generation;
+            RefreshConsumerGroupOwnershipUnderLock(groupId);
             return generation;
         }
     }
@@ -298,6 +303,7 @@ public sealed partial class InMemoryKafkaCluster
             member.SubscribedPartitions.Clear();
             member.SubscribedPartitions.UnionWith(subscribedPartitions);
             _consumerGroupGenerations[groupId] = ++_nextConsumerGroupGeneration;
+            RefreshConsumerGroupOwnershipUnderLock(groupId);
         }
     }
 
@@ -332,6 +338,7 @@ public sealed partial class InMemoryKafkaCluster
             else
             {
                 _consumerGroupGenerations[groupId] = ++_nextConsumerGroupGeneration;
+                RefreshConsumerGroupOwnershipUnderLock(groupId);
             }
         }
     }
@@ -340,7 +347,15 @@ public sealed partial class InMemoryKafkaCluster
         string groupId,
         string memberId,
         long registrationId,
-        out int generation)
+        out int generation) =>
+        GetConsumerGroupAssignment(groupId, memberId, registrationId, out generation, out _);
+
+    internal IReadOnlySet<TopicPartition> GetConsumerGroupAssignment(
+        string groupId,
+        string memberId,
+        long registrationId,
+        out int generation,
+        out IReadOnlyDictionary<TopicPartition, int> ownership)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
         ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
@@ -352,14 +367,13 @@ public sealed partial class InMemoryKafkaCluster
                 member.RegistrationId != registrationId)
             {
                 generation = -1;
+                ownership = new Dictionary<TopicPartition, int>();
                 return new HashSet<TopicPartition>();
             }
 
             generation = _consumerGroupGenerations.GetValueOrDefault(groupId);
-            var assignments = BuildConsumerGroupAssignments(groupId);
-            return assignments.TryGetValue(memberId, out var partitions)
-                ? partitions.ToHashSet()
-                : new HashSet<TopicPartition>();
+            ownership = new Dictionary<TopicPartition, int>(member.Ownership);
+            return member.Ownership.Keys.ToHashSet();
         }
     }
 
@@ -1749,6 +1763,26 @@ public sealed partial class InMemoryKafkaCluster
         return null;
     }
 
+    private void RefreshConsumerGroupOwnershipUnderLock(string groupId)
+    {
+        if (!_consumerGroupMembers.TryGetValue(groupId, out var members))
+            return;
+
+        var assignments = BuildConsumerGroupAssignments(groupId);
+        var generation = _consumerGroupGenerations[groupId];
+        foreach (var (memberId, member) in members)
+        {
+            var assigned = assignments[memberId];
+            foreach (var partition in member.Ownership.Keys.ToArray())
+            {
+                if (!assigned.Contains(partition))
+                    member.Ownership.Remove(partition);
+            }
+            foreach (var partition in assigned)
+                member.Ownership.TryAdd(partition, generation);
+        }
+    }
+
     private Dictionary<string, HashSet<TopicPartition>> BuildConsumerGroupAssignments(string groupId)
     {
         var result = new Dictionary<string, HashSet<TopicPartition>>(StringComparer.Ordinal);
@@ -2126,12 +2160,14 @@ public sealed partial class InMemoryKafkaCluster
 
     private readonly record struct ConsumerGroupMemberState(
         long RegistrationId,
-        HashSet<TopicPartition> SubscribedPartitions)
+        HashSet<TopicPartition> SubscribedPartitions,
+        // Ownership survives retained assignments, but changes after any loss and regain, even
+        // when the consumer does not poll between those two group transitions.
+        Dictionary<TopicPartition, int> Ownership)
     {
         public string? GroupInstanceId => (SubscribedPartitions as StaticMemberPartitions)?.GroupInstanceId;
     }
 
-    // Keep dynamic registrations and dictionary entries at their original size.
     // Only static members need the additional identity reference.
     private sealed class StaticMemberPartitions(IEnumerable<TopicPartition> partitions, string groupInstanceId)
         : HashSet<TopicPartition>(partitions)
