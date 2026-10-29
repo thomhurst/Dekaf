@@ -39,22 +39,23 @@ public sealed class DynamoDbLocalContainer : IAsyncInitializer, IAsyncDisposable
     }
 
     /// <summary>
-    /// A client with retries disabled: a test that expects a refused conditional write must
-    /// see it once, and a throttled local instance is a test failure, not something to mask.
+    /// A client that never retries service errors: a refused conditional write must be seen
+    /// once, and a throttled local instance is a test failure, not something to mask.
+    /// Only transport failures before a response arrives can be retried.
     /// </summary>
-    public AmazonDynamoDBClient CreateClient() => new(Credentials, CreateConfig());
+    public AmazonDynamoDBClient CreateClient() => new OutboxDynamoDbLocalClient(Credentials, CreateConfig(ServiceUrl));
 
     /// <summary>A client like <see cref="CreateClient()"/>, with every request passing
     /// <paramref name="beforeCall"/> first.</summary>
     internal AmazonDynamoDBClient CreateClient(
         Func<AmazonWebServiceRequest, ValueTask<OutboxDynamoDbFault>> beforeCall) =>
-        OutboxDynamoDbCallInterceptor.CreateClient(Credentials, CreateConfig(), beforeCall);
+        OutboxDynamoDbCallInterceptor.CreateClient(Credentials, CreateConfig(ServiceUrl), beforeCall);
 
     private static BasicAWSCredentials Credentials => new("dekaf", "dekaf");
 
-    private AmazonDynamoDBConfig CreateConfig() => new()
+    internal static AmazonDynamoDBConfig CreateConfig(string serviceUrl) => new()
     {
-        ServiceURL = ServiceUrl,
+        ServiceURL = serviceUrl,
         AuthenticationRegion = "us-east-1",
         MaxErrorRetry = 0
     };
