@@ -1332,6 +1332,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             ThrowIfSnapshotActiveUnderLock();
+            _ = GetCurrentAssignmentUnderLock();
             var partition = new TopicPartition(offset.Topic, offset.Partition);
             DiscardInDoubtRecordUnderLock(partition);
             _positions[partition] = offset.Offset;
@@ -1348,6 +1349,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             ThrowIfSnapshotActiveUnderLock();
+            _ = GetCurrentAssignmentUnderLock();
             foreach (var partition in SelectTargetPartitions(partitions))
             {
                 var position = _cluster.GetWatermarks(partition, _options.IsolationLevel).Low;
@@ -1367,6 +1369,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             ThrowIfSnapshotActiveUnderLock();
+            _ = GetCurrentAssignmentUnderLock();
             foreach (var partition in SelectTargetPartitions(partitions))
             {
                 var position = _cluster.GetWatermarks(partition, _options.IsolationLevel).High;

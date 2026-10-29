@@ -103,6 +103,87 @@ public sealed class InMemoryConsumerReassignmentTests
     }
 
     [Test]
+    [Arguments("Seek", false, false)]
+    [Arguments("Seek", false, true)]
+    [Arguments("Seek", true, false)]
+    [Arguments("Seek", true, true)]
+    [Arguments("SeekToBeginning", false, false)]
+    [Arguments("SeekToBeginning", false, true)]
+    [Arguments("SeekToBeginning", true, false)]
+    [Arguments("SeekToBeginning", true, true)]
+    [Arguments("SeekToEnd", false, false)]
+    [Arguments("SeekToEnd", false, true)]
+    [Arguments("SeekToEnd", true, false)]
+    [Arguments("SeekToEnd", true, true)]
+    [Arguments("SeekAllToBeginning", false, false)]
+    [Arguments("SeekAllToBeginning", false, true)]
+    [Arguments("SeekAllToBeginning", true, false)]
+    [Arguments("SeekAllToBeginning", true, true)]
+    [Arguments("SeekAllToEnd", false, false)]
+    [Arguments("SeekAllToEnd", false, true)]
+    [Arguments("SeekAllToEnd", true, false)]
+    [Arguments("SeekAllToEnd", true, true)]
+    public async Task Seek_AfterReassignment_PreservesRequestedPosition(
+        string method, bool manualAssignment, bool observeRevocation)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("topic", 2);
+        await using var producer = new InMemoryProducer<string, string>(cluster);
+        for (var i = 0; i < 4; i++)
+            await Produce(producer, 1, $"record-{i}");
+        var moved = new TopicPartition("topic", 1);
+        await using var first = CreateConsumer(cluster, "a", OffsetCommitMode.Manual);
+        if (manualAssignment)
+            first.Assign(new TopicPartition("topic", 0), moved);
+        else
+            first.Subscribe("topic");
+        _ = await first.ConsumeOneAsync(TimeSpan.Zero);
+        first.Pause(moved);
+        await using var second = CreateConsumer(cluster, "b", OffsetCommitMode.Manual);
+        second.Subscribe("topic");
+        if (observeRevocation)
+            await Assert.That(first.Assignment.Contains(moved)).IsFalse();
+        await second.CommitAsync([new("topic", 1, 2)]);
+        second.Unsubscribe();
+
+        long expected;
+        switch (method)
+        {
+            case "Seek":
+                first.Seek(new TopicPartitionOffset("topic", 1, 3));
+                expected = 3;
+                break;
+            case "SeekToBeginning":
+                first.SeekToBeginning(moved);
+                expected = 0;
+                break;
+            case "SeekToEnd":
+                first.SeekToEnd(moved);
+                expected = 4;
+                break;
+            case "SeekAllToBeginning":
+                first.SeekToBeginning();
+                expected = 0;
+                break;
+            case "SeekAllToEnd":
+                first.SeekToEnd();
+                expected = 4;
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(method));
+        }
+
+        await Assert.That(first.GetPosition(moved)).IsEqualTo(expected);
+        await Assert.That(first.Paused.Contains(moved)).IsFalse();
+        await first.CommitAsync();
+        await Assert.That(cluster.GetCommittedOffset("group", moved)).IsEqualTo(expected);
+        // End seeks must also drive subsequent consumption from the requested position.
+        await Produce(producer, 1, "after-seek");
+        var record = await first.ConsumeOneAsync(TimeSpan.Zero);
+        await Assert.That(record!.Value.Offset).IsEqualTo(expected);
+    }
+
+    [Test]
     public async Task ScaleOut_DoesNotSeedUnownedPartitions_AndPreservesRetainedProgress()
     {
         var cluster = new InMemoryKafkaCluster();
