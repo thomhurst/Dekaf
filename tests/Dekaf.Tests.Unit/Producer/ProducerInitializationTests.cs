@@ -1,4 +1,5 @@
 using Dekaf.Producer;
+using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Producer;
 
@@ -8,6 +9,46 @@ namespace Dekaf.Tests.Unit.Producer;
 /// </summary>
 public sealed class ProducerInitializationTests
 {
+    [Test]
+    [Arguments("")]
+    [Arguments(" ")]
+    [Arguments("\t\r\n")]
+    [Arguments("\u2003")]
+    public async Task Constructor_BlankTransactionalId_ThrowsArgumentException(string transactionalId)
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            TransactionalId = transactionalId
+        };
+
+        var exception = await Assert.That(async () =>
+        {
+            await using var producer = new KafkaProducer<string, string>(
+                options, Serializers.String, Serializers.String);
+        }).Throws<ArgumentException>();
+
+        await Assert.That(exception!.ParamName).IsEqualTo("options.TransactionalId");
+    }
+
+    [Test]
+    [Arguments(null)]
+    [Arguments("txn-1")]
+    [Arguments(" txn-1 ")]
+    public async Task Constructor_NullOrNonBlankTransactionalId_Succeeds(string? transactionalId)
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            TransactionalId = transactionalId
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options, Serializers.String, Serializers.String);
+
+        await Assert.That(producer).IsNotNull();
+    }
+
     [Test]
     public async Task ProduceAsync_WithoutInitialize_ThrowsInvalidOperationException()
     {

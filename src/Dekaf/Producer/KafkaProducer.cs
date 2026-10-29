@@ -536,6 +536,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         ILoggerFactory? loggerFactory,
         MetadataOptions? metadataOptions)
     {
+        if (options.TransactionalId is not null)
+            ArgumentException.ThrowIfNullOrWhiteSpace(options.TransactionalId);
+
         var reconnectBackoffMaxMs = ReconnectBackoffValidation.ResolveMaximumMilliseconds(
             options.ReconnectBackoffMs,
             options.ReconnectBackoffMaxMs,
@@ -3026,7 +3029,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
     public ITransaction<TKey, TValue> BeginTransaction()
     {
-        if (string.IsNullOrEmpty(_options.TransactionalId))
+        if (_options.TransactionalId is null)
         {
             throw new InvalidOperationException("Producer is not transactional. Set TransactionalId in options.");
         }
@@ -3094,7 +3097,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         bool keepPreparedTransaction,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrEmpty(_options.TransactionalId))
+        if (_options.TransactionalId is null)
         {
             throw new InvalidOperationException(
                 "Cannot initialize transactions: TransactionalId is not set in producer options.");
@@ -3154,7 +3157,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         bool committed,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrEmpty(_options.TransactionalId))
+        if (_options.TransactionalId is null)
         {
             throw new InvalidOperationException(
                 "Cannot complete a prepared transaction: TransactionalId is not set in producer options.");

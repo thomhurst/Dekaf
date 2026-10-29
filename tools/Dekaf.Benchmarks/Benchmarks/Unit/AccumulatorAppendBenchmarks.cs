@@ -19,7 +19,6 @@ public class AccumulatorAppendBenchmarks
     private RecordAccumulator _accumulator = null!;
     private RecordAccumulator _secondAccumulator = null!;
     private RecordAccumulator _rotationAccumulator = null!;
-    private readonly TopicPartition _rotationPartition = new("bench-topic", 0);
     private byte[] _keyBytes = null!;
     private byte[] _valueBytes = null!;
     private CancellationTokenSource _drainerCts = null!;
@@ -162,7 +161,9 @@ public class AccumulatorAppendBenchmarks
             _keyBytes, false, _valueBytes, false,
             null, 0, null, CancellationToken.None));
 
-        while (_rotationAccumulator.TryDrainBatch(_rotationPartition, out var batch))
+        // Consume publication notifications too: deque-only drains leave an unbounded
+        // queue whose segment allocations depend on the diagnostic iteration boundary.
+        while (_rotationAccumulator.TryDrainPublishedBatch(out var batch))
         {
             _rotationAccumulator.ReleaseBatchMemory(batch);
             batch.CompleteSend(0, DateTimeOffset.UnixEpoch);
@@ -213,7 +214,7 @@ public class AccumulatorAppendBenchmarks
 
     private static void DrainAll(RecordAccumulator accumulator)
     {
-        while (accumulator.TryDrainBatch(out var batch))
+        while (accumulator.TryDrainPublishedBatch(out var batch))
         {
             accumulator.ReleaseMemory(batch.DataSize);
             accumulator.ReturnReadyBatch(batch);
@@ -227,13 +228,13 @@ public class AccumulatorAppendBenchmarks
         var sw = new SpinWait();
         while (!ct.IsCancellationRequested)
         {
-            if (_accumulator.TryDrainBatch(out var batch))
+            if (_accumulator.TryDrainPublishedBatch(out var batch))
             {
                 _accumulator.ReleaseMemory(batch.DataSize);
                 _accumulator.ReturnReadyBatch(batch);
                 sw.Reset();
             }
-            else if (_secondAccumulator.TryDrainBatch(out batch))
+            else if (_secondAccumulator.TryDrainPublishedBatch(out batch))
             {
                 _secondAccumulator.ReleaseMemory(batch.DataSize);
                 _secondAccumulator.ReturnReadyBatch(batch);

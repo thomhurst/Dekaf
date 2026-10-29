@@ -295,6 +295,32 @@ public class ProducerBuilderValidationTests
     }
 
     [Test]
+    public async Task WithTransactionalId_Null_ThrowsArgumentNullException()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+
+        var exception = await Assert.That(() => builder.WithTransactionalId(null!))
+            .Throws<ArgumentNullException>();
+
+        await Assert.That(exception!.ParamName).IsEqualTo("transactionalId");
+    }
+
+    [Test]
+    [Arguments("")]
+    [Arguments(" ")]
+    [Arguments("\t\r\n")]
+    [Arguments("\u2003")]
+    public async Task WithTransactionalId_Blank_ThrowsArgumentException(string transactionalId)
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+
+        var exception = await Assert.That(() => builder.WithTransactionalId(transactionalId))
+            .Throws<ArgumentException>();
+
+        await Assert.That(exception!.ParamName).IsEqualTo("transactionalId");
+    }
+
+    [Test]
     public async Task WithTransactionalId_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateProducer<string, string>();

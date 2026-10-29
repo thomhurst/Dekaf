@@ -242,9 +242,22 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Sets the transactional ID for exactly-once semantics.
+    /// </summary>
+    /// <exception cref="ArgumentNullException">The transactional ID is null.</exception>
+    /// <exception cref="ArgumentException">The transactional ID is empty or whitespace.</exception>
     public ProducerBuilder<TKey, TValue> WithTransactionalId(string transactionalId)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(transactionalId);
         _transactionalId = transactionalId;
+        return this;
+    }
+
+    internal ProducerBuilder<TKey, TValue> WithoutTransactions()
+    {
+        _transactionalId = null;
+        _enableTwoPhaseCommit = false;
         return this;
     }
 
@@ -1386,7 +1399,7 @@ public sealed class ProducerBuilder<TKey, TValue>
                 "Transaction coordination requests require a single connection per broker. " +
                 "Either remove WithTransactionalId() or use ConnectionsPerBroker = 1.");
 
-        if (_enableTwoPhaseCommit && string.IsNullOrEmpty(_transactionalId))
+        if (_enableTwoPhaseCommit && _transactionalId is null)
             throw new InvalidOperationException("Two-phase commit requires TransactionalId to be set.");
 
         if (_enableIdempotence && _acks == Acks.None)
