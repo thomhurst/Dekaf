@@ -200,13 +200,13 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         var relativeUri = Environment.GetEnvironmentVariable("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI");
 
         Uri? endpoint = null;
-        if (!string.IsNullOrWhiteSpace(fullUri) && Uri.TryCreate(fullUri, UriKind.Absolute, out var parsedFullUri))
-        {
-            endpoint = IsTrustedContainerCredentialsFullUri(parsedFullUri) ? parsedFullUri : null;
-        }
-        else if (!string.IsNullOrWhiteSpace(relativeUri))
+        if (!string.IsNullOrWhiteSpace(relativeUri))
         {
             endpoint = new Uri("http://169.254.170.2" + relativeUri);
+        }
+        else if (!string.IsNullOrWhiteSpace(fullUri) && Uri.TryCreate(fullUri, UriKind.Absolute, out var parsedFullUri))
+        {
+            endpoint = IsTrustedContainerCredentialsFullUri(parsedFullUri) ? parsedFullUri : null;
         }
 
         if (endpoint is null)
@@ -327,7 +327,7 @@ public sealed class AwsMskIamDefaultCredentialsProvider : IAwsCredentialsProvide
         var token = Environment.GetEnvironmentVariable("AWS_CONTAINER_AUTHORIZATION_TOKEN");
         var tokenFile = Environment.GetEnvironmentVariable("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE");
 
-        if (string.IsNullOrWhiteSpace(token) && !string.IsNullOrWhiteSpace(tokenFile) && File.Exists(tokenFile))
+        if (!string.IsNullOrWhiteSpace(tokenFile))
             token = File.ReadAllText(tokenFile).Trim();
 
         if (!string.IsNullOrWhiteSpace(token))

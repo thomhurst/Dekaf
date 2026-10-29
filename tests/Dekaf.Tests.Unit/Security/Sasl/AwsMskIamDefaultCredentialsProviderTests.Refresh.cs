@@ -70,6 +70,147 @@ public sealed partial class AwsMskIamDefaultCredentialsProviderTests
     }
 
     [Test]
+    [Arguments("http://169.254.170.23/credentials/other")]
+    [Arguments("http://example.com/credentials/other")]
+    [Arguments("not a URI")]
+    public async Task Container_RelativeUriTakesPrecedenceOverFullUri(string fullUri)
+    {
+        using var environment = new CredentialEnvironment();
+        Environment.SetEnvironmentVariable("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "/credentials/task");
+        Environment.SetEnvironmentVariable("AWS_CONTAINER_CREDENTIALS_FULL_URI", fullUri);
+        var expiration = DateTimeOffset.UtcNow.AddHours(1);
+        var calls = 0;
+        using var http = new HttpClient(new CredentialHandler(async (request, _) =>
+        {
+            calls++;
+            await Assert.That(request.RequestUri!.AbsoluteUri).IsEqualTo("http://169.254.170.2/credentials/task");
+            return CredentialResponse(expiration);
+        }));
+
+        var credentials = await new AwsMskIamDefaultCredentialsProvider(http).GetCredentialsAsync();
+
+        await AssertCredentialsAsync(credentials, "access", "secret", "token", expiration);
+        await Assert.That(calls).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Container_FullUriIsUsedWhenRelativeUriIsAbsent()
+    {
+        using var environment = new CredentialEnvironment();
+        Environment.SetEnvironmentVariable("AWS_CONTAINER_CREDENTIALS_FULL_URI", "http://169.254.170.23/credentials/test");
+        var expiration = DateTimeOffset.UtcNow.AddHours(1);
+        using var http = new HttpClient(new CredentialHandler(async (request, _) =>
+        {
+            await Assert.That(request.RequestUri!.AbsoluteUri).IsEqualTo("http://169.254.170.23/credentials/test");
+            return CredentialResponse(expiration);
+        }));
+
+        var credentials = await new AwsMskIamDefaultCredentialsProvider(http).GetCredentialsAsync();
+
+        await AssertCredentialsAsync(credentials, "access", "secret", "token", expiration);
+    }
+
+    [Test]
+    public async Task Container_UnreadableTokenFileDoesNotFallBackToStaticToken()
+    {
+        using var environment = new CredentialEnvironment();
+        Environment.SetEnvironmentVariable("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "/credentials/test");
+        Environment.SetEnvironmentVariable("AWS_CONTAINER_AUTHORIZATION_TOKEN", "stale-token");
+        var tokenFile = environment.WriteFile("token");
+        Environment.SetEnvironmentVariable("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE", tokenFile);
+        using var lockedFile = new FileStream(tokenFile, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        var calls = 0;
+        using var http = new HttpClient(new CredentialHandler((_, _) =>
+        {
+            calls++;
+            return Task.FromResult(CredentialResponse(DateTimeOffset.UtcNow.AddHours(1)));
+        }));
+        var provider = new AwsMskIamDefaultCredentialsProvider(http);
+
+        await Assert.That(async () => await provider.GetCredentialsAsync()).Throws<IOException>();
+
+        await Assert.That(calls).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Container_TokenFileTakesPrecedenceAndRotationIsReadOnRefresh()
+    {
+        using var environment = new CredentialEnvironment();
+        Environment.SetEnvironmentVariable("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "/credentials/test");
+        Environment.SetEnvironmentVariable("AWS_CONTAINER_AUTHORIZATION_TOKEN", "stale-token");
+        var tokenFile = environment.WriteFile("first-token\n");
+        Environment.SetEnvironmentVariable("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE", tokenFile);
+        var now = DateTimeOffset.UtcNow;
+        var expiration = now.AddHours(1);
+        var calls = 0;
+        using var http = new HttpClient(new CredentialHandler(async (request, _) =>
+        {
+            calls++;
+            await Assert.That(request.Headers.GetValues("Authorization").Single())
+                .IsEqualTo(calls == 1 ? "first-token" : "rotated-token");
+            return CredentialResponse(now.AddHours(1), calls == 1 ? "access" : "refreshed");
+        }));
+        var provider = new AwsMskIamDefaultCredentialsProvider(http, utcNow: () => now);
+
+        var first = await provider.GetCredentialsAsync();
+        await File.WriteAllTextAsync(tokenFile, "rotated-token\n");
+        now = expiration - AwsMskIamDefaultCredentialsProvider.CacheRefreshInterval - TimeSpan.FromSeconds(1);
+        var cached = await provider.GetCredentialsAsync();
+        await Assert.That(cached).IsSameReferenceAs(first);
+        await Assert.That(calls).IsEqualTo(1);
+        now += TimeSpan.FromSeconds(1);
+        var refreshed = await provider.GetCredentialsAsync();
+
+        await Assert.That(refreshed.AccessKeyId).IsEqualTo("refreshed");
+        await Assert.That(calls).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task Container_MissingTokenFileDoesNotFallBackToStaticToken()
+    {
+        using var environment = new CredentialEnvironment();
+        Environment.SetEnvironmentVariable("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "/credentials/test");
+        Environment.SetEnvironmentVariable("AWS_CONTAINER_AUTHORIZATION_TOKEN", "stale-token");
+        var tokenFile = environment.WriteFile("token");
+        File.Delete(tokenFile);
+        Environment.SetEnvironmentVariable("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE", tokenFile);
+        var calls = 0;
+        using var http = new HttpClient(new CredentialHandler((_, _) =>
+        {
+            calls++;
+            return Task.FromResult(CredentialResponse(DateTimeOffset.UtcNow.AddHours(1)));
+        }));
+        var provider = new AwsMskIamDefaultCredentialsProvider(http);
+
+        await Assert.That(async () => await provider.GetCredentialsAsync()).Throws<FileNotFoundException>();
+
+        await Assert.That(calls).IsEqualTo(0);
+        await File.WriteAllTextAsync(tokenFile, "recovered-token");
+        var recovered = await provider.GetCredentialsAsync();
+        await Assert.That(recovered.AccessKeyId).IsEqualTo("access");
+        await Assert.That(calls).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Container_EmptyTokenFileDoesNotFallBackToStaticToken()
+    {
+        using var environment = new CredentialEnvironment();
+        Environment.SetEnvironmentVariable("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "/credentials/test");
+        Environment.SetEnvironmentVariable("AWS_CONTAINER_AUTHORIZATION_TOKEN", "stale-token");
+        Environment.SetEnvironmentVariable("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE", environment.WriteFile(" \n"));
+        var expiration = DateTimeOffset.UtcNow.AddHours(1);
+        using var http = new HttpClient(new CredentialHandler(async (request, _) =>
+        {
+            await Assert.That(request.Headers.Contains("Authorization")).IsFalse();
+            return CredentialResponse(expiration);
+        }));
+
+        var credentials = await new AwsMskIamDefaultCredentialsProvider(http).GetCredentialsAsync();
+
+        await AssertCredentialsAsync(credentials, "access", "secret", "token", expiration);
+    }
+
+    [Test]
     public async Task ImdsV2_UsesTokenForRoleDiscoveryAndCredentialRequest()
     {
         using var environment = new CredentialEnvironment();
