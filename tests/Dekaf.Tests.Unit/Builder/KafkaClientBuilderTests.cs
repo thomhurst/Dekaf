@@ -86,6 +86,46 @@ public sealed class KafkaClientBuilderTests
     }
 
     [Test]
+    [Arguments(false, 100)]
+    [Arguments(true, 5)]
+    public async Task RootClient_CreatedProducer_PreservesDefaultMaxInFlight(bool enableIdempotence, int expected)
+    {
+        await using var client = Kafka.Connect("localhost:9092");
+        await using var producer = client.CreateProducer<string, string>()
+            .WithIdempotence(enableIdempotence)
+            .Build();
+
+        var options = GetField<ProducerOptions>(producer, "_options");
+        var pool = GetField<ConnectionPool>(producer, "_connectionPool");
+
+        await Assert.That(options.MaxInFlightRequestsPerConnection).IsEqualTo(expected);
+        await Assert.That(pool.EffectiveConnectionOptions.MaxInFlightRequestsPerConnection).IsEqualTo(5);
+    }
+
+    [Test]
+    [Arguments(1, false, 1)]
+    [Arguments(1, true, 1)]
+    [Arguments(3, false, 3)]
+    [Arguments(3, true, 3)]
+    [Arguments(5, false, 5)]
+    [Arguments(12, false, 12)]
+    [Arguments(12, true, 5)]
+    public async Task RootClient_MaxInFlight_ConfiguresCreatedProducer(int maxInFlight, bool enableIdempotence, int expected)
+    {
+        await using var client = Kafka.Connect("localhost:9092", builder => builder
+            .WithMaxInFlightRequestsPerConnection(maxInFlight));
+        await using var producer = client.CreateProducer<string, string>()
+            .WithIdempotence(enableIdempotence)
+            .Build();
+
+        var options = GetField<ProducerOptions>(producer, "_options");
+        var pool = GetField<ConnectionPool>(producer, "_connectionPool");
+
+        await Assert.That(options.MaxInFlightRequestsPerConnection).IsEqualTo(expected);
+        await Assert.That(pool.EffectiveConnectionOptions.MaxInFlightRequestsPerConnection).IsEqualTo(maxInFlight);
+    }
+
+    [Test]
     public async Task RootClient_CreatedProducer_UsesDefaultAdaptiveMaximumOf3()
     {
         await using var client = Kafka.Connect("localhost:9092");

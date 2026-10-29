@@ -117,6 +117,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         _bootstrapServers = clientInfrastructure.BootstrapServers;
         _loggerFactory = clientInfrastructure.LoggerFactory;
         _connectionsPerBroker = clientInfrastructure.ConnectionsPerBroker;
+        _maxInFlightRequestsPerConnection = clientInfrastructure.MaxInFlightRequestsPerConnection;
         _maxConnectionsPerBroker = clientInfrastructure.ProducerMaxConnectionsPerBroker;
         _isMaxConnectionsPerBrokerConfigured = true;
         _retryBackoffMs = clientInfrastructure.RetryBackoffMs;

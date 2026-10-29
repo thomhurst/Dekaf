@@ -119,7 +119,7 @@ public sealed class KafkaClientBuilder
     private int _socketSendBufferBytes;
     private int _socketReceiveBufferBytes;
     private int _connectionsPerBroker = 1;
-    private int _maxInFlightRequestsPerConnection = 5;
+    private int? _maxInFlightRequestsPerConnection;
     private int _maxConnectionsPerBroker = ConsumerOptions.DefaultMaxConnectionsPerBroker;
     private int _producerMaxConnectionsPerBroker = ProducerOptions.DefaultMaxConnectionsPerBroker;
     private bool _isMaxConnectionsPerBrokerConfigured;
@@ -516,6 +516,17 @@ public sealed class KafkaClientBuilder
         return this;
     }
 
+    /// <summary>
+    /// Sets the maximum number of in-flight requests per connection for each producer created by this client.
+    /// Also sizes the shared connection pools. Idempotent producers cap this value at 5.
+    /// </summary>
+    /// <param name="maxInFlightRequestsPerConnection">The limit, from 1 to 1,000,000.</param>
+    /// <remarks>
+    /// When unset, producers default to 5 with idempotence enabled and 100 with idempotence disabled;
+    /// shared connection pools are sized for 5. With idempotence disabled, use 1 to preserve
+    /// per-partition ordering across retries. This is a per-producer limit, not an aggregate
+    /// limit across producers sharing a connection.
+    /// </remarks>
     public KafkaClientBuilder WithMaxInFlightRequestsPerConnection(int maxInFlightRequestsPerConnection)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(maxInFlightRequestsPerConnection, 1);
@@ -738,7 +749,7 @@ internal sealed class KafkaClientOptions
     public int SocketSendBufferBytes { get; init; }
     public int SocketReceiveBufferBytes { get; init; }
     public int ConnectionsPerBroker { get; init; }
-    public int MaxInFlightRequestsPerConnection { get; init; }
+    public int? MaxInFlightRequestsPerConnection { get; init; }
     public int MaxConnectionsPerBroker { get; init; }
     public int ProducerMaxConnectionsPerBroker { get; init; }
     public int ConnectionsMaxIdleMs { get; init; }
@@ -767,6 +778,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
         IDekafMemoryBudget memoryBudget,
         ILoggerFactory? loggerFactory,
         int connectionsPerBroker,
+        int? maxInFlightRequestsPerConnection,
         int maxConnectionsPerBroker,
         int producerMaxConnectionsPerBroker,
         int retryBackoffMs,
@@ -782,6 +794,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
         MemoryBudget = memoryBudget;
         LoggerFactory = loggerFactory;
         ConnectionsPerBroker = connectionsPerBroker;
+        MaxInFlightRequestsPerConnection = maxInFlightRequestsPerConnection;
         MaxConnectionsPerBroker = maxConnectionsPerBroker;
         ProducerMaxConnectionsPerBroker = producerMaxConnectionsPerBroker;
         RetryBackoffMs = retryBackoffMs;
@@ -798,6 +811,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
     public IDekafMemoryBudget MemoryBudget { get; }
     public ILoggerFactory? LoggerFactory { get; }
     public int ConnectionsPerBroker { get; }
+    public int? MaxInFlightRequestsPerConnection { get; }
     public int MaxConnectionsPerBroker { get; }
     public int ProducerMaxConnectionsPerBroker { get; }
     public int RetryBackoffMs { get; }
@@ -811,7 +825,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
         var poolSizes = PoolSizing.ForSharedPools(
             brokerCount: options.BootstrapServers.Count,
             connectionsPerBroker: options.ConnectionsPerBroker,
-            maxInFlightRequestsPerConnection: options.MaxInFlightRequestsPerConnection,
+            maxInFlightRequestsPerConnection: options.MaxInFlightRequestsPerConnection ?? 5,
             batchSize: 1048576,
             maxConnectionsPerBroker: options.MaxConnectionsPerBroker);
 
@@ -860,6 +874,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
             new ClientMemoryBudget(options.MemoryBudgetBytes),
             options.LoggerFactory,
             options.ConnectionsPerBroker,
+            options.MaxInFlightRequestsPerConnection,
             options.MaxConnectionsPerBroker,
             options.ProducerMaxConnectionsPerBroker,
             options.RetryBackoffMs,
@@ -896,7 +911,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
         AwsMskIamConfig = options.AwsMskIamConfig,
         SendBufferSize = options.SocketSendBufferBytes,
         ReceiveBufferSize = options.SocketReceiveBufferBytes,
-        MaxInFlightRequestsPerConnection = options.MaxInFlightRequestsPerConnection,
+        MaxInFlightRequestsPerConnection = options.MaxInFlightRequestsPerConnection ?? 5,
         ClientDnsLookup = options.ClientDnsLookup
     };
 
