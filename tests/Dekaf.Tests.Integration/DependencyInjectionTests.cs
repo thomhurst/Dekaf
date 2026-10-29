@@ -14,6 +14,96 @@ namespace Dekaf.Tests.Integration;
 public sealed class DependencyInjectionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ReusedServiceCollection_DeliversWithOnlyCurrentProviderInterceptors(bool keyed)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var services = new ServiceCollection();
+        services.AddSingleton<ProviderInterceptor>();
+        services.AddDekaf(builder =>
+        {
+            builder.AddGlobalProducerInterceptor<string, string, ProviderInterceptor>();
+            builder.AddGlobalConsumerInterceptor<string, string, ProviderInterceptor>();
+            void ConfigureProducer(ProducerBuilder<string, string> producer) =>
+                producer.WithBootstrapServers(KafkaContainer.BootstrapServers);
+            void ConfigureConsumer(ConsumerBuilder<string, string> consumer) =>
+                consumer.WithBootstrapServers(KafkaContainer.BootstrapServers)
+                    .WithGroupId($"di-isolation-{Guid.NewGuid():N}")
+                    .WithAutoOffsetReset(AutoOffsetReset.Earliest);
+            if (keyed)
+            {
+                builder.AddProducer<string, string>("client", ConfigureProducer);
+                builder.AddConsumer<string, string>("client", ConfigureConsumer);
+            }
+            else
+            {
+                builder.AddProducer<string, string>(ConfigureProducer);
+                builder.AddConsumer<string, string>(ConfigureConsumer);
+            }
+        });
+
+        ProviderInterceptor disposedInterceptor;
+        await using (var first = services.BuildServiceProvider())
+        {
+            ResolveProducer(first);
+            ResolveConsumer(first);
+            disposedInterceptor = first.GetRequiredService<ProviderInterceptor>();
+        }
+        await Assert.That(disposedInterceptor.Disposed).IsTrue();
+
+        await using var second = services.BuildServiceProvider();
+        var producer = ResolveProducer(second);
+        var consumer = ResolveConsumer(second);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await producer.InitializeAsync(timeout.Token);
+        await consumer.InitializeAsync(timeout.Token);
+        await producer.ProduceAsync(topic, "key", "value", timeout.Token);
+        consumer.Subscribe(topic);
+        var message = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), timeout.Token);
+        var interceptor = second.GetRequiredService<ProviderInterceptor>();
+
+        await Assert.That(message).IsNotNull();
+        await Assert.That(message!.Value.Value).IsEqualTo("value");
+        await Assert.That(interceptor.SendCount).IsEqualTo(1);
+        await Assert.That(interceptor.ConsumeCount).IsEqualTo(1);
+        await Assert.That(disposedInterceptor.SendCount).IsEqualTo(0);
+        await Assert.That(disposedInterceptor.ConsumeCount).IsEqualTo(0);
+
+        IKafkaProducer<string, string> ResolveProducer(ServiceProvider provider) => keyed
+            ? provider.GetRequiredKeyedService<IKafkaProducer<string, string>>("client")
+            : provider.GetRequiredService<IKafkaProducer<string, string>>();
+        IKafkaConsumer<string, string> ResolveConsumer(ServiceProvider provider) => keyed
+            ? provider.GetRequiredKeyedService<IKafkaConsumer<string, string>>("client")
+            : provider.GetRequiredService<IKafkaConsumer<string, string>>();
+    }
+
+    private sealed class ProviderInterceptor
+        : IProducerInterceptor<string, string>, IConsumerInterceptor<string, string>, IDisposable
+    {
+        private int _sendCount;
+        private int _consumeCount;
+        public int SendCount => Volatile.Read(ref _sendCount);
+        public int ConsumeCount => Volatile.Read(ref _consumeCount);
+        public bool Disposed { get; private set; }
+        public ProducerMessage<string, string> OnSend(ProducerMessage<string, string> message)
+        {
+            Interlocked.Increment(ref _sendCount);
+            ObjectDisposedException.ThrowIf(Disposed, this);
+            return message;
+        }
+        public ConsumeResult<string, string> OnConsume(ConsumeResult<string, string> result)
+        {
+            Interlocked.Increment(ref _consumeCount);
+            ObjectDisposedException.ThrowIf(Disposed, this);
+            return result;
+        }
+        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception) { }
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+        public void Dispose() => Disposed = true;
+    }
+
+    [Test]
     public async Task ProducerResolvesFromDI_ProduceSucceeds()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
