@@ -716,7 +716,7 @@ public sealed partial class InMemoryAdminClient :
             await ApplyAdminResourceFaultAsync(resourceList[index], cancellationToken).ConfigureAwait(false);
         var result = resourceList.ToDictionary(
             resource => resource,
-            _ => (IReadOnlyList<ConfigEntry>)Array.Empty<ConfigEntry>());
+            resource => _cluster.DescribeShareIsolation(resource));
 
         return result;
     }
@@ -729,12 +729,17 @@ public sealed partial class InMemoryAdminClient :
         ArgumentNullException.ThrowIfNull(configs);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        var resources = configs.Keys.ToArray();
-        ValidateConfigResources(resources, nameof(configs), requireDistinct: false);
-        if (resources.Length == 0)
+        var items = AdminClient.SnapshotDetailedConfigs(configs, static entry => ConfigAlter.Set(entry.Name, entry.Value));
+        if (items.Count == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
-        foreach (var resource in resources)
-            await ApplyAdminResourceFaultAsync(resource, cancellationToken).ConfigureAwait(false);
+        foreach (var item in items)
+        {
+            await ApplyAdminResourceFaultAsync(item.Resource, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            var error = _cluster.AlterShareIsolation(item.Resource, item.Changes, replace: true, options?.ValidateOnly ?? false);
+            if (error != ErrorCode.None)
+                throw KafkaException.FromErrorCode(error, "Invalid share.isolation.level configuration.");
+        }
     }
 
     public async ValueTask IncrementalAlterConfigsAsync(
@@ -745,12 +750,18 @@ public sealed partial class InMemoryAdminClient :
         ArgumentNullException.ThrowIfNull(configs);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        var resources = configs.Keys.ToArray();
-        ValidateConfigResources(resources, nameof(configs), requireDistinct: false);
-        if (resources.Length == 0)
+        var items = AdminClient.SnapshotDetailedConfigs(configs, static change => new ConfigAlter
+            { Name = change.Name, Value = change.Value, Operation = change.Operation });
+        if (items.Count == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
-        foreach (var resource in resources)
-            await ApplyAdminResourceFaultAsync(resource, cancellationToken).ConfigureAwait(false);
+        foreach (var item in items)
+        {
+            await ApplyAdminResourceFaultAsync(item.Resource, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            var error = _cluster.AlterShareIsolation(item.Resource, item.Changes, replace: false, options?.ValidateOnly ?? false);
+            if (error != ErrorCode.None)
+                throw KafkaException.FromErrorCode(error, "Invalid share.isolation.level configuration.");
+        }
     }
 
     public async ValueTask CreateAclsAsync(
