@@ -1,4 +1,5 @@
 using Dekaf.Networking;
+using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Protocol.Messages;
 using Dekaf.Security.Sasl;
@@ -69,6 +70,58 @@ public sealed class OAuthReauthenticationIntegrationTests(ReauthOAuthKafkaContai
                 new MetadataRequest { Topics = [] }, 9, cancellationToken);
             await Assert.That(metadata.Brokers.Count).IsGreaterThan(0);
         }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task FetchAdmissionWait_ReauthenticationDrainsResponsesBeforeHandshake(
+        bool expireBudget, CancellationToken cancellationToken)
+    {
+        var endpoint = BootstrapServerList.Parse(kafka.BootstrapServers);
+        await using var connection = new KafkaConnection(
+            endpoint.Host, endpoint.Port, clientId: null,
+            new ConnectionOptions
+            {
+                SaslMechanism = SaslMechanism.OAuthBearer,
+                OAuthBearerTokenProvider = OAuthBearerKafkaContainer.GetTokenAsync,
+                SaslReauthenticationConfig = new SaslReauthenticationConfig { MinSessionLifetimeMs = long.MaxValue },
+                RequestTimeout = TimeSpan.FromSeconds(2)
+            }, logger: null, ResponseBufferPool.Default, responseMemoryAdmissionsEnabled: true);
+        await connection.ConnectAsync(cancellationToken);
+        using var memoryPool = new FetchBufferMemoryPool(64);
+        using var buffered = await memoryPool.ReserveAsync(64, cancellationToken);
+        var fetch = connection.SendPipelinedAsync<FetchRequest, FetchResponse>(
+            new FetchRequest { ResponseMemoryPool = memoryPool }, 16, cancellationToken);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        while (memoryPool.DepletedDurationSeconds == 0)
+            await Task.Delay(10, deadline.Token);
+
+        var previousSession = connection.SaslSession;
+        var renewal = connection.PerformReauthenticationAsync();
+        await Assert.That(renewal.IsCompleted).IsFalse();
+        await Assert.That(GetPrivateField<TaskCompletionSource>(connection, "_reauthenticationResponsesDrained"))
+            .IsNotNull();
+        if (expireBudget)
+        {
+            // The renewal budget expires before a handshake is written. The current session
+            // stays usable, and renewal can retry after the application releases fetch memory.
+            await renewal.WaitAsync(deadline.Token);
+            await Assert.That(connection.SaslSession).IsSameReferenceAs(previousSession);
+        }
+        await Assert.That(connection.IsConnected).IsTrue();
+        await Assert.That(fetch.IsCompleted).IsFalse();
+        buffered.Dispose();
+        var response = await fetch.WaitAsync(deadline.Token);
+        response.PooledMemoryOwner?.Dispose();
+        response.ReturnToPool();
+        if (expireBudget)
+            await connection.PerformReauthenticationAsync().WaitAsync(deadline.Token);
+        else
+            await renewal.WaitAsync(deadline.Token);
+        await Assert.That(connection.IsConnected).IsTrue();
+        await Assert.That(connection.SaslSession).IsNotSameReferenceAs(previousSession);
     }
 
     [Test]

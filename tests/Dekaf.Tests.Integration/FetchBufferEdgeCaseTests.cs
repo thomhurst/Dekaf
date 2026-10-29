@@ -3,6 +3,8 @@ using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Networking;
 using Dekaf.Producer;
+using Dekaf.Protocol;
+using Dekaf.Protocol.Messages;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Tests.Integration;
@@ -51,6 +53,47 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
 
         await Assert.That(checkedResult!.Value.Value).IsEqualTo("crc-value");
         await Assert.That(uncheckedResult!.Value.Value).IsEqualTo("crc-value");
+    }
+
+    [Test]
+    public async Task FetchAdmissionWait_QueuedMetadataResponse_SurvivesRequestTimeout(CancellationToken cancellationToken)
+    {
+        var endpoint = BootstrapServerList.Parse(KafkaContainer.BootstrapServers);
+        var requestTimeout = TimeSpan.FromSeconds(2);
+        await using var connection = new KafkaConnection(
+            endpoint.Host, endpoint.Port, clientId: null,
+            new ConnectionOptions { RequestTimeout = requestTimeout }, logger: null,
+            ResponseBufferPool.Default, responseMemoryAdmissionsEnabled: true);
+        await connection.ConnectAsync(cancellationToken);
+        using var memoryPool = new FetchBufferMemoryPool(64);
+        using var buffered = await memoryPool.ReserveAsync(64, cancellationToken);
+        var fetch = connection.SendPipelinedAsync<FetchRequest, FetchResponse>(
+            new FetchRequest { ResponseMemoryPool = memoryPool }, 16, cancellationToken);
+
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        while (memoryPool.DepletedDurationSeconds == 0)
+            await Task.Delay(10, deadline.Token);
+        var queuedFetch = connection.SendPipelinedAsync<FetchRequest, FetchResponse>(
+            new FetchRequest { ResponseMemoryPool = memoryPool }, 16, cancellationToken);
+        var metadata = connection.SendAsync<MetadataRequest, MetadataResponse>(
+            new MetadataRequest { Topics = [] }, 9, cancellationToken).AsTask();
+
+        await Task.Delay(requestTimeout * 3, deadline.Token);
+        await Assert.That(fetch.IsCompleted).IsFalse();
+        await Assert.That(queuedFetch.IsCompleted).IsFalse();
+        await Assert.That(metadata.IsCompleted).IsFalse();
+        await Assert.That(connection.IsConnected).IsTrue();
+        buffered.Dispose();
+
+        var response = await fetch.WaitAsync(deadline.Token);
+        response.PooledMemoryOwner?.Dispose();
+        response.ReturnToPool();
+        var queuedResponse = await queuedFetch.WaitAsync(deadline.Token);
+        queuedResponse.PooledMemoryOwner?.Dispose();
+        queuedResponse.ReturnToPool();
+        await Assert.That((await metadata.WaitAsync(deadline.Token)).Brokers.Count).IsGreaterThan(0);
+        await Assert.That(connection.IsConnected).IsTrue();
     }
 
     [Test]

@@ -177,6 +177,7 @@ public sealed partial class KafkaConnection :
     // 1 while the receive loop waits for response-memory admission. The broker has answered,
     // so OnReceiveTimeout treats the wait as progress instead of silence (issue #3816).
     private int _responseAdmissionWaiting;
+    private TaskCompletionSource? _reauthenticationResponsesDrained;
     // Receive-loop only: the request whose frame GetResponseFrameAdmission last bounded.
     private PendingRequestEntry _admissionRequest;
     // 1 while a receive-timeout callback is scheduled or executing. Invariant: a pending
@@ -250,6 +251,8 @@ public sealed partial class KafkaConnection :
     /// Returns null if no SASL authentication occurred or if re-authentication is disabled.
     /// </summary>
     internal SaslSessionState? SaslSession => _saslSessionState;
+
+    internal bool IsResponseAdmissionWaiting => Volatile.Read(ref _responseAdmissionWaiting) != 0;
 
     private readonly struct PendingRequestEntry(PooledPendingRequest request, short version)
     {
@@ -869,7 +872,8 @@ public sealed partial class KafkaConnection :
                     cancellationToken,
                     registerCancellation: false,
                     checkCrcs: request is FetchRequest { CheckCrcs: true },
-                    responseMemoryPool: responseMemoryPool);
+                    responseMemoryPool: responseMemoryPool,
+                    admissionConnection: this);
                 try
                 {
                     AddPendingRequest(correlationId, pending);
@@ -1309,7 +1313,8 @@ public sealed partial class KafkaConnection :
                     registerCancellation: false,
                     checkCrcs: request is FetchRequest { CheckCrcs: true },
                     runContinuationsAsynchronously: false,
-                    responseMemoryPool: responseMemoryPool);
+                    responseMemoryPool: responseMemoryPool,
+                    admissionConnection: this);
                 try
                 {
                     AddPendingRequest(correlationId, pending);
@@ -3061,8 +3066,12 @@ public sealed partial class KafkaConnection :
             var remaining = Interlocked.Decrement(ref _pendingRequestCount);
             Debug.Assert(remaining >= 0);
 
-            if (remaining == 0 && Volatile.Read(ref _disposed) != 0)
-                Volatile.Read(ref _pendingRequestsDrained)?.TrySetResult();
+            if (remaining == 0)
+            {
+                Volatile.Read(ref _reauthenticationResponsesDrained)?.TrySetResult();
+                if (Volatile.Read(ref _disposed) != 0)
+                    Volatile.Read(ref _pendingRequestsDrained)?.TrySetResult();
+            }
 
             // No timer work on the response path: the armed timer evaluates the
             // stamped deadline when it fires and goes dormant if nothing is pending.
@@ -3088,6 +3097,27 @@ public sealed partial class KafkaConnection :
             drained.TrySetResult();
 
         return drained.Task;
+    }
+
+    private async Task DrainResponsesBeforeReauthenticationAsync(CancellationToken cancellationToken)
+    {
+        // Request admission is paused, but pipelined sends leave the SASL gate after writing.
+        // Drain their responses before putting a handshake behind a locally blocked fetch.
+        if (!HasPendingRequests())
+            return;
+
+        var drained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Volatile.Write(ref _reauthenticationResponsesDrained, drained);
+        try
+        {
+            if (!HasPendingRequests())
+                drained.TrySetResult();
+            await drained.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            Volatile.Write(ref _reauthenticationResponsesDrained, null);
+        }
     }
 
     private bool HasPendingRequests() => Volatile.Read(ref _pendingRequestCount) != 0;
@@ -4233,7 +4263,10 @@ public sealed partial class KafkaConnection :
         {
             await PrepareSaslAuthenticatorAsync(authenticator, cancellationToken).ConfigureAwait(false);
             if (_reauthenticationGate is not null)
+            {
                 await _reauthenticationGate.PauseAsync(cancellationToken).ConfigureAwait(false);
+                await DrainResponsesBeforeReauthenticationAsync(cancellationToken).ConfigureAwait(false);
+            }
 
             // A broker expects only SASL messages between handshake and authentication completion.
             cancellationToken.ThrowIfCancellationRequested();
@@ -5720,6 +5753,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     // token did not request is the timeout, which a response-memory admission wait defers.
     private CancellationToken _callerCancellationToken;
     private CancellationTokenRegistration _deferredCallerRegistration;
+    private KafkaConnection? _admissionConnection;
     private int _admissionState; // High 16 bits = core version; low 16 bits = Admission*
     private bool _checkCrcs;
     private IResponseMemoryPool? _responseMemoryPool;
@@ -5735,8 +5769,10 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         bool registerCancellation = true,
         bool checkCrcs = false,
         bool runContinuationsAsynchronously = true,
-        IResponseMemoryPool? responseMemoryPool = null)
+        IResponseMemoryPool? responseMemoryPool = null,
+        KafkaConnection? admissionConnection = null)
     {
+        _admissionConnection = admissionConnection;
         _responseHeaderVersion = responseHeaderVersion;
         _cancellationToken = cancellationToken;
         _callerCancellationToken = cancellationToken;
@@ -5764,7 +5800,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
 
     /// <summary>
     /// Registers a connection-owned timeout token that <paramref name="callerCancellationToken"/>
-    /// also cancels. While the response waits for response-memory admission, a timeout is
+    /// also cancels. While this connection waits for response-memory admission, a timeout is
     /// deferred (see <see cref="TryBeginAdmissionWait"/>); caller cancellation is not.
     /// </summary>
     public void RegisterCancellation(
@@ -5807,9 +5843,9 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     }
 
     /// <summary>
-    /// Marks the captured request version's response frame as waiting for response-memory
-    /// admission. The broker has answered; the wait is local backpressure, so the request
-    /// timeout must not fail it. Called only by the receive loop.
+    /// Marks the captured request version as blocked by response-memory admission on its
+    /// connection. The wait is local backpressure, so the request timeout must not fail it.
+    /// Called by the receive loop for the admitted frame, or by a queued request's timeout.
     /// </summary>
     internal bool TryBeginAdmissionWait(short expectedVersion)
         => Interlocked.CompareExchange(
@@ -5831,6 +5867,11 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     {
         var version = _core.Version;
         var callerToken = _callerCancellationToken;
+        // Every response on this TCP stream is blocked by the same admission wait, including
+        // requests sent after the wait began. Check only on timeout, not on frame dispatch.
+        // Once deferred, the connection receive watchdog bounds broker silence after admission.
+        if (_admissionConnection?.IsResponseAdmissionWaiting == true)
+            TryBeginAdmissionWait(version);
         if (callerToken.IsCancellationRequested
             || Interlocked.CompareExchange(
                 ref _admissionState,
@@ -6109,6 +6150,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         _deferredCallerRegistration = default;
         _cancellationToken = default;
         _callerCancellationToken = default;
+        _admissionConnection = null;
         _checkCrcs = false;
         _responseMemoryPool = null;
         Interlocked.Exchange(ref _responseMemoryReservation, null)?.Dispose();
