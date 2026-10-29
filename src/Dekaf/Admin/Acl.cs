@@ -38,7 +38,12 @@ public enum ResourceType : sbyte
     /// <summary>
     /// A delegation token resource.
     /// </summary>
-    DelegationToken = 6
+    DelegationToken = 6,
+
+    /// <summary>
+    /// A user principal resource.
+    /// </summary>
+    User = 7
 }
 
 /// <summary>
@@ -140,7 +145,22 @@ public enum AclOperation : sbyte
     /// <summary>
     /// Idempotent write operation.
     /// </summary>
-    IdempotentWrite = 12
+    IdempotentWrite = 12,
+
+    /// <summary>
+    /// Create delegation tokens on behalf of a user.
+    /// </summary>
+    CreateTokens = 13,
+
+    /// <summary>
+    /// Describe delegation tokens for a user.
+    /// </summary>
+    DescribeTokens = 14,
+
+    /// <summary>
+    /// Two-phase commit operation.
+    /// </summary>
+    TwoPhaseCommit = 15
 }
 
 /// <summary>
@@ -212,6 +232,12 @@ public sealed class ResourcePattern
     /// </summary>
     public static ResourcePattern TransactionalId(string name, PatternType patternType = PatternType.Literal) =>
         new() { Type = ResourceType.TransactionalId, Name = name, PatternType = patternType };
+
+    /// <summary>
+    /// Creates a resource pattern for a user principal.
+    /// </summary>
+    public static ResourcePattern User(string name, PatternType patternType = PatternType.Literal) =>
+        new() { Type = ResourceType.User, Name = name, PatternType = patternType };
 }
 
 /// <summary>

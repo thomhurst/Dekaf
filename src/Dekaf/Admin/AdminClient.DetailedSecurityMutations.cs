@@ -59,9 +59,9 @@ public sealed partial class AdminClient : IDetailedSecurityMutationAdminClient
             ArgumentException.ThrowIfNullOrEmpty(binding.Pattern.Name);
             ArgumentException.ThrowIfNullOrEmpty(binding.Entry.Principal);
             ArgumentException.ThrowIfNullOrEmpty(binding.Entry.Host);
-            if (binding.Pattern.Type is < ResourceType.Topic or > ResourceType.DelegationToken
+            if (binding.Pattern.Type is < ResourceType.Topic or > ResourceType.User
                 || binding.Pattern.PatternType is not (PatternType.Literal or PatternType.Prefixed)
-                || binding.Entry.Operation is < AclOperation.All or > AclOperation.IdempotentWrite
+                || binding.Entry.Operation is < AclOperation.All or > AclOperation.TwoPhaseCommit
                 || binding.Entry.Permission is not (AclPermissionType.Allow or AclPermissionType.Deny))
                 throw new ArgumentException("ACL creation requires concrete resource, pattern, operation and permission types.", nameof(aclBindings));
             items.Add(new(items.Count, binding));

@@ -928,3 +928,9 @@ static Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateResponse.Api
 static Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateResponse.HighestSupportedVersion.get -> short
 static Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateResponse.LowestSupportedVersion.get -> short
 static Dekaf.Protocol.Messages.StreamsGroupTopologyDescriptionUpdateResponse.Read(ref Dekaf.Protocol.KafkaProtocolReader reader, short version) -> Dekaf.Protocol.IKafkaResponse!
+
+Dekaf.Admin.ResourceType.User = 7 -> Dekaf.Admin.ResourceType
+Dekaf.Admin.AclOperation.CreateTokens = 13 -> Dekaf.Admin.AclOperation
+Dekaf.Admin.AclOperation.DescribeTokens = 14 -> Dekaf.Admin.AclOperation
+Dekaf.Admin.AclOperation.TwoPhaseCommit = 15 -> Dekaf.Admin.AclOperation
+static Dekaf.Admin.ResourcePattern.User(string! name, Dekaf.Admin.PatternType patternType = Dekaf.Admin.PatternType.Literal) -> Dekaf.Admin.ResourcePattern!
