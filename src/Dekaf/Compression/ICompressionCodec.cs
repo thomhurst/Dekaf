@@ -26,11 +26,26 @@ public interface ICompressionCodec
 }
 
 /// <summary>
+/// A compression codec that supports producer-local integer compression levels.
+/// </summary>
+public interface ICompressionCodecWithLevel : ICompressionCodec
+{
+    /// <summary>
+    /// Creates a codec of the same compression type with the specified level,
+    /// without modifying this codec.
+    /// </summary>
+    /// <param name="compressionLevel">The codec-specific compression level.</param>
+    /// <returns>A codec configured with the specified level.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">The level is outside the codec's supported range.</exception>
+    ICompressionCodec WithCompressionLevel(int compressionLevel);
+}
+
+/// <summary>
 /// Registry for compression codecs.
 /// </summary>
 public sealed class CompressionCodecRegistry
 {
-    private readonly ConcurrentDictionary<CompressionType, ICompressionCodec> _codecs = [];
+    private readonly ConcurrentDictionary<CompressionType, ICompressionCodec> _codecs;
 
     /// <summary>
     /// Sentinel value indicating no compression level is set (<see cref="DefaultCompressionLevel"/> returns null).
@@ -71,8 +86,28 @@ public sealed class CompressionCodecRegistry
     /// </summary>
     public CompressionCodecRegistry()
     {
+        _codecs = new ConcurrentDictionary<CompressionType, ICompressionCodec>();
         Register(new NoneCompressionCodec());
         Register(new GzipCompressionCodec());
+    }
+
+    private CompressionCodecRegistry(CompressionCodecRegistry source)
+    {
+        _codecs = new ConcurrentDictionary<CompressionType, ICompressionCodec>(source._codecs);
+        DefaultCompressionLevel = source.DefaultCompressionLevel;
+    }
+
+    internal CompressionCodecRegistry WithCompressionLevel(CompressionType type, int compressionLevel)
+    {
+        if (GetCodec(type) is not ICompressionCodecWithLevel configurableCodec)
+            return this; // Codecs such as Snappy have no configurable level.
+
+        // Validate and create the codec before taking a snapshot. All of this work
+        // happens once per producer, never while compressing a batch.
+        var codec = configurableCodec.WithCompressionLevel(compressionLevel);
+        var registry = new CompressionCodecRegistry(this);
+        registry.Register(codec);
+        return registry;
     }
 
     /// <summary>

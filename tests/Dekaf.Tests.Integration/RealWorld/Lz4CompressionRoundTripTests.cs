@@ -13,15 +13,20 @@ namespace Dekaf.Tests.Integration.RealWorld;
 public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
-    public async Task Lz4_SingleMessage_RoundTripPreservesData()
+    [Arguments(null)]
+    [Arguments(0)]
+    [Arguments(12)]
+    public async Task Lz4_SingleMessage_RoundTripPreservesData(int? compressionLevel)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = await Kafka.CreateProducer<string, string>()
+        var builder = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseLz4Compression()
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory());
+        if (compressionLevel.HasValue)
+            builder.WithCompressionLevel(compressionLevel.Value);
+        await using var producer = await builder.BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {

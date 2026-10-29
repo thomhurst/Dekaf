@@ -500,6 +500,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// Valid ranges depend on the compression type:
     /// Gzip: 0-9, LZ4: 0-12, Zstd: 1-22. Snappy does not support levels.
     /// When not set, the codec's default level is used.
+    /// The level applies only to this producer and is validated when the producer is built.
     /// </summary>
     /// <param name="level">The compression level.</param>
     public ProducerBuilder<TKey, TValue> WithCompressionLevel(int level)

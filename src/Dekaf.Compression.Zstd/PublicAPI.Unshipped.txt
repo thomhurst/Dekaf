@@ -1,1 +1,2 @@
 #nullable enable
+Dekaf.Compression.Zstd.ZstdCompressionCodec.WithCompressionLevel(int compressionLevel) -> Dekaf.Compression.ICompressionCodec!

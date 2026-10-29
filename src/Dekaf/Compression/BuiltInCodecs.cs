@@ -36,7 +36,7 @@ public sealed class NoneCompressionCodec : ICompressionCodec
 /// <summary>
 /// Gzip compression codec.
 /// </summary>
-public sealed class GzipCompressionCodec : ICompressionCodec
+public sealed class GzipCompressionCodec : ICompressionCodecWithLevel
 {
     private readonly CompressionLevel _compressionLevel;
 
@@ -78,6 +78,9 @@ public sealed class GzipCompressionCodec : ICompressionCodec
     }
 
     public CompressionType Type => CompressionType.Gzip;
+
+    /// <inheritdoc />
+    public ICompressionCodec WithCompressionLevel(int compressionLevel) => new GzipCompressionCodec(compressionLevel);
 
     public void Compress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
     {

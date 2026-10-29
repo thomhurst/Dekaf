@@ -249,6 +249,7 @@ public sealed class ProducerOptions
     /// <summary>
     /// Compression level for the configured compression codec.
     /// When null, the codec's default level is used.
+    /// The level applies only to this producer and is validated during construction.
     /// Valid ranges depend on the compression type:
     /// - Gzip: 0-9 (0 = no compression, 9 = best compression)
     /// - LZ4: 0-12 (0 = fast, 12 = max compression)

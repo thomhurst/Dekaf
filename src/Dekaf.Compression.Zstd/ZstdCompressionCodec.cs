@@ -8,7 +8,7 @@ namespace Dekaf.Compression.Zstd;
 /// <summary>
 /// Zstd compression codec using zero-allocation streaming APIs.
 /// </summary>
-public sealed class ZstdCompressionCodec : ICompressionCodec
+public sealed class ZstdCompressionCodec : ICompressionCodecWithLevel
 {
     [ThreadStatic]
     private static Compressor? s_compressor;
@@ -38,6 +38,9 @@ public sealed class ZstdCompressionCodec : ICompressionCodec
     }
 
     public CompressionType Type => CompressionType.Zstd;
+
+    /// <inheritdoc />
+    public ICompressionCodec WithCompressionLevel(int compressionLevel) => new ZstdCompressionCodec(compressionLevel);
 
     public void Compress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
     {
