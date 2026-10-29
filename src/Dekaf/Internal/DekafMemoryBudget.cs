@@ -112,7 +112,7 @@ public static class DekafMemoryBudget
     /// </summary>
     public static void SetBudget(double percentOfAvailable)
     {
-        if (percentOfAvailable is <= 0.0 or > 1.0)
+        if (percentOfAvailable is not (> 0.0 and <= 1.0))
             throw new ArgumentOutOfRangeException(nameof(percentOfAvailable),
                 "Must be in the range (0.0, 1.0].");
 
