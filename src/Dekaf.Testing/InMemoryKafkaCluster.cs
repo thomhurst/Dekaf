@@ -747,7 +747,7 @@ public sealed partial class InMemoryKafkaCluster
             if (!TryReadRecordUnderLock(
                     topicPartition,
                     offset,
-                    IsolationLevel.ReadCommitted,
+                    GetShareIsolationUnderLock(groupId),
                     out var candidate,
                     out _))
             {
@@ -822,7 +822,7 @@ public sealed partial class InMemoryKafkaCluster
             if (!TryReadRecordUnderLock(
                     topicPartition,
                     offset,
-                    IsolationLevel.ReadCommitted,
+                    GetShareIsolationUnderLock(groupId),
                     out var candidate,
                     out _))
             {

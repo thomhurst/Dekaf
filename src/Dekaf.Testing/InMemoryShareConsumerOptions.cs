@@ -8,6 +8,11 @@ public sealed class InMemoryShareConsumerOptions
     /// <summary>
     /// Share group ID used for accepted offsets.
     /// </summary>
+    /// <remarks>
+    /// Share acquisition defaults to read-uncommitted isolation. Configure the group's
+    /// <c>share.isolation.level</c> through <see cref="InMemoryAdminClient.IncrementalAlterConfigsAsync"/>
+    /// to select read-committed isolation for all members of the group.
+    /// </remarks>
     public string GroupId { get; init; } = "dekaf-in-memory-share";
 
     /// <summary>
