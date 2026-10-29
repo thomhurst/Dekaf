@@ -995,6 +995,8 @@ internal static class SchemaRegistryBuffers
     {
         internal ArrayBufferWriter<byte> Buffer { get; }
 
+        // Avoid an out-of-line struct constructor and its checked reference write on every message.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Lease()
         {
             Buffer = t_payloadBuffer ?? new ArrayBufferWriter<byte>(initialCapacity: 4096);
