@@ -326,8 +326,13 @@ Streaming validators are compiled once per exact registered `Schema` object and 
 serializer fetches the complete registered schema after registration or lookup, so write validation
 includes Schema Registry `references`. The deserializer compiles once when each schema ID is first
 encountered. References are resolved by subject and version with a configurable 30-second default
-timeout. Relative references resolve from the effective `$id`; internal JSON Pointer references are
-supported directly.
+timeout. Relative references resolve from the effective `$id`; internal JSON Pointer references and
+2019-09/2020-12 `$anchor` references are supported directly. In 2020-12, `$dynamicRef` and
+`$dynamicAnchor` are recognized; in 2019-09, `$recursiveRef` and `$recursiveAnchor` are recognized.
+These references are applied like `$ref` when their target cannot change with the dynamic scope,
+which covers the usual recursive tree pattern. A schema that overrides a `$dynamicAnchor` or
+`$recursiveAnchor` in a second resource fails compilation with `NotSupportedException`. Reference
+and anchor keywords from other drafts are ignored, including all of these keywords in Draft 7.
 
 The allocation-free evaluator supports the common structural and scalar assertion subset of Draft
 7, 2019-09, and 2020-12: types and nullability, object properties and required fields, additional

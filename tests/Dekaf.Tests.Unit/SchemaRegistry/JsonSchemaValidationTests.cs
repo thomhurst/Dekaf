@@ -216,6 +216,181 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    [Arguments("""{"$schema":"https://json-schema.org/draft/2020-12/schema","$dynamicAnchor":"node","type":"object","required":["name"],"properties":{"name":{"type":"string"},"children":{"type":"array","items":{"$dynamicRef":"#node"}}}}""")]
+    [Arguments("""{"$schema":"https://json-schema.org/draft/2019-09/schema","$recursiveAnchor":true,"type":"object","required":["name"],"properties":{"name":{"type":"string"},"children":{"type":"array","items":{"$recursiveRef":"#"}}}}""")]
+    [Arguments("""{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["name"],"properties":{"name":{"type":"string"},"children":{"type":"array","items":{"$dynamicRef":"#"}}}}""")]
+    public async Task Validator_AppliesStaticDynamicAndRecursiveReferences(string schema)
+    {
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schema));
+
+        validator.Validate("""{"name":"root","children":[{"name":"leaf","children":[]}]}"""u8, 38);
+        var wrongType = Assert.Throws<JsonSchemaValidationException>(
+            () => validator.Validate("""{"name":"root","children":[{"name":5}]}"""u8, 38));
+        var missing = Assert.Throws<JsonSchemaValidationException>(
+            () => validator.Validate("""{"name":"root","children":[{"name":"a","children":[{}]}]}"""u8, 38));
+
+        await Assert.That(wrongType.Keyword).IsEqualTo("type");
+        await Assert.That(wrongType.JsonPath).IsEqualTo("$['children'][0]['name']");
+        await Assert.That(missing.Keyword).IsEqualTo("required");
+        await Assert.That(missing.JsonPath).IsEqualTo("$['children'][0]['children'][0]");
+    }
+
+    [Test]
+    [Arguments("$dynamicRef", "sub/#node")]
+    [Arguments("$dynamicRef", "sub/")]
+    [Arguments("$dynamicRef", "#/$defs/tree")]
+    [Arguments("$ref", "sub/#node")]
+    [Arguments("$ref", "sub/")]
+    [Arguments("$ref", "#/$defs/tree")]
+    public async Task Validator_ResolvesReferencesToResourcesWithRelativeDirectoryIds(string keyword, string reference)
+    {
+        var schema = $$$"""
+            {
+              "$schema":"https://json-schema.org/draft/2020-12/schema",
+              "$id":"https://example.test/root.json",
+              "$defs":{
+                "tree":{
+                  "$id":"sub/",
+                  "$dynamicAnchor":"node",
+                  "type":"object",
+                  "required":["name"],
+                  "properties":{
+                    "name":{"type":"string"},
+                    "child":{"$dynamicRef":"#node"},
+                    "label":{"$id":"labels/","$ref":"text.json"}
+                  },
+                  "$defs":{"text":{"$id":"labels/text.json","type":"string"}}
+                }
+              },
+              "{{{keyword}}}":"{{{reference}}}"
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schema));
+
+        validator.Validate("""{"name":"root","child":{"name":"leaf"},"label":"text"}"""u8, 45);
+        var missing = Assert.Throws<JsonSchemaValidationException>(
+            () => validator.Validate("""{"name":"root","child":{}}"""u8, 45));
+        var wrongType = Assert.Throws<JsonSchemaValidationException>(
+            () => validator.Validate("""{"name":"root","label":5}"""u8, 45));
+
+        await Assert.That(missing.Keyword).IsEqualTo("required");
+        await Assert.That(missing.JsonPath).IsEqualTo("$['child']");
+        await Assert.That(wrongType.Keyword).IsEqualTo("type");
+        await Assert.That(wrongType.JsonPath).IsEqualTo("$['label']");
+    }
+
+    [Test]
+    [Arguments("2020-12", "\"$dynamicAnchor\":\"node\"", "$dynamicRef", "#node")]
+    [Arguments("2019-09", "\"$recursiveAnchor\":true", "$recursiveRef", "#")]
+    public void Validator_ResolvesReferencesWithinRootWithRelativeDirectoryId(
+        string draft, string anchor, string keyword, string reference)
+    {
+        var schema = $$$"""
+            {
+              "$schema":"https://json-schema.org/draft/{{{draft}}}/schema",
+              "$id":"sub/",
+              {{{anchor}}},
+              "type":"object",
+              "required":["name"],
+              "properties":{"child":{"{{{keyword}}}":"{{{reference}}}"}}
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schema));
+
+        validator.Validate("""{"name":"root","child":{"name":"leaf"}}"""u8, 46);
+        Assert.Throws<JsonSchemaValidationException>(() => validator.Validate("""{"name":"root","child":{}}"""u8, 46));
+    }
+
+    [Test]
+    public void Validator_AppliesDynamicReferenceAlongsideRef()
+    {
+        var validator = CreateFactory().GetOrCreate(CreateSchema(
+            """
+            {
+              "$schema":"https://json-schema.org/draft/2020-12/schema",
+              "$defs":{"text":{"type":"string"},"long":{"$anchor":"long","minLength":3}},
+              "properties":{"value":{"$ref":"#/$defs/text","$dynamicRef":"#long"}}
+            }
+            """));
+
+        validator.Validate("""{"value":"abc"}"""u8, 39);
+        Assert.Throws<JsonSchemaValidationException>(() => validator.Validate("""{"value":"ab"}"""u8, 39));
+        Assert.Throws<JsonSchemaValidationException>(() => validator.Validate("""{"value":123}"""u8, 39));
+    }
+
+    [Test]
+    [Arguments("""{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://example.test/tree.json","$dynamicAnchor":"node","$defs":{"strict":{"$id":"strict.json","$dynamicAnchor":"node","type":"object"}},"properties":{"children":{"items":{"$dynamicRef":"#node"}}}}""")]
+    [Arguments("""{"$schema":"https://json-schema.org/draft/2019-09/schema","$id":"https://example.test/tree.json","$recursiveAnchor":true,"$defs":{"strict":{"$id":"strict.json","$recursiveAnchor":true,"type":"object"}},"properties":{"children":{"items":{"$recursiveRef":"#"}}}}""")]
+    [Arguments("""{"$schema":"https://json-schema.org/draft/2019-09/schema","properties":{"children":{"items":{"$recursiveRef":"#/$defs/x"}}}}""")]
+    public void Factory_RejectsReferencesThatResolveThroughDynamicScope(string schema)
+    {
+        Assert.Throws<NotSupportedException>(() => CreateFactory().GetOrCreate(CreateSchema(schema)));
+    }
+
+    [Test]
+    [Arguments("""{"type":"number","$dynamicRef":{},"$recursiveRef":42}""")]
+    [Arguments("""{"$schema":"http://json-schema.org/draft-07/schema#","type":"number","$dynamicRef":"#/definitions/text","$recursiveRef":"#","definitions":{"text":{"type":"string"}}}""")]
+    [Arguments("""{"$schema":"https://json-schema.org/draft/2019-09/schema","type":"number","$dynamicRef":"#/$defs/text","$defs":{"text":{"type":"string"}}}""")]
+    [Arguments("""{"$schema":"https://json-schema.org/draft/2019-09/schema","type":"number","$dynamicRef":{}}""")]
+    [Arguments("""{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"number","$recursiveRef":"#/$defs/text","$defs":{"text":{"type":"string"}}}""")]
+    [Arguments("""{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"number","$recursiveRef":{}}""")]
+    public void Validator_IgnoresReferenceKeywordsFromOtherDialects(string schema)
+    {
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schema));
+
+        validator.Validate("1"u8, 40);
+        Assert.Throws<JsonSchemaValidationException>(() => validator.Validate("\"text\""u8, 40));
+    }
+
+    [Test]
+    [Arguments("""{"type":"string","$anchor":{},"$dynamicAnchor":42}""")]
+    [Arguments("""{"$schema":"http://json-schema.org/draft-07/schema#","type":"string","definitions":{"unused":{"$anchor":42,"$dynamicAnchor":{}}}}""")]
+    [Arguments("""{"$schema":"http://json-schema.org/draft-07/schema#","definitions":{"text":{"type":"string"}},"$ref":"#/definitions/text","$anchor":{},"$dynamicAnchor":42}""")]
+    [Arguments("""{"$schema":"https://json-schema.org/draft/2019-09/schema","type":"string","$dynamicAnchor":{}}""")]
+    public void Validator_IgnoresAnchorKeywordsFromOtherDialects(string schema)
+    {
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schema));
+
+        validator.Validate("\"text\""u8, 41);
+        Assert.Throws<JsonSchemaValidationException>(() => validator.Validate("1"u8, 41));
+    }
+
+    [Test]
+    [Arguments("2019-09")]
+    [Arguments("2020-12")]
+    public void Validator_ResolvesPlainAnchorsInModernDialects(string draft)
+    {
+        var schema = $$$"""
+            {"$schema":"https://json-schema.org/draft/{{{draft}}}/schema","$defs":{"text":{"$anchor":"text","type":"string"}},"$ref":"#text"}
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schema));
+
+        validator.Validate("\"text\""u8, 42);
+        Assert.Throws<JsonSchemaValidationException>(() => validator.Validate("1"u8, 42));
+    }
+
+    [Test]
+    [Arguments("""{"$schema":"https://json-schema.org/draft/2019-09/schema","$id":"https://example.test/root.json","$defs":{"tree":{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"tree.json","$dynamicAnchor":"node","type":"object","required":["name"],"properties":{"child":{"$dynamicRef":"#node"}}},"unused":{"$id":"unused.json","$dynamicAnchor":"node"}},"$ref":"tree.json"}""")]
+    [Arguments("""{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://example.test/root.json","$defs":{"tree":{"$schema":"https://json-schema.org/draft/2019-09/schema","$id":"tree.json","$recursiveAnchor":true,"type":"object","required":["name"],"properties":{"child":{"$recursiveRef":"#"}}},"unused":{"$id":"unused.json","$recursiveAnchor":true}},"$ref":"tree.json"}""")]
+    public void Validator_UsesEachResourceDialectForReferencesAndAnchors(string schema)
+    {
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schema));
+
+        validator.Validate("""{"name":"root","child":{"name":"leaf"}}"""u8, 43);
+        Assert.Throws<JsonSchemaValidationException>(() => validator.Validate("""{"name":"root","child":{}}"""u8, 43));
+    }
+
+    [Test]
+    public void Validator_PreservesDraft201909TupleItems()
+    {
+        var validator = CreateFactory().GetOrCreate(CreateSchema(
+            """{"$schema":"https://json-schema.org/draft/2019-09/schema","items":[{"type":"string"},{"type":"integer"}]}"""));
+
+        validator.Validate("""["text",1]"""u8, 44);
+        Assert.Throws<JsonSchemaValidationException>(() => validator.Validate("""[1,"text"]"""u8, 44));
+    }
+
+    [Test]
     public void Factory_RejectsMixedTupleKeywordDialects()
     {
         const string schema =

@@ -1701,6 +1701,9 @@ internal sealed class SchemaCompiler : IDisposable
     private readonly StreamingJsonSchemaValidatorOptions _options;
     private readonly List<JsonDocument> _documents = [];
     private readonly Dictionary<string, SchemaResource> _resourcesByUri = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, SchemaAnchor> _anchorsByUri = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _dynamicAnchorCounts = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _recursiveAnchorResources = new(StringComparer.Ordinal);
     private readonly Dictionary<NodeKey, CompiledSchemaNode> _compiledNodes = [];
     private readonly List<CompiledSchemaNode> _compiledNodeList = [];
     private readonly Dictionary<string, int> _validationMemberIndexes = new(StringComparer.Ordinal);
@@ -1729,7 +1732,8 @@ internal sealed class SchemaCompiler : IDisposable
             string.Empty,
             root.EffectiveBaseUri,
             GetDialect(root.Document.RootElement, SchemaDialect.Draft7),
-            0);
+            0,
+            baseUriIsResolved: true);
         AssignValidationRuleMemberTables();
         return compiled;
     }
@@ -1843,6 +1847,7 @@ internal sealed class SchemaCompiler : IDisposable
                 dialect);
         }
 
+        IndexAnchors(document, schema, pointer, baseUri, dialect);
         IndexSchemaMap(document, schema, "$defs", pointer, baseUri, dialect);
         IndexSchemaMap(document, schema, "definitions", pointer, baseUri, dialect);
         IndexSchemaMap(document, schema, "properties", pointer, baseUri, dialect);
@@ -1863,6 +1868,45 @@ internal sealed class SchemaCompiler : IDisposable
         IndexSchemaArray(document, schema, "allOf", pointer, baseUri, dialect);
         IndexSchemaArray(document, schema, "anyOf", pointer, baseUri, dialect);
         IndexSchemaArray(document, schema, "oneOf", pointer, baseUri, dialect);
+    }
+
+    private void IndexAnchors(
+        SchemaDocument document,
+        JsonElement schema,
+        string pointer,
+        Uri baseUri,
+        SchemaDialect dialect)
+    {
+        if (dialect == SchemaDialect.Draft7)
+            return;
+
+        var target = new ReferenceTarget(document, schema, pointer, baseUri, dialect);
+        if (schema.TryGetProperty("$anchor", out var anchor))
+            AddAnchor(target, "$anchor", anchor, isDynamic: false);
+
+        // Dynamic anchors are counted per distinct resource URI, so a document registered under two
+        // reference names still counts once when deciding whether a dynamic reference is static.
+        if (dialect == SchemaDialect.Draft202012 &&
+            schema.TryGetProperty("$dynamicAnchor", out var dynamicAnchor))
+            AddAnchor(target, "$dynamicAnchor", dynamicAnchor, isDynamic: true);
+
+        if (dialect == SchemaDialect.Draft201909 &&
+            schema.TryGetProperty("$recursiveAnchor", out var recursiveAnchor) &&
+            recursiveAnchor.ValueKind == JsonValueKind.True)
+            _recursiveAnchorResources.Add(WithoutFragment(baseUri).AbsoluteUri);
+    }
+
+    private void AddAnchor(ReferenceTarget target, string keyword, JsonElement anchor, bool isDynamic)
+    {
+        var name = anchor.GetString()
+            ?? throw new InvalidOperationException($"JSON Schema {keyword} must be a string.");
+        var key = WithoutFragment(target.BaseUri).AbsoluteUri + "#" + name;
+        var exists = _anchorsByUri.TryGetValue(key, out var existing);
+        if (!exists)
+            existing = new SchemaAnchor(target, false);
+        if (isDynamic && !existing.IsDynamic)
+            _dynamicAnchorCounts[name] = _dynamicAnchorCounts.GetValueOrDefault(name) + 1;
+        _anchorsByUri[key] = existing with { IsDynamic = existing.IsDynamic || isDynamic };
     }
 
     private void IndexSchemaMap(
@@ -1939,7 +1983,8 @@ internal sealed class SchemaCompiler : IDisposable
         string pointer,
         Uri baseUri,
         SchemaDialect dialect,
-        int depth)
+        int depth,
+        bool baseUriIsResolved = false)
     {
         if (depth > _options.MaxSchemaDepth)
             throw new InvalidOperationException($"JSON Schema exceeds maximum depth {_options.MaxSchemaDepth}.");
@@ -1964,7 +2009,10 @@ internal sealed class SchemaCompiler : IDisposable
         if (schema.ValueKind != JsonValueKind.Object)
             throw new InvalidOperationException($"JSON Schema at '{pointer}' must be an object or boolean.");
 
-        baseUri = GetEffectiveBaseUri(schema, baseUri);
+        // Indexed reference targets and the document root already include this node's $id.
+        // Structural children still inherit their parent's base and must resolve their own $id.
+        if (!baseUriIsResolved)
+            baseUri = GetEffectiveBaseUri(schema, baseUri);
         dialect = GetDialect(schema, dialect);
         if (schema.TryGetProperty("$ref", out var referenceElement))
         {
@@ -1977,7 +2025,8 @@ internal sealed class SchemaCompiler : IDisposable
                 target.Pointer,
                 target.BaseUri,
                 target.Dialect,
-                depth + 1);
+                depth + 1,
+                baseUriIsResolved: true);
 
             if (dialect == SchemaDialect.Draft7)
             {
@@ -2004,6 +2053,10 @@ internal sealed class SchemaCompiler : IDisposable
         node.MaxLength = GetNonNegativeInt32(schema, "maxLength", int.MaxValue);
         ParseNumericAssertions(schema, node);
         node.AllOf = CompileSchemaArray(document, schema, "allOf", pointer, baseUri, dialect, depth);
+        if (dialect == SchemaDialect.Draft202012)
+            AttachDynamicReference(node, CompileDynamicReference(schema, baseUri, depth));
+        else if (dialect == SchemaDialect.Draft201909)
+            AttachDynamicReference(node, CompileRecursiveReference(schema, baseUri, depth));
         node.HasAnyOf = schema.TryGetProperty("anyOf", out _);
         node.AnyOf = CompileSchemaArray(document, schema, "anyOf", pointer, baseUri, dialect, depth);
         node.HasOneOf = schema.TryGetProperty("oneOf", out _);
@@ -2026,6 +2079,66 @@ internal sealed class SchemaCompiler : IDisposable
             node.Items?.ContainsCompositionTraversal == true ||
             ContainsCompositionTraversal(node.PrefixItems);
         return node;
+    }
+
+    private static void AttachDynamicReference(CompiledSchemaNode node, CompiledSchemaNode? reference)
+    {
+        if (reference is null)
+            return;
+        if (node.Reference is null)
+            node.Reference = reference;
+        else
+            node.AllOf = [.. node.AllOf, reference];
+    }
+
+    // The validator compiles a static graph, so $dynamicRef is supported only when it cannot resolve
+    // through the dynamic scope: its initial target is not a $dynamicAnchor, or no other resource
+    // declares a $dynamicAnchor with the same name. Then it behaves exactly like $ref.
+    private CompiledSchemaNode? CompileDynamicReference(JsonElement schema, Uri baseUri, int depth)
+    {
+        if (!schema.TryGetProperty("$dynamicRef", out var referenceElement))
+            return null;
+
+        var referenceText = referenceElement.GetString()
+            ?? throw new InvalidOperationException("JSON Schema $dynamicRef must be a string.");
+        var target = ResolveTarget(baseUri, referenceText, out var isDynamicAnchor);
+        if (isDynamicAnchor)
+        {
+            var name = Uri.UnescapeDataString(ResolveUri(baseUri, referenceText).Fragment)[1..];
+            if (_dynamicAnchorCounts[name] > 1)
+            {
+                throw new NotSupportedException(
+                    $"JSON Schema $dynamicRef '{referenceText}' resolves through the dynamic scope because more than one resource declares $dynamicAnchor '{name}'.");
+            }
+        }
+
+        return CompileNode(target.Document, target.Element, target.Pointer, target.BaseUri, target.Dialect, depth + 1,
+            baseUriIsResolved: true);
+    }
+
+    // 2019-09 $recursiveRef has the same static rule: it is a plain $ref to the current resource
+    // root unless that root sets $recursiveAnchor and another resource also sets it.
+    private CompiledSchemaNode? CompileRecursiveReference(JsonElement schema, Uri baseUri, int depth)
+    {
+        if (!schema.TryGetProperty("$recursiveRef", out var referenceElement))
+            return null;
+
+        var referenceText = referenceElement.GetString()
+            ?? throw new InvalidOperationException("JSON Schema $recursiveRef must be a string.");
+        if (referenceText != "#")
+            throw new NotSupportedException($"JSON Schema $recursiveRef '{referenceText}' is not supported; only '#' is defined.");
+
+        var target = ResolveTarget(baseUri, referenceText);
+        if (_recursiveAnchorResources.Count > 1 &&
+            target.Element.TryGetProperty("$recursiveAnchor", out var recursiveAnchor) &&
+            recursiveAnchor.ValueKind == JsonValueKind.True)
+        {
+            throw new NotSupportedException(
+                "JSON Schema $recursiveRef resolves through the dynamic scope because more than one resource sets $recursiveAnchor.");
+        }
+
+        return CompileNode(target.Document, target.Element, target.Pointer, target.BaseUri, target.Dialect, depth + 1,
+            baseUriIsResolved: true);
     }
 
     private static bool ContainsCompositionTraversal(CompiledSchemaNode[] nodes)
@@ -2437,8 +2550,12 @@ internal sealed class SchemaCompiler : IDisposable
         }
     }
 
-    private ReferenceTarget ResolveTarget(Uri baseUri, string reference)
+    private ReferenceTarget ResolveTarget(Uri baseUri, string reference) =>
+        ResolveTarget(baseUri, reference, out _);
+
+    private ReferenceTarget ResolveTarget(Uri baseUri, string reference, out bool isDynamicAnchor)
     {
+        isDynamicAnchor = false;
         var targetUri = ResolveUri(baseUri, reference);
         if (!_resourcesByUri.TryGetValue(WithoutFragment(targetUri).AbsoluteUri, out var resource))
             throw new InvalidOperationException($"JSON Schema reference '{reference}' was not registered.");
@@ -2462,7 +2579,13 @@ internal sealed class SchemaCompiler : IDisposable
                 resource.BaseUri,
                 resource.Dialect);
         if (pointer[0] != '/')
-            throw new NotSupportedException($"JSON Schema anchor reference '{reference}' is not supported.");
+        {
+            if (resource.Dialect == SchemaDialect.Draft7 ||
+                !_anchorsByUri.TryGetValue(WithoutFragment(resource.BaseUri).AbsoluteUri + "#" + pointer, out var anchor))
+                throw new NotSupportedException($"JSON Schema anchor reference '{reference}' is not supported.");
+            isDynamicAnchor = anchor.IsDynamic;
+            return anchor.Target;
+        }
 
         var current = resource.Element;
         var currentBase = resource.BaseUri;
@@ -2671,8 +2794,9 @@ internal sealed class SchemaCompiler : IDisposable
             value.Contains("draft-06", StringComparison.OrdinalIgnoreCase) ||
             value.Contains("draft-07", StringComparison.OrdinalIgnoreCase))
             return SchemaDialect.Draft7;
-        if (value.Contains("2019-09", StringComparison.OrdinalIgnoreCase) ||
-            value.Contains("2020-12", StringComparison.OrdinalIgnoreCase))
+        if (value.Contains("2019-09", StringComparison.OrdinalIgnoreCase))
+            return SchemaDialect.Draft201909;
+        if (value.Contains("2020-12", StringComparison.OrdinalIgnoreCase))
             return SchemaDialect.Draft202012;
 
         throw new NotSupportedException($"JSON Schema dialect '{value}' is not supported.");
@@ -2711,11 +2835,13 @@ internal sealed class SchemaCompiler : IDisposable
         string Pointer,
         Uri BaseUri,
         SchemaDialect Dialect);
+    private readonly record struct SchemaAnchor(ReferenceTarget Target, bool IsDynamic);
 }
 
 internal enum SchemaDialect : byte
 {
     Draft7,
+    Draft201909,
     Draft202012
 }
 
