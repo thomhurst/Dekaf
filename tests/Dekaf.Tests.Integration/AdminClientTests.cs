@@ -983,9 +983,11 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
 
             await admin.AlterUserScramCredentialsAsync([upsertion]).ConfigureAwait(false);
 
-            // Verify it was created
-            var credentials = await admin.DescribeUserScramCredentialsAsync([testUser])
-                .ConfigureAwait(false);
+            // Wait for the acknowledged credential change to reach the broker metadata cache.
+            var credentials = await WaitForConditionAsync(
+                () => admin.DescribeUserScramCredentialsAsync([testUser]).AsTask(),
+                result => result.ContainsKey(testUser),
+                description: "SCRAM credential creation to propagate").ConfigureAwait(false);
 
             await Assert.That(credentials).ContainsKey(testUser);
             await Assert.That(credentials[testUser].Count).IsGreaterThan(0);

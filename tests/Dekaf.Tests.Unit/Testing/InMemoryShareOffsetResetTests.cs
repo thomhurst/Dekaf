@@ -181,6 +181,7 @@ public sealed class InMemoryShareOffsetResetTests
             Topic = "jobs", Key = "key", Value = "before", Timestamp = oldTimestamp
         });
         await using var transactionalProducer = new InMemoryProducer<string, string>(cluster);
+        await transactionalProducer.InitTransactionsAsync();
         await using var transaction = transactionalProducer.BeginTransaction();
         await transaction.ProduceAsync(new ProducerMessage<string, string>
         {
