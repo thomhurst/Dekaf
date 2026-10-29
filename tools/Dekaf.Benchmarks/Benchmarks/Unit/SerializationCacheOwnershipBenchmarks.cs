@@ -17,10 +17,13 @@ public class SerializationCacheOwnershipBenchmarks
     private readonly SerializationContext _context = new() { Topic = "cache-ownership", Component = SerializationComponent.Value };
     private readonly Dekaf.Serialization.Json.JsonSerializer<Payload> _plain = new();
     private SchemaRegistrySerializer<int> _custom = null!;
+    private SchemaRegistrySerializer<Payload> _customReference = null!;
     private JsonSchemaRegistrySerializer<Payload> _json = null!;
     private IAsyncSerializerPreparationAdmission<int> _preparedCustom = null!;
+    private IAsyncSerializerPreparationAdmission<Payload> _preparedCustomReference = null!;
     private IAsyncSerializerPreparationAdmission<Payload> _preparedJson = null!;
     private SerializerPreparationAdmission _customAdmission;
+    private SerializerPreparationAdmission _customReferenceAdmission;
     private SerializerPreparationAdmission _jsonAdmission;
 
     [GlobalSetup]
@@ -32,10 +35,17 @@ public class SerializationCacheOwnershipBenchmarks
             BinaryPrimitives.WriteInt32BigEndian(writer.GetSpan(4), value);
             writer.Advance(4);
         }, static () => new Schema { SchemaType = SchemaType.Json, SchemaString = "{}" });
+        _customReference = new SchemaRegistrySerializer<Payload>(registry, static (value, writer) =>
+        {
+            BinaryPrimitives.WriteInt32BigEndian(writer.GetSpan(4), value.Id);
+            writer.Advance(4);
+        }, static () => new Schema { SchemaType = SchemaType.Json, SchemaString = "{}" });
         _json = new JsonSchemaRegistrySerializer<Payload>(registry, "{}");
         _preparedCustom = (IAsyncSerializerPreparationAdmission<int>)_custom;
+        _preparedCustomReference = (IAsyncSerializerPreparationAdmission<Payload>)_customReference;
         _preparedJson = (IAsyncSerializerPreparationAdmission<Payload>)_json;
         _customAdmission = await _preparedCustom.PrepareForSerializationAsync(42, _context);
+        _customReferenceAdmission = await _preparedCustomReference.PrepareForSerializationAsync(_value, _context);
         _jsonAdmission = await _preparedJson.PrepareForSerializationAsync(_value, _context);
     }
 
@@ -66,6 +76,16 @@ public class SerializationCacheOwnershipBenchmarks
         return destination.WrittenCount;
     }
 
+    // Reference types share generated generic code; retain the value-type case above as well.
+    [Benchmark]
+    public int CustomRegistryPreparedReference()
+    {
+        _destination.ResetWrittenCount();
+        var destination = _destination;
+        _preparedCustomReference.SerializePrepared(_value, ref destination, _context, in _customReferenceAdmission);
+        return destination.WrittenCount;
+    }
+
     [Benchmark]
     public int JsonRegistry()
     {
@@ -88,6 +108,7 @@ public class SerializationCacheOwnershipBenchmarks
     public async Task Cleanup()
     {
         await _custom.DisposeAsync();
+        await _customReference.DisposeAsync();
         await _json.DisposeAsync();
     }
 
