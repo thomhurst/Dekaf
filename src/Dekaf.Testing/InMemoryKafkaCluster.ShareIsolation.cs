@@ -13,6 +13,21 @@ public sealed partial class InMemoryKafkaCluster
     private IsolationLevel GetShareIsolationUnderLock(string groupId) =>
         _shareIsolationLevels.GetValueOrDefault(groupId, IsolationLevel.ReadUncommitted);
 
+    internal bool TryReadShareRecord(
+        string groupId,
+        TopicPartition topicPartition,
+        long offset,
+        out InMemoryRecord record)
+    {
+        lock (_gate)
+            return TryReadRecordUnderLock(
+                topicPartition,
+                offset,
+                GetShareIsolationUnderLock(groupId),
+                out record,
+                out _);
+    }
+
     internal IReadOnlyList<ConfigEntry> DescribeShareIsolation(ConfigResource resource)
     {
         if (resource.Type != ConfigResourceType.Group)

@@ -155,11 +155,16 @@ public sealed class InMemoryTransactionOffsetTests
     }
 
     [Test]
-    [Arguments(false, false)]
-    [Arguments(true, false)]
-    [Arguments(false, true)]
-    [Arguments(true, true)]
-    public async Task ShareConsumer_AcknowledgmentsSkipOnlyInvisibleOffsets(bool withFault, bool releaseFirst)
+    [Arguments(false, false, false)]
+    [Arguments(true, false, false)]
+    [Arguments(false, true, false)]
+    [Arguments(true, true, false)]
+    [Arguments(false, false, true)]
+    [Arguments(true, false, true)]
+    [Arguments(false, true, true)]
+    [Arguments(true, true, true)]
+    public async Task ShareConsumer_AcknowledgmentsSkipOnlyInvisibleOffsets(
+        bool withFault, bool releaseFirst, bool readCommitted)
     {
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic(Partition.Topic);
@@ -173,6 +178,15 @@ public sealed class InMemoryTransactionOffsetTests
             else
                 await transaction.CommitAsync();
         }
+        if (readCommitted)
+        {
+            await using var admin = new InMemoryAdminClient(cluster);
+            await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+            {
+                [new ConfigResource { Type = ConfigResourceType.Group, Name = "share-markers" }] =
+                    [ConfigAlter.Set("share.isolation.level", "read_committed")]
+            });
+        }
         if (withFault)
             cluster.FaultPlan.PauseNext(new KafkaFaultScope(KafkaFaultOperation.ShareConsume)).Release();
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster,
@@ -180,18 +194,20 @@ public sealed class InMemoryTransactionOffsetTests
         consumer.Subscribe(Partition.Topic);
 
         var offsets = new List<long>();
+        var firstOffset = readCommitted ? 2L : 0L;
         await foreach (var record in consumer.PollAsync())
         {
             offsets.Add(record.Offset);
             consumer.Acknowledge(record,
-                releaseFirst && record.Offset == 2L ? AcknowledgeType.Release : AcknowledgeType.Accept);
+                releaseFirst && record.Offset == firstOffset ? AcknowledgeType.Release : AcknowledgeType.Accept);
         }
-        await Assert.That(offsets).IsEquivalentTo([2L, 6L]);
+        long[] expected = readCommitted ? [2L, 6L] : [0L, 2L, 4L, 6L];
+        await Assert.That(offsets).IsEquivalentTo(expected);
         await consumer.CommitAsync();
         await using var remaining = consumer.PollAsync().GetAsyncEnumerator();
         await Assert.That(await remaining.MoveNextAsync()).IsEqualTo(releaseFirst);
         if (releaseFirst)
-            await Assert.That(remaining.Current.Offset).IsEqualTo(2L);
+            await Assert.That(remaining.Current.Offset).IsEqualTo(firstOffset);
     }
 
     [Test]
