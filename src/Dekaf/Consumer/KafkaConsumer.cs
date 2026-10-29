@@ -3664,24 +3664,32 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
 #pragma warning restore CS8424
     {
+        return new ConsumeStream(this, cancellationToken);
+    }
+
+    private IAsyncEnumerable<ConsumeResult<TKey, TValue>> SelectConsumeCore<TProofMode>(CancellationToken cancellationToken)
+        where TProofMode : struct
+    {
         if (_options.RecordFilter is null)
         {
             return _hasRecordHeaderDeserializers
-                ? ConsumeAsyncCore<NoRecordFilterMode, RecordHeaderMode>(cancellationToken)
-                : ConsumeAsyncCore<NoRecordFilterMode, NoRecordHeaderMode>(cancellationToken);
+                ? ConsumeAsyncCore<NoRecordFilterMode, RecordHeaderMode, TProofMode>(cancellationToken)
+                : ConsumeAsyncCore<NoRecordFilterMode, NoRecordHeaderMode, TProofMode>(cancellationToken);
         }
 
         return _hasRecordHeaderDeserializers
-            ? ConsumeAsyncCore<RecordFilterMode, RecordHeaderMode>(cancellationToken)
-            : ConsumeAsyncCore<RecordFilterMode, NoRecordHeaderMode>(cancellationToken);
+            ? ConsumeAsyncCore<RecordFilterMode, RecordHeaderMode, TProofMode>(cancellationToken)
+            : ConsumeAsyncCore<RecordFilterMode, NoRecordHeaderMode, TProofMode>(cancellationToken);
     }
 
     private async IAsyncEnumerable<ConsumeResult<TKey, TValue>> ConsumeAsyncCore<
         TRecordFilterMode,
-        TRecordHeaderMode>(
+        TRecordHeaderMode,
+        TProofMode>(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
         where TRecordFilterMode : struct
         where TRecordHeaderMode : struct
+        where TProofMode : struct
     {
         if (Volatile.Read(ref _consumerDisposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
@@ -3814,7 +3822,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     using var pendingRetention = pending.RetainForIteration();
                     // A fresh ConsumeAsync stream is another pull and therefore proves any
                     // record retained when a previous stream was disposed at its yield point.
-                    pending.MarkYieldedProcessed();
+                    if (typeof(TProofMode) == typeof(RecordProofMode))
+                        pending.MarkYieldedProcessed();
+                    if (typeof(TProofMode) == typeof(BufferedBatchProofMode))
+                        BeginBufferedBatchFetch(pending);
                     var pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
                     var pausedDuringDelivery = false;
                     long? batchProcessingStarted = _adaptiveFetchSizer is not null
@@ -3945,7 +3956,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     {
                                         TrackConsumedPosition(pending, offset, messageBytes);
                                     }
-                                    pending.MarkYieldedProcessed();
+                                    if (typeof(TProofMode) == typeof(RecordProofMode))
+                                        pending.MarkYieldedProcessed();
                                     filteredRecordRejected = true;
                                     goto FilteredRecordComplete;
                                 }
@@ -4224,7 +4236,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         // proves the record yielded above was processed. Enumerator disposal
                         // (loop-body exception, break) resumes directly into finally blocks and
                         // never executes this, leaving the in-doubt record unproven.
-                        pending.MarkYieldedProcessed();
+                        if (typeof(TProofMode) == typeof(RecordProofMode))
+                            pending.MarkYieldedProcessed();
 
                         if (--recordsUntilPollRefresh == 0)
                         {
@@ -5863,12 +5876,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _positions[tp] = nextOffset;
         SetLastConsumedLeaderEpoch(tp, leaderEpoch);
 
+        var deferBatchProof = CaptureBufferedBatchPosition(pending);
         var fullyTraversed = pending.IsExhausted && pending.FetchEndOffsetExclusive >= 0;
         var allYieldedRecordsProven = pending.ProvenOffset == pending.LastYieldedOffset;
         var stagedFullRange = true;
         if (_options.EnableAutoOffsetStore)
         {
-            if (EagerOffsetStore || (fullyTraversed && allYieldedRecordsProven))
+            if (EagerOffsetStore || (!deferBatchProof && fullyTraversed && allYieldedRecordsProven))
             {
                 StoreOffsetCore(pending, nextOffset, leaderEpoch);
             }
@@ -9077,6 +9091,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// </summary>
     private void StageExplicitCommitOffsets()
     {
+        ProveBufferedBatch();
         FlushActiveConsumedPosition();
         FlushPausedConsumedPositions();
     }
@@ -10087,6 +10102,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (version == NoPendingFetchClearVersion)
             version = Interlocked.Increment(ref _pendingFetchClearVersion);
 
+        _bufferedBatchProof?.Invalidate(partition);
         _coordinatorRevokedPartitionsPendingFetchClear[partition] = version;
         _pendingFetchClearMarkerSources[partition] = source;
     }
@@ -10682,6 +10698,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private void InvalidateAllFetchesLocked()
     {
+        _bufferedBatchProof?.InvalidateAll();
         var minimumEpoch = Interlocked.Increment(ref _fetchBufferEpoch);
         Volatile.Write(ref _minimumFetchBufferEpoch, minimumEpoch);
         _minimumFetchBufferEpochsByPartition.Clear();
@@ -10692,14 +10709,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         var minimumEpoch = Interlocked.Increment(ref _fetchBufferEpoch);
         foreach (var partition in partitions)
+        {
+            _bufferedBatchProof?.Invalidate(partition);
             _minimumFetchBufferEpochsByPartition[partition] = minimumEpoch;
+        }
     }
 
     private void InvalidateFetchesForPartitionsLocked(IEnumerable<TopicPartition> partitions)
     {
         var minimumEpoch = Interlocked.Increment(ref _fetchBufferEpoch);
         foreach (var partition in partitions)
+        {
+            _bufferedBatchProof?.Invalidate(partition);
             _minimumFetchBufferEpochsByPartition[partition] = minimumEpoch;
+        }
     }
 
     private async ValueTask WritePrefetchedItemsAsync(

@@ -17,14 +17,14 @@ public enum OffsetStoreTiming
 {
     /// <summary>
     /// A record's offset is staged only once the application has demonstrably moved past it —
-    /// by requesting the next record or batch, completing a fetch, or committing explicitly.
+    /// by requesting the next record or batch, or committing explicitly.
     /// A record whose processing throws out of the consume loop is never staged and is
     /// redelivered after a restart or rebalance. This is the default and gives at-least-once
-    /// delivery for sequential consume loops. An operator that reads ahead of the loop body,
-    /// such as <see cref="ConsumerExtensions.Batch{TKey, TValue}"/>, requests records before
-    /// they are processed and so proves them early; use
-    /// <see cref="IKafkaConsumer{TKey, TValue}.ConsumeBatchAsync(CancellationToken)"/> for
-    /// at-least-once batch processing.
+    /// delivery for sequential consume loops. Applying
+    /// <see cref="ConsumerExtensions.Batch{TKey, TValue}"/> directly to
+    /// <see cref="KafkaConsumer{TKey, TValue}.ConsumeAsync(CancellationToken)"/> defers proof
+    /// until the next application batch is requested. Other read-ahead operators may prove
+    /// records before processing; use explicit offset storage or manual commits with them.
     /// </summary>
     AfterProcessing,
 
