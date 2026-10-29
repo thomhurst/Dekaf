@@ -21,11 +21,13 @@ public sealed class InMemoryConsumerGroupOffsetQueryTests
         await using var consumer = new InMemoryConsumer<string, string>(cluster,
             new InMemoryConsumerOptions { GroupId = "group" });
         consumer.Subscribe("orders");
-        await using var producer = new InMemoryProducer<string, string>(cluster);
+        await using var producer = new InMemoryProducer<string, string>(cluster,
+            new InMemoryProducerOptions { TransactionalId = "writer" });
         await using var transaction = producer.BeginTransaction();
         await transaction.SendOffsetsToTransactionAsync([new("orders", 0, 19)], consumer.ConsumerGroupMetadata!);
         var state = prepared ? await transaction.PrepareAsync() : default;
-        await using var recoveryProducer = new InMemoryProducer<string, string>(cluster);
+        await using var recoveryProducer = new InMemoryProducer<string, string>(cluster,
+            new InMemoryProducerOptions { TransactionalId = "writer" });
         await recoveryProducer.InitTransactionsAsync(keepPreparedTransaction: true);
         var completionProducer = recoverWithReplacement ? recoveryProducer : producer;
         await using var replacement = new InMemoryConsumer<string, string>(cluster,
@@ -218,14 +220,16 @@ public sealed class InMemoryConsumerGroupOffsetQueryTests
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic("orders");
         await using var admin = new InMemoryAdminClient(cluster);
-        await using var original = new InMemoryProducer<string, string>(cluster);
+        await using var original = new InMemoryProducer<string, string>(cluster,
+            new InMemoryProducerOptions { TransactionalId = "writer" });
         await using var transaction = original.BeginTransaction();
         await transaction.SendOffsetsToTransactionAsync([new("orders", 0, 19)], "group");
         var prepared = await transaction.PrepareAsync();
         await original.DisposeAsync();
         var pending = admin.ListConsumerGroupOffsetsAsync(Query("group", [new("orders", 0)]), new() { RequireStable = true });
         await Assert.That(pending.IsCompleted).IsFalse();
-        await using var replacement = new InMemoryProducer<string, string>(cluster);
+        await using var replacement = new InMemoryProducer<string, string>(cluster,
+            new InMemoryProducerOptions { TransactionalId = "writer" });
         await replacement.InitTransactionsAsync(keepPreparedTransaction: true);
         await replacement.CompletePreparedTransactionAsync(prepared, committed: commit);
         var checkpoint = (await pending)["group"].Offsets[new("orders", 0)].Offset;

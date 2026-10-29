@@ -40,6 +40,7 @@ public static class ServiceCollectionExtensions
         ReplaceDekafClientRegistrations(services);
 
         services.AddSingleton(options);
+        services.TryAddSingleton(new InMemoryProducerOptions());
         services.TryAddSingleton(new InMemoryConsumerOptions());
         services.TryAddSingleton(new InMemoryShareConsumerOptions());
         services.AddSingleton<InMemoryKafkaCluster>();

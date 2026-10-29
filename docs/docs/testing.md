@@ -57,6 +57,25 @@ consumer.Subscribe("orders");
 var record = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
 ```
 
+## Prepared transaction recovery
+
+Set `InMemoryProducerOptions.TransactionalId` when testing prepared transaction recovery (KIP-939).
+Pass the same identity to the original producer and each replacement producer, using the
+`InMemoryProducer(cluster, options)` overload or the serializer overloads with options last.
+Without an explicit identity, each producer has a private identity and cannot recover another
+producer's prepared transaction.
+
+After `InitTransactionsAsync(keepPreparedTransaction: true)` adopts a prepared transaction,
+`BeginTransaction()` rejects new work until `CompletePreparedTransactionAsync` completes it.
+The default `InitTransactionsAsync()` and the explicit `false` overload abort a prepared transaction
+for that identity, discard its pending consumer offsets, and unblock read-committed consumers.
+Completion with a missing or mismatched pending state throws `TransactionException` with
+`ErrorCode.InvalidTxnState`.
+
+For dependency injection, register `InMemoryProducerOptions` with the desired `TransactionalId`
+before or after `AddDekafInMemory()`. All producers resolved with those options share that identity;
+use separate registrations or construct producers directly when testing multiple transactional identities.
+
 ## Asynchronous serializers
 
 Serdes that perform per-message I/O (`IAsyncSerializer<T>`, `IAsyncDeserializer<T>`, `IAsyncSerde<T>`)

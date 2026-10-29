@@ -1033,13 +1033,15 @@ public sealed class InMemoryProducerFaultTests
     public async Task PreparedTransaction_ReplacementProducerRecoversCommitAndAbort()
     {
         var cluster = new InMemoryKafkaCluster();
-        var original = new InMemoryProducer<string, string>(cluster);
+        var original = new InMemoryProducer<string, string>(cluster,
+            new InMemoryProducerOptions { TransactionalId = "orders-writer" });
         var committedTransaction = original.BeginTransaction();
         _ = await committedTransaction.ProduceAsync("orders", "k", "committed");
         var committedState = await committedTransaction.PrepareAsync();
         await original.DisposeAsync();
 
-        var replacement = new InMemoryProducer<string, string>(cluster);
+        var replacement = new InMemoryProducer<string, string>(cluster,
+            new InMemoryProducerOptions { TransactionalId = "orders-writer" });
         await replacement.InitTransactionsAsync(keepPreparedTransaction: true);
         await replacement.CompletePreparedTransactionAsync(committedState, committed: true);
 
@@ -1048,7 +1050,8 @@ public sealed class InMemoryProducerFaultTests
         var abortedState = await abortedTransaction.PrepareAsync();
         await replacement.DisposeAsync();
 
-        var secondReplacement = new InMemoryProducer<string, string>(cluster);
+        var secondReplacement = new InMemoryProducer<string, string>(cluster,
+            new InMemoryProducerOptions { TransactionalId = "orders-writer" });
         await secondReplacement.InitTransactionsAsync(keepPreparedTransaction: true);
         await secondReplacement.CompletePreparedTransactionAsync(abortedState, committed: false);
 
@@ -1075,24 +1078,22 @@ public sealed class InMemoryProducerFaultTests
     }
 
     [Test]
-    public async Task PreparedTransaction_RecoveryRejectsAnotherActiveTransaction()
+    public async Task PreparedTransaction_RecoveryBlocksBeginUntilCompletion()
     {
         var cluster = new InMemoryKafkaCluster();
-        var original = new InMemoryProducer<string, string>(cluster);
+        var original = new InMemoryProducer<string, string>(cluster,
+            new InMemoryProducerOptions { TransactionalId = "orders-writer" });
         var preparedTransaction = original.BeginTransaction();
         _ = await preparedTransaction.ProduceAsync("orders", "k", "prepared");
         var prepared = await preparedTransaction.PrepareAsync();
         await original.DisposeAsync();
 
-        var replacement = new InMemoryProducer<string, string>(cluster);
+        var replacement = new InMemoryProducer<string, string>(cluster,
+            new InMemoryProducerOptions { TransactionalId = "orders-writer" });
         await replacement.InitTransactionsAsync(keepPreparedTransaction: true);
-        var activeTransaction = replacement.BeginTransaction();
-
-        await Assert.That(async () =>
-                await replacement.CompletePreparedTransactionAsync(prepared, committed: true))
-            .Throws<InvalidOperationException>();
-
-        await activeTransaction.AbortAsync();
+        var exception = Assert.Throws<InvalidOperationException>(() => replacement.BeginTransaction());
+        await Assert.That(exception!.Message).IsEqualTo(
+            "A prepared transaction is waiting for completion. Complete, commit, or abort it before starting a new one.");
         await replacement.CompletePreparedTransactionAsync(prepared, committed: true);
         await Assert.That(cluster.ReadRecords("orders")).Count().IsEqualTo(1);
     }
@@ -1101,13 +1102,15 @@ public sealed class InMemoryProducerFaultTests
     public async Task PreparedTransaction_RecoveryClaimsLifecycleBeforeAwaitingCompletion()
     {
         var cluster = new InMemoryKafkaCluster();
-        var original = new InMemoryProducer<string, string>(cluster);
+        var original = new InMemoryProducer<string, string>(cluster,
+            new InMemoryProducerOptions { TransactionalId = "orders-writer" });
         var transaction = original.BeginTransaction();
         _ = await transaction.ProduceAsync("orders", "k", "prepared");
         var prepared = await transaction.PrepareAsync();
         await original.DisposeAsync();
 
-        var replacement = new InMemoryProducer<string, string>(cluster);
+        var replacement = new InMemoryProducer<string, string>(cluster,
+            new InMemoryProducerOptions { TransactionalId = "orders-writer" });
         await replacement.InitTransactionsAsync(keepPreparedTransaction: true);
         var barrier = cluster.FaultPlan.PauseNext(
             new KafkaFaultScope(KafkaFaultOperation.CommitTransaction));
@@ -1129,13 +1132,15 @@ public sealed class InMemoryProducerFaultTests
     public async Task PreparedTransaction_ProducerDisposeWaitsForRecoveryCompletion()
     {
         var cluster = new InMemoryKafkaCluster();
-        var original = new InMemoryProducer<string, string>(cluster);
+        var original = new InMemoryProducer<string, string>(cluster,
+            new InMemoryProducerOptions { TransactionalId = "orders-writer" });
         var transaction = original.BeginTransaction();
         _ = await transaction.ProduceAsync("orders", "k", "prepared");
         var prepared = await transaction.PrepareAsync();
         await original.DisposeAsync();
 
-        var replacement = new InMemoryProducer<string, string>(cluster);
+        var replacement = new InMemoryProducer<string, string>(cluster,
+            new InMemoryProducerOptions { TransactionalId = "orders-writer" });
         await replacement.InitTransactionsAsync(keepPreparedTransaction: true);
         var barrier = cluster.FaultPlan.PauseNext(
             new KafkaFaultScope(KafkaFaultOperation.CommitTransaction));
@@ -1165,11 +1170,13 @@ public sealed class InMemoryProducerFaultTests
         var firstProducer = new InMemoryProducer<ProducerKeyA, string>(
             cluster,
             ProducerKeySerializer<ProducerKeyA>.Instance,
-            Serializers.String);
+            Serializers.String,
+            new InMemoryProducerOptions { TransactionalId = "first-writer" });
         var secondProducer = new InMemoryProducer<ProducerKeyB, string>(
             cluster,
             ProducerKeySerializer<ProducerKeyB>.Instance,
-            Serializers.String);
+            Serializers.String,
+            new InMemoryProducerOptions { TransactionalId = "second-writer" });
         var firstTransaction = firstProducer.BeginTransaction();
         var secondTransaction = secondProducer.BeginTransaction();
         _ = await firstTransaction.ProduceAsync("strings", new ProducerKeyA(), "value");
@@ -1184,13 +1191,15 @@ public sealed class InMemoryProducerFaultTests
         var firstReplacement = new InMemoryProducer<ProducerKeyA, string>(
             cluster,
             ProducerKeySerializer<ProducerKeyA>.Instance,
-            Serializers.String);
+            Serializers.String,
+            new InMemoryProducerOptions { TransactionalId = "first-writer" });
         await firstReplacement.InitTransactionsAsync(keepPreparedTransaction: true);
         await firstReplacement.CompletePreparedTransactionAsync(firstState, committed: true);
         var secondReplacement = new InMemoryProducer<ProducerKeyB, string>(
             cluster,
             ProducerKeySerializer<ProducerKeyB>.Instance,
-            Serializers.String);
+            Serializers.String,
+            new InMemoryProducerOptions { TransactionalId = "second-writer" });
         await secondReplacement.InitTransactionsAsync(keepPreparedTransaction: true);
         await secondReplacement.CompletePreparedTransactionAsync(secondState, committed: true);
 
@@ -1204,13 +1213,15 @@ public sealed class InMemoryProducerFaultTests
     public async Task PreparedTransaction_ReplacementProducerSupportsDifferentGenericTypes()
     {
         var cluster = new InMemoryKafkaCluster();
-        var original = new InMemoryProducer<string, string>(cluster);
+        var original = new InMemoryProducer<string, string>(cluster,
+            new InMemoryProducerOptions { TransactionalId = "orders-writer" });
         var transaction = original.BeginTransaction();
         _ = await transaction.ProduceAsync("orders", "k", "committed");
         var prepared = await transaction.PrepareAsync();
         await original.DisposeAsync();
 
-        var replacement = new InMemoryProducer<int, int>(cluster);
+        var replacement = new InMemoryProducer<int, int>(cluster,
+            new InMemoryProducerOptions { TransactionalId = "orders-writer" });
         await replacement.InitTransactionsAsync(keepPreparedTransaction: true);
         await replacement.CompletePreparedTransactionAsync(prepared, committed: true);
 
@@ -1224,7 +1235,8 @@ public sealed class InMemoryProducerFaultTests
     public async Task PreparedTransaction_RecoveryUsesReplacementProducerFatalState()
     {
         var cluster = new InMemoryKafkaCluster();
-        var original = new InMemoryProducer<string, string>(cluster);
+        var original = new InMemoryProducer<string, string>(cluster,
+            new InMemoryProducerOptions { TransactionalId = "orders-writer" });
         var transaction = original.BeginTransaction();
         _ = await transaction.ProduceAsync("orders", "k", "v");
         var prepared = await transaction.PrepareAsync();
@@ -1236,7 +1248,8 @@ public sealed class InMemoryProducerFaultTests
             original.CompletePreparedTransactionAsync(prepared, committed: true).AsTask());
         await original.DisposeAsync();
 
-        var replacement = new InMemoryProducer<string, string>(cluster);
+        var replacement = new InMemoryProducer<string, string>(cluster,
+            new InMemoryProducerOptions { TransactionalId = "orders-writer" });
         await replacement.InitTransactionsAsync(keepPreparedTransaction: true);
         await replacement.CompletePreparedTransactionAsync(prepared, committed: true);
 
