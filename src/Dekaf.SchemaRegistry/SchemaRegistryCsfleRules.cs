@@ -724,10 +724,15 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         {
         }
 
-        var rawKey = RandomNumberGenerator.GetBytes(GetKeyLength(settings.Algorithm));
-        var keyMaterial = CreateTinkKeyMaterial(settings.Algorithm, rawKey);
-        var encryptedKeyMaterial = WaitFor(
-            _kmsProviders.WrapKeyAsync(keyMaterial, ToKeyReference(kek)));
+        byte[]? rawKey = null;
+        string? encryptedKeyMaterial = null;
+        if (!kek.Shared)
+        {
+            rawKey = RandomNumberGenerator.GetBytes(GetKeyLength(settings.Algorithm));
+            var keyMaterial = CreateTinkKeyMaterial(settings.Algorithm, rawKey);
+            encryptedKeyMaterial = Convert.ToBase64String(WaitFor(
+                _kmsProviders.WrapKeyAsync(keyMaterial, ToKeyReference(kek))));
+        }
 
         int? version = existing is null ? null : existing.Version + 1;
         Dek registered;
@@ -741,14 +746,15 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
                         Subject = settings.Subject,
                         Version = version,
                         Algorithm = settings.Algorithm,
-                        EncryptedKeyMaterial = Convert.ToBase64String(encryptedKeyMaterial)
+                        EncryptedKeyMaterial = encryptedKeyMaterial
                     }));
         }
         catch (SchemaRegistryException ex) when (IsConflict(ex))
         {
             // Another producer registered this DEK version first. Use its key material, as the
             // Confluent clients do, instead of failing the write.
-            CryptographicOperations.ZeroMemory(rawKey);
+            if (rawKey is not null)
+                CryptographicOperations.ZeroMemory(rawKey);
             var winner = version is { } dekVersion
                 ? WaitFor(_schemaRegistryClient.GetDekAsync(
                     settings.KekName,
@@ -759,7 +765,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             return ResolveDekMaterial(winner, kek, settings.Subject, settings.RuleName, settings.Algorithm);
         }
 
-        return new ResolvedDek(settings.Algorithm, registered.Version, rawKey, registered.Timestamp);
+        return rawKey is null
+            ? ResolveDekMaterial(registered, kek, settings.Subject, settings.RuleName, settings.Algorithm)
+            : new ResolvedDek(settings.Algorithm, registered.Version, rawKey, registered.Timestamp);
     }
 
     private ResolvedDek ResolveReadDek(EncryptionSettings settings, int? version)

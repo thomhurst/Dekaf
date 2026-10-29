@@ -132,6 +132,95 @@ public sealed partial class SchemaRegistryCsfleRuleTests
         await Assert.That(reader.TransformDeserializedPayload(oldCiphertext, context).Span.SequenceEqual(payload)).IsTrue();
     }
 
+    [Test]
+    [Arguments(DekAlgorithm.Aes128Gcm, false, false)]
+    [Arguments(DekAlgorithm.Aes256Gcm, false, false)]
+    [Arguments(DekAlgorithm.Aes256Siv, false, false)]
+    [Arguments(DekAlgorithm.Aes128Gcm, true, false)]
+    [Arguments(DekAlgorithm.Aes256Gcm, true, false)]
+    [Arguments(DekAlgorithm.Aes256Siv, true, false)]
+    [Arguments(DekAlgorithm.Aes256Gcm, false, true)]
+    [Arguments(DekAlgorithm.Aes256Gcm, true, true)]
+    public async Task SharedKek_RegistersOrRotatesDek_UsesServerKey(DekAlgorithm algorithm, bool rotate, bool conflict)
+    {
+        var client = CreateDekClient();
+        client.AddKek(new Kek
+        {
+            Name = "payments-kek", KmsType = LocalKmsProvider.DefaultType,
+            KmsKeyId = "local://payments", Shared = true
+        });
+        var keyLength = algorithm switch
+        {
+            DekAlgorithm.Aes128Gcm => 16,
+            DekAlgorithm.Aes256Siv => 64,
+            _ => 32
+        };
+        var serverKey = Enumerable.Repeat((byte)7, keyLength).ToArray();
+        var serverDek = new Dek
+        {
+            KekName = "payments-kek", Subject = "orders-value", Version = rotate ? 2 : 1,
+            Algorithm = algorithm, KeyMaterial = Convert.ToBase64String(serverKey),
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        };
+        if (rotate)
+            client.AddDek(TestDek(algorithm, new byte[keyLength], DateTimeOffset.UtcNow.AddDays(-2).ToUnixTimeMilliseconds()));
+        client.RegisteredDekKeyMaterial = serverDek.KeyMaterial;
+        if (conflict)
+            client.BeforeRegisterDek = () => client.AddDek(serverDek);
+        var writer = new SchemaRegistryCsfleRuleHandler(client, [new RejectingKmsProvider()]);
+        var context = CreateHandlerContext(AlgorithmRule(algorithm, rotate));
+        var payload = "server-managed key"u8.ToArray();
+
+        var ciphertext = writer.TransformSerializedPayload(payload, context).ToArray();
+
+        await Assert.That(client.RegisterDekCallCount).IsEqualTo(1);
+        await Assert.That(client.LastRegisterDekRequest!.EncryptedKeyMaterial).IsNull();
+        await Assert.That(client.LastRegisterDekRequest.Version).IsEqualTo(rotate ? (int?)2 : null);
+        await Assert.That(client.LastRegisterDekRequest.Algorithm).IsEqualTo(algorithm);
+        if (rotate)
+            await Assert.That(BinaryPrimitives.ReadInt32BigEndian(ciphertext.AsSpan(1, 4))).IsEqualTo(2);
+        // Use an independent registry and no KMS providers to prove that the returned key encrypted the payload.
+        var readerClient = CreateDekClient();
+        readerClient.AddDek(serverDek);
+        var reader = new SchemaRegistryCsfleRuleHandler(readerClient, []);
+        await Assert.That(reader.TransformDeserializedPayload(ciphertext, context).Span.SequenceEqual(payload)).IsTrue();
+    }
+
+    [Test]
+    [Arguments(null)]
+    [Arguments("not base64")]
+    [Arguments("AQID")]
+    public async Task SharedKek_Registration_RejectsMissingOrInvalidServerKey(string? keyMaterial)
+    {
+        var client = CreateDekClient();
+        client.AddKek(new Kek
+        {
+            Name = "payments-kek", KmsType = LocalKmsProvider.DefaultType,
+            KmsKeyId = "local://payments", Shared = true
+        });
+        client.RegisteredDekKeyMaterial = keyMaterial;
+        var writer = new SchemaRegistryCsfleRuleHandler(client, [new RejectingKmsProvider()]);
+        var context = CreateHandlerContext(CreateRule());
+
+        await Assert.That(() => writer.TransformSerializedPayload("payload"u8.ToArray(), context))
+            .Throws<SchemaRegistryRuleException>();
+        await Assert.That(client.RegisterDekCallCount).IsEqualTo(1);
+        await Assert.That(client.LastRegisterDekRequest!.EncryptedKeyMaterial).IsNull();
+    }
+
+    private sealed class RejectingKmsProvider : ISchemaRegistryKmsProvider
+    {
+        public string Type => LocalKmsProvider.DefaultType;
+
+        public ValueTask<byte[]> WrapKeyAsync(ReadOnlyMemory<byte> keyMaterial,
+            SchemaRegistryKmsKeyReference keyReference, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Shared KEKs must not wrap keys locally.");
+
+        public ValueTask<byte[]> UnwrapKeyAsync(ReadOnlyMemory<byte> encryptedKeyMaterial,
+            SchemaRegistryKmsKeyReference keyReference, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Server plaintext keys must not be unwrapped locally.");
+    }
+
     // Ciphertexts from the original Dekaf S2V construction (CMAC(empty), no AD item).
     [Test]
     [Arguments(0, "64699f564e16f177875ad70d35a153b3")]
@@ -164,7 +253,12 @@ public sealed partial class SchemaRegistryCsfleRuleTests
         parameters: new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["encrypt.kek.name"] = "payments-kek",
-            ["encrypt.dek.algorithm"] = algorithm == DekAlgorithm.Aes256Siv ? "AES256_SIV" : "AES256_GCM",
+            ["encrypt.dek.algorithm"] = algorithm switch
+            {
+                DekAlgorithm.Aes128Gcm => "AES128_GCM",
+                DekAlgorithm.Aes256Siv => "AES256_SIV",
+                _ => "AES256_GCM"
+            },
             ["encrypt.dek.expiry.days"] = rotate ? "1" : "0"
         });
 }

@@ -24,9 +24,11 @@ namespace Dekaf.Tests.Integration;
 public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
     [Test]
-    [Arguments("AES256_GCM")]
-    [Arguments("AES256_SIV")]
-    public async Task RegisteredAvroCsfleRule_ProduceConsume_RoundTripsTaggedField(string algorithm, CancellationToken cancellationToken)
+    [Arguments("AES256_GCM", false)]
+    [Arguments("AES256_SIV", false)]
+    [Arguments("AES256_GCM", true)]
+    [Arguments("AES256_SIV", true)]
+    public async Task RegisteredAvroCsfleRule_ProduceConsume_RoundTripsTaggedField(string algorithm, bool shared, CancellationToken cancellationToken)
     {
         const string schemaText = """
             {
@@ -60,6 +62,16 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
                 ["encrypt.kms.key.id"] = "local://integration"
             }
         };
+        if (shared)
+        {
+            await registryClient.RegisterKekAsync(new RegisterKekRequest
+            {
+                Name = rule.Parameters!["encrypt.kek.name"],
+                KmsType = LocalKmsProvider.DefaultType,
+                KmsKeyId = "local://integration",
+                Shared = true
+            }, cancellationToken: cancellationToken);
+        }
         await registryClient.RegisterSchemaAsync($"{topic}-value", new Schema
         {
             SchemaType = SchemaType.Avro,
@@ -72,7 +84,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         });
         var executor = new SchemaRegistryRuleExecutor(
         [
-            new SchemaRegistryCsfleRuleHandler(registryClient, [kms])
+            new SchemaRegistryCsfleRuleHandler(registryClient, shared ? [] : [kms])
         ]);
         var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(schemaText);
         var record = new GenericRecord(avroSchema);
@@ -828,7 +840,8 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
                 Name = request.Name,
                 KmsType = request.KmsType,
                 KmsKeyId = request.KmsKeyId,
-                KmsProps = request.KmsProps
+                KmsProps = request.KmsProps,
+                Shared = request.Shared ?? false
             };
             _keks[kek.Name] = kek;
             return Task.FromResult(kek);
@@ -848,6 +861,9 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             CancellationToken cancellationToken = default)
         {
             var algorithm = request.Algorithm ?? DekAlgorithm.Aes256Gcm;
+            var shared = _keks[kekName].Shared;
+            if (shared && request.EncryptedKeyMaterial is not null)
+                throw new InvalidOperationException("Server-managed DEKs must omit encrypted key material.");
             var dek = new Dek
             {
                 KekName = kekName,
@@ -855,6 +871,10 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
                 Version = request.Version ?? 1,
                 Algorithm = algorithm,
                 EncryptedKeyMaterial = request.EncryptedKeyMaterial,
+                KeyMaterial = shared
+                    ? Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(
+                        algorithm == DekAlgorithm.Aes256Siv ? 64 : 32))
+                    : null,
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
             };
             _deks[(kekName, request.Subject, algorithm)] = dek;

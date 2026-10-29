@@ -2712,6 +2712,10 @@ public sealed partial class SchemaRegistryCsfleRuleTests
 
         public TimeSpan RegisterDekDelay { get; set; }
 
+        public string? RegisteredDekKeyMaterial { get; set; }
+
+        public RegisterDekRequest? LastRegisterDekRequest { get; private set; }
+
         public Action? BeforeRegisterDek { get; set; }
 
         public Action? BeforeRegisterKek { get; set; }
@@ -2885,6 +2889,7 @@ public sealed partial class SchemaRegistryCsfleRuleTests
             RegisterDekRequest request,
             CancellationToken cancellationToken = default)
         {
+            LastRegisterDekRequest = request;
             BeforeRegisterDek?.Invoke();
             if (RegisterDekDelay > TimeSpan.Zero)
                 Thread.Sleep(RegisterDekDelay);
@@ -2907,6 +2912,7 @@ public sealed partial class SchemaRegistryCsfleRuleTests
                     Version = request.Version ?? _nextDekVersion++,
                     Algorithm = algorithm,
                     EncryptedKeyMaterial = request.EncryptedKeyMaterial,
+                    KeyMaterial = RegisteredDekKeyMaterial,
                     Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
                 };
                 AddDekCore(dek);
