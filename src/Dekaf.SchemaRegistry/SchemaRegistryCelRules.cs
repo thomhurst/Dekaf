@@ -31,29 +31,26 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
     public ReadOnlyMemory<byte> TransformSerializedPayload(
         ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleHandlerContext context)
-        => ApplyRule(payload, context);
+        => ApplyRule(payload, context, out _);
 
     /// <inheritdoc />
     public ReadOnlyMemory<byte> TransformDeserializedPayload(
         ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleHandlerContext context)
-        => ApplyRule(payload, context);
+        => ApplyRule(payload, context, out _);
 
     /// <inheritdoc />
     public ReadOnlyMemory<byte> TransformDeserializedPayload(
         ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleHandlerContext context,
-        out bool payloadChanged)
-    {
-        var result = ApplyRule(payload, context);
-        payloadChanged = context.Rule.Kind == SchemaRuleKind.Transform && !payload.Equals(result);
-        return result;
-    }
+        out bool payloadChanged) => ApplyRule(payload, context, out payloadChanged);
 
     private static ReadOnlyMemory<byte> ApplyRule(
         ReadOnlyMemory<byte> payload,
-        SchemaRegistryRuleHandlerContext context)
+        SchemaRegistryRuleHandlerContext context,
+        out bool payloadChanged)
     {
+        payloadChanged = false;
         var value = ParsedExpressions
             .GetValue(context.Rule, static rule => ParsedCelExpression.Create(rule))
             .Evaluate(payload, context);
@@ -73,7 +70,12 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformR
         }
 
         if (value.Kind is CelValueKind.String or CelValueKind.Utf8String)
+        {
+            // String encoding may evict and overwrite the cache slot backing the input.
+            // UTF-8 values bypass that cache, so memory identity is safe only for them.
+            payloadChanged = value.Kind != CelValueKind.Utf8String || !payload.Equals(value.Utf8);
             return GetUtf8Memory(value);
+        }
 
         throw new SchemaRegistryRuleException(
             $"CEL transform rule '{context.Rule.Name}' returned {value.Kind.ToString().ToLowerInvariant()}; only string transform results are supported.");
