@@ -374,7 +374,7 @@ public sealed class ProducerOptions
     public bool EnableIdempotence { get; init; } = true;
 
     /// <summary>
-    /// Transactional ID for exactly-once semantics.
+    /// Transactional ID for exactly-once semantics. Null disables transactions; a configured ID must not be empty or whitespace.
     /// </summary>
     public string? TransactionalId { get; init; }
 
