@@ -46,6 +46,27 @@ public class ShareConsumerHealthCheckTests
     }
 
     [Test]
+    public async Task StoppedConsumer_ReportsConfiguredFailureStatus()
+    {
+        var result = await new DekafShareConsumerHealthCheck<string, string>(Consumer(Status(Group(), isStopped: true)))
+            .CheckHealthAsync(Context(HealthStatus.Degraded));
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Degraded);
+        await Assert.That(result.Description).Contains("stopped");
+    }
+
+    [Test]
+    public async Task StaleHeartbeat_ReportsConfiguredFailureStatus()
+    {
+        var result = await new DekafShareConsumerHealthCheck<string, string>(
+                Consumer(Status(Group(heartbeatAge: TimeSpan.FromSeconds(10)))))
+            .CheckHealthAsync(Context(HealthStatus.Degraded));
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Degraded);
+        await Assert.That(result.Description).Contains("stale");
+    }
+
+    [Test]
     public async Task MissingGroup_IsUnhealthy()
     {
         var result = await Check(Status(group: null));
@@ -349,8 +370,8 @@ public class ShareConsumerHealthCheckTests
         Assignment = assignment ?? [new TopicPartition("orders", 0)]
     };
 
-    private static HealthCheckContext Context() => new()
+    private static HealthCheckContext Context(HealthStatus? failureStatus = null) => new()
     {
-        Registration = new HealthCheckRegistration("test", Substitute.For<IHealthCheck>(), null, null)
+        Registration = new HealthCheckRegistration("test", Substitute.For<IHealthCheck>(), failureStatus, null)
     };
 }

@@ -861,6 +861,172 @@ public class HealthCheckTests
 
     #endregion
 
+    #region Failure Status Tests
+
+    [Test]
+    public async Task BrokerHealthCheck_ConnectionFails_ReportsConfiguredFailureStatus()
+    {
+        var adminClient = Substitute.For<IAdminClient>();
+        adminClient.DescribeClusterAsync(Arg.Any<CancellationToken>())
+            .Returns(_ => new ValueTask<ClusterDescription>(
+                Task.FromException<ClusterDescription>(new InvalidOperationException("Connection refused"))));
+
+        var healthCheck = new DekafBrokerHealthCheck(adminClient, new DekafBrokerHealthCheckOptions());
+
+        var result = await healthCheck.CheckHealthAsync(CreateContext(HealthStatus.Degraded));
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Degraded);
+        await Assert.That(result.Exception).IsTypeOf<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task BrokerHealthCheck_NoBrokers_ReportsConfiguredFailureStatus()
+    {
+        var adminClient = Substitute.For<IAdminClient>();
+        adminClient.DescribeClusterAsync(Arg.Any<CancellationToken>())
+            .Returns(new ClusterDescription { ClusterId = "test-cluster", ControllerId = -1, Nodes = [] });
+
+        var healthCheck = new DekafBrokerHealthCheck(adminClient, new DekafBrokerHealthCheckOptions());
+
+        var result = await healthCheck.CheckHealthAsync(CreateContext(HealthStatus.Degraded));
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Degraded);
+        await Assert.That(result.Data["BrokerCount"]).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task BrokerHealthCheck_TimesOut_ReportsConfiguredFailureStatus()
+    {
+        var adminClient = Substitute.For<IAdminClient>();
+        adminClient.DescribeClusterAsync(Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var token = callInfo.Arg<CancellationToken>()!;
+                var tcs = new TaskCompletionSource<ClusterDescription>();
+                token.Register(() => tcs.TrySetCanceled(token));
+                return new ValueTask<ClusterDescription>(tcs.Task);
+            });
+
+        var healthCheck = new DekafBrokerHealthCheck(
+            adminClient, new DekafBrokerHealthCheckOptions { Timeout = TimeSpan.FromMilliseconds(50) });
+
+        var result = await healthCheck.CheckHealthAsync(CreateContext(HealthStatus.Degraded));
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Degraded);
+        await Assert.That(result.Description).Contains("timed out");
+    }
+
+    [Test]
+    public async Task ProducerHealthCheck_FlushThrows_ReportsConfiguredFailureStatus()
+    {
+        var producer = Substitute.For<IKafkaProducer<string, string>>();
+        producer.FlushAsync(Arg.Any<CancellationToken>())
+            .Returns(_ => new ValueTask(Task.FromException(new InvalidOperationException("Connection lost"))));
+
+        var healthCheck = new DekafProducerHealthCheck<string, string>(
+            producer, new DekafProducerHealthCheckOptions());
+
+        var result = await healthCheck.CheckHealthAsync(CreateContext(HealthStatus.Degraded));
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Degraded);
+        await Assert.That(result.Exception).IsTypeOf<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task ConsumerHealthCheck_StoppedConsumer_ReportsConfiguredFailureStatus()
+    {
+        var consumer = CreateConsumerSubstitute(
+            LiveGroupLiveness() with { IsStopped = true },
+            out var partitions,
+            out _,
+            out _);
+        partitions.Assignment.Returns(new HashSet<TopicPartition>());
+
+        var healthCheck = new DekafConsumerHealthCheck<string, string>(
+            consumer, new DekafConsumerHealthCheckOptions());
+
+        var result = await healthCheck.CheckHealthAsync(CreateContext(HealthStatus.Degraded));
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Degraded);
+        await Assert.That(result.Data["ConsumerState"]).IsEqualTo("Stopped");
+    }
+
+    [Test]
+    public async Task ConsumerHealthCheck_HighLag_ReportsConfiguredFailureStatus()
+    {
+        var consumer = CreateConsumerSubstitute(out var partitions, out var positions, out var offsets);
+        var tp = new TopicPartition("test-topic", 0);
+        partitions.Assignment.Returns(new HashSet<TopicPartition> { tp });
+        positions.GetPosition(tp).Returns(0L);
+        offsets.QueryWatermarkOffsetsAsync(tp, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 50000));
+
+        var healthCheck = new DekafConsumerHealthCheck<string, string>(
+            consumer, new DekafConsumerHealthCheckOptions());
+
+        var result = await healthCheck.CheckHealthAsync(CreateContext(HealthStatus.Degraded));
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Degraded);
+        await Assert.That(result.Description).Contains("unhealthy threshold");
+    }
+
+    [Test]
+    public async Task ConsumerHealthCheck_ExceptionThrown_ReportsConfiguredFailureStatus()
+    {
+        var consumer = CreateConsumerSubstitute(out var partitions, out _, out _);
+        partitions.Assignment.Throws(new InvalidOperationException("Consumer disposed"));
+
+        var healthCheck = new DekafConsumerHealthCheck<string, string>(
+            consumer, new DekafConsumerHealthCheckOptions());
+
+        var result = await healthCheck.CheckHealthAsync(CreateContext(HealthStatus.Degraded));
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Degraded);
+        await Assert.That(result.Exception).IsTypeOf<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task HealthCheck_ContextWithoutRegistration_ReportsUnhealthy()
+    {
+        var producer = Substitute.For<IKafkaProducer<string, string>>();
+        producer.FlushAsync(Arg.Any<CancellationToken>())
+            .Returns(_ => new ValueTask(Task.FromException(new InvalidOperationException("Connection lost"))));
+
+        var healthCheck = new DekafProducerHealthCheck<string, string>(
+            producer, new DekafProducerHealthCheckOptions());
+
+        var result = await healthCheck.CheckHealthAsync(new HealthCheckContext());
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Unhealthy);
+    }
+
+    [Test]
+    public async Task HealthCheckService_FailingChecks_ReportRegisteredFailureStatus()
+    {
+        var adminClient = Substitute.For<IAdminClient>();
+        adminClient.DescribeClusterAsync(Arg.Any<CancellationToken>())
+            .Returns(_ => new ValueTask<ClusterDescription>(
+                Task.FromException<ClusterDescription>(new InvalidOperationException("Connection refused"))));
+        var producer = Substitute.For<IKafkaProducer<string, string>>();
+        producer.FlushAsync(Arg.Any<CancellationToken>())
+            .Returns(_ => new ValueTask(Task.FromException(new InvalidOperationException("Connection lost"))));
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(adminClient);
+        services.AddSingleton(producer);
+        services.AddHealthChecks()
+            .AddDekafBrokerHealthCheck(failureStatus: HealthStatus.Degraded)
+            .AddDekafProducerHealthCheck<string, string>();
+        await using var provider = services.BuildServiceProvider();
+
+        var report = await provider.GetRequiredService<HealthCheckService>().CheckHealthAsync();
+
+        await Assert.That(report.Entries["dekaf-broker"].Status).IsEqualTo(HealthStatus.Degraded);
+        await Assert.That(report.Entries["dekaf-producer"].Status).IsEqualTo(HealthStatus.Unhealthy);
+    }
+
+    #endregion
+
     #region Helpers
 
     private static IKafkaConsumer<string, string> CreateConsumerSubstitute(
@@ -907,14 +1073,14 @@ public class HealthCheckTests
         HeartbeatInterval: TimeSpan.FromSeconds(3),
         LastHeartbeatFailure: null);
 
-    private static HealthCheckContext CreateContext()
+    private static HealthCheckContext CreateContext(HealthStatus? failureStatus = null)
     {
         return new HealthCheckContext
         {
             Registration = new HealthCheckRegistration(
                 "test",
                 Substitute.For<IHealthCheck>(),
-                null,
+                failureStatus,
                 null)
         };
     }

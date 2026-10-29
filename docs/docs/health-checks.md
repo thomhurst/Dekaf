@@ -42,7 +42,19 @@ Broker reachability does not prove that a particular topic accepts writes, that 
 
 ## Failure and recovery
 
-The producer check returns **Unhealthy** if its flush throws or exceeds the timeout. Each invocation evaluates a new flush: the next completed flush returns Healthy. The check retains no delivery-history latch and does not turn past produce failures into a permanent unhealthy state.
+The producer check reports a failure if its flush throws or exceeds the timeout. Each invocation evaluates a new flush: the next completed flush returns Healthy. The check retains no delivery-history latch and does not turn past produce failures into a permanent unhealthy state.
+
+Every Dekaf check reports failures with the registration's `failureStatus`, which defaults to **Unhealthy**. Pass `failureStatus: HealthStatus.Degraded` to let a broker outage, a failed flush, or a consumer liveness or lag failure degrade readiness instead of failing it:
+
+```csharp
+using Dekaf.Extensions.HealthChecks;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
+
+builder.Services.AddHealthChecks()
+    .AddDekafBrokerHealthCheck(failureStatus: HealthStatus.Degraded, tags: ["ready"]);
+```
+
+The consumer check's lag between `DegradedThreshold` and `UnhealthyThreshold` always reports **Degraded**; lag at or above `UnhealthyThreshold` reports the failure status.
 
 If recent delivery failures are part of an application's readiness policy, choose a bounded observation window and an explicit recovery condition, such as failures aging out of that window. The built-in producer check neither installs that policy nor resets delivery counters. Keep its status separate from the application's delivery-failure status.
 

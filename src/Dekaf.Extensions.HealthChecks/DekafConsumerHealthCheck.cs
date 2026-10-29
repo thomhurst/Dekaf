@@ -7,8 +7,8 @@ namespace Dekaf.Extensions.HealthChecks;
 /// Health check that monitors consumer lag per partition.
 /// Reports <see cref="HealthStatus.Healthy"/> when all partitions are within the degraded threshold,
 /// <see cref="HealthStatus.Degraded"/> when any partition exceeds the degraded threshold,
-/// and <see cref="HealthStatus.Unhealthy"/> when any partition exceeds the unhealthy threshold
-/// or when the consumer's group membership is not live.
+/// and the registration's failure status (<see cref="HealthStatus.Unhealthy"/> by default) when any partition
+/// exceeds the unhealthy threshold, when the consumer's group membership is not live, or when the check fails.
 /// A heartbeat is considered stale after three missed broker-directed heartbeat intervals.
 /// </summary>
 /// <typeparam name="TKey">The consumer key type.</typeparam>
@@ -39,6 +39,8 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
         HealthCheckContext context,
         CancellationToken cancellationToken = default)
     {
+        var failureStatus = context.GetFailureStatus();
+
         try
         {
             var partitions = _consumer.Partitions;
@@ -46,13 +48,14 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
             var offsets = _consumer.Offsets;
             var assignment = partitions.Assignment;
 
-            var livenessResult = CheckGroupLiveness(assignment.Count);
+            var livenessResult = CheckGroupLiveness(assignment.Count, failureStatus);
             if (livenessResult is { } result)
                 return result;
 
             if (assignment.Count == 0)
             {
-                return HealthCheckResult.Unhealthy(
+                return new HealthCheckResult(
+                    failureStatus,
                     "Consumer has no partition assignment and no live group membership.",
                     data: CreateLivenessData("MissingGroupMembership", assignment.Count));
             }
@@ -124,7 +127,8 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
 
             if (maxLag >= _options.UnhealthyThreshold)
             {
-                return HealthCheckResult.Unhealthy(
+                return new HealthCheckResult(
+                    failureStatus,
                     $"Consumer lag ({maxLag}) exceeds unhealthy threshold ({_options.UnhealthyThreshold}).",
                     data: data);
             }
@@ -142,18 +146,20 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return HealthCheckResult.Unhealthy(
+            return new HealthCheckResult(
+                failureStatus,
                 $"Consumer health check timed out after {_options.Timeout.TotalSeconds}s.");
         }
         catch (Exception ex)
         {
-            return HealthCheckResult.Unhealthy(
+            return new HealthCheckResult(
+                failureStatus,
                 "Failed to check consumer health.",
                 exception: ex);
         }
     }
 
-    private HealthCheckResult? CheckGroupLiveness(int assignedPartitionCount)
+    private HealthCheckResult? CheckGroupLiveness(int assignedPartitionCount, HealthStatus failureStatus)
     {
         if (_consumer is not IConsumerGroupLiveness livenessSource)
             return null;
@@ -162,21 +168,24 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
 
         if (liveness.IsStopped)
         {
-            return HealthCheckResult.Unhealthy(
+            return new HealthCheckResult(
+                failureStatus,
                 "Consumer is stopped.",
                 data: CreateLivenessData("Stopped", assignedPartitionCount, liveness));
         }
 
         if (liveness.HasConsumerGroup && liveness.LastHeartbeatFailure is { Length: > 0 } failure)
         {
-            return HealthCheckResult.Unhealthy(
+            return new HealthCheckResult(
+                failureStatus,
                 $"Consumer coordinator heartbeat failed: {failure}",
                 data: CreateLivenessData("CoordinatorFailure", assignedPartitionCount, liveness));
         }
 
         if (liveness.HasConsumerGroup && !liveness.IsJoined)
         {
-            return HealthCheckResult.Unhealthy(
+            return new HealthCheckResult(
+                failureStatus,
                 "Consumer is not joined to its consumer group.",
                 data: CreateLivenessData("MissingGroupMembership", assignedPartitionCount, liveness));
         }
@@ -186,7 +195,8 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
         if (liveness.HasConsumerGroup &&
             (heartbeatAge is null || heartbeatAge > heartbeatStaleThreshold))
         {
-            return HealthCheckResult.Unhealthy(
+            return new HealthCheckResult(
+                failureStatus,
                 heartbeatAge is null
                     ? "Consumer has joined its group but has no successful heartbeat."
                     : $"Consumer heartbeat is stale ({heartbeatAge.Value.TotalSeconds:F1}s old; " +
