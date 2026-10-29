@@ -970,9 +970,14 @@ public sealed class TransactionTests
         {
             heldResponse.TrySetResult(CreateProduceSuccessResponse(request));
             await inFlightProduce.AsTask().WaitAsync(cancellationToken);
+            // CompleteSend resolves delivery before CleanupBatch removes the batch from the
+            // pipeline. Wait for that terminal bookkeeping outside the 300 ms abort budget;
+            // under suite load the sender can be descheduled after completing delivery.
+            await producer.RecordAccumulator.WaitForInFlightBatchesAsync(cancellationToken);
         }
 
-        // Once the batch is answered, aborting again completes the transaction.
+        await Assert.That(producer.RecordAccumulator.InFlightBatchCount).IsEqualTo(0L);
+        // Once the batch has left the pipeline, aborting again completes the transaction.
         await transaction.AbortAsync(cancellationToken);
         await Assert.That(harness.EndTxnRequests).IsEqualTo(1);
         await Assert.That(producer._transactionState).IsEqualTo(TransactionState.Ready);
