@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -12,6 +13,57 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent
 BASH = shutil.which('bash')
+
+
+class ReviewWorkflowTests(unittest.TestCase):
+    def setUp(self):
+        self.workflow = (ROOT.parent / 'workflows' / 'claude-code-review.yml').read_text()
+
+    def job(self, name):
+        match = re.search(r'^  ' + re.escape(name) + r':\n(.*?)(?=^  [a-zA-Z0-9_-]+:|\Z)',
+                          self.workflow, re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(match, f'Missing workflow job: {name}')
+        return match[1]
+
+    def test_successful_model_run_requires_a_posting_receipt(self):
+        review = self.job('claude-review')
+        self.assertIn('REVIEW_RECEIPT: ${{ runner.temp }}/claude-review-${{ github.run_id }}-${{ github.run_attempt }}.json', review)
+        upload_step = '      - name: Retain the untrusted posting receipt'
+        self.assertIn(upload_step, review)
+        upload = review[review.index(upload_step):]
+        self.assertIn('uses: actions/upload-artifact@', upload)
+        self.assertNotRegex(upload, r'(?m)^        (if|continue-on-error):')
+        self.assertIn('if-no-files-found: error', upload)
+        self.assertIn('name: review-receipt-${{ github.run_id }}-${{ github.run_attempt }}', upload)
+        self.assertIn('path: ${{ runner.temp }}/claude-review-${{ github.run_id }}-${{ github.run_attempt }}.json', upload)
+
+    def test_receipt_is_verified_on_an_independent_read_only_runner(self):
+        verify = self.job('verify-review')
+        self.assertIn('needs: claude-review', verify)
+        self.assertIn('runs-on: ubuntu-latest', verify)
+        self.assertNotRegex(verify, r'(?m)^    (if|continue-on-error):')
+        self.assertNotIn(': write', verify)
+        self.assertIn('pull-requests: read', verify)
+        self.assertIn('ref: ${{ github.sha }}', verify)
+        self.assertIn('persist-credentials: false', verify)
+        self.assertNotIn('pr-head', verify)
+        self.assertIn('uses: actions/download-artifact@', verify)
+        self.assertIn('name: review-receipt-${{ github.run_id }}-${{ github.run_attempt }}', verify)
+        self.assertIn('path: ${{ runner.temp }}/review-receipt', verify)
+        self.assertIn('run: python3 -I .github/scripts/pr_review_comment.py --verify-receipt', verify)
+        self.assertNotRegex(verify, r'(?m)^        (if|continue-on-error):')
+
+    def test_verifier_checks_this_invocation_and_reviewed_head(self):
+        verify = self.job('verify-review')
+        for binding in (
+                'GH_TOKEN: ${{ github.token }}',
+                'GH_REPO: ${{ github.repository }}',
+                'PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}',
+                'REVIEW_RECEIPT: ${{ runner.temp }}/review-receipt/claude-review-${{ github.run_id }}-${{ github.run_attempt }}.json',
+                'REVIEW_HEAD_SHA: ${{ needs.claude-review.outputs.head_sha }}',
+                'REVIEW_STARTED_AT: ${{ needs.claude-review.outputs.started_at }}'):
+            with self.subTest(binding=binding):
+                self.assertIn(binding, verify)
 
 
 @unittest.skipIf(os.name == 'nt', 'The posting helper runs on Linux; use the Linux container test command.')
