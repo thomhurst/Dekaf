@@ -18,7 +18,7 @@ public sealed class KafkaClientIntegrationTests(KafkaTestContainer kafka) : Kafk
             .WithIdempotence(false)
             .WithBatchSize(1024)
             .BuildAsync();
-        var options = (ProducerOptions)producer.GetType()
+        var options = (ProducerOptions)typeof(KafkaProducer<string, string>)
             .GetField("_options", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(producer)!;
         await Assert.That(options.MaxInFlightRequestsPerConnection).IsEqualTo(1);
 
