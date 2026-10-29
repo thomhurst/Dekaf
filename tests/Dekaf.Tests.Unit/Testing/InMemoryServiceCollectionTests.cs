@@ -161,6 +161,108 @@ public sealed class InMemoryServiceCollectionTests
         }
     }
 
+    [Test]
+    public async Task AddDekafInMemory_ClientEnumerationPreservesRegistrationCount()
+    {
+        var services = new ServiceCollection();
+        services.AddDekaf(builder =>
+        {
+            builder.AddProducer<string, string>(p => p.WithBootstrapServers("unused:9092"));
+            builder.AddProducer<int, string>(p => p.WithBootstrapServers("unused:9092"));
+            builder.AddConsumer<string, string>(c => c.WithBootstrapServers("unused:9092").WithGroupId("orders"));
+            builder.AddShareConsumer<string, string>(c => c.WithBootstrapServers("unused:9092").WithGroupId("orders"));
+            builder.AddAdminClient(a => a.WithBootstrapServers("unused:9092"));
+        });
+        services.AddDekafInMemory();
+
+        await using var provider = services.BuildServiceProvider();
+        await Assert.That(provider.GetServices<IKafkaProducer<string, string>>().Single())
+            .IsSameReferenceAs(provider.GetRequiredService<IKafkaProducer<string, string>>());
+        await Assert.That(provider.GetServices<IKafkaProducer<int, string>>().Single())
+            .IsSameReferenceAs(provider.GetRequiredService<IKafkaProducer<int, string>>());
+        await Assert.That(provider.GetServices<IKafkaConsumer<string, string>>().Single())
+            .IsSameReferenceAs(provider.GetRequiredService<IKafkaConsumer<string, string>>());
+        await Assert.That(provider.GetServices<IKafkaShareConsumer<string, string>>().Single())
+            .IsSameReferenceAs(provider.GetRequiredService<IKafkaShareConsumer<string, string>>());
+        await Assert.That(provider.GetServices<IAdminClient>().Single())
+            .IsSameReferenceAs(provider.GetRequiredService<IAdminClient>());
+    }
+
+    [Test]
+    public async Task AddDekafInMemory_ExistingOpenGenericClientsDoNotGainFallbacks()
+    {
+        var services = new ServiceCollection();
+        services.AddScoped(typeof(IKafkaProducer<,>), typeof(InMemoryProducer<,>));
+        services.AddScoped(typeof(IKafkaConsumer<,>), typeof(InMemoryConsumer<,>));
+        services.AddScoped(typeof(IKafkaShareConsumer<,>), typeof(InMemoryShareConsumer<,>));
+        services.AddDekafInMemory();
+
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        await using var scope = provider.CreateAsyncScope();
+        var scoped = scope.ServiceProvider;
+        await Assert.That(scoped.GetServices<IKafkaProducer<int, string>>().Single())
+            .IsSameReferenceAs(scoped.GetRequiredService<IKafkaProducer<int, string>>());
+        await Assert.That(scoped.GetServices<IKafkaConsumer<int, string>>().Single())
+            .IsSameReferenceAs(scoped.GetRequiredService<IKafkaConsumer<int, string>>());
+        await Assert.That(scoped.GetServices<IKafkaShareConsumer<int, string>>().Single())
+            .IsSameReferenceAs(scoped.GetRequiredService<IKafkaShareConsumer<int, string>>());
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task AddDekafInMemory_HostedShareConsumerAliasesPreserveWorkerIdentity(bool keyed)
+    {
+        var services = new ServiceCollection();
+        services.AddDekaf(builder =>
+        {
+            if (keyed)
+            {
+                builder.AddShareConsumerService<ShareOrdersWorker, string, string>("orders", c => c
+                    .WithBootstrapServers("unused:9092").WithGroupId("orders"));
+                builder.AddShareConsumerService<OtherShareOrdersWorker, string, string>("orders", c => c
+                    .WithBootstrapServers("unused:9092").WithGroupId("orders"));
+            }
+            else
+            {
+                builder.AddShareConsumerService<ShareOrdersWorker, string, string>(c => c
+                    .WithBootstrapServers("unused:9092").WithGroupId("orders"));
+                builder.AddShareConsumerService<OtherShareOrdersWorker, string, string>(c => c
+                    .WithBootstrapServers("unused:9092").WithGroupId("orders"));
+            }
+        });
+        services.AddDekafInMemory();
+
+        await using var provider = services.BuildServiceProvider();
+        object? key = keyed ? "orders" : null;
+        var workers = provider.GetServices<IHostedService>().OfType<ShareOrdersWorker>().ToArray();
+        var consumers = provider.GetKeyedServices<IKafkaShareConsumer<string, string>>(key).ToArray();
+        await Assert.That(workers.Length).IsEqualTo(2);
+        await Assert.That(consumers.Length).IsEqualTo(2);
+        for (var i = 0; i < workers.Length; i++)
+        {
+            await Assert.That(consumers[i]).IsTypeOf<InMemoryShareConsumer<string, string>>();
+            await Assert.That(consumers[i]).IsSameReferenceAs(workers[i].Client);
+            var privateKey = new KafkaShareConsumerServiceKey(workers[i].GetType(), key);
+            await Assert.That(consumers[i]).IsSameReferenceAs(
+                provider.GetRequiredKeyedService<IKafkaShareConsumer<string, string>>(privateKey));
+        }
+        await Assert.That(consumers[0]).IsNotSameReferenceAs(consumers[1]);
+        await Assert.That(provider.GetRequiredKeyedService<IKafkaShareConsumer<string, string>>(key))
+            .IsSameReferenceAs(consumers[1]);
+    }
+
+    private class ShareOrdersWorker(IKafkaShareConsumer<string, string> consumer)
+        : KafkaShareConsumerService<string, string>(consumer, NullLogger.Instance)
+    {
+        public IKafkaShareConsumer<string, string> Client { get; } = consumer;
+        protected override IEnumerable<string> Topics => ["orders"];
+        protected override ValueTask ProcessAsync(ShareConsumeResult<string, string> result, CancellationToken cancellationToken)
+            => ValueTask.CompletedTask;
+    }
+
+    private sealed class OtherShareOrdersWorker(IKafkaShareConsumer<string, string> consumer) : ShareOrdersWorker(consumer);
+
     private static async Task AssertSingletonClients(IServiceProvider provider, IServiceProvider scoped, object? serviceKey)
     {
         var producer = provider.GetRequiredKeyedService<IKafkaProducer<string, string>>(serviceKey);

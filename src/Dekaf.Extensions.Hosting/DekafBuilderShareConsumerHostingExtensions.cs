@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using Dekaf.Consumer.DeadLetter;
 using Dekaf.Extensions.DependencyInjection;
+using Dekaf.Internal;
 using Dekaf.ShareConsumer;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -236,12 +237,9 @@ public static class DekafBuilderShareConsumerHostingExtensions
         // sharing message types and service key, the last registration wins single resolution and enumeration
         // returns all of them. Hosted factories always use the per-service KafkaShareConsumerServiceKey, so another
         // service with the same message types cannot replace their wiring.
-        if (serviceKey is null)
-            builder.Services.AddSingleton<IKafkaShareConsumer<TKey, TValue>>(provider =>
-                provider.GetRequiredKeyedService<IKafkaShareConsumer<TKey, TValue>>(registrationKey));
-        else
-            builder.Services.AddKeyedSingleton<IKafkaShareConsumer<TKey, TValue>>(serviceKey, (provider, _) =>
-                provider.GetRequiredKeyedService<IKafkaShareConsumer<TKey, TValue>>(registrationKey));
+        builder.Services.Add(serviceKey is null
+            ? new ShareConsumerAliasDescriptor<TKey, TValue>(registrationKey)
+            : new ShareConsumerAliasDescriptor<TKey, TValue>(serviceKey, registrationKey));
 
         // The service initializes its consumer with restart-on-transient-failure, so keep it out of
         // eager startup initialization, which would fault the host instead.
@@ -265,6 +263,25 @@ public static class DekafBuilderShareConsumerHostingExtensions
             return service;
         });
         return builder;
+    }
+
+    private sealed class ShareConsumerAliasDescriptor<TKey, TValue> : ServiceDescriptor, IKafkaClientAliasRegistration
+    {
+        public object TargetServiceKey { get; }
+
+        public ShareConsumerAliasDescriptor(object registrationKey)
+            : base(typeof(IKafkaShareConsumer<TKey, TValue>), provider =>
+                provider.GetRequiredKeyedService<IKafkaShareConsumer<TKey, TValue>>(registrationKey), ServiceLifetime.Singleton)
+        {
+            TargetServiceKey = registrationKey;
+        }
+
+        public ShareConsumerAliasDescriptor(object serviceKey, object registrationKey)
+            : base(typeof(IKafkaShareConsumer<TKey, TValue>), serviceKey, (provider, _) =>
+                provider.GetRequiredKeyedService<IKafkaShareConsumer<TKey, TValue>>(registrationKey), ServiceLifetime.Singleton)
+        {
+            TargetServiceKey = registrationKey;
+        }
     }
 
     private sealed class RegistrationMarker

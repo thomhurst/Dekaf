@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using Dekaf.Admin;
 using Dekaf.Consumer;
+using Dekaf.Internal;
 using Dekaf.Producer;
 using Dekaf.ShareConsumer;
 using Microsoft.Extensions.DependencyInjection;
@@ -15,7 +16,9 @@ public static class ServiceCollectionExtensions
 {
     /// <summary>
     /// Replaces Dekaf client registrations with in-memory test doubles backed by one shared cluster,
-    /// preserving their service keys and lifetimes. Unregistered client types use singleton doubles.
+    /// preserving their service keys, lifetimes and hosted aliases. Singleton open-generic fallbacks
+    /// are added only for client families with no unkeyed registrations, to avoid duplicate clients
+    /// when enumerating services. Register all required unkeyed types before calling this method.
     /// </summary>
     [RequiresDynamicCode("Replacing closed generic clients requires constructing in-memory client types at runtime.")]
     public static IServiceCollection AddDekafInMemory(
@@ -33,12 +36,25 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton(new InMemoryConsumerOptions());
         services.TryAddSingleton(new InMemoryShareConsumerOptions());
         services.AddSingleton<InMemoryKafkaCluster>();
-        services.TryAddSingleton(typeof(IKafkaProducer<,>), typeof(InMemoryProducer<,>));
-        services.TryAddSingleton(typeof(IKafkaConsumer<,>), typeof(InMemoryConsumer<,>));
-        services.TryAddSingleton(typeof(IKafkaShareConsumer<,>), typeof(InMemoryShareConsumer<,>));
+        AddFallback(services, typeof(IKafkaProducer<,>), typeof(InMemoryProducer<,>));
+        AddFallback(services, typeof(IKafkaConsumer<,>), typeof(InMemoryConsumer<,>));
+        AddFallback(services, typeof(IKafkaShareConsumer<,>), typeof(InMemoryShareConsumer<,>));
         services.TryAddSingleton<IAdminClient, InMemoryAdminClient>();
 
         return services;
+    }
+
+    private static void AddFallback(IServiceCollection services, Type serviceType,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] Type implementationType)
+    {
+        foreach (var descriptor in services)
+        {
+            if (!descriptor.IsKeyedService && descriptor.ServiceType.IsGenericType &&
+                descriptor.ServiceType.GetGenericTypeDefinition() == serviceType)
+                return;
+        }
+
+        services.AddSingleton(serviceType, implementationType);
     }
 
     [RequiresDynamicCode("Replacing closed generic clients requires constructing in-memory client types at runtime.")]
@@ -53,6 +69,10 @@ public static class ServiceCollectionExtensions
                 services.RemoveAt(i);
                 continue;
             }
+
+            // Hosted aliases must keep forwarding to the replaced private keyed client.
+            if (descriptor is IKafkaClientAliasRegistration)
+                continue;
 
             var implementationType = GetInMemoryImplementationType(descriptor.ServiceType);
             if (implementationType is null)
