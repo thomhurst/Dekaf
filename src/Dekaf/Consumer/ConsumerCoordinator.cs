@@ -28,6 +28,8 @@ namespace Dekaf.Consumer;
 /// </summary>
 public sealed partial class ConsumerCoordinator : IAsyncDisposable
 {
+    private static readonly TimeSpan HeartbeatStopTimeout = TimeSpan.FromSeconds(5);
+
     private readonly ConsumerOptions _options;
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
@@ -1559,7 +1561,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 try
                 {
-                    await oldTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    await oldTask.WaitAsync(HeartbeatStopTimeout).ConfigureAwait(false);
                 }
                 catch
                 {
@@ -3938,6 +3940,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         // Keep the joined member alive even when its initial assignment callback takes longer
         // than the session timeout. Publication remains serialized by the listener lock.
+        // Initial ownership can be reported immediately: no previous ownership is being released.
         if (_state == CoordinatorState.Stable)
             await StartConsumerProtocolHeartbeatAsync().ConfigureAwait(false);
 
@@ -4818,7 +4821,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             try
             {
-                await task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+                await task.WaitAsync(HeartbeatStopTimeout, cancellationToken).ConfigureAwait(false);
             }
             catch
             {
@@ -4831,7 +4834,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             try
             {
                 await Volatile.Read(ref _heartbeatRebalanceCallbacks)
-                    .WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+                    .WaitAsync(HeartbeatStopTimeout, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
             catch (TimeoutException) { }

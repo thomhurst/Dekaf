@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
@@ -9,6 +10,153 @@ namespace Dekaf.Tests.Unit.Consumer;
 
 public sealed partial class ConsumerCoordinatorKip848Tests
 {
+    [Test]
+    [Timeout(10_000)]
+    public async Task ConsumerProtocol_HeartbeatCallbackFailure_RequestsRejoin(CancellationToken cancellationToken)
+    {
+        var script = new HeartbeatScript(this);
+        var listener = Substitute.For<IRebalanceListener>();
+        var failNextRevocation = 1;
+        listener.OnPartitionsRevokedAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(_ => Interlocked.Exchange(ref failNextRevocation, 0) == 1
+                // Ordinary listener exceptions are logged and suppressed. Unexpected cancellation
+                // escapes the listener wrapper and must reach the heartbeat's recovery path.
+                ? ValueTask.FromException(new OperationCanceledException("callback failed"))
+                : ValueTask.CompletedTask);
+        await using var coordinator = await JoinAsync(script, listener);
+        script.Respond = (_, _) => Joined("member-1", 6, CreateAssignment(TestTopicId, 0));
+
+        await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+        await Assert.That(GetPrivateField<object?>(coordinator, "_heartbeatCallbackFailure")).IsNotNull();
+        SetPrivateField(coordinator, "_heartbeatIntervalMs", 1);
+        await InvokeConsumerProtocolHeartbeatLoopAsync(coordinator, cancellationToken).WaitAsync(cancellationToken);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+        await Assert.That(GetPrivateField<int>(coordinator, "_coordinatorId")).IsEqualTo(-1);
+        await Assert.That(GetPrivateField<string?>(coordinator, "_lastHeartbeatFailure")).IsEqualTo("callback failed");
+        await Assert.That(GetPrivateField<object?>(coordinator, "_heartbeatCallbackFailure")).IsNull();
+
+        script.Respond = (_, _) => Joined("member-2", 1, CreateAssignment(TestTopicId, 1));
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, cancellationToken);
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(coordinator.MemberId).IsEqualTo("member-2");
+        await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("test-topic", 1)]);
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task ConsumerProtocol_HeartbeatCallbackFailure_FromOldMembership_IsIgnored(
+        CancellationToken cancellationToken)
+    {
+        var script = new HeartbeatScript(this);
+        var listener = Substitute.For<IRebalanceListener>();
+        var failNextRevocation = 1;
+        listener.OnPartitionsRevokedAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(_ => Interlocked.Exchange(ref failNextRevocation, 0) == 1
+                ? ValueTask.FromException(new OperationCanceledException("old callback failed"))
+                : ValueTask.CompletedTask);
+        await using var coordinator = await JoinAsync(script, listener);
+        script.Respond = (_, _) => Joined("member-1", 6, CreateAssignment(TestTopicId, 0));
+        await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+        await Assert.That(GetPrivateField<object?>(coordinator, "_heartbeatCallbackFailure")).IsNotNull();
+
+        // A foreground fence replaces the membership before the heartbeat observes its failure.
+        await InvokePartitionsLostAsync(coordinator, coordinator.Assignment.ToArray());
+        await Assert.That(GetPrivateField<object?>(coordinator, "_heartbeatCallbackFailure")).IsNotNull();
+        script.Respond = (_, _) => Joined("member-2", 1, CreateAssignment(TestTopicId, 1));
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, cancellationToken);
+        await coordinator.StopHeartbeatAsync();
+
+        // A successful heartbeat proves the stale failure did not terminate the replacement loop.
+        var heartbeatSent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        script.Respond = (_, _) =>
+        {
+            heartbeatSent.TrySetResult();
+            return Joined("member-2", 1, CreateAssignment(TestTopicId, 1));
+        };
+        using var loopStop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        SetPrivateField(coordinator, "_heartbeatIntervalMs", 1);
+        var loop = InvokeConsumerProtocolHeartbeatLoopAsync(coordinator, loopStop.Token);
+        try
+        {
+            await Task.WhenAny(heartbeatSent.Task, loop).WaitAsync(cancellationToken);
+            await Assert.That(heartbeatSent.Task.IsCompleted).IsTrue();
+            await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+            await Assert.That(coordinator.MemberId).IsEqualTo("member-2");
+            await Assert.That(GetPrivateField<string?>(coordinator, "_lastHeartbeatFailure")).IsNull();
+            await Assert.That(GetPrivateField<object?>(coordinator, "_heartbeatCallbackFailure")).IsNull();
+        }
+        finally
+        {
+            await loopStop.CancelAsync();
+            await loop.WaitAsync(cancellationToken);
+        }
+    }
+
+    [Test]
+    [Timeout(15_000)]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ConsumerProtocol_StopHeartbeat_BoundsUncooperativeCallbackDrain(
+        bool cancelStop, CancellationToken cancellationToken)
+    {
+        var script = new HeartbeatScript(this);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsRevokedAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(call => new ValueTask(BlockAsync(call.Arg<CancellationToken>())));
+        await using var coordinator = await JoinAsync(script, listener);
+        script.Respond = (_, _) => Joined("member-1", 6, CreateAssignment(TestTopicId, 0));
+        SetPrivateField(coordinator, "_heartbeatIntervalMs", 1);
+        await (ValueTask)typeof(ConsumerCoordinator).GetMethod(
+            "StartConsumerProtocolHeartbeatAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(coordinator, null)!;
+        try
+        {
+            await entered.Task.WaitAsync(cancellationToken);
+            var heartbeat = GetPrivateField<Task>(coordinator, "_heartbeatTask");
+            using var stopCancellation = new CancellationTokenSource();
+            var stop = coordinator.StopHeartbeatAsyncCore(stopCancellation.Token).AsTask();
+            await cancelled.Task.WaitAsync(cancellationToken);
+            await Assert.That(stop.IsCompleted).IsFalse();
+            if (cancelStop)
+                await stopCancellation.CancelAsync();
+            await stop.WaitAsync(cancellationToken);
+            await heartbeat.WaitAsync(cancellationToken);
+
+            var callbacks = GetPrivateField<Task>(coordinator, "_heartbeatRebalanceCallbacks");
+            await Assert.That(callbacks.IsCompleted).IsFalse();
+            var listenerLock = GetPrivateField<SemaphoreSlim>(coordinator, "_rebalanceListenerLock");
+            await Assert.That(listenerLock.CurrentCount).IsEqualTo(0);
+
+            release.TrySetResult();
+            await callbacks.WaitAsync(cancellationToken);
+            await Assert.That(listenerLock.CurrentCount).IsEqualTo(1);
+
+            // The interrupted drain resumes and another reconciliation can acquire the lock.
+            await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, cancellationToken);
+            script.Respond = (_, _) => Joined("member-1", 7, CreateAssignment(TestTopicId, 1));
+            await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator).AsTask().WaitAsync(cancellationToken);
+            await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("test-topic", 1)]);
+            await Assert.That(GetPrivateField<object?>(coordinator, "_heartbeatCallbackFailure")).IsNull();
+        }
+        finally
+        {
+            release.TrySetResult();
+            await coordinator.StopHeartbeatAsync();
+            await GetPrivateField<Task>(coordinator, "_heartbeatRebalanceCallbacks").WaitAsync(cancellationToken);
+        }
+
+        async Task BlockAsync(CancellationToken token)
+        {
+            using var registration = token.Register(() => cancelled.TrySetResult());
+            entered.TrySetResult();
+            await release.Task;
+        }
+    }
+
     [Test]
     [Timeout(10_000)]
     [Arguments(false, false)]
