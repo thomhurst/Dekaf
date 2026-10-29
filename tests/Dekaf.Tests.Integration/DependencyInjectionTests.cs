@@ -88,14 +88,14 @@ public sealed class DependencyInjectionTests(KafkaTestContainer kafka) : KafkaIn
         public bool Disposed { get; private set; }
         public ProducerMessage<string, string> OnSend(ProducerMessage<string, string> message)
         {
-            ObjectDisposedException.ThrowIf(Disposed, this);
             Interlocked.Increment(ref _sendCount);
+            ObjectDisposedException.ThrowIf(Disposed, this);
             return message;
         }
         public ConsumeResult<string, string> OnConsume(ConsumeResult<string, string> result)
         {
-            ObjectDisposedException.ThrowIf(Disposed, this);
             Interlocked.Increment(ref _consumeCount);
+            ObjectDisposedException.ThrowIf(Disposed, this);
             return result;
         }
         public void OnAcknowledgement(RecordMetadata metadata, Exception? exception) { }
