@@ -113,7 +113,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // Names of _unresolvedAssignment's topics that resolved at least once, so a snapshot that
     // briefly leaves one out does not revoke its partitions; null while nothing is pending.
     private IReadOnlyDictionary<Guid, string>? _unresolvedResolvedNames;
-    // Refreshes metadata for an unresolved assignment off the heartbeat path, rate-limited.
+    // Coalesces metadata recovery for unresolved assignments and deferred offset lookups.
     private readonly UnresolvedAssignmentMetadataRefresher _unresolvedRefresher;
     private volatile HashSet<TopicPartition> _newlyExpandedPartitions = [];
     private readonly SemaphoreSlim _lock = new(1, 1);
@@ -2496,6 +2496,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     catch (Exception ex) when (!retryOnFailure && IsRetriableLookupFailure(ex))
                     {
                         cancellationToken.ThrowIfCancellationRequested();
+                        // Queue metadata recovery without waiting under the assignment lock. Share
+                        // the assignment refresher's coalescing, backoff and disposal drain; a slow
+                        // refresh must not block delivery from already positioned partitions.
+                        if (ex is not KafkaException failure || ShouldRefreshMetadataForGroupRetry(failure))
+                            _unresolvedRefresher.Request();
+
                         // No recovery callback runs in single-attempt mode. Preserve its rejoin
                         // signal, so membership recovery still happens outside the assignment lock.
                         if (_state == CoordinatorState.Unjoined
@@ -3339,7 +3345,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     };
 
     /// <summary>
-    /// The latest background refresh for an unresolved assignment. Lets tests wait for it.
+    /// The latest background refresh for assignment or deferred-offset recovery. Lets tests wait for it.
     /// </summary>
     internal Task UnresolvedAssignmentRefreshTask => _unresolvedRefresher.Current;
 

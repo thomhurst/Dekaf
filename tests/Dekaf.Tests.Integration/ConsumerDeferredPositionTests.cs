@@ -13,8 +13,10 @@ public sealed class ConsumerDeferredPositionTests(KafkaTestContainer kafka) : Ka
 {
     [Test]
     [Timeout(120_000)]
+    [Arguments(ErrorCode.CoordinatorLoadInProgress)]
+    [Arguments(ErrorCode.UnknownTopicId)]
     public async Task RetriableOffsetLookup_DeliversPositionedPartitionAndInitializesDeferredPartitionAfterRecovery(
-        CancellationToken cancellationToken)
+        ErrorCode errorCode, CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
         await using (var producer = await Kafka.CreateProducer<string, string>()
@@ -28,7 +30,7 @@ public sealed class ConsumerDeferredPositionTests(KafkaTestContainer kafka) : Ka
         }
 
         var clientId = $"deferred-position-{Guid.NewGuid():N}";
-        await using var pool = new OffsetFetchFaultPool(new ConnectionPool(clientId, new ConnectionOptions()));
+        await using var pool = new OffsetFetchFaultPool(new ConnectionPool(clientId, new ConnectionOptions()), errorCode);
         await using var metadata = new MetadataManager(pool, [KafkaContainer.BootstrapServers]);
         await using var consumer = new KafkaConsumer<string, string>(new ConsumerOptions
         {
@@ -73,8 +75,9 @@ public sealed class ConsumerDeferredPositionTests(KafkaTestContainer kafka) : Ka
         await Assert.That(recovered.Value.Value).IsEqualTo("after-recovery");
     }
 
-    private sealed class OffsetFetchFaultPool(ConnectionPool inner) : IConnectionPool
+    private sealed class OffsetFetchFaultPool(ConnectionPool inner, ErrorCode failureCode) : IConnectionPool
     {
+        private readonly ErrorCode _failureCode = failureCode;
         private int _enabled;
         private int _failedRequests;
         public int FailedRequests => Volatile.Read(ref _failedRequests);
@@ -134,10 +137,10 @@ public sealed class ConsumerDeferredPositionTests(KafkaTestContainer kafka) : Ka
                     Interlocked.Increment(ref owner._failedRequests);
                     return ValueTask.FromResult((TResponse)(object)new OffsetFetchResponse
                     {
-                        ErrorCode = apiVersion < 8 ? ErrorCode.CoordinatorLoadInProgress : ErrorCode.None,
+                        ErrorCode = apiVersion < 8 ? owner._failureCode : ErrorCode.None,
                         Groups = apiVersion < 8 ? null : [new OffsetFetchResponseGroup
                         {
-                            GroupId = fetch.GroupId!, Topics = [], ErrorCode = ErrorCode.CoordinatorLoadInProgress
+                            GroupId = fetch.GroupId!, Topics = [], ErrorCode = owner._failureCode
                         }]
                     });
                 }

@@ -11,11 +11,12 @@ namespace Dekaf.Consumer;
 /// a time, and consecutive refreshes for the same unresolved assignment back off exponentially
 /// from the retry backoff up to <see cref="MaxIntervalMs"/>, so a topic ID that never resolves
 /// (a deleted topic, say) costs a Metadata request only rarely. Used by the KIP-848 and share
-/// group coordinators; nothing here runs while every assigned topic is known.
+/// group coordinators, including deferred offset lookups with stale metadata. Nothing here runs
+/// while the assignment and its offset lookups are healthy.
 /// </summary>
 /// <remarks>
-/// Called at heartbeat cadence, and only while an assignment is unresolved, so a plain lock
-/// guards the state; the steady heartbeat never reaches this type.
+/// Called only during assignment or offset-lookup recovery, so a plain lock guards the state;
+/// steady-state delivery and heartbeats never reach this type.
 /// </remarks>
 internal sealed partial class UnresolvedAssignmentMetadataRefresher
 {

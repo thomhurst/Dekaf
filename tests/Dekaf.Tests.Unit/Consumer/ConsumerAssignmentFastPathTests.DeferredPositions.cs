@@ -187,6 +187,112 @@ public sealed partial class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    [Arguments(ErrorCode.UnknownTopicId)]
+    [Arguments(ErrorCode.InconsistentTopicId)]
+    [Arguments(ErrorCode.UnknownTopicOrPartition)]
+    public async Task EnsureAssignmentAsync_DeferredTopicIdentityError_RefreshesWithoutBlockingDelivery(ErrorCode errorCode)
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        metadataManager.SetApiVersion(ApiKey.OffsetFetch, 10, 10);
+        SetMetadataApiVersion(metadataManager);
+        SetupFindCoordinator(connection);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0, 1));
+        var recreatedTopicId = Guid.NewGuid();
+        var failing = false;
+        var requestedTopicId = Guid.Empty;
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                requestedTopicId = call.ArgAt<OffsetFetchRequest>(0).Groups![0].Topics![0].TopicId;
+                var topic = CreateOffsetFetchResponseWithUnstablePartition1().Topics![0];
+                return ValueTask.FromResult(new OffsetFetchResponse
+                {
+                    Groups = [new OffsetFetchResponseGroup
+                    {
+                        GroupId = "group-a", ErrorCode = ErrorCode.None,
+                        Topics = [new OffsetFetchResponseTopic
+                        {
+                            TopicId = requestedTopicId,
+                            Partitions = failing
+                                ? [new OffsetFetchResponsePartition { PartitionIndex = 1, CommittedOffset = -1, ErrorCode = errorCode }]
+                                : topic.Partitions
+                        }]
+                    }]
+                });
+            });
+        var refreshStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRefresh = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var refreshes = 0;
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(call => new ValueTask<MetadataResponse>(RefreshAsync(call.ArgAt<CancellationToken>(2))));
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager,
+            retryBackoffMs: 600_000, retryBackoffMaxMs: 600_000);
+        consumer.Subscribe("test-topic");
+        SetInitialized(consumer);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        try
+        {
+            await consumer.EnsureAssignmentForPollAsync(timeout.Token);
+            failing = true;
+            DeferredPositionRetryDueField.SetValue(consumer, 1L);
+            await consumer.EnsureAssignmentForPollAsync(timeout.Token);
+            await refreshStarted.Task.WaitAsync(timeout.Token);
+
+            // A blocked refresh never holds the assignment lock or delays positioned records.
+            await Assert.That(GetAssignmentLock(consumer).CurrentCount).IsEqualTo(1);
+            DeferredPositionRetryDueField.SetValue(consumer, 1L);
+            await consumer.EnsureAssignmentForPollAsync(timeout.Token);
+            await Assert.That(Volatile.Read(ref refreshes)).IsEqualTo(1);
+            GetPendingFetches(consumer).Enqueue(CreateFetch(0, 10, "during-refresh"));
+            var record = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), timeout.Token);
+            await Assert.That(record!.Value.Value).IsEqualTo("during-refresh");
+
+            releaseRefresh.TrySetResult();
+            await GetCoordinator(consumer).UnresolvedAssignmentRefreshTask.WaitAsync(timeout.Token);
+            connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                    Arg.Any<OffsetFetchRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+                .Returns(call =>
+                {
+                    requestedTopicId = call.ArgAt<OffsetFetchRequest>(0).Groups![0].Topics![0].TopicId;
+                    return ValueTask.FromResult(new OffsetFetchResponse
+                    {
+                        Groups = [new OffsetFetchResponseGroup
+                        {
+                            GroupId = "group-a", ErrorCode = ErrorCode.None,
+                            Topics = [new OffsetFetchResponseTopic
+                            {
+                                TopicId = requestedTopicId,
+                                Partitions = [new OffsetFetchResponsePartition { PartitionIndex = 1, CommittedOffset = 20, ErrorCode = ErrorCode.None }]
+                            }]
+                        }]
+                    });
+                });
+            DeferredPositionRetryDueField.SetValue(consumer, 1L);
+            await consumer.EnsureAssignmentForPollAsync(timeout.Token);
+            await Assert.That(requestedTopicId).IsEqualTo(recreatedTopicId);
+            await Assert.That(GetFetchPositions(consumer)[new TopicPartition("test-topic", 1)]).IsEqualTo(20L);
+            await Assert.That((long)DeferredPositionRetryDueField.GetValue(consumer)!).IsEqualTo(0L);
+        }
+        finally
+        {
+            releaseRefresh.TrySetResult();
+        }
+
+        async Task<MetadataResponse> RefreshAsync(CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref refreshes);
+            refreshStarted.TrySetResult();
+            await releaseRefresh.Task.WaitAsync(cancellationToken);
+            return CreateMetadataResponse(recreatedTopicId, partitionCount: 2);
+        }
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task EnsureAssignmentAsync_CancellationDuringOffsetLookup_PropagatesAndReleasesAssignmentLock(bool transportFailure)
