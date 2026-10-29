@@ -14,7 +14,7 @@ public sealed class InMemoryConsumerOptions
     public string? GroupId { get; init; }
 
     /// <summary>
-    /// Offset reset behavior when no committed offset exists.
+    /// Offset reset behavior when no committed offset exists or the position is out of range.
     /// </summary>
     public AutoOffsetReset AutoOffsetReset { get; init; } = AutoOffsetReset.Latest;
 
