@@ -250,6 +250,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             [coordinatorId, false, true, new System.Runtime.CompilerServices.StrongBox<int>(), CancellationToken.None])!;
         var task = (Task)result.GetType().GetMethod("AsTask")!.Invoke(result, null)!;
         await task;
+        await GetPrivateField<Task>(coordinator, "_heartbeatRebalanceCallbacks");
     }
 
     /// <summary>

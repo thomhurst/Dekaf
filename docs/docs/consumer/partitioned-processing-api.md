@@ -352,10 +352,12 @@ the release waits for queued records, up to `StopTimeout`. The revoked lanes sto
 in parallel, and their offsets are then committed in one request, also bounded by
 `StopTimeout`. The wait is therefore at most about two `StopTimeout`s however
 many partitions are revoked. A commit that does not finish in time is abandoned,
-and the next owner processes those records again. The member sends no heartbeat
-while it waits, so keep twice `StopTimeout` well below the group's session
-timeout. A revocation caused by leaving the group
-(unsubscribe or close) does not wait, because the leave itself ends ownership.
+and the next owner processes those records again. Heartbeats continue while the
+revocation callback waits, reporting the previous ownership until the callback
+completes. The broker's rebalance timeout still bounds reconciliation, so keep
+the total revocation wait below `ConsumerOptions.RebalanceTimeoutMs`.
+A revocation caused by leaving the group (unsubscribe or close) does not wait,
+because the leave itself ends ownership.
 
 When partitions are lost involuntarily, such as after a heartbeat timeout, Dekaf
 cancels those partition lanes and completes their streams. It does not commit

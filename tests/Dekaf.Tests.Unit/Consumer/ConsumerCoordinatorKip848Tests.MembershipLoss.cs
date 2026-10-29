@@ -1456,6 +1456,8 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         // callback is delivered while [p0] is still the published assignment.
         script.Respond = (_, _) => Joined("member-1", memberEpoch: 7, CreateAssignment(TestTopicId, 0, 1));
         await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+        // Publication resumes on the next heartbeat after the queued callback completes.
+        await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
 
         await Assert.That(string.Join(" | ", calls))
             .IsEqualTo("assigned:test-topic-0 owned:test-topic-0 | assigned:test-topic-1 owned:test-topic-0,test-topic-1");

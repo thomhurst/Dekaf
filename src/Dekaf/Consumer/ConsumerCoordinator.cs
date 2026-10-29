@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using Dekaf.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Metadata;
@@ -27,6 +28,8 @@ namespace Dekaf.Consumer;
 /// </summary>
 public sealed partial class ConsumerCoordinator : IAsyncDisposable
 {
+    private static readonly TimeSpan HeartbeatStopTimeout = TimeSpan.FromSeconds(5);
+
     private readonly ConsumerOptions _options;
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
@@ -123,6 +126,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly object _heartbeatGuard = new();
     private CancellationTokenSource? _heartbeatCts;
     private Task? _heartbeatTask;
+    // One ordered callback drain, scheduled per reconciliation, never per record or stable heartbeat.
+    private Task _heartbeatRebalanceCallbacks = Task.CompletedTask;
+    private HeartbeatCallbackFailure? _heartbeatCallbackFailure;
+    // Broker ownership remains at the pre-reconciliation snapshot until every callback completes.
+    private PendingRebalanceCallback? _heartbeatReconciliation;
+    // A target received while callbacks run must survive responses that omit the assignment.
+    // Guarded by _lock; the subscription stamp belongs to the response that delivered it.
+    private ConsumerGroupHeartbeatAssignment? _deferredHeartbeatAssignment;
+    private int _deferredHeartbeatAssignmentSubscriptionGeneration;
+    private long _deferredHeartbeatAssignmentStarted = -1;
 
     // Pooled dictionaries to avoid allocations in hot paths (protected by _lock or method-local usage)
     private readonly Dictionary<string, List<OffsetCommitRequestPartition>> _commitTopicGroups = new();
@@ -1548,7 +1561,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 try
                 {
-                    await oldTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    await oldTask.WaitAsync(HeartbeatStopTimeout).ConfigureAwait(false);
                 }
                 catch
                 {
@@ -1788,6 +1801,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         public int SubscriptionGeneration { get; } = subscriptionGeneration;
     }
 
+    private sealed record HeartbeatCallbackFailure(Exception Exception, int JoinStateVersion);
+
     /// <summary>
     /// A rebalance notification not yet delivered: the partitions a fence cleared when
     /// <see cref="Lost"/> is set, otherwise a published assignment change, reserved when it was
@@ -1817,6 +1832,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         public int SubscriptionGeneration = -1;
 
         public bool RevokedDelivered;
+
+        public IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? PreviousOwnedTopicPartitions { get; init; }
+        public int ReconciliationCompleted;
 
         // Set when the internal revocation commit starts, so it runs once whichever drain
         // delivers this entry; cleared again if cancellation interrupts it, so it is retried.
@@ -2658,6 +2676,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private IReadOnlyList<TopicPartition>? ClearAssignment()
     {
+        _deferredHeartbeatAssignment = null;
+        _deferredHeartbeatAssignmentStarted = -1;
+        Volatile.Write(ref _heartbeatReconciliation, null);
         var revoked = _assignedPartitions.Count != 0 ? _assignedPartitions.ToList() : null;
 
         var (revocationSequence, revocationGeneration) = NotifyRevoking(revoked);
@@ -2721,18 +2742,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private void ReserveRebalanceCallbacks(
         ConsumerHeartbeatResult result,
         HashSet<TopicPartition> published,
+        HashSet<TopicPartition> previouslyOwned,
         int publishedSubscriptionGeneration)
     {
         if (result.Revoked is { Count: > 0 } || result.Assigned is { Count: > 0 })
         {
-            EnqueuePendingRebalanceCallback(
-                new PendingRebalanceCallback
-                {
-                    Deferred = result,
-                    Assignment = published,
-                    SubscriptionGeneration = publishedSubscriptionGeneration
-                },
-                reserved: true);
+            var pending = new PendingRebalanceCallback
+            {
+                Deferred = result,
+                Assignment = published,
+                SubscriptionGeneration = publishedSubscriptionGeneration,
+                PreviousOwnedTopicPartitions = BuildOwnedTopicPartitions(previouslyOwned) ?? []
+            };
+            Volatile.Write(ref _heartbeatReconciliation, pending);
+            EnqueuePendingRebalanceCallback(pending, reserved: true);
         }
     }
 
@@ -2907,8 +2930,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // On initial join, send empty array (owns nothing). null means "unchanged" in KIP-848
             // which is invalid when there's no previous state.
             assignmentVersion = Volatile.Read(ref _assignmentVersion);
-            ownedTopicPartitions =
-                isInitial ? [] : GetOwnedTopicPartitionsForHeartbeat(assignmentVersion);
+            var reconciliation = Volatile.Read(ref _heartbeatReconciliation);
+            if (!isInitial && reconciliation is not null &&
+                Volatile.Read(ref reconciliation.ReconciliationCompleted) == 0)
+            {
+                ownedTopicPartitions = reconciliation.PreviousOwnedTopicPartitions;
+                // Do not mark the published assignment sent: its ownership is still pending.
+                assignmentVersion = -1;
+            }
+            else
+            {
+                ownedTopicPartitions = isInitial ? [] : GetOwnedTopicPartitionsForHeartbeat(assignmentVersion);
+            }
 
             // Snapshot the subscription once, so the topics, regex, stamp and version this request
             // carries all describe the same subscription even if it changes concurrently. The
@@ -2959,6 +2992,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // Without a received or pending assignment this reads one field.
         if (response.Assignment is null &&
             _unresolvedAssignment is not null &&
+            Volatile.Read(ref _deferredHeartbeatAssignment) is null &&
             response.ErrorCode == ErrorCode.None &&
             GetPendingAssignmentToRetry() is { } pendingAssignment)
         {
@@ -3021,6 +3055,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             }
         }
 
+        // Never wait for application callbacks on the heartbeat path. The listener lock still
+        // serializes publication with callback delivery; targets arriving meanwhile are retained.
         var rebalanceListenerLockHeld = false;
         var rebalanceStarted = response.Assignment is not null
             ? StandardTelemetryMetrics?.RebalanceStarted() ?? -1 : -1;
@@ -3029,29 +3065,35 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             using (assignmentProcessing)
             {
-                await _rebalanceListenerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-                rebalanceListenerLockHeld = true;
-
-                // Queued callbacks describe earlier assignments; deliver them while those are
-                // still current, before this response publishes a newer one. Cancellation here
-                // drops the response as the lock wait does, and the entries stay queued.
-                if (HasQueuedRebalanceCallbacks())
-                    await InvokePendingRebalanceCallbacksCoreAsync(cancellationToken).ConfigureAwait(false);
-
+                rebalanceListenerLockHeld = _rebalanceListenerLock.Wait(0, cancellationToken);
                 await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
-                    // A foreground poll can expire or fence the member, and a rejoin replace it,
-                    // while this request is in flight: its response then describes a membership
-                    // that is gone. Validate and publish under the state lock. The listener lock
-                    // preserves callback ordering after this lock is released without blocking
-                    // re-entrant APIs.
                     if (_state != CoordinatorState.Stable ||
                         _joinStateVersion != joinStateVersion ||
                         Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
                         IsCurrentPollGenerationExpired())
                         return default;
 
+                    if (response.Assignment is not null)
+                    {
+                        _deferredHeartbeatAssignment = response.Assignment;
+                        _deferredHeartbeatAssignmentSubscriptionGeneration = requestSubscriptionGeneration;
+                        _deferredHeartbeatAssignmentStarted = rebalanceStarted;
+                    }
+
+                    var canPublish = rebalanceListenerLockHeld && !HasQueuedRebalanceCallbacks();
+                    var assignment = canPublish ? _deferredHeartbeatAssignment : null;
+                    if (assignment is not null)
+                    {
+                        requestSubscriptionGeneration = _deferredHeartbeatAssignmentSubscriptionGeneration;
+                        rebalanceStarted = _deferredHeartbeatAssignmentStarted;
+                    }
+                    if (canPublish)
+                        _deferredHeartbeatAssignment = null;
+
+                    if (!ReferenceEquals(response.Assignment, assignment))
+                        response = WithAssignment(response, assignment);
                     result = ProcessConsumerGroupHeartbeatResponse(
                         response,
                         isInitial,
@@ -3066,25 +3108,57 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 }
             }
 
-            // Assignment state and the immediate stale-fetch marker are published, and the
-            // result's callbacks reserved behind anything queued earlier. User callbacks remain
-            // serialized, but no longer suppress buffered polls while awaiting.
+            if (rebalanceListenerLockHeld && HasQueuedRebalanceCallbacks())
+            {
+                // Task.Run is control-plane work, once per reconciliation. Even a listener that
+                // blocks synchronously cannot prevent the next heartbeat. The worker owns the
+                // listener lock and observes its own failures; stop/disposal coordinate its drain.
+                _heartbeatRebalanceCallbacks = Task.Run(
+                    () => DeliverHeartbeatRebalanceCallbacksAsync(
+                        result, rebalanceStarted, joinStateVersion, cancellationToken),
+                    CancellationToken.None);
+                rebalanceListenerLockHeld = false;
+            }
+        }
+        finally
+        {
+            if (rebalanceListenerLockHeld)
+            {
+                ReleaseReservedRebalanceCallbacks();
+                _rebalanceListenerLock.Release();
+            }
+        }
+
+        return default;
+    }
+
+    private async Task DeliverHeartbeatRebalanceCallbacksAsync(
+        ConsumerHeartbeatResult result,
+        long rebalanceStarted,
+        int joinStateVersion,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
             await InvokePendingRebalanceCallbacksCoreAsync(cancellationToken).ConfigureAwait(false);
             if (result.AssignmentChanged)
                 StandardTelemetryMetrics?.RebalanceCompleted(rebalanceStarted);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Undelivered callbacks retain ownership and are resumed by the next drain.
+        }
+        catch (Exception ex)
+        {
+            LogAbandonedRebalanceCallbacksFailed(ex);
+            Interlocked.CompareExchange(ref _heartbeatCallbackFailure,
+                new HeartbeatCallbackFailure(ex, joinStateVersion), null);
+        }
         finally
         {
-            // The revocation commit's completion belongs to the entry: whichever drain delivers
-            // it runs the commit and completes it, so assignment sync waits for it.
             ReleaseReservedRebalanceCallbacks();
-            if (rebalanceListenerLockHeld)
-                _rebalanceListenerLock.Release();
+            _rebalanceListenerLock.Release();
         }
-
-        // Steady-heartbeat callbacks are fired above while publication is fenced against
-        // max-poll expiry. The heartbeat loop must not fire the result a second time.
-        return default;
     }
 
     private AssignmentProcessingScope BeginAssignmentProcessing(
@@ -3300,7 +3374,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private static ConsumerGroupHeartbeatResponse WithAssignment(
         ConsumerGroupHeartbeatResponse response,
-        ConsumerGroupHeartbeatAssignment assignment) => new()
+        ConsumerGroupHeartbeatAssignment? assignment) => new()
     {
         ThrottleTimeMs = response.ThrottleTimeMs,
         ErrorCode = response.ErrorCode,
@@ -3469,7 +3543,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             assignmentCallbacksCompletion);
         AfterAssignmentPublishedForTest?.Invoke();
         if (changed)
-            ReserveRebalanceCallbacks(result, newAssignment, publishedSubscriptionGeneration);
+            ReserveRebalanceCallbacks(result, newAssignment, oldAssignment, publishedSubscriptionGeneration);
 
         return result;
     }
@@ -3864,18 +3938,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             }
         }
 
-        try
-        {
-            await FireConsumerProtocolRebalanceListenersAsync(heartbeatResult, cancellationToken).ConfigureAwait(false);
-            StandardTelemetryMetrics?.RebalanceCompleted(rebalanceStarted);
-        }
-        finally
-        {
-            // The join succeeded even when cancellation interrupted its callbacks (they stay
-            // queued), so the membership is kept alive either way.
-            if (_state == CoordinatorState.Stable)
-                await StartConsumerProtocolHeartbeatAsync().ConfigureAwait(false);
-        }
+        // Keep the joined member alive even when its initial assignment callback takes longer
+        // than the session timeout. Publication remains serialized by the listener lock.
+        // Initial ownership can be reported immediately: no previous ownership is being released.
+        if (_state == CoordinatorState.Stable)
+            await StartConsumerProtocolHeartbeatAsync().ConfigureAwait(false);
+
+        await FireConsumerProtocolRebalanceListenersAsync(heartbeatResult, cancellationToken).ConfigureAwait(false);
+        StandardTelemetryMetrics?.RebalanceCompleted(rebalanceStarted);
     }
 
     private KafkaTimeoutException CreateJoinTimeoutException(
@@ -3904,6 +3974,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // loop re-discovers the coordinator itself and beats on the retry backoff.
         var transientFailureCount = 0;
         var heartbeatCoordinatorId = -1;
+        var completedCallbacks = Task.CompletedTask;
         // The join state version each request is built under; a fence it reports applies only
         // to that state. Allocated once per loop.
         var joinStateVersion = new StrongBox<int>(Volatile.Read(ref _joinStateVersion));
@@ -3915,8 +3986,35 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 // Task.Delay (not PeriodicTimer): the broker controls the interval via each response,
                 // and PeriodicTimer cannot change its period after construction. Wake at the
                 // max.poll deadline when it is sooner so eviction is not heartbeat-interval late.
-                await Task.Delay(GetConsumerProtocolHeartbeatDelay(transientFailureCount), cancellationToken)
-                    .ConfigureAwait(false);
+                var callbacks = Volatile.Read(ref _heartbeatRebalanceCallbacks);
+                if (ReferenceEquals(callbacks, completedCallbacks))
+                {
+                    await Task.Delay(GetConsumerProtocolHeartbeatDelay(transientFailureCount), cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    // Reconciliation completion acknowledges ownership promptly, and a failed
+                    // drain enters the loop's existing recovery path without waiting an interval.
+                    using var delayCancellation = new CancellationTokenSource();
+                    try
+                    {
+                        var delay = Task.Delay(GetConsumerProtocolHeartbeatDelay(transientFailureCount),
+                            delayCancellation.Token);
+                        await Task.WhenAny(delay, callbacks).WaitAsync(cancellationToken).ConfigureAwait(false);
+                        if (callbacks.IsCompleted)
+                            completedCallbacks = callbacks;
+                    }
+                    finally
+                    {
+                        await delayCancellation.CancelAsync().ConfigureAwait(false);
+                    }
+                }
+
+                var callbackFailure = Interlocked.Exchange(ref _heartbeatCallbackFailure, null);
+                if (callbackFailure is not null &&
+                    callbackFailure.JoinStateVersion == Volatile.Read(ref _joinStateVersion))
+                    ExceptionDispatchInfo.Capture(callbackFailure.Exception).Throw();
 
                 var expiration = await TryExpireMaxPollIntervalAsync(cancellationToken).ConfigureAwait(false);
                 if (expiration.Expired)
@@ -4273,6 +4371,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     }
                 }
 
+                // Only now may a heartbeat acknowledge the reconciled ownership.
+                Volatile.Write(ref pending.ReconciliationCompleted, 1);
+                Interlocked.CompareExchange(ref _heartbeatReconciliation, null, pending);
                 // Delivered: the consumer may now synchronize this assignment.
                 pending.Deferred.AssignmentCallbacksCompletion?.TrySetResult(true);
 
@@ -4720,12 +4821,23 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             try
             {
-                await task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+                await task.WaitAsync(HeartbeatStopTimeout, cancellationToken).ConfigureAwait(false);
             }
             catch
             {
                 // Ignore cancellation exceptions
             }
+        }
+
+        if (!IsInsideOwnRebalanceCallback())
+        {
+            try
+            {
+                await Volatile.Read(ref _heartbeatRebalanceCallbacks)
+                    .WaitAsync(HeartbeatStopTimeout, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+            catch (TimeoutException) { }
         }
 
         cts?.Dispose();
