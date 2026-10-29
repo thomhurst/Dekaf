@@ -215,7 +215,7 @@ public class OAuthBearerAuthenticationTests(OAuthBearerKafkaContainer oauthKafka
         });
     }
 
-    private sealed class JwtBearerTokenEndpoint : IAsyncDisposable
+    internal sealed class JwtBearerTokenEndpoint : IAsyncDisposable
     {
         private readonly TcpListener _listener;
         private readonly CancellationTokenSource _cts = new();
