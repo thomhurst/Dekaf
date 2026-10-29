@@ -267,17 +267,20 @@ public sealed class PartitionedRecordLifetimeTests
     }
 
     [Test]
-    [Arguments(PartitionedProcessingOrder.Partition, false)]
-    [Arguments(PartitionedProcessingOrder.Partition, true)]
-    [Arguments(PartitionedProcessingOrder.Key, false)]
-    [Arguments(PartitionedProcessingOrder.Key, true)]
+    [Arguments(PartitionedProcessingOrder.Partition, false, false)]
+    [Arguments(PartitionedProcessingOrder.Partition, true, false)]
+    [Arguments(PartitionedProcessingOrder.Key, false, false)]
+    [Arguments(PartitionedProcessingOrder.Key, true, false)]
+    [Arguments(PartitionedProcessingOrder.Partition, true, true)]
+    [Arguments(PartitionedProcessingOrder.Key, true, true)]
     public async Task CancelledLane_ReleasesQueuedStorageAfterActiveHandlerExits(
-        PartitionedProcessingOrder ordering, bool ignoreCancellation)
+        PartitionedProcessingOrder ordering, bool ignoreCancellation, bool blockCallback)
     {
         using var timeout = new CancellationTokenSource();
         var handlerStarted = NewSignal();
         var fetchAdvanced = NewSignal();
         var cancellationObserved = NewSignal();
+        using var releaseCallback = new ManualResetEventSlim();
         var releaseHandler = NewSignal();
         var memory = new ReusedMemory();
         var pending = CreatePending(memory, recordCount: 4);
@@ -290,7 +293,12 @@ public sealed class PartitionedRecordLifetimeTests
         timeout.CancelAfter(TimeSpan.FromSeconds(10));
         var run = consumer.RunPartitionedAsync(async (_, message, token) =>
         {
-            using var registration = token.Register(() => cancellationObserved.TrySetResult());
+            using var registration = token.Register(() =>
+            {
+                cancellationObserved.TrySetResult();
+                if (blockCallback)
+                    releaseCallback.Wait();
+            });
             handlerStarted.TrySetResult();
             if (ignoreCancellation)
                 await releaseHandler.Task;
@@ -313,7 +321,7 @@ public sealed class PartitionedRecordLifetimeTests
             if (ignoreCancellation)
             {
                 await cancellationObserved.Task.WaitAsync(timeout.Token);
-                await Assert.That(async () => await run).Throws<TimeoutException>();
+                await Assert.That(async () => await run.WaitAsync(timeout.Token)).Throws<TimeoutException>();
                 await Assert.That(memory.DisposeCount).IsEqualTo(0);
             }
             else
@@ -323,6 +331,7 @@ public sealed class PartitionedRecordLifetimeTests
         }
         finally
         {
+            releaseCallback.Set();
             releaseHandler.TrySetResult();
         }
 

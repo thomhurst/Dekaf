@@ -2398,27 +2398,27 @@ internal sealed class PartitionLane<TKey, TValue>
     {
         CompleteWriter();
 
+        var stopping = _processorTask ?? Task.CompletedTask;
         if (stopPolicy == PartitionStopPolicy.Cancel)
-            await CancelAsync().ConfigureAwait(false);
-
-        if (_processorTask is null)
-            return null;
+        {
+            // Callback completion and processor completion share one stop budget.
+            // CancelAsync signals the token synchronously but runs callbacks asynchronously.
+            stopping = Task.WhenAll(stopping, _stopping.CancelAsync());
+        }
 
         try
         {
-            await _processorTask.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+            await stopping.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
 
             return null;
         }
         catch (Exception exception) when (exception is TimeoutException
             || exception is OperationCanceledException && cancellationToken.IsCancellationRequested)
         {
-            await CancelAsync().ConfigureAwait(false);
-            _ = _processorTask.ContinueWith(
-                static task => _ = task.Exception,
-                CancellationToken.None,
-                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
+            // The budget is exhausted. Signal cancellation without waiting for user
+            // callbacks, and observe both operations when their owners eventually exit.
+            ObserveFailure(stopping);
+            ObserveFailure(_stopping.CancelAsync());
 
             return new TimeoutException(
                 $"Partition processor for {TopicPartition.Topic}:{TopicPartition.Partition} did not stop within {timeout}.");
@@ -2458,10 +2458,13 @@ internal sealed class PartitionLane<TKey, TValue>
             _channel.Writer.TryComplete();
     }
 
-    private async ValueTask CancelAsync()
+    private static void ObserveFailure(Task task)
     {
-        if (!_stopping.IsCancellationRequested)
-            await _stopping.CancelAsync().ConfigureAwait(false);
+        _ = task.ContinueWith(
+            static completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 }
 
