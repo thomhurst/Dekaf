@@ -652,7 +652,7 @@ public sealed partial class InMemoryKafkaCluster
             Transaction = transactionMarker
         };
 
-        partitionState.Records.Add(record);
+        partitionState.Append(record);
         if (transactionMarker is not null &&
             partitionState.RegisterTransaction(transactionMarker, offset))
         {
@@ -2144,8 +2144,14 @@ public sealed partial class InMemoryKafkaCluster
 
         public List<InMemoryRecord> Records { get; } = [];
         public long LogStartOffset { get; set; }
-        public long HighWatermark => Records.Count == 0 ? LogStartOffset : Records[^1].Offset + 1;
+        public long HighWatermark { get; private set; }
         public long FirstUnstableOffset { get; private set; } = long.MaxValue;
+
+        public void Append(InMemoryRecord record)
+        {
+            Records.Add(record);
+            HighWatermark = record.Offset + 1;
+        }
 
         public bool RegisterTransaction(InMemoryTransactionMarker transaction, long offset)
         {
@@ -2158,11 +2164,14 @@ public sealed partial class InMemoryKafkaCluster
 
         public void CompleteTransaction(InMemoryTransactionMarker transaction)
         {
-            if (!_transactionOffsets.Remove(transaction, out var offset) ||
-                offset != FirstUnstableOffset)
-            {
+            if (!_transactionOffsets.Remove(transaction, out var offset))
                 return;
-            }
+
+            // A broker appends one invisible COMMIT/ABORT control record per touched partition.
+            // Reserve its offset without adding a user record to the in-memory log.
+            HighWatermark++;
+            if (offset != FirstUnstableOffset)
+                return;
 
             FirstUnstableOffset = long.MaxValue;
             foreach (var remainingOffset in _transactionOffsets.Values)

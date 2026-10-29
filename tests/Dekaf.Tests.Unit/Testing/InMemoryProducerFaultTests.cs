@@ -397,7 +397,7 @@ public sealed class InMemoryProducerFaultTests
         await Assert.That(visible.Select(static record => Encoding.UTF8.GetString(record.Value)))
             .IsEquivalentTo(["committed", "ordinary"]);
         await Assert.That(visible.Select(static record => record.Offset))
-            .IsEquivalentTo([0L, 2L]);
+            .IsEquivalentTo([0L, 4L]);
 
         await using var consumer = new InMemoryConsumer<string, string>(
             cluster,
@@ -411,7 +411,7 @@ public sealed class InMemoryProducerFaultTests
         var second = await consumer.ConsumeOneAsync(TimeSpan.Zero);
 
         await Assert.That(first!.Value.Offset).IsEqualTo(0);
-        await Assert.That(second!.Value.Offset).IsEqualTo(2);
+        await Assert.That(second!.Value.Offset).IsEqualTo(4);
     }
 
     [Test]

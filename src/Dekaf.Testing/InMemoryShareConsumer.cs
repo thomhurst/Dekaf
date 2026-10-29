@@ -1084,8 +1084,16 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             for (var index = groupStart; index < groupEnd; index++)
             {
                 var record = _commitRecords[index];
-                if (record.NextOffset - 1 != commitOffset ||
-                    record.AcknowledgeType is not (AcknowledgeType.Accept or AcknowledgeType.Reject))
+                if (record.AcknowledgeType is not (AcknowledgeType.Accept or AcknowledgeType.Reject))
+                    break;
+
+                // Offsets invisible to the group do not interrupt contiguous acknowledgments.
+                if (record.NextOffset - 1 != commitOffset &&
+                    (!_cluster.TryReadShareRecord(
+                        _options.GroupId,
+                        first.TopicPartition,
+                        commitOffset,
+                        out var nextRecord) || nextRecord.Offset != record.Record.Offset))
                 {
                     break;
                 }

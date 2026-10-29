@@ -146,7 +146,7 @@ public sealed class InMemoryConsumerLagTests
 
         await transaction.CommitAsync();
 
-        await Assert.That(readCommitted.GetCurrentLag(Partition)).IsEqualTo(2);
+        await Assert.That(readCommitted.GetCurrentLag(Partition)).IsEqualTo(3);
     }
 
     [Test]
@@ -167,7 +167,7 @@ public sealed class InMemoryConsumerLagTests
             new TopicPartitionOffset(Partition.Topic, Partition.Partition, 0)
         ]);
 
-        await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(1);
+        await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(2);
 
         using var cancellation = new CancellationTokenSource();
         var pendingConsume = consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan, cancellation.Token).AsTask();
