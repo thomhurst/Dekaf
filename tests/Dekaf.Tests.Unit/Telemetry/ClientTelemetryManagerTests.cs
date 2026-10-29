@@ -271,7 +271,97 @@ public sealed partial class ClientTelemetryManagerTests
     }
 
     [Test]
-    public async Task StopAsync_CanceledWhileWaitingForStartLock_RemainsRetryable()
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task StopAsync_DuringSubscriptionFetch_BoundsStopAndSubsequentDispose(bool observeCancellation)
+    {
+        await using var context = new TelemetryTestContext();
+        context.Connection.Enqueue(Subscription(Guid.NewGuid(), subscriptionId: 20, pushIntervalMs: 60000));
+        context.Connection.BlockNextRequest<GetTelemetrySubscriptionsRequest>(observeCancellation);
+
+        var startTask = context.Manager.StartAsync().AsTask();
+        await context.Connection.WaitForBlockedRequestAsync(TimeSpan.FromSeconds(2));
+        try
+        {
+            await context.Manager.StopAsync(TimeSpan.FromMilliseconds(50)).AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(2));
+            await context.Manager.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+
+            await Assert.That(context.Connection.BlockedRequestToken.IsCancellationRequested).IsTrue();
+            await Assert.That(context.Manager.IsStarted).IsFalse();
+            if (observeCancellation)
+                await startTask.WaitAsync(TimeSpan.FromSeconds(2));
+            else
+            {
+                await Assert.That(startTask.IsCompleted).IsFalse();
+                await Assert.That(context.Connection.LeaseCount).IsEqualTo(1);
+            }
+        }
+        finally
+        {
+            context.Connection.ReleaseBlockedRequest();
+            await startTask.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+
+        await context.Manager.StartAsync();
+        await Assert.That(context.Manager.IsStarted).IsFalse();
+        await Assert.That(context.Connection.LeaseCount).IsEqualTo(0);
+        await Assert.That(context.Connection.RequestsOfType<PushTelemetryRequest>().Count).IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task StopAsync_DuringTerminatingPush_BoundsStopAndSubsequentDispose(bool observeCancellation)
+    {
+        await using var context = new TelemetryTestContext();
+        context.Connection.Enqueue(Subscription(Guid.NewGuid(), subscriptionId: 22, pushIntervalMs: 60000));
+        await context.Manager.StartAsync();
+        context.Connection.BlockNextRequest<PushTelemetryRequest>(observeCancellation);
+
+        var stopTask = context.Manager.StopAsync(TimeSpan.FromMilliseconds(50)).AsTask();
+        await context.Connection.WaitForBlockedRequestAsync(TimeSpan.FromSeconds(2));
+        try
+        {
+            await stopTask.WaitAsync(TimeSpan.FromSeconds(2));
+            await context.Manager.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+            await Assert.That(context.Connection.BlockedRequestToken.IsCancellationRequested).IsTrue();
+            if (!observeCancellation)
+                await Assert.That(context.Connection.LeaseCount).IsEqualTo(1);
+        }
+        finally
+        {
+            context.Connection.ReleaseBlockedRequest();
+            await context.Connection.WaitForLeasesDrainedAsync(TimeSpan.FromSeconds(2));
+        }
+
+        await Assert.That(context.Connection.LeaseCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task StartAsync_CallerCancellationDuringSubscriptionFetch_RemainsRetryable()
+    {
+        await using var context = new TelemetryTestContext();
+        context.Connection.Enqueue(Subscription(Guid.NewGuid(), subscriptionId: 21, pushIntervalMs: 60000));
+        context.Connection.BlockNextRequest<GetTelemetrySubscriptionsRequest>();
+        using var cancellationSource = new CancellationTokenSource();
+
+        var startTask = context.Manager.StartAsync(cancellationSource.Token).AsTask();
+        await context.Connection.WaitForBlockedRequestAsync(TimeSpan.FromSeconds(2));
+        cancellationSource.Cancel();
+        await Assert.That(async () => await startTask.WaitAsync(TimeSpan.FromSeconds(2)))
+            .Throws<OperationCanceledException>();
+        context.Connection.ReleaseBlockedRequest();
+
+        await context.Manager.StartAsync();
+        await Assert.That(context.Manager.IsStarted).IsTrue();
+        await Assert.That(context.Manager.SubscriptionId).IsEqualTo(21);
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task StopAsync_CanceledWhileWaitingForStartLock_RemainsRetryable(bool cancelBeforeWait)
     {
         await using var context = new TelemetryTestContext();
         context.Connection.Enqueue(Subscription(
@@ -288,10 +378,13 @@ public sealed partial class ClientTelemetryManagerTests
         try
         {
             using var cancellationSource = new CancellationTokenSource();
+            if (cancelBeforeWait)
+                cancellationSource.Cancel();
+
+            var stopTask = context.Manager.StopAsync(TimeSpan.FromSeconds(2), cancellationSource.Token).AsTask();
             cancellationSource.Cancel();
 
-            await Assert.That(async () =>
-                    await context.Manager.StopAsync(TimeSpan.FromSeconds(2), cancellationSource.Token))
+            await Assert.That(async () => await stopTask.WaitAsync(TimeSpan.FromSeconds(2)))
                 .Throws<OperationCanceledException>();
         }
         finally
@@ -689,7 +782,7 @@ public sealed partial class ClientTelemetryManagerTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    private sealed class TestKafkaConnection : IKafkaConnection
+    private sealed class TestKafkaConnection : IKafkaConnection, IRetirableKafkaConnection
     {
         private readonly ConcurrentQueue<object> _responses = new();
         private readonly ConcurrentQueue<object> _requests = new();
@@ -698,6 +791,29 @@ public sealed partial class ClientTelemetryManagerTests
         private Type? _blockedRequestType;
         private TaskCompletionSource? _blockedRequestSeen;
         private TaskCompletionSource? _blockedRequestRelease;
+        private TaskCompletionSource? _leasesDrained;
+        private bool _observeBlockedRequestCancellation;
+        private int _leaseCount;
+
+        public CancellationToken BlockedRequestToken { get; private set; }
+        public int LeaseCount => Volatile.Read(ref _leaseCount);
+        public int ActiveOperationCount => 0;
+
+        public bool TryAcquireLease()
+        {
+            Interlocked.Increment(ref _leaseCount);
+            return true;
+        }
+
+        public void ReleaseLease()
+        {
+            if (Interlocked.Decrement(ref _leaseCount) == 0)
+                _leasesDrained?.TrySetResult();
+        }
+        public void BeginRetirement() { }
+        public void CompleteRetirement() { }
+
+        public Task WaitForLeasesDrainedAsync(TimeSpan timeout) => _leasesDrained!.Task.WaitAsync(timeout);
 
         public int BrokerId => 0;
         public string Host => "localhost";
@@ -711,13 +827,15 @@ public sealed partial class ClientTelemetryManagerTests
         public IReadOnlyList<T> RequestsOfType<T>() =>
             _requests.ToArray().OfType<T>().ToArray();
 
-        public void BlockNextRequest<TRequest>()
+        public void BlockNextRequest<TRequest>(bool observeCancellation = true)
         {
             lock (_blockLock)
             {
                 _blockedRequestType = typeof(TRequest);
+                _observeBlockedRequestCancellation = observeCancellation;
                 _blockedRequestSeen = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 _blockedRequestRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _leasesDrained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             }
         }
 
@@ -778,12 +896,15 @@ public sealed partial class ClientTelemetryManagerTests
 
             TaskCompletionSource? blockedRequestSeen = null;
             TaskCompletionSource? blockedRequestRelease = null;
+            var observeCancellation = true;
             lock (_blockLock)
             {
                 if (_blockedRequestType == typeof(TRequest))
                 {
                     blockedRequestSeen = _blockedRequestSeen;
                     blockedRequestRelease = _blockedRequestRelease;
+                    observeCancellation = _observeBlockedRequestCancellation;
+                    BlockedRequestToken = cancellationToken;
                     _blockedRequestType = null;
                 }
             }
@@ -791,7 +912,8 @@ public sealed partial class ClientTelemetryManagerTests
             if (blockedRequestRelease is not null)
             {
                 blockedRequestSeen!.TrySetResult();
-                await blockedRequestRelease.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                await blockedRequestRelease.Task.WaitAsync(observeCancellation ? cancellationToken : default)
+                    .ConfigureAwait(false);
             }
 
             if (!_responses.TryDequeue(out var response))
