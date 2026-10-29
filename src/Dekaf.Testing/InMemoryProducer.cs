@@ -50,7 +50,7 @@ public sealed class InMemoryProducer<TKey, TValue> :
     // means a produce path missed the asynchronous divert and must fail loudly.
     private readonly IAsyncSerializer<TKey>? _asyncKeySerializer;
     private readonly IAsyncSerializer<TValue>? _asyncValueSerializer;
-    private readonly bool _hasAsyncSerializers;
+    private readonly bool _requiresAsyncSerialization;
     private readonly bool _keyProducesRecordHeaders;
     private readonly bool _valueProducesRecordHeaders;
     private readonly object _transactionGate = new();
@@ -150,7 +150,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
         _valueSerializer = asyncValueSerializer is null
             ? valueSerializer!
             : AsyncOnlySerializerPlaceholder<TValue>.Instance;
-        _hasAsyncSerializers = asyncKeySerializer is not null || asyncValueSerializer is not null;
+        _requiresAsyncSerialization = asyncKeySerializer is not null || asyncValueSerializer is not null
+            || keySerializer is IAsyncSerializerPreparer<TKey>
+            || valueSerializer is IAsyncSerializerPreparer<TValue>;
         _keyProducesRecordHeaders = (asyncKeySerializer as IRecordHeaderSerializer
             ?? keySerializer as IRecordHeaderSerializer) is { ProducesRecordHeaders: true };
         _valueProducesRecordHeaders = (asyncValueSerializer as IRecordHeaderSerializer
@@ -518,6 +520,7 @@ public sealed class InMemoryProducer<TKey, TValue> :
         InMemoryTransactionMarker? transactionMarker,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
         ThrowIfFatalTransactionError();
         if (transactionMarker is null)
@@ -529,9 +532,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
             headers = headers is null ? new Headers() : new Headers(headers);
         }
 
-        if (_hasAsyncSerializers)
+        if (_requiresAsyncSerialization)
         {
-            return ProduceWithAsyncSerializersAsync(
+            return ProduceWithPreparationAsync(
                 topic,
                 partition,
                 key,
@@ -580,11 +583,10 @@ public sealed class InMemoryProducer<TKey, TValue> :
     }
 
     /// <summary>
-    /// Produce path used when at least one component has an <see cref="IAsyncSerializer{T}"/>.
-    /// Components without one still encode through their synchronous serializer, so mixed
-    /// configurations behave exactly like the production producer.
+    /// Produce path for asynchronous serializers and synchronous serializers with asynchronous
+    /// preparation. Each non-null component uses its own serialization contract.
     /// </summary>
-    private async ValueTask<RecordMetadata> ProduceWithAsyncSerializersAsync(
+    private async ValueTask<RecordMetadata> ProduceWithPreparationAsync(
         string topic,
         int? partition,
         TKey? key,
@@ -753,10 +755,28 @@ public sealed class InMemoryProducer<TKey, TValue> :
             IsNull = false
         };
 
-        if (asyncSerializer is null)
-            serializer.Serialize(value, ref writer, context);
-        else
+        cancellationToken.ThrowIfCancellationRequested();
+        if (asyncSerializer is not null)
+        {
             await asyncSerializer.SerializeAsync(value, writer, context, cancellationToken).ConfigureAwait(false);
+        }
+        else if (serializer is IAsyncSerializerPreparationAdmission<T> admissionSerializer)
+        {
+            var admission = await admissionSerializer.PrepareForSerializationAsync(value, context, cancellationToken)
+                .ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (admission.IsPrepared)
+                admissionSerializer.SerializePrepared(value, ref writer, context, in admission);
+            else
+                serializer.Serialize(value, ref writer, context);
+        }
+        else
+        {
+            if (serializer is IAsyncSerializerPreparer<T> preparer)
+                await preparer.PrepareAsync(value, context, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            serializer.Serialize(value, ref writer, context);
+        }
 
         return writer.WrittenSpan.ToArray();
     }
