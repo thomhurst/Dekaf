@@ -201,7 +201,7 @@ var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .ForHighThroughput()
-    // Batch(n) proves records before they are processed; commit only after each batch.
+    // Commit explicitly after each successful batch.
     .WithOffsetCommitMode(OffsetCommitMode.Manual)
     .SubscribeTo("events")
     .BuildAsync();

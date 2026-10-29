@@ -140,21 +140,22 @@ Shutting down by cancelling the consume token does *not* have this caveat — ca
 observed while waiting for the next record, after the previous one was proven.
 :::
 
-:::warning Buffering operators prove records before you process them
-The proof signal is the request for the next record, so any operator that reads ahead of your
-code proves the records it buffers. `ConsumeAsync(ct).Batch(n)` requests up to `n` records
-before it yields the batch, so the first `n - 1` records are proven before your batch handler
-runs. If the handler throws, or the process dies while it runs, the auto-commit loop or the
-close commit can commit those records although they were never processed.
+`KafkaConsumer.ConsumeAsync(ct).Batch(n)` preserves the same at-least-once contract when
+`Batch` is applied directly to the consume stream. Requesting the next application batch
+proves every record in the previous batch, even across fetches and partitions. A handler
+that throws or breaks leaves its entire current batch unproven. Call `CommitAsync` after
+success to commit the final batch before breaking.
 
-For batch processing, use one of these patterns instead:
+:::warning Other read-ahead operators can prove records early
+An intervening operator, such as `ConsumeAsync(ct).Where(...).Batch(n)`, hides the original
+consume stream from `Batch`. Requests made by that operator can prove buffered records
+before the batch handler runs. Other `IAsyncEnumerable` implementations have their own
+proof semantics.
 
-- `ConsumeBatchAsync`. Requesting the next batch proves only the records you enumerated from
-  the current one, so a failing batch is redelivered.
-- `.Batch(n)` with `WithAutoOffsetStore(false)`, then `StoreOffset` for each record after the
-  whole batch succeeds.
-- `.Batch(n)` with `WithOffsetCommitMode(OffsetCommitMode.Manual)`, then `CommitAsync()` after
-  the whole batch succeeds. In manual mode nothing is committed unless you call `CommitAsync`.
+For these sources, disable automatic offset storage with `WithAutoOffsetStore(false)` and
+call `StoreOffset` after the whole batch succeeds, or use
+`WithOffsetCommitMode(OffsetCommitMode.Manual)` and commit after success. `ConsumeBatchAsync`
+also provides at-least-once processing without allocating a list per application batch.
 :::
 
 ### Explicit Acknowledgment (strict at-least-once)

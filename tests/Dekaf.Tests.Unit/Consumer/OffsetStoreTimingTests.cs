@@ -20,7 +20,7 @@ namespace Dekaf.Tests.Unit.Consumer;
 /// (<see cref="OffsetStoreTiming.AfterProcessing"/>) and the opt-in at-most-once
 /// staging (<see cref="OffsetStoreTiming.OnDelivery"/>).
 /// </summary>
-public sealed class OffsetStoreTimingTests
+public sealed partial class OffsetStoreTimingTests
 {
     private const string Topic = "test-topic";
     private const int Partition = 0;

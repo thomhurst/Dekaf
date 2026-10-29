@@ -200,15 +200,16 @@ Everything skipped before the marker is [dropped permanently once committed past
 
 Group messages into batches for bulk processing:
 
-:::warning Batch proves records before your handler runs
-`Batch(n)` requests up to `n` records before it yields the batch. Under the default
-at-least-once timing, each request [proves the record before it](delivery-semantics.md#how-the-default-works),
-so the buffered records can be committed by the auto-commit loop or the close commit even if
-your batch handler then throws. The examples on this page that commit after a batch assume a
-consumer built with `.WithOffsetCommitMode(OffsetCommitMode.Manual)`, where nothing is committed
-until you call `CommitAsync`. Alternatively, use `ConsumeBatchAsync`, which proves a batch only
-when you request the next one, or disable automatic offset storage with
-`WithAutoOffsetStore(false)` and call `StoreOffset` for each record after the batch succeeds.
+Applied directly to `KafkaConsumer.ConsumeAsync`, `Batch(n)` defers offset proof until you
+request the next batch. With the default `AfterProcessing` timing, a failing batch remains
+uncommitted, including records from several fetches or partitions. Explicit `CommitAsync`
+still vouches for all records delivered so far, so call it only after processing succeeds.
+
+:::warning Keep Batch directly after ConsumeAsync for automatic proof
+An intervening operator such as `Where` hides the consume stream and can prove records
+before the batch handler runs. With intervening operators or another source implementation,
+use `WithAutoOffsetStore(false)` and `StoreOffset` after success, or manual commit mode and
+`CommitAsync` after success. See [delivery semantics](delivery-semantics.md#at-least-once-the-default).
 :::
 
 ```csharp

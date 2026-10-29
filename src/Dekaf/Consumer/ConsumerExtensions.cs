@@ -147,25 +147,21 @@ public static class ConsumerExtensions
     /// <returns>An async enumerable of batches.</returns>
     /// <remarks>
     /// <para>
-    /// This operator requests up to <paramref name="batchSize"/> records from
-    /// <paramref name="source"/> before it yields the batch. Over <c>ConsumeAsync</c> with the
-    /// default <see cref="OffsetStoreTiming.AfterProcessing"/> timing, each request proves the
-    /// record before it, so the buffered records are proven, and can be committed by the
-    /// automatic commit loop or the close commit, before the batch handler runs. A batch whose
-    /// handler fails is then not redelivered.
+    /// When applied directly to <see cref="KafkaConsumer{TKey, TValue}.ConsumeAsync(CancellationToken)"/>
+    /// with <see cref="OffsetStoreTiming.AfterProcessing"/>, records in the batch become
+    /// committable only when the next batch is requested. Breaking or throwing from the batch
+    /// handler leaves the entire current batch unproven, including records from released fetches
+    /// and multiple partitions. Explicit commits still vouch for everything delivered.
     /// </para>
     /// <para>
-    /// To keep at-least-once delivery for batches, use
-    /// <see cref="IKafkaConsumer{TKey, TValue}.ConsumeBatchAsync(CancellationToken)"/>, which
-    /// proves a batch only when the next batch is requested. Alternatively, disable
-    /// <see cref="ConsumerOptions.EnableAutoOffsetStore"/> and call
-    /// <see cref="IKafkaConsumer{TKey, TValue}.StoreOffset(ConsumeResult{TKey, TValue})"/> for
-    /// each record after the batch succeeds, or use <see cref="OffsetCommitMode.Manual"/> and
-    /// commit after the batch succeeds.
+    /// Intervening operators or other source implementations may request records ahead of the
+    /// batch handler and prove them early. For those sources, disable
+    /// <see cref="ConsumerOptions.EnableAutoOffsetStore"/> and store offsets after success, or
+    /// use <see cref="OffsetCommitMode.Manual"/> and commit after success.
     /// </para>
     /// <para>
-    /// This method allocates a new List for each batch. This is acceptable for consumer-side
-    /// processing which is not in the zero-allocation hot path (protocol serialization).
+    /// This method allocates a List and its backing array per batch. Deferred proof state is
+    /// amortized per stream, fetch, and batch; record delivery adds no per-message allocation.
     /// </para>
     /// </remarks>
     public static async IAsyncEnumerable<IReadOnlyList<ConsumeResult<TKey, TValue>>> Batch<TKey, TValue>(
@@ -175,6 +171,13 @@ public static class ConsumerExtensions
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1);
+
+        if (source is KafkaConsumer<TKey, TValue>.ConsumeStream stream)
+        {
+            await foreach (var buffered in stream.Batch(batchSize).WithCancellation(cancellationToken).ConfigureAwait(false))
+                yield return buffered;
+            yield break;
+        }
 
         var batch = new List<ConsumeResult<TKey, TValue>>(batchSize);
 
