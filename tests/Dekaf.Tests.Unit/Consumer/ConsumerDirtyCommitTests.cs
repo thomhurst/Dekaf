@@ -326,7 +326,7 @@ public sealed partial class ConsumerDirtyCommitTests
         await coordinator.StopHeartbeatAsync();
 
         // The steady heartbeat publishes [p0, p1] and runs OnPartitionsAssigned for p1 on the
-        // heartbeat's thread, while the prefetch loop synchronizes the assignment.
+        // background callback task, while the prefetch loop synchronizes the assignment.
         var sendHeartbeat = typeof(ConsumerCoordinator)
             .GetMethod("SendConsumerGroupHeartbeatAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
         var coordinatorId = (int)typeof(ConsumerCoordinator)
@@ -338,6 +338,7 @@ public sealed partial class ConsumerDirtyCommitTests
                 coordinator,
                 [coordinatorId, false, true, new System.Runtime.CompilerServices.StrongBox<int>(), CancellationToken.None])!;
             await (Task)pending.GetType().GetMethod("AsTask")!.Invoke(pending, null)!;
+            await WaitForHeartbeatCallbacksAsync(coordinator);
         });
         await assignedP1Entered.Task.WaitAsync(timeout.Token);
         var prefetchSync = Task.Run(async () =>
@@ -1775,4 +1776,9 @@ public sealed partial class ConsumerDirtyCommitTests
 
         System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => offsets.GetEnumerator();
     }
+
+    private static Task WaitForHeartbeatCallbacksAsync(ConsumerCoordinator coordinator) =>
+        (Task)typeof(ConsumerCoordinator)
+            .GetField("_heartbeatRebalanceCallbacks", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(coordinator)!;
 }

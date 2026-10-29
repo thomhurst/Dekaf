@@ -912,6 +912,7 @@ public sealed partial class ConsumerDirtyCommitTests
                 coordinator,
                 [coordinatorId, false, true, new StrongBox<int>(), CancellationToken.None])!;
             await (Task)pending.GetType().GetMethod("AsTask")!.Invoke(pending, null)!;
+            await WaitForHeartbeatCallbacksAsync(coordinator);
         }
 
         // While the sync is between publication and cleanup, a commit runs on another thread. It
@@ -1075,6 +1076,7 @@ public sealed partial class ConsumerDirtyCommitTests
                 coordinator,
                 [coordinatorId, false, true, new StrongBox<int>(), CancellationToken.None])!;
             await (Task)pending.GetType().GetMethod("AsTask")!.Invoke(pending, null)!;
+            await WaitForHeartbeatCallbacksAsync(coordinator);
         }
         finally
         {
@@ -1425,6 +1427,7 @@ public sealed partial class ConsumerDirtyCommitTests
             coordinator,
             [coordinatorId, false, true, new StrongBox<int>(), CancellationToken.None])!;
         await (Task)pending.GetType().GetMethod("AsTask")!.Invoke(pending, null)!;
+        await WaitForHeartbeatCallbacksAsync(coordinator);
         await (ValueTask)ensureAssignment.Invoke(consumer, [timeout.Token])!;
 
         await Assert.That(consumer.Assignment.Contains(RevokedP1)).IsTrue();
