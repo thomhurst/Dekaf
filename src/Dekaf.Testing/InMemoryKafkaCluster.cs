@@ -238,7 +238,7 @@ public sealed partial class InMemoryKafkaCluster
         string groupId,
         string memberId,
         IEnumerable<TopicPartition> subscribedPartitions,
-        out long registrationId, string? groupInstanceId = null)
+        out long registrationId, string? groupInstanceId = null, long previousRegistrationId = 0)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
         ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
@@ -258,8 +258,12 @@ public sealed partial class InMemoryKafkaCluster
                 _consumerGroupMembers[groupId] = members;
             }
 
+            var hasPreviousMember = members.TryGetValue(memberId, out var replaced);
+            var ownership = hasPreviousMember && replaced.RegistrationId == previousRegistrationId
+                ? replaced.Ownership
+                : new Dictionary<TopicPartition, int>();
             registrationId = ++_nextConsumerGroupRegistrationId;
-            if (_staticConsumerGroupMembers is not null && members.TryGetValue(memberId, out var replaced) &&
+            if (_staticConsumerGroupMembers is not null && hasPreviousMember &&
                 replaced.GroupInstanceId is { } replacedInstance)
                 _staticConsumerGroupMembers.Remove((groupId, replacedInstance));
             if (groupInstanceId is not null)
@@ -271,7 +275,7 @@ public sealed partial class InMemoryKafkaCluster
                     members.Remove(previousMember!);
                 previousMember = memberId;
             }
-            members[memberId] = new ConsumerGroupMemberState(registrationId, partitions);
+            members[memberId] = new ConsumerGroupMemberState(registrationId, partitions, ownership);
             var generation = ++_nextConsumerGroupGeneration;
             _consumerGroupGenerations[groupId] = generation;
             RefreshConsumerGroupOwnershipUnderLock(groupId);
@@ -2156,11 +2160,11 @@ public sealed partial class InMemoryKafkaCluster
 
     private readonly record struct ConsumerGroupMemberState(
         long RegistrationId,
-        HashSet<TopicPartition> SubscribedPartitions)
-    {
+        HashSet<TopicPartition> SubscribedPartitions,
         // Ownership survives retained assignments, but changes after any loss and regain, even
         // when the consumer does not poll between those two group transitions.
-        public Dictionary<TopicPartition, int> Ownership { get; } = [];
+        Dictionary<TopicPartition, int> Ownership)
+    {
         public string? GroupInstanceId => (SubscribedPartitions as StaticMemberPartitions)?.GroupInstanceId;
     }
 

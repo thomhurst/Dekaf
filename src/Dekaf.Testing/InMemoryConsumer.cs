@@ -2625,7 +2625,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private void MarkOffsetCommittedUnderLock(TopicPartitionOffset offset)
     {
         var partition = new TopicPartition(offset.Topic, offset.Partition);
-        if (_storedOffsets.TryGetValue(partition, out var stored) && stored.Offset == offset.Offset)
+        if (_storedOffsets.TryGetValue(partition, out var stored) && stored == offset)
         {
             _storedOffsets.Remove(partition);
             _storedOffsetsVersion++;
@@ -3379,8 +3379,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private void StoreOffsetUnderLock(TopicPartitionOffset offset)
     {
         var partition = new TopicPartition(offset.Topic, offset.Partition);
-        if (!GetPotentialFaultAssignmentUnderLock(out _, out _).Contains(partition))
+        if (_groupId is not null && _subscriptionTopologyVersion >= 0 &&
+            !GetPotentialFaultAssignmentUnderLock(out _, out _).Contains(partition))
+        {
             return;
+        }
         _storedOffsets[partition] = offset;
         _storedOffsetsVersion++;
     }
@@ -3458,6 +3461,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             {
                 // Manual assignment may supply an explicit position before registration.
                 addedPositions[partition] = _subscriptionTopologyVersion < 0 &&
+                                            !_assignmentOwnership.ContainsKey(partition) &&
                                             _positions.TryGetValue(partition, out var position)
                     ? position
                     : GetStartOffset(partition);
@@ -3466,8 +3470,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         foreach (var partition in _positions.Keys.ToArray())
         {
-            if (!current.Contains(partition) || addedPositions.ContainsKey(partition))
+            if (!current.Contains(partition) ||
+                addedPositions.ContainsKey(partition) &&
+                (_subscriptionTopologyVersion >= 0 || _assignmentOwnership.ContainsKey(partition)))
+            {
                 RevokePartitionUnderLock(partition);
+            }
         }
         foreach (var (partition, position) in addedPositions)
             _positions[partition] = position;
@@ -3584,11 +3592,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         if (_groupId is null || _memberId is null)
             return;
 
+        var previousRegistrationId = _consumerGroupRegistrationId;
         _consumerGroupGeneration = _cluster.RegisterConsumerGroupMember(
             _groupId,
             _memberId,
             _assignment,
-            out _consumerGroupRegistrationId, _options.GroupInstanceId);
+            out _consumerGroupRegistrationId, _options.GroupInstanceId, previousRegistrationId);
         _ = GetCurrentAssignmentUnderLock();
     }
 
