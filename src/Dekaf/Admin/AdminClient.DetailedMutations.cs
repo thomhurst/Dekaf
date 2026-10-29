@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Dekaf.Errors;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -10,7 +11,11 @@ public sealed partial class AdminClient
     private readonly record struct MutationProtocol(ApiKey ApiKey, short MinimumVersion, short MaximumVersion,
         string Operation, string? GroupId = null, bool BrokerOrController = false);
 
-    private async ValueTask<IReadOnlyDictionary<TKey, AdminMutationResult>> ExecuteDetailedMutationAsync<TKey, TItem, TRequest, TResponse>(
+    private async ValueTask<IReadOnlyDictionary<TKey, AdminMutationResult>> ExecuteDetailedMutationAsync<
+        TKey,
+        TItem,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         List<TItem> items, Func<TItem, TKey> getKey, MutationProtocol protocol, int timeoutMs,
         Func<List<TItem>, short, Dictionary<TKey, AdminMutationResult>, TRequest> createRequest,
         Func<List<TItem>, TResponse, Dictionary<TKey, AdminMutationResult>> readResponse,

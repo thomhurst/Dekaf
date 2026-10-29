@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace Dekaf.Networking;
 
 /// <summary>
@@ -21,7 +23,9 @@ internal sealed class KafkaRequestWriteContext
 
 internal interface IKafkaRequestCancellationConnection
 {
-    ValueTask<TResponse> SendWithResponseCancellationAsync<TRequest, TResponse>(
+    ValueTask<TResponse> SendWithResponseCancellationAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request, short apiVersion, KafkaRequestWriteContext context,
         CancellationToken cancellationToken)
         where TRequest : Protocol.IKafkaRequest<TResponse>
@@ -32,7 +36,9 @@ internal interface IKafkaRequestAfterWriteCancellationConnection
 {
     // The caller's token bounds the request until its frame is written; after that only
     // the context's response token (or the request timeout) bounds the wait for the answer.
-    ValueTask<TResponse> SendWithResponseCancellationAfterWriteAsync<TRequest, TResponse>(
+    ValueTask<TResponse> SendWithResponseCancellationAfterWriteAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request, short apiVersion, KafkaRequestWriteContext context,
         CancellationToken cancellationToken)
         where TRequest : Protocol.IKafkaRequest<TResponse>

@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using Dekaf.Compression;
 using Dekaf.Consumer;
@@ -3463,7 +3464,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         return true;
     }
 
-    private async ValueTask<TResponse> SendWithConnectionLeaseAsync<TRequest, TResponse>(
+    private async ValueTask<TResponse> SendWithConnectionLeaseAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         int brokerId,
         TRequest request,
         CancellationToken cancellationToken,

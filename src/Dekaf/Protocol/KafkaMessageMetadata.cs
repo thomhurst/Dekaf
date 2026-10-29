@@ -1,8 +1,12 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 
 namespace Dekaf.Protocol;
 
-internal static class KafkaMessageMetadata<TRequest, TResponse>
+// Legacy targets cache reflection delegates; generic callers must preserve the discovered members.
+internal static class KafkaMessageMetadata<
+    [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+    [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>
     where TRequest : IKafkaRequest<TResponse>
     where TResponse : IKafkaResponse
 {

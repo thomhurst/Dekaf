@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks.Sources;
 using Dekaf.Protocol;
@@ -32,7 +33,9 @@ public interface IKafkaConnection : IAsyncDisposable
     /// <summary>
     /// Sends a request and waits for the response.
     /// </summary>
-    ValueTask<TResponse> SendAsync<TRequest, TResponse>(
+    ValueTask<TResponse> SendAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request,
         short apiVersion,
         CancellationToken cancellationToken = default)
@@ -43,7 +46,9 @@ public interface IKafkaConnection : IAsyncDisposable
     /// Sends a request without waiting for a response (fire-and-forget).
     /// Used for Produce requests with acks=0.
     /// </summary>
-    ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
+    ValueTask SendFireAndForgetAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request,
         short apiVersion,
         CancellationToken cancellationToken = default)
@@ -55,7 +60,9 @@ public interface IKafkaConnection : IAsyncDisposable
     /// Unlike SendAsync, this method returns immediately after writing the request,
     /// enabling pipelining of multiple requests over a single connection.
     /// </summary>
-    Task<TResponse> SendPipelinedAsync<TRequest, TResponse>(
+    Task<TResponse> SendPipelinedAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request,
         short apiVersion,
         CancellationToken cancellationToken = default)
@@ -73,7 +80,9 @@ public interface IKafkaConnection : IAsyncDisposable
     /// use the standard Send methods instead, which correctly distinguish timeout from explicit cancellation.
     /// If the token does not carry a timeout, flush operations may block indefinitely.
     /// </remarks>
-    ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
+    ValueTask SendFireAndForgetWithCallerTimeoutAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request,
         short apiVersion,
         CancellationToken cancellationToken = default)
@@ -91,7 +100,9 @@ public interface IKafkaConnection : IAsyncDisposable
     /// use the standard Send methods instead, which correctly distinguish timeout from explicit cancellation.
     /// If the token does not carry a timeout, flush operations may block indefinitely.
     /// </remarks>
-    Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
+    Task<TResponse> SendPipelinedWithCallerTimeoutAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request,
         short apiVersion,
         CancellationToken cancellationToken = default)
@@ -113,14 +124,18 @@ internal interface IKafkaPipelinedWriteCompletionConnection
     /// Response completion runs inline on the receive-dispatch path. Code awaiting the returned
     /// response must remain bounded and non-blocking until its next asynchronous yield.
     /// </remarks>
-    ValueTask<PipelinedResponse<TResponse>> SendPipelinedAfterWriteAsync<TRequest, TResponse>(
+    ValueTask<PipelinedResponse<TResponse>> SendPipelinedAfterWriteAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request,
         short apiVersion,
         CancellationToken cancellationToken = default)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse;
 
-    ValueTask<PipelinedResponse<TResponse>> SendPipelinedWithCallerTimeoutAfterWriteAsync<TRequest, TResponse>(
+    ValueTask<PipelinedResponse<TResponse>> SendPipelinedWithCallerTimeoutAfterWriteAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request,
         short apiVersion,
         CancellationToken cancellationToken = default)
@@ -134,7 +149,9 @@ internal interface IKafkaPipelinedWriteCompletionConnection
 /// </summary>
 internal interface IKafkaRequestWriteObserverConnection
 {
-    ValueTask<TResponse> SendWithWriteObservationAsync<TRequest, TResponse>(
+    ValueTask<TResponse> SendWithWriteObservationAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request,
         short apiVersion,
         Action requestWriteStarted,
@@ -142,7 +159,9 @@ internal interface IKafkaRequestWriteObserverConnection
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse;
 
-    ValueTask<PipelinedResponse<TResponse>> SendPipelinedWithWriteObservationAfterWriteAsync<TRequest, TResponse>(
+    ValueTask<PipelinedResponse<TResponse>> SendPipelinedWithWriteObservationAfterWriteAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request,
         short apiVersion,
         Action requestWriteStarted,

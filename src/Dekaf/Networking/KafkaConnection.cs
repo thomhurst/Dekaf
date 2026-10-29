@@ -636,7 +636,9 @@ public sealed partial class KafkaConnection :
         return socket;
     }
 
-    public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
+    public ValueTask<TResponse> SendAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request,
         short apiVersion,
         CancellationToken cancellationToken = default)
@@ -644,7 +646,9 @@ public sealed partial class KafkaConnection :
         where TResponse : IKafkaResponse
         => SendAsyncCore<TRequest, TResponse>(request, apiVersion, requireReady: true, cancellationToken);
 
-    internal ValueTask<TResponse> SendWithTelemetryAsync<TRequest, TResponse>(
+    internal ValueTask<TResponse> SendWithTelemetryAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request, short apiVersion, ClientTelemetryMetricCollector collector,
         CancellationToken cancellationToken)
         where TRequest : IKafkaRequest<TResponse>
@@ -654,7 +658,9 @@ public sealed partial class KafkaConnection :
                 requireReady: true, new TelemetryObservation(collector), cancellationToken)
             : SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
 
-    internal ValueTask<TResponse> SendWithTelemetryAsync<TRequest, TResponse>(
+    internal ValueTask<TResponse> SendWithTelemetryAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request, short apiVersion, ClientTelemetryMetricCollector collector,
         Action requestWriteStarted, CancellationToken cancellationToken)
         where TRequest : IKafkaRequest<TResponse>
@@ -672,7 +678,9 @@ public sealed partial class KafkaConnection :
     /// take over, bounding the wait for the response. Telemetry goes to the connection's own
     /// collector, or else to <paramref name="collector"/>.
     /// </summary>
-    internal ValueTask<TResponse> SendWithResponseCancellationAfterWriteAsync<TRequest, TResponse>(
+    internal ValueTask<TResponse> SendWithResponseCancellationAfterWriteAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request, short apiVersion, ClientTelemetryMetricCollector? collector,
         KafkaRequestWriteContext context, CancellationToken cancellationToken)
         where TRequest : IKafkaRequest<TResponse>
@@ -680,7 +688,9 @@ public sealed partial class KafkaConnection :
         => SendAsyncCore<TRequest, TResponse, ResponseCancellationAfterWriteObservation>(request, apiVersion,
             requireReady: true, new ResponseCancellationAfterWriteObservation(collector, context), cancellationToken);
 
-    internal ValueTask<PipelinedResponse<TResponse>> SendPipelinedWithTelemetryAfterWriteAsync<TRequest, TResponse>(
+    internal ValueTask<PipelinedResponse<TResponse>> SendPipelinedWithTelemetryAfterWriteAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request, short apiVersion, ClientTelemetryMetricCollector collector,
         Action requestWriteStarted, CancellationToken cancellationToken)
         where TRequest : IKafkaRequest<TResponse>
@@ -696,7 +706,9 @@ public sealed partial class KafkaConnection :
         TRequest request, ClientTelemetryMetricCollector? supplied = null)
         => _telemetryMetricCollector ?? supplied ?? (request as IClientTelemetrySource)?.TelemetryMetricCollector;
 
-    private void RecordClientTelemetry<TRequest, TResponse>(ClientTelemetryMetricCollector? collector,
+    private void RecordClientTelemetry<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(ClientTelemetryMetricCollector? collector,
         TResponse response, short apiVersion, long started)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
@@ -710,7 +722,9 @@ public sealed partial class KafkaConnection :
             collector.RecordBrokerThrottle(KafkaMessageMetadata<TRequest, TResponse>.GetThrottleTimeMs(response));
     }
 
-    ValueTask<TResponse> IKafkaRequestWriteObserverConnection.SendWithWriteObservationAsync<TRequest, TResponse>(
+    ValueTask<TResponse> IKafkaRequestWriteObserverConnection.SendWithWriteObservationAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request,
         short apiVersion,
         Action requestWriteStarted,
@@ -722,19 +736,25 @@ public sealed partial class KafkaConnection :
             cancellationToken,
             requestWriteStarted);
 
-    ValueTask<TResponse> IKafkaRequestAfterWriteCancellationConnection.SendWithResponseCancellationAfterWriteAsync<TRequest, TResponse>(
+    ValueTask<TResponse> IKafkaRequestAfterWriteCancellationConnection.SendWithResponseCancellationAfterWriteAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request, short apiVersion, KafkaRequestWriteContext context,
         CancellationToken cancellationToken)
         => SendWithResponseCancellationAfterWriteAsync<TRequest, TResponse>(request, apiVersion,
             collector: null, context, cancellationToken);
 
-    ValueTask<TResponse> IKafkaRequestCancellationConnection.SendWithResponseCancellationAsync<TRequest, TResponse>(
+    ValueTask<TResponse> IKafkaRequestCancellationConnection.SendWithResponseCancellationAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request, short apiVersion, KafkaRequestWriteContext context,
         CancellationToken cancellationToken)
         => SendAsyncCore<TRequest, TResponse, CancellationObservation>(request, apiVersion,
             requireReady: true, new CancellationObservation(context), cancellationToken);
 
-    private ValueTask<TResponse> SendAsyncCore<TRequest, TResponse>(
+    private ValueTask<TResponse> SendAsyncCore<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request,
         short apiVersion,
         bool requireReady,
@@ -821,7 +841,10 @@ public sealed partial class KafkaConnection :
         public CancellationToken WhileWriting(CancellationToken cancellationToken) => AfterWriteStarts(cancellationToken);
     }
 
-    private async ValueTask<TResponse> SendAsyncCore<TRequest, TResponse, TObservation>(
+    private async ValueTask<TResponse> SendAsyncCore<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse,
+        TObservation>(
         TRequest request,
         short apiVersion,
         bool requireReady,
@@ -1088,7 +1111,9 @@ public sealed partial class KafkaConnection :
         return retryVersion;
     }
 
-    public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
+    public ValueTask SendFireAndForgetAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request,
         short apiVersion,
         CancellationToken cancellationToken = default)
@@ -1107,7 +1132,9 @@ public sealed partial class KafkaConnection :
     /// use the standard Send methods instead, which correctly distinguish timeout from explicit cancellation.
     /// If the token does not carry a timeout, flush operations may block indefinitely.
     /// </remarks>
-    public ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
+    public ValueTask SendFireAndForgetWithCallerTimeoutAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request,
         short apiVersion,
         CancellationToken cancellationToken = default)
@@ -1115,7 +1142,9 @@ public sealed partial class KafkaConnection :
         where TResponse : IKafkaResponse
         => SendFireAndForgetCoreAsync<TRequest, TResponse>(request, apiVersion, callerOwnsTimeout: true, cancellationToken);
 
-    private async ValueTask SendFireAndForgetCoreAsync<TRequest, TResponse>(
+    private async ValueTask SendFireAndForgetCoreAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request,
         short apiVersion,
         bool callerOwnsTimeout,
@@ -1165,7 +1194,9 @@ public sealed partial class KafkaConnection :
         }
     }
 
-    public Task<TResponse> SendPipelinedAsync<TRequest, TResponse>(
+    public Task<TResponse> SendPipelinedAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request,
         short apiVersion,
         CancellationToken cancellationToken = default)
@@ -1188,7 +1219,9 @@ public sealed partial class KafkaConnection :
     /// use the standard Send methods instead, which correctly distinguish timeout from explicit cancellation.
     /// If the token does not carry a timeout, flush operations may block indefinitely.
     /// </remarks>
-    public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
+    public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request,
         short apiVersion,
         CancellationToken cancellationToken = default)
@@ -1200,7 +1233,9 @@ public sealed partial class KafkaConnection :
             callerOwnsTimeout: true,
             cancellationToken);
 
-    ValueTask<PipelinedResponse<TResponse>> IKafkaPipelinedWriteCompletionConnection.SendPipelinedAfterWriteAsync<TRequest, TResponse>(
+    ValueTask<PipelinedResponse<TResponse>> IKafkaPipelinedWriteCompletionConnection.SendPipelinedAfterWriteAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request,
         short apiVersion,
         CancellationToken cancellationToken)
@@ -1211,7 +1246,9 @@ public sealed partial class KafkaConnection :
             cancellationToken);
 
     ValueTask<PipelinedResponse<TResponse>>
-        IKafkaRequestWriteObserverConnection.SendPipelinedWithWriteObservationAfterWriteAsync<TRequest, TResponse>(
+        IKafkaRequestWriteObserverConnection.SendPipelinedWithWriteObservationAfterWriteAsync<
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
             TRequest request,
             short apiVersion,
             Action requestWriteStarted,
@@ -1224,7 +1261,9 @@ public sealed partial class KafkaConnection :
             requestWriteStarted);
 
     ValueTask<PipelinedResponse<TResponse>>
-        IKafkaPipelinedWriteCompletionConnection.SendPipelinedWithCallerTimeoutAfterWriteAsync<TRequest, TResponse>(
+        IKafkaPipelinedWriteCompletionConnection.SendPipelinedWithCallerTimeoutAfterWriteAsync<
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
             TRequest request,
             short apiVersion,
             CancellationToken cancellationToken)
@@ -1234,7 +1273,9 @@ public sealed partial class KafkaConnection :
             callerOwnsTimeout: true,
             cancellationToken);
 
-    private async Task<TResponse> SendPipelinedCoreAsync<TRequest, TResponse>(
+    private async Task<TResponse> SendPipelinedCoreAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request,
         short apiVersion,
         bool callerOwnsTimeout,
@@ -1251,7 +1292,9 @@ public sealed partial class KafkaConnection :
         return await responseTask.AsValueTask().ConfigureAwait(false);
     }
 
-    private ValueTask<PipelinedResponse<TResponse>> SendPipelinedAfterWriteCoreAsync<TRequest, TResponse>(
+    private ValueTask<PipelinedResponse<TResponse>> SendPipelinedAfterWriteCoreAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request, short apiVersion, bool callerOwnsTimeout,
         CancellationToken cancellationToken, Action? requestWriteStarted = null)
         where TRequest : IKafkaRequest<TResponse>
@@ -1259,7 +1302,10 @@ public sealed partial class KafkaConnection :
         => SendPipelinedAfterWriteCoreAsync<TRequest, TResponse, WriteObservation>(request,
             apiVersion, callerOwnsTimeout, new WriteObservation(requestWriteStarted), cancellationToken);
 
-    private async ValueTask<PipelinedResponse<TResponse>> SendPipelinedAfterWriteCoreAsync<TRequest, TResponse, TObservation>(
+    private async ValueTask<PipelinedResponse<TResponse>> SendPipelinedAfterWriteCoreAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse,
+        TObservation>(
         TRequest request, short apiVersion, bool callerOwnsTimeout,
         TObservation observation, CancellationToken cancellationToken)
         where TRequest : IKafkaRequest<TResponse>
@@ -1384,7 +1430,9 @@ public sealed partial class KafkaConnection :
             _cancelledCorrelationIds.TryAdd(correlationId);
     }
 
-    internal static int GetPipelinedResponsePoolCount<TRequest, TResponse>()
+    internal static int GetPipelinedResponsePoolCount<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>()
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
         => PooledPipelinedResponse<TRequest, TResponse>.ApproximatePoolCount;
@@ -1392,7 +1440,9 @@ public sealed partial class KafkaConnection :
     internal static Action? PipelinedResponseBeforePublishTestHook;
     internal static Action? PendingRequestDrainStartedTestHook;
 
-    private sealed class PooledPipelinedResponse<TRequest, TResponse> :
+    private sealed class PooledPipelinedResponse<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse> :
         IPipelinedResponseSource<TResponse>,
         IPipelinedResponseExternalOwnership
         where TRequest : IKafkaRequest<TResponse>
@@ -1819,7 +1869,9 @@ public sealed partial class KafkaConnection :
     /// Awaits the response for a pending request, applies timeout, and parses the response.
     /// Shared between SendAsync and SendPipelinedAsync.
     /// </summary>
-    private async Task<TResponse> AwaitAndParseResponseAsync<TRequest, TResponse>(
+    private async Task<TResponse> AwaitAndParseResponseAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         PooledPendingRequest pending,
         int correlationId,
         short apiVersion,
@@ -1895,7 +1947,9 @@ public sealed partial class KafkaConnection :
         }
     }
 
-    private static TResponse ParsePipelinedResponse<TRequest, TResponse>(
+    private static TResponse ParsePipelinedResponse<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         PooledResponseBuffer pooledBuffer,
         short apiVersion,
         bool checkCrcs,
@@ -1926,7 +1980,9 @@ public sealed partial class KafkaConnection :
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void ObserveBrokerThrottle<TRequest, TResponse>(
+    private void ObserveBrokerThrottle<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TResponse response,
         short apiVersion)
         where TRequest : IKafkaRequest<TResponse>
@@ -1941,7 +1997,9 @@ public sealed partial class KafkaConnection :
         }
     }
 
-    internal static TResponse ParseFetchResponse<TRequest, TResponse>(
+    internal static TResponse ParseFetchResponse<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         PooledResponseBuffer pooledBuffer,
         short apiVersion,
         bool checkCrcs = false,
@@ -2026,7 +2084,9 @@ public sealed partial class KafkaConnection :
     /// The ArrayPool rent/return is per-request to the broker (per-batch for produce, per-fetch
     /// for consume), so the overhead is negligible.
     /// </remarks>
-    private (byte[] Buffer, int Length) PreSerializeRequest<TRequest, TResponse>(
+    private (byte[] Buffer, int Length) PreSerializeRequest<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request,
         int correlationId,
         short apiVersion,
@@ -2080,7 +2140,9 @@ public sealed partial class KafkaConnection :
     /// the pre-serialized bytes and flush. This minimizes lock hold time by keeping
     /// CPU-bound serialization out of the critical section.
     /// </summary>
-    private ValueTask PreSerializeAndWriteAsync<TRequest, TResponse>(
+    private ValueTask PreSerializeAndWriteAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request,
         int correlationId,
         short apiVersion,
@@ -2094,7 +2156,10 @@ public sealed partial class KafkaConnection :
             correlationId, apiVersion, headerVersion, callerOwnsTimeout,
             new WriteObservation(requestWriteStarted), cancellationToken);
 
-    private async ValueTask PreSerializeAndWriteCoreAsync<TRequest, TResponse, TObservation>(
+    private async ValueTask PreSerializeAndWriteCoreAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse,
+        TObservation>(
         TRequest request,
         int correlationId,
         short apiVersion,
@@ -4350,7 +4415,9 @@ public sealed partial class KafkaConnection :
         }
     }
 
-    private async ValueTask<TResponse> SendSaslMessageAsync<TRequest, TResponse>(
+    private async ValueTask<TResponse> SendSaslMessageAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
         TRequest request,
         short apiVersion,
         CancellationToken cancellationToken)
