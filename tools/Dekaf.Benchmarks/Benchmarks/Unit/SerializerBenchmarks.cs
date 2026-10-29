@@ -37,6 +37,10 @@ public class SerializerBenchmarks
     private JsonSerializer<string> _jsonSerializer = null!;
     private byte[] _jsonBytes = null!;
     private SerializationContext _context;
+    private JsonSerializer<JsonPayload> _jsonPayloadSerializer = null!;
+    private JsonPayload _jsonPayload = null!;
+    private JsonPayload _largeJsonPayload = null!;
+    private ArrayBufferWriter<byte> _largeJsonBuffer = null!;
 
     // Persistent buffers for ReusableBufferWriter, mirroring the producer's
     // thread-local KeySerializationBuffer/ValueSerializationBuffer.
@@ -59,6 +63,11 @@ public class SerializerBenchmarks
             Topic = "test-topic",
             Component = SerializationComponent.Value
         };
+
+        _jsonPayloadSerializer = new JsonSerializer<JsonPayload>();
+        _jsonPayload = new JsonPayload { Id = 42, Name = _mediumString };
+        _largeJsonPayload = new JsonPayload { Id = 42, Name = new string('x', 2 * 1024 * 1024) };
+        _largeJsonBuffer = new ArrayBufferWriter<byte>(3 * 1024 * 1024);
 
         // Pre-create string bytes for deserialization
         _stringBytes = System.Text.Encoding.UTF8.GetBytes(_mediumString);
@@ -116,6 +125,33 @@ public class SerializerBenchmarks
     {
         _buffer.ResetWrittenCount();
         Serializers.Int32.Serialize(12345678, ref _buffer, _context);
+    }
+
+    // ===== JSON Serialization =====
+
+    // Steady state of the thread-static scratch buffer in JsonSerializer<T>.
+    [BenchmarkCategory("Scalar")]
+    [Benchmark(Description = "Serialize JSON (small object)")]
+    public void SerializeJson_Small()
+    {
+        _buffer.ResetWrittenCount();
+        _jsonPayloadSerializer.Serialize(_jsonPayload, ref _buffer, _context);
+    }
+
+    [BenchmarkCategory("Json")]
+    [Benchmark(Description = "Serialize JSON (2 MiB object)")]
+    public void SerializeJson_Large()
+    {
+        _largeJsonBuffer.ResetWrittenCount();
+        _jsonPayloadSerializer.Serialize(_largeJsonPayload, ref _largeJsonBuffer, _context);
+    }
+
+    [BenchmarkCategory("Json")]
+    [Benchmark(Description = "Serialize JSON (2 MiB then small)", OperationsPerInvoke = 2)]
+    public void SerializeJson_LargeThenSmall()
+    {
+        SerializeJson_Large();
+        SerializeJson_Small();
     }
 
     // ===== Batch Serialization (100 messages) =====
@@ -177,5 +213,11 @@ public class SerializerBenchmarks
         Serializers.String.Serialize(_mediumString, ref writer, _context);
         writer.ToPooledMemory().Return();
         writer.UpdateBufferRef(ref _reusableValueBuffer);
+    }
+
+    public sealed class JsonPayload
+    {
+        public int Id { get; init; }
+        public string Name { get; init; } = string.Empty;
     }
 }
