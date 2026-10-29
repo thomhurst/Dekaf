@@ -752,109 +752,113 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         var schemaEntry = GetSchemaForContext(context.Topic, context.Component == SerializationComponent.Key);
         var schemaId = schemaEntry.SchemaId;
 
-        var payloadBuffer = SchemaRegistryBuffers.PayloadBuffer ??= new ArrayBufferWriter<byte>(initialCapacity: 4096);
-        payloadBuffer.ResetWrittenCount();
+        using var payloadLease = new SchemaRegistryBuffers.Lease();
+        var payloadBuffer = payloadLease.Buffer;
 
-        var writerCache = t_writerCache ??= new JsonWriterCache();
-        var jsonWriter = writerCache.GetWriter(payloadBuffer, _jsonTypeInfo?.Options ?? _jsonOptions!);
-
+        var writerCache = t_writerCache ?? new JsonWriterCache();
+        t_writerCache = null;
         try
         {
-            _serializePayload(jsonWriter, value);
-            jsonWriter.Flush();
-        }
-        catch
-        {
-            writerCache.DiscardCurrent();
-            throw;
-        }
+            var jsonWriter = writerCache.GetWriter(payloadBuffer, _jsonTypeInfo?.Options ?? _jsonOptions!);
 
-        var payload = payloadBuffer.WrittenMemory;
-        var validator = _validatorFactory?.GetOrCreate(schemaEntry.Schema!);
-        var validationRules = _validationRulesFactory?.GetOrCreate(schemaEntry.Schema!);
-
-        if (_ruleExecutor is null)
-        {
-            if (validationRules is null)
-            {
-                validator?.Validate(payload.Span, schemaId);
-            }
-            else
-            {
-                if (_validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
-                    validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
-                validator?.Validate(payload.Span, schemaId);
-                if (_validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
-                    validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
-            }
-        }
-        else
-        {
-            var ruleContext = SchemaRegistryRuleContext.Rent(
-                context.Topic,
-                context.Component,
-                schemaId,
-                schemaEntry.Subject,
-                schemaEntry.Schema,
-                SchemaRegistryPayloadFormat.Json);
             try
             {
-                if (_ruleExecutor is SchemaRegistryRuleExecutor builtInRuleExecutor &&
-                    (validator is not null || validationRules is not null))
+                _serializePayload(jsonWriter, value);
+                jsonWriter.Flush();
+            }
+            catch
+            {
+                writerCache.DiscardCurrent();
+                throw;
+            }
+
+            var payload = payloadBuffer.WrittenMemory;
+            var validator = _validatorFactory?.GetOrCreate(schemaEntry.Schema!);
+            var validationRules = _validationRulesFactory?.GetOrCreate(schemaEntry.Schema!);
+
+            if (_ruleExecutor is null)
+            {
+                if (validationRules is null)
                 {
-                    payload = builtInRuleExecutor.TransformSerializedPayload(
-                        payload,
-                        ruleContext,
-                        validator,
-                        schemaId,
-                        validationRules,
-                        _validationRulesExecution,
-                        _validationRulesFailFast);
+                    validator?.Validate(payload.Span, schemaId);
                 }
                 else
                 {
-                    if (validationRules is not null &&
-                        _validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+                    if (_validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
                         validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
                     validator?.Validate(payload.Span, schemaId);
-                    payload = _ruleExecutor.TransformSerializedPayload(payload, ruleContext);
-                    if (validationRules is not null &&
-                        _validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                    if (_validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
                         validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
                 }
             }
-            finally
+            else
             {
-                ruleContext.Return();
+                var ruleContext = SchemaRegistryRuleContext.Rent(
+                    context.Topic,
+                    context.Component,
+                    schemaId,
+                    schemaEntry.Subject,
+                    schemaEntry.Schema,
+                    SchemaRegistryPayloadFormat.Json);
+                try
+                {
+                    if (_ruleExecutor is SchemaRegistryRuleExecutor builtInRuleExecutor &&
+                        (validator is not null || validationRules is not null))
+                    {
+                        payload = builtInRuleExecutor.TransformSerializedPayload(
+                            payload,
+                            ruleContext,
+                            validator,
+                            schemaId,
+                            validationRules,
+                            _validationRulesExecution,
+                            _validationRulesFailFast);
+                    }
+                    else
+                    {
+                        if (validationRules is not null &&
+                            _validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+                            validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
+                        validator?.Validate(payload.Span, schemaId);
+                        payload = _ruleExecutor.TransformSerializedPayload(payload, ruleContext);
+                        if (validationRules is not null &&
+                            _validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                            validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
+                    }
+                }
+                finally
+                {
+                    ruleContext.Return();
+                }
             }
-        }
 
-        int totalSize;
-        if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
-        {
-            totalSize = SchemaIdentityFraming.SchemaIdFrameSize + payload.Length;
-            var span = destination.GetSpan(totalSize);
-            span[0] = MagicByte;
-            BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
-            payload.Span.CopyTo(span.Slice(SchemaIdentityFraming.SchemaIdFrameSize));
+            int totalSize;
+            if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
+            {
+                totalSize = SchemaIdentityFraming.SchemaIdFrameSize + payload.Length;
+                var span = destination.GetSpan(totalSize);
+                span[0] = MagicByte;
+                BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
+                payload.Span.CopyTo(span.Slice(SchemaIdentityFraming.SchemaIdFrameSize));
+            }
+            else
+            {
+                totalSize = payload.Length;
+                var span = destination.GetSpan(totalSize);
+                SchemaIdentitySerialization.WriteIdentity(
+                    span,
+                    context,
+                    in schemaEntry,
+                    SchemaIdSerializerStrategy.Header);
+                payload.Span.CopyTo(span);
+            }
+            destination.Advance(totalSize);
         }
-        else
+        finally
         {
-            totalSize = payload.Length;
-            var span = destination.GetSpan(totalSize);
-            SchemaIdentitySerialization.WriteIdentity(
-                span,
-                context,
-                in schemaEntry,
-                SchemaIdSerializerStrategy.Header);
-            payload.Span.CopyTo(span);
-        }
-        destination.Advance(totalSize);
-
-        if (payloadBuffer.Capacity > 1024 * 1024)
-        {
-            SchemaRegistryBuffers.PayloadBuffer = null;
-            writerCache.DiscardCurrent();
+            if (payloadBuffer.Capacity > 1024 * 1024)
+                writerCache.DiscardCurrent();
+            t_writerCache = writerCache;
         }
     }
 
@@ -885,109 +889,113 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     {
         var schemaId = schemaEntry.SchemaId;
 
-        var payloadBuffer = SchemaRegistryBuffers.PayloadBuffer ??= new ArrayBufferWriter<byte>(initialCapacity: 4096);
-        payloadBuffer.ResetWrittenCount();
+        using var payloadLease = new SchemaRegistryBuffers.Lease();
+        var payloadBuffer = payloadLease.Buffer;
 
-        var writerCache = t_writerCache ??= new JsonWriterCache();
-        var jsonWriter = writerCache.GetWriter(payloadBuffer, _jsonTypeInfo?.Options ?? _jsonOptions!);
-
+        var writerCache = t_writerCache ?? new JsonWriterCache();
+        t_writerCache = null;
         try
         {
-            _serializePayload(jsonWriter, value);
-            jsonWriter.Flush();
-        }
-        catch
-        {
-            writerCache.DiscardCurrent();
-            throw;
-        }
+            var jsonWriter = writerCache.GetWriter(payloadBuffer, _jsonTypeInfo?.Options ?? _jsonOptions!);
 
-        var payload = payloadBuffer.WrittenMemory;
-        var validator = _validatorFactory?.GetOrCreate(schemaEntry.Schema!);
-        var validationRules = _validationRulesFactory?.GetOrCreate(schemaEntry.Schema!);
-        if (_ruleExecutor is null)
-        {
-            if (validationRules is null)
-            {
-                validator?.Validate(payload.Span, schemaId);
-            }
-            else
-            {
-                if (_validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
-                    validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
-                validator?.Validate(payload.Span, schemaId);
-                if (_validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
-                    validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
-            }
-        }
-        else
-        {
-            var ruleContext = SchemaRegistryRuleContext.Rent(
-                context.Topic,
-                context.Component,
-                schemaId,
-                schemaEntry.Subject,
-                schemaEntry.Schema,
-                SchemaRegistryPayloadFormat.Json);
             try
             {
-                if (_ruleExecutor is SchemaRegistryRuleExecutor builtInRuleExecutor &&
-                    (validator is not null || validationRules is not null))
+                _serializePayload(jsonWriter, value);
+                jsonWriter.Flush();
+            }
+            catch
+            {
+                writerCache.DiscardCurrent();
+                throw;
+            }
+
+            var payload = payloadBuffer.WrittenMemory;
+            var validator = _validatorFactory?.GetOrCreate(schemaEntry.Schema!);
+            var validationRules = _validationRulesFactory?.GetOrCreate(schemaEntry.Schema!);
+            if (_ruleExecutor is null)
+            {
+                if (validationRules is null)
                 {
-                    payload = builtInRuleExecutor.TransformSerializedPayload(
-                        payload,
-                        ruleContext,
-                        validator,
-                        schemaId,
-                        validationRules,
-                        _validationRulesExecution,
-                        _validationRulesFailFast);
+                    validator?.Validate(payload.Span, schemaId);
                 }
                 else
                 {
-                    if (validationRules is not null &&
-                        _validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+                    if (_validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
                         validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
                     validator?.Validate(payload.Span, schemaId);
-                    payload = _ruleExecutor.TransformSerializedPayload(payload, ruleContext);
-                    if (validationRules is not null &&
-                        _validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                    if (_validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
                         validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
                 }
             }
-            finally
+            else
             {
-                ruleContext.Return();
+                var ruleContext = SchemaRegistryRuleContext.Rent(
+                    context.Topic,
+                    context.Component,
+                    schemaId,
+                    schemaEntry.Subject,
+                    schemaEntry.Schema,
+                    SchemaRegistryPayloadFormat.Json);
+                try
+                {
+                    if (_ruleExecutor is SchemaRegistryRuleExecutor builtInRuleExecutor &&
+                        (validator is not null || validationRules is not null))
+                    {
+                        payload = builtInRuleExecutor.TransformSerializedPayload(
+                            payload,
+                            ruleContext,
+                            validator,
+                            schemaId,
+                            validationRules,
+                            _validationRulesExecution,
+                            _validationRulesFailFast);
+                    }
+                    else
+                    {
+                        if (validationRules is not null &&
+                            _validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+                            validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
+                        validator?.Validate(payload.Span, schemaId);
+                        payload = _ruleExecutor.TransformSerializedPayload(payload, ruleContext);
+                        if (validationRules is not null &&
+                            _validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                            validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
+                    }
+                }
+                finally
+                {
+                    ruleContext.Return();
+                }
             }
-        }
 
-        int totalSize;
-        if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
-        {
-            totalSize = SchemaIdentityFraming.SchemaIdFrameSize + payload.Length;
-            var span = destination.GetSpan(totalSize);
-            span[0] = MagicByte;
-            BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
-            payload.Span.CopyTo(span.Slice(SchemaIdentityFraming.SchemaIdFrameSize));
-        }
-        else
-        {
-            totalSize = payload.Length;
-            var span = destination.GetSpan(totalSize);
-            SchemaIdentitySerialization.WriteIdentity(
-                span,
-                context,
-                in schemaEntry,
-                SchemaIdSerializerStrategy.Header);
-            payload.Span.CopyTo(span);
-        }
+            int totalSize;
+            if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
+            {
+                totalSize = SchemaIdentityFraming.SchemaIdFrameSize + payload.Length;
+                var span = destination.GetSpan(totalSize);
+                span[0] = MagicByte;
+                BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
+                payload.Span.CopyTo(span.Slice(SchemaIdentityFraming.SchemaIdFrameSize));
+            }
+            else
+            {
+                totalSize = payload.Length;
+                var span = destination.GetSpan(totalSize);
+                SchemaIdentitySerialization.WriteIdentity(
+                    span,
+                    context,
+                    in schemaEntry,
+                    SchemaIdSerializerStrategy.Header);
+                payload.Span.CopyTo(span);
+            }
 
-        destination.Advance(totalSize);
-
-        if (payloadBuffer.Capacity > 1024 * 1024)
+            destination.Advance(totalSize);
+        }
+        finally
         {
-            SchemaRegistryBuffers.PayloadBuffer = null;
-            writerCache.DiscardCurrent();
+            if (payloadBuffer.Capacity > 1024 * 1024)
+                writerCache.DiscardCurrent();
+            t_writerCache = writerCache;
         }
     }
 
