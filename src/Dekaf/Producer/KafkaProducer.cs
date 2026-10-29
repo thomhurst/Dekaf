@@ -488,6 +488,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             options,
             keySerializer,
             valueSerializer,
+            CreateCompressionCodecRegistry(options),
             CreateInfrastructure(options, loggerFactory, metadataOptions),
             loggerFactory,
             ownsInfrastructure: true,
@@ -513,6 +514,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             options,
             keySerializer,
             valueSerializer,
+            CreateCompressionCodecRegistry(options),
             (connectionPool, metadataManager, new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Producer)),
             loggerFactory,
             ownsInfrastructure: false,
@@ -606,6 +608,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         ProducerOptions options,
         ISerializer<TKey> keySerializer,
         ISerializer<TValue> valueSerializer,
+        CompressionCodecRegistry compressionCodecs,
         (ConnectionPool Pool, MetadataManager Metadata, ClientTelemetryMetricCollector TelemetryMetricCollector) infrastructure,
         ILoggerFactory? loggerFactory,
         bool ownsInfrastructure,
@@ -617,6 +620,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     {
         ExponentialRetryBackoff.Validate(options.RetryBackoffMs, options.RetryBackoffMaxMs);
         _options = options;
+        _compressionCodecs = compressionCodecs;
         _addPartitionsToTransaction = addPartitionsToTransaction ?? AddPartitionsToTransactionAsync;
         _transactionTimestampProvider = transactionTimestampProvider;
         // When an async serializer is configured for a component, its sync slot is forced to the
@@ -747,7 +751,6 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             connectionPool.RatchetPipeMemoryBucketCapacity(sizes.PipeMemoryArraysPerBucket);
         });
 
-        _compressionCodecs = CreateCompressionCodecRegistry(options);
         Action<string, int>? batchCompletionCallback = _uniformStickyPartitioner is null
             && _partitioner is IBatchCompletionAwarePartitioner batchCompletionAware
             ? batchCompletionAware.OnBatchComplete
@@ -818,27 +821,12 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
     private static CompressionCodecRegistry CreateCompressionCodecRegistry(ProducerOptions options)
     {
-        // Start from the global Default registry which includes codecs auto-registered
-        // by compression packages (e.g. Dekaf.Compression.Lz4) via [ModuleInitializer].
+        // Preserve optional and custom codecs from the global registry. Applying a
+        // level creates a producer-local snapshot and never mutates global defaults.
         var registry = CompressionCodecRegistry.Default;
-
-        if (options.CompressionLevel.HasValue)
-        {
-            var level = options.CompressionLevel.Value;
-
-            // Set the default compression level hint on the registry so external codec
-            // extensions (AddLz4, AddZstd) can use it as a fallback when registering
-            registry.DefaultCompressionLevel = level;
-
-            // Re-register the built-in Gzip codec with the specified level.
-            // The GzipCompressionCodec(int) constructor validates the range (0-9).
-            if (options.CompressionType == CompressionType.Gzip)
-            {
-                registry.Register(new GzipCompressionCodec(level));
-            }
-        }
-
-        return registry;
+        return options.CompressionLevel.HasValue
+            ? registry.WithCompressionLevel(options.CompressionType, options.CompressionLevel.Value)
+            : registry;
     }
 
     /// <summary>

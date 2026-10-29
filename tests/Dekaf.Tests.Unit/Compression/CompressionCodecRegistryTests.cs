@@ -1,3 +1,4 @@
+using System.Buffers;
 using Dekaf.Compression;
 using Dekaf.Protocol.Records;
 
@@ -103,5 +104,45 @@ public class CompressionCodecRegistryTests
     public async Task Default_SupportsGzip()
     {
         await Assert.That(CompressionCodecRegistry.Default.IsSupported(CompressionType.Gzip)).IsTrue();
+    }
+
+    [Test]
+    public async Task WithCompressionLevel_CustomCodec_CreatesLocalCodecAndPreservesOtherRegistrations()
+    {
+        var registry = new CompressionCodecRegistry { DefaultCompressionLevel = 3 };
+        var original = new ConfigurableCodec(3);
+        registry.Register(original);
+        var gzip = registry.GetCodec(CompressionType.Gzip);
+
+        var configured = registry.WithCompressionLevel(CompressionType.Lz4, 9);
+
+        await Assert.That(((ConfigurableCodec)configured.GetCodec(CompressionType.Lz4)).Level).IsEqualTo(9);
+        await Assert.That(registry.GetCodec(CompressionType.Lz4)).IsSameReferenceAs(original);
+        await Assert.That(original.Level).IsEqualTo(3);
+        await Assert.That(configured.GetCodec(CompressionType.Gzip)).IsSameReferenceAs(gzip);
+        await Assert.That(registry.DefaultCompressionLevel).IsEqualTo(3);
+        await Assert.That(configured.DefaultCompressionLevel).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task WithCompressionLevel_CodecWithoutLevels_DoesNotChangeRegistry()
+    {
+        var registry = new CompressionCodecRegistry();
+        var codec = registry.GetCodec(CompressionType.None);
+
+        var configured = registry.WithCompressionLevel(CompressionType.None, 9);
+
+        await Assert.That(configured).IsSameReferenceAs(registry);
+        await Assert.That(configured.GetCodec(CompressionType.None)).IsSameReferenceAs(codec);
+        await Assert.That(configured.DefaultCompressionLevel).IsNull();
+    }
+
+    private sealed class ConfigurableCodec(int level) : ICompressionCodecWithLevel
+    {
+        public int Level { get; } = level;
+        public CompressionType Type => CompressionType.Lz4;
+        public ICompressionCodec WithCompressionLevel(int compressionLevel) => new ConfigurableCodec(compressionLevel);
+        public void Compress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination) => throw new NotSupportedException();
+        public void Decompress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination) => throw new NotSupportedException();
     }
 }
