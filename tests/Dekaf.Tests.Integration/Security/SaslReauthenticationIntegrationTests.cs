@@ -25,6 +25,53 @@ public sealed class ReauthOAuthKafkaContainer : OAuthBearerKafkaContainer
 public sealed class OAuthReauthenticationIntegrationTests(ReauthOAuthKafkaContainer kafka)
 {
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ConfigProvider_ReusesCacheAndRefreshesAcrossReauthentication(
+        bool forceRefresh, CancellationToken cancellationToken)
+    {
+        await using var tokenEndpoint = OAuthBearerAuthenticationTests.JwtBearerTokenEndpoint.Start(
+            OAuthBearerKafkaContainer.CreateToken(OAuthBearerKafkaContainer.Principal));
+        var endpoint = BootstrapServerList.Parse(kafka.BootstrapServers);
+        await using var connection = new KafkaConnection(endpoint.Host, endpoint.Port, options: new ConnectionOptions
+        {
+            SaslMechanism = SaslMechanism.OAuthBearer,
+            OAuthBearerConfig = new OAuthBearerConfig
+            {
+                TokenEndpointUrl = tokenEndpoint.Url,
+                ClientId = "reauth-client",
+                ClientSecret = "reauth-secret",
+                // Force refresh without sleeping or racing token expiration.
+                TokenRefreshBufferSeconds = forceRefresh ? 7200 : 60
+            },
+            // Track completed sessions but leave the timer unarmed for deterministic manual renewal.
+            SaslReauthenticationConfig = new SaslReauthenticationConfig { MinSessionLifetimeMs = long.MaxValue }
+        });
+        await connection.ConnectAsync(cancellationToken);
+        var provider = GetPrivateField<OAuthBearerTokenProvider>(connection, "_ownedTokenProvider");
+        await Assert.That(provider).IsNotNull();
+        await Assert.That(tokenEndpoint.RequestCount).IsEqualTo(1);
+
+        for (var i = 0; i < 3; i++)
+        {
+            // KafkaChannel rejects a second reauthentication less than one second after the first.
+            // Wait past that protocol minimum, independently of token validity.
+            if (i > 0)
+                await Task.Delay(TimeSpan.FromMilliseconds(1100), cancellationToken);
+            var previousSession = connection.SaslSession;
+            await connection.PerformReauthenticationAsync().WaitAsync(cancellationToken);
+            await Assert.That(connection.IsConnected).IsTrue();
+            await Assert.That(connection.SaslSession).IsNotSameReferenceAs(previousSession);
+            await Assert.That(GetPrivateField<OAuthBearerTokenProvider>(connection, "_ownedTokenProvider"))
+                .IsSameReferenceAs(provider);
+            await Assert.That(tokenEndpoint.RequestCount).IsEqualTo(forceRefresh ? i + 2 : 1);
+            var metadata = await connection.SendAsync<MetadataRequest, MetadataResponse>(
+                new MetadataRequest { Topics = [] }, 9, cancellationToken);
+            await Assert.That(metadata.Brokers.Count).IsGreaterThan(0);
+        }
+    }
+
+    [Test]
     [Arguments("write lock")]
     [Arguments("pending slot")]
     [Arguments("broker throttle")]

@@ -4325,12 +4325,9 @@ public sealed partial class KafkaConnection :
 
         if (_options.OAuthBearerConfig is not null)
         {
-            // Create and track the provider for disposal. Each (re-)authentication attempt gets a
-            // fresh provider; attempts are serialized, so the previous one is no longer in use.
-            var provider = new OAuthBearerTokenProvider(_options.OAuthBearerConfig);
-            var previous = _ownedTokenProvider;
-            _ownedTokenProvider = provider;
-            previous?.Dispose();
+            // Authentication attempts are serialized. Keep the provider (and its token cache
+            // and HTTP pool) for the connection lifetime, with a fresh exchange authenticator.
+            var provider = _ownedTokenProvider ??= new OAuthBearerTokenProvider(_options.OAuthBearerConfig);
             return new OAuthBearerAuthenticator(provider.GetTokenAsync);
         }
 
