@@ -285,6 +285,62 @@ public sealed class SchemaRegistryCelRuleTests
         await Assert.That(Encoding.UTF8.GetString(result.Span)).IsEqualTo("transformed-topic");
     }
 
+    [Test]
+    public async Task TransformDeserializedPayload_EvictedInputSlot_ReportsChanged()
+    {
+        // A dedicated thread starts with an empty eight-slot output cache.
+        var result = await Task.Factory.StartNew(() =>
+        {
+            var handler = new CelSchemaRegistryRuleHandler();
+            for (var literal = 'A'; literal <= 'H'; literal++)
+            {
+                _ = handler.TransformDeserializedPayload(
+                    ReadOnlyMemory<byte>.Empty, CreateHandlerContext($"\"{literal}\""));
+            }
+
+            var input = handler.TransformDeserializedPayload(
+                ReadOnlyMemory<byte>.Empty, CreateHandlerContext("\"A\""));
+            var before = Encoding.UTF8.GetString(input.Span);
+            var output = handler.TransformDeserializedPayload(
+                input, CreateHandlerContext("\"I\""), out var payloadChanged);
+            return (Before: before, After: Encoding.UTF8.GetString(output.Span),
+                AliasesInput: input.Equals(output), PayloadChanged: payloadChanged);
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+
+        await Assert.That(result.Before).IsEqualTo("A");
+        await Assert.That(result.After).IsEqualTo("I");
+        await Assert.That(result.AliasesInput).IsTrue();
+        await Assert.That(result.PayloadChanged).IsTrue();
+    }
+
+    [Test]
+    [Arguments("message", SchemaRuleKind.Transform)]
+    [Arguments("payload", SchemaRuleKind.Transform)]
+    [Arguments("true", SchemaRuleKind.Condition)]
+    public async Task TransformDeserializedPayload_PreservedRepresentation_ReportsUnchanged(
+        string expression, SchemaRuleKind kind)
+    {
+        var handler = new CelSchemaRegistryRuleHandler();
+        var input = "payload"u8.ToArray();
+        var output = handler.TransformDeserializedPayload(
+            input, CreateHandlerContext(expression, kind), out var payloadChanged);
+
+        await Assert.That(payloadChanged).IsFalse();
+        await Assert.That(output.Equals(input.AsMemory())).IsTrue();
+    }
+
+    private static SchemaRegistryRuleHandlerContext CreateHandlerContext(
+        string expression, SchemaRuleKind kind = SchemaRuleKind.Transform)
+    {
+        var rule = CreateCelRule("result", kind, SchemaRuleMode.Read, expression);
+        return new SchemaRegistryRuleHandlerContext
+        {
+            PayloadContext = CreateContext(CreateSchema(rule)),
+            Rule = rule,
+            Direction = SchemaRegistryRuleDirection.Read
+        };
+    }
+
     private static SchemaRegistryRuleContext CreateContext(Schema schema, string topic = "orders") =>
         new()
         {

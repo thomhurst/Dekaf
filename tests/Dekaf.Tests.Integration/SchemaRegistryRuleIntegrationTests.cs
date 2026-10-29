@@ -200,6 +200,92 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
     }
 
     [Test]
+    [Arguments("JSONATA")]
+    [Arguments("CEL")]
+    public async Task RegisteredAliasedRuleOutputs_UseLatestVersion_ValidatesReaderRepresentation(
+        string ruleType, CancellationToken cancellationToken)
+    {
+        var topic = await testInfra.CreateTestTopicAsync();
+        var subject = $"{topic}-value";
+        using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = testInfra.RegistryUrl
+        });
+        await registryClient.UpdateCompatibilityAsync(SchemaCompatibilityLevel.None, subject, cancellationToken);
+
+        SchemaRule CreateTransformRule(string property, int value) => new()
+        {
+            Name = $"{property}-{value}",
+            Kind = SchemaRuleKind.Transform,
+            Mode = SchemaRuleMode.Read,
+            Type = ruleType,
+            Expr = ruleType == "JSONATA" ? $"{{'{property}': {value}}}" : $"'{{\"{property}\":{value}}}'"
+        };
+
+        var writer = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "{ \"required\": [\"old\"], \"properties\": { \"old\": { \"type\": \"integer\" } }, \"additionalProperties\": false }",
+            RuleSet = new SchemaRuleSet { EncodingRules = [CreateTransformRule("old", 1)] }
+        };
+        var reader = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "{ \"required\": [\"new\"], \"properties\": { \"new\": { \"type\": \"integer\" } }, \"additionalProperties\": false }",
+            RuleSet = new SchemaRuleSet { DomainRules = [CreateTransformRule("new", 1)] }
+        };
+        var writerId = await registryClient.RegisterSchemaAsync(subject, writer, cancellationToken);
+        await registryClient.RegisterSchemaAsync(subject, reader, cancellationToken);
+        var handler = ruleType == "JSONATA"
+            ? (ISchemaRegistryRuleHandler)new JsonataSchemaRegistryRuleHandler()
+            : new CelSchemaRegistryRuleHandler();
+        await using var deserializer = new JsonSchemaRegistryDeserializer<System.Text.Json.JsonElement>(
+            registryClient,
+            SchemaRegistryRuleJsonContext.Default.JsonElement,
+            new JsonSchemaValidationOptions
+            {
+                ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registryClient),
+                Mode = JsonSchemaValidationMode.Deserialize
+            },
+            new SchemaRegistryDeserializerConfig { UseLatestVersion = true },
+            ruleExecutor: new SchemaRegistryRuleExecutor([handler]));
+        var wire = new byte[7];
+        BinaryPrimitives.WriteInt32BigEndian(wire.AsSpan(1, 4), writerId);
+        "{}"u8.CopyTo(wire.AsSpan(5));
+
+        var result = await Task.Factory.StartNew(() =>
+        {
+            // Fresh thread makes CEL's replacement cursor deterministic. Decode hits
+            // the first cached value; the domain transform then overwrites that slot.
+            if (ruleType == "CEL")
+            {
+                for (var value = 1; value <= 8; value++)
+                {
+                    _ = handler.TransformDeserializedPayload(ReadOnlyMemory<byte>.Empty,
+                        new SchemaRegistryRuleHandlerContext
+                        {
+                            PayloadContext = new SchemaRegistryRuleContext
+                            {
+                                Topic = topic,
+                                Component = SerializationComponent.Value,
+                                SchemaId = writerId,
+                                Schema = writer,
+                                PayloadFormat = SchemaRegistryPayloadFormat.Json
+                            },
+                            Rule = CreateTransformRule("old", value),
+                            Direction = SchemaRegistryRuleDirection.Read
+                        });
+                }
+            }
+
+            return deserializer.Deserialize(wire, CreateContext(topic));
+        }, cancellationToken, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+
+        await Assert.That(result.GetProperty("new").GetInt32()).IsEqualTo(1);
+        await Assert.That(result.TryGetProperty("old", out _)).IsFalse();
+    }
+
+    [Test]
     public async Task RegisteredJsonataIdentityRule_UseLatestVersion_ValidatesWriterRepresentation(CancellationToken cancellationToken)
     {
         var topic = await testInfra.CreateTestTopicAsync();

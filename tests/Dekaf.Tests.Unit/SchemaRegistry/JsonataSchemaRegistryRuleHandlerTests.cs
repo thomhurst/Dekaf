@@ -63,6 +63,41 @@ public sealed class JsonataSchemaRegistryRuleHandlerTests
     }
 
     [Test]
+    public async Task TransformDeserializedPayload_ChainedEqualLengthOutputs_ReportChanged()
+    {
+        var handler = new JsonataSchemaRegistryRuleHandler();
+        var firstContext = CreateHandlerContext("{'old': 1}");
+        var secondContext = CreateHandlerContext("{'new': old}");
+
+        // Consume both outputs synchronously: JSONata reuses thread-static storage.
+        var input = handler.TransformDeserializedPayload("{}"u8.ToArray(), firstContext);
+        var before = Encoding.UTF8.GetString(input.Span);
+        var output = handler.TransformDeserializedPayload(input, secondContext, out var payloadChanged);
+        var after = Encoding.UTF8.GetString(output.Span);
+        var aliasesInput = input.Equals(output);
+
+        await Assert.That(before).IsEqualTo("{\"old\":1}");
+        await Assert.That(after).IsEqualTo("{\"new\":1}");
+        await Assert.That(aliasesInput).IsTrue();
+        await Assert.That(payloadChanged).IsTrue();
+    }
+
+    [Test]
+    [Arguments(" $ ", SchemaRuleKind.Transform)]
+    [Arguments("true", SchemaRuleKind.Condition)]
+    public async Task TransformDeserializedPayload_PreservedRepresentation_ReportsUnchanged(
+        string expression, SchemaRuleKind kind)
+    {
+        var handler = new JsonataSchemaRegistryRuleHandler();
+        var input = "{ \"id\": 7 }"u8.ToArray();
+        var output = handler.TransformDeserializedPayload(
+            input, CreateHandlerContext(expression, kind), out var payloadChanged);
+
+        await Assert.That(payloadChanged).IsFalse();
+        await Assert.That(output.Equals(input.AsMemory())).IsTrue();
+    }
+
+    [Test]
     public async Task ConditionRule_RequiresTrueBoolean()
     {
         var payload = """{"total":12}"""u8.ToArray();
@@ -213,6 +248,18 @@ public sealed class JsonataSchemaRegistryRuleHandlerTests
         await Assert.That(result.PayloadSchemaId).IsEqualTo(1);
         await Assert.That(result.Payload.Equals(payload.AsMemory())).IsTrue();
         await Assert.That(result.ReaderSchema.Schema).IsSameReferenceAs(v2);
+    }
+
+    private static SchemaRegistryRuleHandlerContext CreateHandlerContext(
+        string expression, SchemaRuleKind kind = SchemaRuleKind.Transform)
+    {
+        var schema = CreateSchema(expression, kind: kind);
+        return new SchemaRegistryRuleHandlerContext
+        {
+            PayloadContext = CreateContext(schema),
+            Rule = schema.RuleSet!.DomainRules![0],
+            Direction = SchemaRegistryRuleDirection.Read
+        };
     }
 
     private static ReadOnlyMemory<byte> Apply(

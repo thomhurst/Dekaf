@@ -2,6 +2,8 @@ using System.Buffers.Binary;
 using System.Text;
 using System.Text.Json;
 using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Json;
+using Dekaf.SchemaRegistry.Jsonata;
 using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;
@@ -13,6 +15,86 @@ public sealed class SchemaRegistryMigrationTests
         Component = SerializationComponent.Value,
         Topic = "orders"
     };
+
+    [Test]
+    [Arguments("JSONATA", false)]
+    [Arguments("JSONATA", true)]
+    [Arguments("CEL", false)]
+    [Arguments("CEL", true)]
+    public async Task Transform_AliasedEncodingThenDomainOutput_SelectsReaderPayloadSchema(
+        string ruleType, bool validateBeforeDomain)
+    {
+        var result = await Task.Factory.StartNew(() =>
+        {
+            var handler = ruleType == "JSONATA"
+                ? (ISchemaRegistryRuleHandler)new JsonataSchemaRegistryRuleHandler()
+                : new CelSchemaRegistryRuleHandler();
+            var writer = new Schema
+            {
+                SchemaType = SchemaType.Json,
+                SchemaString = "{ \"required\": [\"old\"] }",
+                RuleSet = new SchemaRuleSet
+                {
+                    EncodingRules = [CreateJsonTransformRule(ruleType, "old", 1)]
+                }
+            };
+            var reader = new Schema
+            {
+                SchemaType = SchemaType.Json,
+                SchemaString = "{ \"required\": [\"new\"] }",
+                RuleSet = new SchemaRuleSet
+                {
+                    DomainRules = [CreateJsonTransformRule(ruleType, "new", 1)]
+                }
+            };
+            using var registry = new MigrationRegistryClient();
+            var writerId = registry.Register("orders-value", writer);
+            var readerId = registry.Register("orders-value", reader);
+
+            // Fill all CEL slots on this fresh thread. The encoding rule then hits
+            // slot zero, which the reader domain rule evicts without resizing it.
+            if (ruleType == "CEL")
+            {
+                for (var value = 1; value <= 8; value++)
+                {
+                    _ = handler.TransformDeserializedPayload(ReadOnlyMemory<byte>.Empty,
+                        new SchemaRegistryRuleHandlerContext
+                        {
+                            PayloadContext = new SchemaRegistryRuleContext
+                            {
+                                Topic = "orders",
+                                Component = SerializationComponent.Value,
+                                SchemaId = writerId,
+                                Schema = writer,
+                                PayloadFormat = SchemaRegistryPayloadFormat.Json
+                            },
+                            Rule = CreateJsonTransformRule(ruleType, "old", value),
+                            Direction = SchemaRegistryRuleDirection.Read
+                        });
+                }
+            }
+
+            var runner = new SchemaRegistryMigrationRunner(
+                registry, new SchemaRegistryRuleExecutor([handler]), TimeSpan.FromSeconds(1));
+            var input = "{}"u8.ToArray();
+            var transformed = validateBeforeDomain
+                ? runner.TransformWithBeforeDomainValidation(
+                    input, writerId, "orders-value", writer, SerializationContext,
+                    SchemaRegistryPayloadFormat.Json,
+                    new StreamingJsonSchemaValidatorFactory(registry), validationRulesFailFast: false)
+                : runner.Transform(
+                    input, writerId, "orders-value", writer, SerializationContext,
+                    SchemaRegistryPayloadFormat.Json);
+            return (Payload: Encoding.UTF8.GetString(transformed.Payload.Span),
+                transformed.PayloadSchemaId, transformed.PayloadSchema,
+                Reader: reader, ReaderId: readerId, transformed.ReaderSchema);
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+
+        await Assert.That(result.Payload).IsEqualTo("{\"new\":1}");
+        await Assert.That(result.PayloadSchemaId).IsEqualTo(result.ReaderId);
+        await Assert.That(result.PayloadSchema).IsSameReferenceAs(result.Reader);
+        await Assert.That(result.ReaderSchema.Schema).IsSameReferenceAs(result.Reader);
+    }
 
     [Test]
     public async Task Transform_UpgradePath_UsesHigherSchemasAndForwardRuleOrder()
@@ -773,6 +855,16 @@ public sealed class SchemaRegistryMigrationTests
 
         await Assert.That(observedSchema).IsSameReferenceAs(v2);
     }
+
+    private static SchemaRule CreateJsonTransformRule(string ruleType, string property, int value) =>
+        new()
+        {
+            Name = $"{property}-{value}",
+            Kind = SchemaRuleKind.Transform,
+            Mode = SchemaRuleMode.Read,
+            Type = ruleType,
+            Expr = ruleType == "JSONATA" ? $"{{'{property}': {value}}}" : $"'{{\"{property}\":{value}}}'"
+        };
 
     private static Schema CreateSchema(string name, params SchemaRule[] migrationRules) =>
         new()

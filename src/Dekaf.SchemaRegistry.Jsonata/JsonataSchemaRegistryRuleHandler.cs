@@ -35,29 +35,26 @@ public sealed class JsonataSchemaRegistryRuleHandler : ISchemaRegistryRuleTransf
     /// <inheritdoc />
     public ReadOnlyMemory<byte> TransformSerializedPayload(
         ReadOnlyMemory<byte> payload,
-        SchemaRegistryRuleHandlerContext context) => Transform(payload, context);
+        SchemaRegistryRuleHandlerContext context) => Transform(payload, context, out _);
 
     /// <inheritdoc />
     public ReadOnlyMemory<byte> TransformDeserializedPayload(
         ReadOnlyMemory<byte> payload,
-        SchemaRegistryRuleHandlerContext context) => Transform(payload, context);
+        SchemaRegistryRuleHandlerContext context) => Transform(payload, context, out _);
 
     /// <inheritdoc />
     public ReadOnlyMemory<byte> TransformDeserializedPayload(
         ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleHandlerContext context,
-        out bool payloadChanged)
-    {
-        var result = Transform(payload, context);
-        payloadChanged = context.Rule.Kind == SchemaRuleKind.Transform && !payload.Equals(result);
-        return result;
-    }
+        out bool payloadChanged) => Transform(payload, context, out payloadChanged);
 
     private ReadOnlyMemory<byte> Transform(
         ReadOnlyMemory<byte> payload,
-        SchemaRegistryRuleHandlerContext context)
+        SchemaRegistryRuleHandlerContext context,
+        out bool payloadChanged)
     {
         ArgumentNullException.ThrowIfNull(context);
+        payloadChanged = false;
 
         var rule = context.Rule;
         if (context.PayloadContext.PayloadFormat != SchemaRegistryPayloadFormat.Json)
@@ -120,6 +117,9 @@ public sealed class JsonataSchemaRegistryRuleHandler : ISchemaRegistryRuleTransf
                 $"JSONata transform rule '{rule.Name}' returned a function instead of a JSON value.");
         }
 
+        // Encoding may overwrite the reusable buffer that also backs the input.
+        // Only the compiled identity shortcut can certify transform preservation.
+        payloadChanged = true;
         return Encode(result.ToFlatString());
     }
 
