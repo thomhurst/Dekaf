@@ -28,7 +28,16 @@
     "@docusaurus/types": "^3.10.2"
   },
   "overrides": {
-    "serialize-javascript": "7.1.4"
+    "serialize-javascript": "7.1.4",
+    "@docusaurus/core": {
+      "tinypool": "2.1.2"
+    },
+    "sockjs": {
+      "uuid": "11.1.1"
+    },
+    "express": {
+      "qs": "6.17.1"
+    }
   },
   "browserslist": {
     "production": [
