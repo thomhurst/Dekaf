@@ -15,6 +15,55 @@ namespace Dekaf.Tests.Integration;
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task JsonWriterOptions_Produce_PreservesConfiguredPayload(bool schemaRegistry, CancellationToken cancellationToken)
+    {
+        var topic = await testInfra.CreateTestTopicAsync();
+        using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig { Url = testInfra.RegistryUrl });
+        var options = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            WriteIndented = true,
+            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+        };
+        var typeInfo = new JsonSchemaRegistryIntegrationJsonContext(options).TestOrder;
+        var order = new TestOrder { OrderId = 42, CustomerName = "<Alice> é", Amount = 12.50m };
+        var builder = Kafka.CreateProducer<string, TestOrder>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory());
+        if (schemaRegistry)
+            builder.UseJsonSchemaRegistry(registryClient, CamelCaseTestOrderSchema, typeInfo);
+        else
+            builder.WithValueSerializer(new Dekaf.Serialization.Json.JsonSerializer<TestOrder>(typeInfo));
+        await using var producer = await builder.BuildAsync(cancellationToken);
+        await producer.ProduceAsync(new ProducerMessage<string, TestOrder>
+        {
+            Topic = topic,
+            Key = "options",
+            Value = order
+        }, cancellationToken);
+
+        await using var consumer = await Kafka.CreateConsumer<string, byte[]>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithGroupId($"json-writer-options-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        consumer.Subscribe(topic);
+        byte[]? consumed = null;
+        await foreach (var message in consumer.ConsumeAsync(cancellationToken))
+        {
+            consumed = message.Value;
+            break;
+        }
+
+        await Assert.That(consumed).IsNotNull();
+        var json = System.Text.Encoding.UTF8.GetString(consumed.AsSpan(schemaRegistry ? 5 : 0));
+        await Assert.That(json).IsEqualTo(JsonSerializer.Serialize(order, typeInfo));
+    }
+
     private const string TestOrderSchema = """
         {
             "type": "object",

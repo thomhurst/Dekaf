@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
@@ -191,6 +192,98 @@ public class JsonSerializerTests
     #endregion
 
     #region Custom Options Tests
+
+    [Test]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1869:Cache and reuse 'JsonSerializerOptions' instances", Justification = "The test verifies changes to options between construction and first serialization.")]
+    public async Task Serialize_OptionsChangedBeforeFirstUse_UsesCurrentSettings()
+    {
+        var options = new JsonSerializerOptions();
+        var serializer = new JsonSerializer<TestPerson>(options);
+        options.WriteIndented = true;
+        options.Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping;
+        var person = new TestPerson { Name = "<Alice>", Age = 30 };
+        var buffer = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(person, ref buffer, CreateContext());
+
+        await Assert.That(System.Text.Encoding.UTF8.GetString(buffer.WrittenSpan))
+            .IsEqualTo(System.Text.Json.JsonSerializer.Serialize(person, options));
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Serialize_AlternatingWriterOptions_MatchesSystemTextJson(bool useTypeInfo)
+    {
+        var person = new SourceGeneratedPerson { Name = "<Ava> é", Age = 42 };
+        var context = CreateContext();
+        var options = new[]
+        {
+            new JsonSerializerOptions(),
+            new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping },
+            new JsonSerializerOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping },
+            new JsonSerializerOptions { WriteIndented = true }
+        };
+#if NET10_0_OR_GREATER
+        options[1].IndentCharacter = '\t';
+        options[1].IndentSize = 1;
+        options[1].NewLine = "\n";
+#endif
+        var serializers = new JsonSerializer<SourceGeneratedPerson>[options.Length];
+        var expected = new string[options.Length];
+        for (var i = 0; i < options.Length; i++)
+        {
+            var typeInfo = new JsonSerializerTestsJsonContext(options[i]).SourceGeneratedPerson;
+            serializers[i] = useTypeInfo
+                ? new JsonSerializer<SourceGeneratedPerson>(typeInfo)
+                : new JsonSerializer<SourceGeneratedPerson>(options[i]);
+            expected[i] = useTypeInfo
+                ? System.Text.Json.JsonSerializer.Serialize(person, typeInfo)
+                : System.Text.Json.JsonSerializer.Serialize(person, options[i]);
+        }
+
+        // No awaits: all configurations must exercise the same thread-static cache.
+        var actual = new string[12];
+        var buffer = new ArrayBufferWriter<byte>();
+        for (var i = 0; i < actual.Length; i++)
+        {
+            buffer.ResetWrittenCount();
+            serializers[i % serializers.Length].Serialize(person, ref buffer, context);
+            actual[i] = System.Text.Encoding.UTF8.GetString(buffer.WrittenSpan);
+        }
+
+        for (var i = 0; i < actual.Length; i++)
+            await Assert.That(actual[i]).IsEqualTo(expected[i % expected.Length]);
+    }
+
+    [Test]
+    public async Task Serialize_AlternatingWriterOptions_DoesNotAllocateAfterWarmup()
+    {
+        var serializers = new[]
+        {
+            new JsonSerializer<SourceGeneratedPerson>(JsonSerializerTestsJsonContext.Default.SourceGeneratedPerson),
+            new JsonSerializer<SourceGeneratedPerson>(new JsonSerializerTestsJsonContext(
+                new JsonSerializerOptions { WriteIndented = true }).SourceGeneratedPerson)
+        };
+        var person = new SourceGeneratedPerson { Name = "Ava", Age = 42 };
+        var buffer = new ArrayBufferWriter<byte>(256);
+        var context = CreateContext();
+        for (var i = 0; i < 16; i++)
+        {
+            buffer.ResetWrittenCount();
+            serializers[i % 2].Serialize(person, ref buffer, context);
+        }
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 16; i++)
+        {
+            buffer.ResetWrittenCount();
+            serializers[i % 2].Serialize(person, ref buffer, context);
+        }
+
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        await Assert.That(allocated).IsEqualTo(0);
+    }
 
     [Test]
     public async Task Serialize_CustomOptions_Respected()

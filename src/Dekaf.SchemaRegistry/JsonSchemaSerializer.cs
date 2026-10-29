@@ -38,7 +38,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
 
     [ThreadStatic]
-    private static Utf8JsonWriter? t_jsonWriter;
+    private static JsonWriterCache? t_writerCache;
 
     private delegate void JsonPayloadSerializer(Utf8JsonWriter writer, T value);
 
@@ -755,16 +755,8 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         var payloadBuffer = SchemaRegistryBuffers.PayloadBuffer ??= new ArrayBufferWriter<byte>(initialCapacity: 4096);
         payloadBuffer.ResetWrittenCount();
 
-        var jsonWriter = t_jsonWriter;
-        if (jsonWriter is null)
-        {
-            jsonWriter = new Utf8JsonWriter(payloadBuffer);
-            t_jsonWriter = jsonWriter;
-        }
-        else
-        {
-            jsonWriter.Reset(payloadBuffer);
-        }
+        var writerCache = t_writerCache ??= new JsonWriterCache();
+        var jsonWriter = writerCache.GetWriter(payloadBuffer, _jsonTypeInfo?.Options ?? _jsonOptions!);
 
         try
         {
@@ -773,7 +765,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         }
         catch
         {
-            t_jsonWriter = null;
+            writerCache.DiscardCurrent();
             throw;
         }
 
@@ -862,7 +854,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         if (payloadBuffer.Capacity > 1024 * 1024)
         {
             SchemaRegistryBuffers.PayloadBuffer = null;
-            t_jsonWriter = null;
+            writerCache.DiscardCurrent();
         }
     }
 
@@ -896,16 +888,8 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         var payloadBuffer = SchemaRegistryBuffers.PayloadBuffer ??= new ArrayBufferWriter<byte>(initialCapacity: 4096);
         payloadBuffer.ResetWrittenCount();
 
-        var jsonWriter = t_jsonWriter;
-        if (jsonWriter is null)
-        {
-            jsonWriter = new Utf8JsonWriter(payloadBuffer);
-            t_jsonWriter = jsonWriter;
-        }
-        else
-        {
-            jsonWriter.Reset(payloadBuffer);
-        }
+        var writerCache = t_writerCache ??= new JsonWriterCache();
+        var jsonWriter = writerCache.GetWriter(payloadBuffer, _jsonTypeInfo?.Options ?? _jsonOptions!);
 
         try
         {
@@ -914,7 +898,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         }
         catch
         {
-            t_jsonWriter = null;
+            writerCache.DiscardCurrent();
             throw;
         }
 
@@ -1003,7 +987,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         if (payloadBuffer.Capacity > 1024 * 1024)
         {
             SchemaRegistryBuffers.PayloadBuffer = null;
-            t_jsonWriter = null;
+            writerCache.DiscardCurrent();
         }
     }
 

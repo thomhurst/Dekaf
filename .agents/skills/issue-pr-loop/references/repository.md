@@ -3,7 +3,7 @@
 Read [AGENTS.md](../../../../AGENTS.md) for validation, public contracts, and performance acceptance. It owns the zero-allocation hot-path rules, benchmark evidence, stress-run budget, and Pareto gate; review/simplification must preserve them.
 
 - Docs-site changes require `npm run build --prefix docs`.
-- There is no Aspire AppHost. Integration tests use Docker/Testcontainers Kafka; stop only resources created for this work.
+- Integration tests use Docker/Testcontainers Kafka; stop only resources created for this work. Aspire sample AppHosts live under `samples/Aspire/`.
 - Add a benchmark fixture only when [AGENTS.md](../../../../AGENTS.md#performance-requirements) requires one: the change materially moves steady-state per-message or per-batch cost. Most bug fixes do not; state the one-line per-message cost in the PR instead. The [performance gate](../../../../AGENTS.md#performance-gate) measures on GitHub Actions; local measurements are diagnostic only. No local Redis `performance` lock is required for heavy work; retain PR/issue ownership locks.
 
 ## Draft review lifecycle

@@ -15,6 +15,9 @@ public class AssociatedNameStrategyBenchmarks
     private AssociatedNameStrategy _strategy = null!;
     private SchemaRegistrySerializer<int> _serializer = null!;
     private JsonSchemaRegistrySerializer<int> _jsonSerializer = null!;
+    private JsonSchemaRegistrySerializer<int> _indentedJsonSerializer = null!;
+    private IAsyncSerializerPreparationAdmission<int> _indentedJsonAdmissionSerializer = null!;
+    private SerializerPreparationAdmission _indentedJsonAdmission;
     private IAsyncSerializerPreparationAdmission<int> _jsonAdmissionSerializer = null!;
     private JsonSchemaRegistryDeserializer<int> _jsonDeserializer = null!;
     private IAsyncDeserializerPreparer<int> _jsonDeserializerPreparer = null!;
@@ -44,6 +47,12 @@ public class AssociatedNameStrategyBenchmarks
             _strategy,
             "{\"type\":\"integer\"}");
         _jsonAdmissionSerializer = _jsonSerializer;
+        _indentedJsonSerializer = new JsonSchemaRegistrySerializer<int>(
+            _client,
+            _strategy,
+            "{\"type\":\"integer\"}",
+            jsonOptions: new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+        _indentedJsonAdmissionSerializer = _indentedJsonSerializer;
         _jsonDestination = new ArrayBufferWriter<byte>(16);
         _serializationContext = new SerializationContext
         {
@@ -56,6 +65,9 @@ public class AssociatedNameStrategyBenchmarks
         _ = _serializer.PrepareAsync(_topic, 42).GetAwaiter().GetResult();
         _ = _jsonSerializer.PrepareAsync(_topic, 42).GetAwaiter().GetResult();
         _jsonAdmission = _jsonAdmissionSerializer.PrepareForSerializationAsync(42, _serializationContext)
+            .GetAwaiter()
+            .GetResult();
+        _indentedJsonAdmission = _indentedJsonAdmissionSerializer.PrepareForSerializationAsync(42, _serializationContext)
             .GetAwaiter()
             .GetResult();
         _jsonDeserializer = new JsonSchemaRegistryDeserializer<int>(
@@ -101,6 +113,7 @@ public class AssociatedNameStrategyBenchmarks
     {
         await _serializer.DisposeAsync().ConfigureAwait(false);
         await _jsonSerializer.DisposeAsync().ConfigureAwait(false);
+        await _indentedJsonSerializer.DisposeAsync().ConfigureAwait(false);
         await _jsonDeserializer.DisposeAsync().ConfigureAwait(false);
         _client.Dispose();
     }
@@ -132,6 +145,25 @@ public class AssociatedNameStrategyBenchmarks
             ref _jsonDestination,
             _serializationContext,
             in _jsonAdmission);
+    }
+
+    [Benchmark(OperationsPerInvoke = 2)]
+    public int JsonSerializerAlternatingOptions()
+    {
+        JsonSerializerAssociatedNameCached();
+        _jsonDestination.Clear();
+        _indentedJsonSerializer.Serialize(42, ref _jsonDestination, _serializationContext);
+        return _jsonDestination.WrittenCount;
+    }
+
+    [Benchmark(OperationsPerInvoke = 2)]
+    public int JsonSerializerAdmittedAlternatingOptions()
+    {
+        JsonSerializerAdmittedCached();
+        _jsonDestination.Clear();
+        _indentedJsonAdmissionSerializer.SerializePrepared(
+            42, ref _jsonDestination, _serializationContext, in _indentedJsonAdmission);
+        return _jsonDestination.WrittenCount;
     }
 
     [Benchmark]

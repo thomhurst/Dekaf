@@ -38,6 +38,7 @@ public class SerializerBenchmarks
     private byte[] _jsonBytes = null!;
     private SerializationContext _context;
     private JsonSerializer<JsonPayload> _jsonPayloadSerializer = null!;
+    private JsonSerializer<JsonPayload> _relaxedJsonPayloadSerializer = null!;
     private JsonPayload _jsonPayload = null!;
     private JsonPayload _largeJsonPayload = null!;
     private ArrayBufferWriter<byte> _largeJsonBuffer = null!;
@@ -65,6 +66,11 @@ public class SerializerBenchmarks
         };
 
         _jsonPayloadSerializer = new JsonSerializer<JsonPayload>();
+        _relaxedJsonPayloadSerializer = new JsonSerializer<JsonPayload>(new System.Text.Json.JsonSerializerOptions
+        {
+            PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+        });
         _jsonPayload = new JsonPayload { Id = 42, Name = _mediumString };
         _largeJsonPayload = new JsonPayload { Id = 42, Name = new string('x', 2 * 1024 * 1024) };
         _largeJsonBuffer = new ArrayBufferWriter<byte>(3 * 1024 * 1024);
@@ -136,6 +142,23 @@ public class SerializerBenchmarks
     {
         _buffer.ResetWrittenCount();
         _jsonPayloadSerializer.Serialize(_jsonPayload, ref _buffer, _context);
+    }
+
+    [BenchmarkCategory("Json")]
+    [Benchmark(Description = "Serialize JSON (custom encoder)")]
+    public int SerializeJson_CustomEncoder()
+    {
+        _buffer.ResetWrittenCount();
+        _relaxedJsonPayloadSerializer.Serialize(_jsonPayload, ref _buffer, _context);
+        return _buffer.WrittenCount;
+    }
+
+    [BenchmarkCategory("Json")]
+    [Benchmark(Description = "Serialize JSON (alternating options)", OperationsPerInvoke = 2)]
+    public int SerializeJson_AlternatingOptions()
+    {
+        SerializeJson_Small();
+        return SerializeJson_CustomEncoder();
     }
 
     [BenchmarkCategory("Json")]
