@@ -42,13 +42,45 @@ public class DekafMemoryBudgetTests
     }
 
     [Test]
-    public async Task SetBudget_WithInvalidPercent_Throws()
+    [Arguments(0.0)]
+    [Arguments(-0.1)]
+    [Arguments(1.5)]
+    [Arguments(double.NaN)]
+    [Arguments(double.NegativeInfinity)]
+    [Arguments(double.PositiveInfinity)]
+    public async Task SetBudget_WithInvalidPercent_ThrowsAndPreservesExplicitBudget(double percentOfAvailable)
     {
         DekafMemoryBudget.ResetForTesting();
+        const ulong budget = 1_073_741_824UL;
+        DekafMemoryBudget.SetBudget(budget);
+        var instance = new FakeInstance();
+        DekafMemoryBudget.RegisterProducer(instance);
+        var rebalanceCount = instance.RebalanceCount;
 
-        await Assert.That(() => DekafMemoryBudget.SetBudget(percentOfAvailable: 0.0))
-            .Throws<ArgumentOutOfRangeException>();
-        await Assert.That(() => DekafMemoryBudget.SetBudget(percentOfAvailable: 1.5))
+        try
+        {
+            await Assert.That(() => DekafMemoryBudget.SetBudget(percentOfAvailable))
+                .Throws<ArgumentOutOfRangeException>();
+            await Assert.That(DekafMemoryBudget.TotalBudget).IsEqualTo(budget);
+            await Assert.That(instance.CurrentLimit).IsEqualTo(budget / ProducerDivisor);
+            await Assert.That(instance.RebalanceCount).IsEqualTo(rebalanceCount);
+        }
+        finally
+        {
+            DekafMemoryBudget.ResetForTesting();
+        }
+    }
+
+    [Test]
+    [Arguments(0.0)]
+    [Arguments(-0.1)]
+    [Arguments(1.5)]
+    [Arguments(double.NaN)]
+    [Arguments(double.NegativeInfinity)]
+    [Arguments(double.PositiveInfinity)]
+    public async Task ClientMemoryBudget_WithInvalidPercent_Throws(double percentOfAvailable)
+    {
+        await Assert.That(() => new ClientMemoryBudget(percentOfAvailable: percentOfAvailable))
             .Throws<ArgumentOutOfRangeException>();
     }
 
