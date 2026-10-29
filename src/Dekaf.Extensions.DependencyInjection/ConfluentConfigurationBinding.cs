@@ -718,11 +718,12 @@ internal static class ConfluentConfigurationBinding
         Fnv1aRandom
     }
 
+    // Numeric values follow Confluent.Kafka's enum numbering, not Dekaf's.
     private enum ConfluentAutoOffsetReset
     {
-        Earliest,
-        Latest,
-        Error
+        Latest = 0,
+        Earliest = 1,
+        Error = 2
     }
 
     private enum ConfluentGroupProtocol

@@ -1398,6 +1398,41 @@ public class DependencyInjectionTests
     }
 
     [Test]
+    [Arguments("0", AutoOffsetReset.Latest)]
+    [Arguments("1", AutoOffsetReset.Earliest)]
+    [Arguments("2", AutoOffsetReset.None)]
+    [Arguments("\"0\"", AutoOffsetReset.Latest)]
+    [Arguments("\"1\"", AutoOffsetReset.Earliest)]
+    [Arguments("\"2\"", AutoOffsetReset.None)]
+    [Arguments("\"Latest\"", AutoOffsetReset.Latest)]
+    [Arguments("\"Earliest\"", AutoOffsetReset.Earliest)]
+    [Arguments("\"Error\"", AutoOffsetReset.None)]
+    public async Task AddConsumerFromConfluentConfig_TranslatesAutoOffsetResetWithConfluentNumbering(
+        string jsonValue,
+        AutoOffsetReset expected)
+    {
+        var services = new ServiceCollection();
+        var json = $$"""
+            {
+              "Config": {
+                "BootstrapServers": "broker1:9092",
+                "GroupId": "orders",
+                "AutoOffsetReset": {{jsonValue}}
+              }
+            }
+            """;
+        using var jsonStream = new MemoryStream(Encoding.UTF8.GetBytes(json));
+        var configuration = new ConfigurationBuilder().AddJsonStream(jsonStream).Build();
+
+        services.AddDekaf(builder => builder.AddConsumerFromConfluentConfig<string, string>(
+            configuration.GetSection("Config")));
+
+        await using var provider = services.BuildServiceProvider();
+        var options = GetConsumerOptions(provider.GetRequiredService<IKafkaConsumer<string, string>>());
+        await Assert.That(options.AutoOffsetReset).IsEqualTo(expected);
+    }
+
+    [Test]
     public async Task AddConsumerFromConfluentConfig_KeyedRegistration_FluentConfigurationWins()
     {
         var services = new ServiceCollection();
@@ -1405,13 +1440,14 @@ public class DependencyInjectionTests
         {
             ["Config:BootstrapServers"] = "broker1:9092",
             ["Config:GroupId"] = "json-group",
-            ["Config:ClientId"] = "json-client"
+            ["Config:ClientId"] = "json-client",
+            ["Config:AutoOffsetReset"] = "1"
         });
 
         services.AddDekaf(builder => builder.AddConsumerFromConfluentConfig<string, string>(
             "orders",
             configuration.GetSection("Config"),
-            consumer => consumer.WithClientId("fluent-client")));
+            consumer => consumer.WithClientId("fluent-client").WithAutoOffsetReset(AutoOffsetReset.Latest)));
 
         await using var provider = services.BuildServiceProvider();
         var consumer = provider.GetRequiredKeyedService<IKafkaConsumer<string, string>>("orders");
@@ -1419,6 +1455,7 @@ public class DependencyInjectionTests
 
         await Assert.That(options.GroupId).IsEqualTo("json-group");
         await Assert.That(options.ClientId).IsEqualTo("fluent-client");
+        await Assert.That(options.AutoOffsetReset).IsEqualTo(AutoOffsetReset.Latest);
     }
 
     [Test]
