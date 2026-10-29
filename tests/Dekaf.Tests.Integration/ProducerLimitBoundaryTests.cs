@@ -19,6 +19,61 @@ public sealed class ProducerLimitBoundaryTests(KafkaTestContainer kafka) : Kafka
         [new("traceparent", new byte[TraceparentValueLength])];
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task BufferMemory_OversizedRecordFailsLocally_ProducerStillDelivers(bool fireAndForget)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        await using var producer = await Kafka.CreateProducer<byte[], byte[]>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("buffer-memory-boundary-producer")
+            .WithBufferMemory(4096)
+            .WithBatchSize(16_384)
+            .WithMaxRequestSize(32_768)
+            .WithMaxBlock(TimeSpan.FromSeconds(30))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        // The timeout is only a deadlock guard: the expected failure is MessageTooLarge,
+        // never cancellation or MaxBlockMs. Both records fit BatchSize and MaxRequestSize.
+        var exception = await Assert.That(async () =>
+        {
+            if (fireAndForget)
+            {
+                var delivery = new TaskCompletionSource<RecordMetadata>(TaskCreationOptions.RunContinuationsAsynchronously);
+                await producer.FireAsync(new ProducerMessage<byte[], byte[]>
+                {
+                    Topic = topic,
+                    Value = new byte[4096]
+                }, (metadata, error) =>
+                {
+                    if (error is not null)
+                        delivery.TrySetException(error);
+                    else
+                        delivery.TrySetResult(metadata);
+                }).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+                await delivery.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            }
+            else
+                await producer.ProduceAsync(topic, null, new byte[4096]).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+        }).Throws<ProduceException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.MessageTooLarge);
+        await Assert.That(exception.IsRetriable).IsFalse();
+        await Assert.That(exception.Topic).IsEqualTo(topic);
+        await Assert.That(exception.Partition).IsEqualTo(0);
+        await Assert.That(exception.Message).Contains("BufferMemory");
+
+        var firstValue = new byte[] { 0x12 };
+        var secondValue = new byte[] { 0x34 };
+        var first = await producer.ProduceAsync(topic, null, firstValue);
+        var second = await producer.ProduceAsync(topic, null, secondValue);
+        await Assert.That(first.Offset).IsEqualTo(0);
+        await Assert.That(second.Offset).IsEqualTo(1);
+        await AssertOnlyExpectedRecords(topic, firstValue, secondValue);
+    }
+
+    [Test]
     public async Task MaxRequestSize_ExactRequestSucceeds_OneByteOverIsRejectedLocallyWithoutDrop()
     {
         using var activityListener = ListenToDekafActivities();

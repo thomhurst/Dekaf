@@ -187,9 +187,9 @@ public sealed class ProducerOptions
     /// process-wide total.
     /// </para>
     /// <para>
-    /// <b>Tuning guidance:</b> Increase this value if profiling shows significant time in
-    /// <c>ReserveMemoryAsync</c> / <c>SemaphoreSlim.WaitAsync</c>. For high-throughput
-    /// scenarios, 1-2GB may be appropriate. Decrease it to limit memory usage in
+    /// <b>Tuning guidance:</b> Increase this value if produce calls frequently wait for
+    /// buffer space. For high-throughput scenarios, 1-2GB may be appropriate.
+    /// Decrease it to limit memory usage in
     /// low-throughput or memory-constrained environments.
     /// </para>
     /// </summary>

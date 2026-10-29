@@ -2082,6 +2082,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly HashSet<TopicPartition> _blockedPendingPartitions = [];
     private readonly List<QueuedPendingAppend> _pendingAppendScan = [];
     private readonly List<DrainablePendingAppend> _drainablePendingAppends = [];
+    // Fail outside the queue lock: cancellation-registration disposal can wait for a callback
+    // that takes that lock. Allocate this scratch list only on an oversized-record failure.
+    private List<(QueuedPendingAppend Entry, ProduceException Exception)>? _oversizedPendingAppends;
     // Drained appends sent back to the head of the queue because a batch arena could not be
     // allocated (out-of-memory path). Owned by the drain guard; created on first use.
     private List<QueuedPendingAppend>? _arenaWaitRequeue;
@@ -3181,6 +3184,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             continue;
 
                         var recordSize = candidate.RecordSize;
+                        var maxBufferMemory = (ulong)Volatile.Read(ref _maxBufferMemory);
+                        if ((ulong)recordSize > maxBufferMemory)
+                        {
+                            (_oversizedPendingAppends ??= []).Add((entry,
+                                CreateBufferMemoryExceededException(
+                                    candidate.Topic, candidate.Partition, recordSize, maxBufferMemory)));
+                            continue;
+                        }
+
                         var topicPartition = new TopicPartition(candidate.Topic, candidate.Partition);
                         if (memoryExhausted)
                         {
@@ -3222,6 +3234,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
                     _pendingAppendScan.Clear();
                     madeProgress = _drainablePendingAppends.Count > 0;
+                }
+
+                if (_oversizedPendingAppends is { } oversizedAppends)
+                {
+                    foreach (var oversized in oversizedAppends)
+                        oversized.Entry.Operation.TryFail(oversized.Exception, oversized.Entry.Generation);
+                    oversizedAppends.Clear();
                 }
 
                 if (s_perRecordTestHooks && madeProgress)
@@ -3376,6 +3395,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 _blockedPendingPartitions.Clear();
                 _pendingAppendScan.Clear();
                 _drainablePendingAppends.Clear();
+                _oversizedPendingAppends?.Clear();
                 // Ensure drain lock is released on exception. Once ownership passes to
                 // another drainer, its invocation owns both the guard and shared scratch.
                 Volatile.Write(ref _draining, 0);
@@ -5210,6 +5230,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return new ValueTask<bool>(Task.FromException<bool>(new OperationCanceledException(cancellationToken)));
         }
 
+        var maxBufferMemory = (ulong)Volatile.Read(ref _maxBufferMemory);
+        if ((ulong)recordSize > maxBufferMemory)
+        {
+            key.Return();
+            value.Return();
+            ReturnPooledHeaders(headers, headerCount);
+            return new ValueTask<bool>(Task.FromException<bool>(
+                CreateBufferMemoryExceededException(topic, partition, recordSize, maxBufferMemory)));
+        }
+
         var (startTicks, deadline) = BeginReservationWait(recordSize);
 
         var op = _pendingAppendPool.Rent();
@@ -5265,6 +5295,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         return new ValueTask<bool>(op, op.Version);
     }
+
+    private static ProduceException CreateBufferMemoryExceededException(
+        string topic, int partition, int recordSize, ulong maxBufferMemory) =>
+        new(ErrorCode.MessageTooLarge,
+            $"Record reservation size {recordSize} bytes exceeds BufferMemory of {maxBufferMemory} bytes.")
+        {
+            Topic = topic,
+            Partition = partition
+        };
 
     /// <summary>
     /// Writes a pending append to the worker channel that owns its partition, behind the

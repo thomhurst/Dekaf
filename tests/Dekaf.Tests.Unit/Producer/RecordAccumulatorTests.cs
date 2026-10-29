@@ -630,11 +630,14 @@ public class RecordAccumulatorTests
         var accumulator = new RecordAccumulator(new ProducerOptions
         {
             BootstrapServers = ["localhost:9092"],
-            BufferMemory = 1,
+            BufferMemory = 128,
             BatchSize = 4096,
             LingerMs = 10,
             MaxBlockMs = 30_000
         });
+        // Leave less than one record free without making any record exceed BufferMemory.
+        for (var i = 0; i < 3; i++)
+            await AppendNullRecordAsync(accumulator);
         var queueLock = GetPrivateField<object>(accumulator, "_pendingAppendQueueLock");
         var queueLockHeld = false;
         Task<bool>? disposeTask = null;
@@ -4474,12 +4477,12 @@ public class RecordAccumulatorTests
             await FillBufferViaHotPath(accumulator, 100);
 
             // Now attempt an append with a pre-cancelled token and a large value
-            // that won't fit — this enters AppendFromSpansAsyncSlowPath, which
-            // checks cancellation before waiting on the semaphore.
+            // that fits BufferMemory but not the remaining space. The slow path
+            // checks cancellation before queueing a pending append.
             using var cts = new CancellationTokenSource();
             cts.Cancel();
 
-            var largeValue = new byte[4096];
+            var largeValue = new byte[1024];
 
             await Assert.ThrowsAsync<OperationCanceledException>(async () =>
                 await accumulator.AppendFromSpansAsync(
@@ -4511,21 +4514,16 @@ public class RecordAccumulatorTests
         // Fill most of the buffer with small messages (hot path)
         await FillBufferViaHotPath(accumulator, 100);
 
-        var largeValue = new byte[4096];
+        var largeValue = new byte[1024];
 
-        // Start an append that will block in the slow path (buffer too full for large message)
-        var appendTask = Task.Run(async () =>
-            await accumulator.AppendFromSpansAsync(
-                "test-topic", 0,
-                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                ReadOnlySpan<byte>.Empty, keyIsNull: true,
-                largeValue, valueIsNull: false,
-                null, 0, null, CancellationToken.None));
-
-        // Yield enough times for the background task to reach WaitAsync.
-        // In practice it parks within the first few yields; 100 is generous headroom.
-        for (var i = 0; i < 100 && !appendTask.IsCompleted; i++)
-            await Task.Yield();
+        // Queue a record that fits BufferMemory but not the remaining space.
+        var appendTask = accumulator.AppendFromSpansAsync(
+            "test-topic", 0,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            ReadOnlySpan<byte>.Empty, keyIsNull: true,
+            largeValue, valueIsNull: false,
+            null, 0, null, CancellationToken.None).AsTask();
+        await Assert.That(accumulator.PendingAppendCountForTest).IsEqualTo(1);
 
         // Dispose should unblock the waiter
         await accumulator.DisposeAsync();
@@ -4562,7 +4560,7 @@ public class RecordAccumulatorTests
             // Fill most of the buffer with small messages (hot path)
             await FillBufferViaHotPath(accumulator, 100);
 
-            var largeValue = new byte[4096];
+            var largeValue = new byte[1024];
 
             // This should timeout after ~100ms since no one is draining
             var ex = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
