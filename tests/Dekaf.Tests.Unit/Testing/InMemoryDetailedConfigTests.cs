@@ -14,6 +14,7 @@ public sealed class InMemoryDetailedConfigTests
     {
         var cluster = new InMemoryKafkaCluster();
         await using var admin = new InMemoryAdminClient(cluster);
+        cluster.CreateTopic("orders");
         var topic = ConfigResource.Topic("orders");
         var group = new ConfigResource { Type = ConfigResourceType.Group, Name = "workers" };
         cluster.FaultPlan.Fail(new(KafkaFaultOperation.Admin, groupId: group.Name), new KafkaException(ErrorCode.GroupAuthorizationFailed, "original denial"));
@@ -30,6 +31,7 @@ public sealed class InMemoryDetailedConfigTests
     {
         var cluster = new InMemoryKafkaCluster();
         await using var admin = new InMemoryAdminClient(cluster);
+        cluster.CreateTopic("done");
         var done = ConfigResource.Topic("done");
         var paused = new ConfigResource { Type = ConfigResourceType.Group, Name = "paused" };
         var barrier = cluster.FaultPlan.PauseNext(new(KafkaFaultOperation.Admin, groupId: paused.Name));
@@ -52,6 +54,7 @@ public sealed class InMemoryDetailedConfigTests
     {
         var cluster = new InMemoryKafkaCluster();
         await using var admin = new InMemoryAdminClient(cluster);
+        cluster.CreateTopic("orders");
         var resource = ConfigResource.Topic("orders");
         cluster.FaultPlan.Fail(new(KafkaFaultOperation.Admin, topic: resource.Name), new KafkaException(ErrorCode.NotController, "moved"));
         await Assert.That((await Invoke(admin, incremental)).Count).IsEqualTo(0);

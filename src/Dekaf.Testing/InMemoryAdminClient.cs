@@ -766,18 +766,18 @@ public sealed partial class InMemoryAdminClient :
             { Name = change.Name, Value = change.Value, Operation = change.Operation });
         if (items.Count == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
-        var firstError = ErrorCode.None;
+        KafkaException? failure = null;
         foreach (var item in items)
         {
             await ApplyAdminResourceFaultAsync(item.Resource, cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
-            var error = _cluster.AlterShareIsolation(item.Resource, item.Changes, replace: false, options?.ValidateOnly ?? false);
-            if (firstError == ErrorCode.None)
-                firstError = error;
+            var error = _cluster.IncrementallyAlterConfigs(item.Resource, item.Changes, options?.ValidateOnly ?? false);
+            if (error != ErrorCode.None)
+                failure ??= KafkaException.FromErrorCode(error, $"Failed to incrementally alter configs for {item.Resource}.");
         }
 
-        if (firstError != ErrorCode.None)
-            throw KafkaException.FromErrorCode(firstError, "Invalid share.isolation.level configuration.");
+        if (failure is not null)
+            throw failure;
     }
 
     public async ValueTask CreateAclsAsync(
