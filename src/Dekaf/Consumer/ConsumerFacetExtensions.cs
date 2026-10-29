@@ -19,7 +19,8 @@ public static class ConsumerFacetExtensions
     }
 
     /// <summary>
-    /// Unassigns all partitions.
+    /// Unassigns all manually assigned partitions. Throws while the consumer is subscribed;
+    /// see <see cref="IConsumerPartitions.Unassign"/>.
     /// </summary>
     public static void Unassign<TKey, TValue>(this IKafkaConsumer<TKey, TValue> consumer)
     {

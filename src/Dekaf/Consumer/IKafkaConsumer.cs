@@ -461,8 +461,17 @@ public interface IConsumerPartitions
     void Assign(params TopicPartition[] partitions);
 
     /// <summary>
-    /// Unassigns all partitions.
+    /// Unassigns all manually assigned partitions.
     /// </summary>
+    /// <remarks>
+    /// Use it only on a consumer with a manual assignment (<see cref="Assign"/> or
+    /// <see cref="IncrementalAssign"/>). The group coordinator owns a subscribed consumer's
+    /// assignment, so this method throws while the consumer is subscribed to topics, a filter,
+    /// or a pattern. Call <see cref="IKafkaConsumer{TKey, TValue}.Unsubscribe"/> to leave the group
+    /// and release its assignment instead. KIP-848 group assignments are applied automatically;
+    /// do not call this method from a rebalance callback to release a group assignment.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">The consumer is subscribed to topics, a filter, or a pattern.</exception>
     void Unassign();
 
     /// <summary>
