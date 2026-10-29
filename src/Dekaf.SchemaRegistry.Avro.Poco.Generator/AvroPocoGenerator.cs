@@ -637,6 +637,13 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
 
             if (model is null && symbol is IArrayTypeSymbol array)
             {
+                if (!array.IsSZArray)
+                {
+                    Error(UnsupportedType, member.Locations.FirstOrDefault(), member.Name, display,
+                        "only single-dimensional zero-based (SZ) arrays are supported");
+                    return null;
+                }
+
                 if (array.ElementType.SpecialType == SpecialType.System_Byte)
                     model = TypeModel.Primitive(TypeKindModel.Bytes, display);
                 else
@@ -1649,7 +1656,7 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 .Append(GetMinimumDecodedAllocationSize(type.Item)).AppendLine(");");
             code.Append(indent).Append("var ").Append(result).Append(" = ")
                 .Append(type.Kind == TypeKindModel.Array
-                    ? "new " + type.Item!.SymbolType + "[" + count + "]"
+                    ? EmitArrayCreation(type, count)
                     : "new " + type.SymbolType + "(" + count + ")")
                 .AppendLine(";");
             if (type.Kind == TypeKindModel.Array)
@@ -1691,6 +1698,15 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     .Append(", ").Append(offset).AppendLine(");");
             }
             code.Append(indent).Append(target).Append(" = ").Append(result).AppendLine(";");
+        }
+
+        private static string EmitArrayCreation(TypeModel type, string count)
+        {
+            var arrayType = (ArrayTypeSyntax)SyntaxFactory.ParseTypeName(type.SymbolType);
+            var outerRank = arrayType.RankSpecifiers[0];
+            var sizedRank = outerRank.WithSizes(SyntaxFactory.SingletonSeparatedList<ExpressionSyntax>(
+                SyntaxFactory.IdentifierName(count)));
+            return "new " + arrayType.WithRankSpecifiers(arrayType.RankSpecifiers.Replace(outerRank, sizedRank));
         }
 
         private void EmitReadCollectionItems(

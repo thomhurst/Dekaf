@@ -53,6 +53,55 @@ public sealed class AvroPocoGeneratorDiagnosticsTests
     }
 
     [Test]
+    [Arguments("int[,]")]
+    [Arguments("byte[,]")]
+    [Arguments("int[,,]")]
+    [Arguments("int[][,]")]
+    [Arguments("int[,][]")]
+    [Arguments("System.Collections.Generic.List<byte[,]>")]
+    [Arguments("System.Collections.Generic.Dictionary<string, int[,]>")]
+    public async Task Generator_RejectsUnsupportedArrayShapes(string typeName)
+    {
+        var result = RunGeneratorResult(
+            $"[AvroRecord] public partial class Value {{ public {typeName} Items {{ get; set; }} = null!; }}");
+        var diagnostics = result.Diagnostics.Where(static diagnostic => diagnostic.Id == "DKAVRO002").ToArray();
+
+        await Assert.That(diagnostics).IsNotEmpty();
+        await Assert.That(diagnostics.Any(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error &&
+            diagnostic.GetMessage().Contains("only single-dimensional zero-based (SZ) arrays are supported", StringComparison.Ordinal)))
+            .IsTrue();
+        await Assert.That(result.Results.Single().GeneratedSources).IsEmpty();
+    }
+
+    [Test]
+    [Arguments("byte[][]")]
+    [Arguments("int[][]")]
+    [Arguments("int[][][]")]
+    [Arguments("byte[]?[]?")]
+    [Arguments("int?[][]")]
+    [Arguments("System.Collections.Generic.List<int[][]>")]
+    [Arguments("System.Collections.Generic.Dictionary<string, byte[][]>")]
+    [Arguments("System.Collections.Generic.List<int[]>[]")]
+    public async Task Generator_JaggedArrays_Compile(string typeName)
+    {
+        var compilation = CSharpCompilation.Create(
+            "JaggedArrayCompilation",
+            [CSharpSyntaxTree.ParseText(
+                "using Dekaf.SchemaRegistry.Avro.Poco; " +
+                $"[AvroRecord] public partial class Value {{ public {typeName} Items {{ get; set; }} = null!; }}")],
+            PlatformReferences,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable));
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(new AvroPocoGenerator());
+        driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
+        var errors = output.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error).ToArray();
+
+        await Assert.That(diagnostics).IsEmpty();
+        await Assert.That(driver.GetRunResult().Results.Single().GeneratedSources.Length).IsEqualTo(1);
+        await Assert.That(errors).IsEmpty().Because(string.Join(Environment.NewLine, errors.Select(static error => error.ToString())));
+    }
+
+    [Test]
     [Arguments("public Child Item { get; set; } = new();", "[AvroRecord(Namespace = \"\")] public partial class Child { public int Id { get; set; } }", "Child")]
     [Arguments("public Child Item { get; set; } = new();", "[AvroRecord] public partial class Child { public int Id { get; set; } }", "Child")]
     [Arguments("public Models.Child Item { get; set; } = new();", "namespace Models { [AvroRecord(Namespace = \"\")] public partial class Child { public int Id { get; set; } } }", "Child")]
