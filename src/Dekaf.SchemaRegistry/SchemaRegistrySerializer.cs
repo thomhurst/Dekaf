@@ -326,11 +326,9 @@ public sealed class SchemaRegistrySerializer<T> :
         var schemaEntry = GetSchemaForContext(context.Topic, context.Component == SerializationComponent.Key);
         var schemaId = schemaEntry.SchemaId;
 
-        var payloadBuffer = SchemaRegistryBuffers.PayloadBuffer ??= new ArrayBufferWriter<byte>(initialCapacity: 4096);
-        payloadBuffer.ResetWrittenCount();
+        using var payloadLease = new SchemaRegistryBuffers.Lease();
+        var payloadBuffer = payloadLease.Buffer;
         _serialize(value, payloadBuffer);
-        if (payloadBuffer.Capacity > 1024 * 1024)
-            SchemaRegistryBuffers.PayloadBuffer = null;
 
         var payload = payloadBuffer.WrittenMemory;
         if (_ruleExecutor is not null)
@@ -387,12 +385,9 @@ public sealed class SchemaRegistrySerializer<T> :
     {
         var schemaId = schemaEntry.SchemaId;
 
-        var payloadBuffer = SchemaRegistryBuffers.PayloadBuffer ??= new ArrayBufferWriter<byte>(initialCapacity: 4096);
-        payloadBuffer.ResetWrittenCount();
+        using var payloadLease = new SchemaRegistryBuffers.Lease();
+        var payloadBuffer = payloadLease.Buffer;
         _serialize(value, payloadBuffer);
-        // Drop an oversized buffer so a single large message doesn't permanently hold capacity on this thread.
-        if (payloadBuffer.Capacity > 1024 * 1024)
-            SchemaRegistryBuffers.PayloadBuffer = null;
 
         var payload = payloadBuffer.WrittenMemory;
         if (_ruleExecutor is not null)
@@ -992,7 +987,26 @@ public sealed class SchemaRegistrySerializer<T> :
 internal static class SchemaRegistryBuffers
 {
     [ThreadStatic]
-    internal static ArrayBufferWriter<byte>? PayloadBuffer;
+    private static ArrayBufferWriter<byte>? t_payloadBuffer;
+
+    // Remove active storage from the cache until every user callback has completed.
+    // Nested calls, including other T and JSON serializers, borrow independent storage.
+    internal readonly struct Lease : IDisposable
+    {
+        internal ArrayBufferWriter<byte> Buffer { get; }
+
+        public Lease()
+        {
+            Buffer = t_payloadBuffer ?? new ArrayBufferWriter<byte>(initialCapacity: 4096);
+            t_payloadBuffer = null;
+            Buffer.ResetWrittenCount();
+        }
+
+        public void Dispose()
+        {
+            t_payloadBuffer = Buffer.Capacity <= 1024 * 1024 ? Buffer : null;
+        }
+    }
 }
 
 /// <summary>

@@ -20,6 +20,9 @@ public sealed class JsonSerializer<T> : ISerde<T>
     [ThreadStatic]
     private static JsonWriterCache? t_writerCache;
 
+    [ThreadStatic]
+    private static bool t_inUse;
+
     private readonly JsonSerializerOptions? _options;
     private readonly JsonTypeInfo<T>? _typeInfo;
 
@@ -56,16 +59,18 @@ public sealed class JsonSerializer<T> : ISerde<T>
         // Utf8JsonWriter cannot accept the generic TWriter directly because the
         // 'allows ref struct' constraint prevents boxing to IBufferWriter<byte>.
         // A ThreadStatic JsonBufferWriter is used as an intermediate buffer.
-        // This is safe because Serialize is fully synchronous (no await points),
-        // so thread migration cannot occur mid-operation.
-        var sharedBuffer = t_sharedBuffer ??= new JsonBufferWriter();
-        sharedBuffer.ResetWrittenCount();
-
-        var jsonWriter = (t_writerCache ??= new JsonWriterCache())
-            .GetWriter(sharedBuffer, _typeInfo?.Options ?? _options!);
+        // Ownership includes destination callbacks as well as converters.
+        // Synchronous user code can reenter another serializer of the same T.
+        var nested = t_inUse;
+        var sharedBuffer = nested ? new JsonBufferWriter() : t_sharedBuffer ??= new JsonBufferWriter();
+        var writerCache = nested ? new JsonWriterCache() : t_writerCache ??= new JsonWriterCache();
+        Utf8JsonWriter? jsonWriter = null;
+        t_inUse = true;
 
         try
         {
+            sharedBuffer.ResetWrittenCount();
+            jsonWriter = writerCache.GetWriter(sharedBuffer, _typeInfo?.Options ?? _options!);
             if (_typeInfo is not null)
             {
                 System.Text.Json.JsonSerializer.Serialize(jsonWriter, value, _typeInfo);
@@ -84,11 +89,12 @@ public sealed class JsonSerializer<T> : ISerde<T>
         }
         finally
         {
-            if (sharedBuffer.Capacity > MaxRetainedBufferBytes)
+            t_inUse = nested;
+            if (nested || sharedBuffer.Capacity > MaxRetainedBufferBytes)
             {
                 // Reset also releases the writer's Memory<byte> before the array is returned.
-                // Keep both wrapper objects reusable for sustained large-payload workloads.
-                jsonWriter.Reset(sharedBuffer);
+                // Retain cached wrapper objects for sustained large-payload workloads.
+                jsonWriter?.Reset(sharedBuffer);
                 sharedBuffer.ReleaseBuffer();
             }
         }

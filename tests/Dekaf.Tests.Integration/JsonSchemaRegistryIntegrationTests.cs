@@ -1,9 +1,11 @@
+using System.Buffers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Json;
+using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Integration;
 
@@ -62,6 +64,85 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
         await Assert.That(consumed).IsNotNull();
         var json = System.Text.Encoding.UTF8.GetString(consumed.AsSpan(schemaRegistry ? 5 : 0));
         await Assert.That(json).IsEqualTo(JsonSerializer.Serialize(order, typeInfo));
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    [SkipWhenNativeAot("This regression exercises reflection-based custom converters.")]
+    public async Task ReentrantJson_Produce_PreservesOuterAndNestedPayloads(bool schemaRegistry, CancellationToken cancellationToken)
+    {
+        var topic = await testInfra.CreateTestTopicAsync();
+        using var registry = new SchemaRegistryClient(new SchemaRegistryConfig { Url = testInfra.RegistryUrl });
+        await using var innerRegistry = new JsonSchemaRegistrySerializer<TestOrder>(registry, TestOrderSchema);
+        if (schemaRegistry)
+            _ = await innerRegistry.PrepareAsync(topic, new TestOrder(), cancellationToken: cancellationToken);
+        ISerializer<TestOrder> inner = schemaRegistry
+            ? innerRegistry
+            : new Dekaf.Serialization.Json.JsonSerializer<TestOrder>();
+        var nestedOutput = new ArrayBufferWriter<byte>();
+        var context = new SerializationContext
+        {
+            Topic = topic,
+            Component = SerializationComponent.Value
+        };
+        var options = new JsonSerializerOptions
+        {
+            Converters = { new ReentrantOrderConverter(() => inner.Serialize(
+                new TestOrder { OrderId = 7, CustomerName = "nested" }, ref nestedOutput, context)) }
+        };
+        ISerializer<TestOrder> outer = schemaRegistry
+            ? new JsonSchemaRegistrySerializer<TestOrder>(registry, TestOrderSchema, options)
+            : new Dekaf.Serialization.Json.JsonSerializer<TestOrder>(options);
+        await using var outerLifetime = outer as IAsyncDisposable;
+        await using var producer = await Kafka.CreateProducer<string, TestOrder>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithValueSerializer(outer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        await producer.ProduceAsync(new ProducerMessage<string, TestOrder>
+        {
+            Topic = topic,
+            Key = "reentrant",
+            Value = new TestOrder { OrderId = 42, CustomerName = "outer", Amount = 12.5m }
+        }, cancellationToken);
+        await using var consumer = await Kafka.CreateConsumer<string, byte[]>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithGroupId($"reentrant-json-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        consumer.Subscribe(topic);
+        byte[]? consumed = null;
+        await foreach (var message in consumer.ConsumeAsync(cancellationToken))
+        {
+            consumed = message.Value;
+            break;
+        }
+        await Assert.That(consumed).IsNotNull();
+        var offset = schemaRegistry ? 5 : 0;
+        using var outerDocument = JsonDocument.Parse(consumed!.AsMemory(offset));
+        using var nestedDocument = JsonDocument.Parse(nestedOutput.WrittenMemory[offset..]);
+        await Assert.That(outerDocument.RootElement.GetProperty("OrderId").GetInt32()).IsEqualTo(42);
+        await Assert.That(outerDocument.RootElement.GetProperty("CustomerName").GetString()).IsEqualTo("outer");
+        await Assert.That(nestedDocument.RootElement.GetProperty("orderId").GetInt32()).IsEqualTo(7);
+    }
+
+    private sealed class ReentrantOrderConverter(Action callback) : JsonConverter<TestOrder>
+    {
+        public override TestOrder Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            throw new NotSupportedException();
+
+        public override void Write(Utf8JsonWriter writer, TestOrder value, JsonSerializerOptions options)
+        {
+            writer.WriteStartObject();
+            writer.WritePropertyName("OrderId");
+            callback();
+            writer.WriteNumberValue(value.OrderId);
+            writer.WriteString("CustomerName", value.CustomerName);
+            writer.WriteNumber("Amount", value.Amount);
+            writer.WriteEndObject();
+        }
     }
 
     private const string TestOrderSchema = """
