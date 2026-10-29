@@ -1579,6 +1579,7 @@ public sealed partial class InMemoryAdminClient :
 
         if (offsetList.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
+        GroupException? firstError = null;
         for (var index = 0; index < offsetList.Length; index++)
         {
             var offset = offsetList[index];
@@ -1588,13 +1589,18 @@ public sealed partial class InMemoryAdminClient :
                 partition.Topic,
                 partition.Partition,
                 groupId).ConfigureAwait(false);
-            _cluster.CommitShareOffsets(
-                groupId,
-                [new TopicPartitionOffset(
-                    partition.Topic,
-                    partition.Partition,
-                    offset.StartOffset)]);
+            var errorCode = _cluster.AlterShareGroupOffsetDetailed(groupId, offset);
+            if (errorCode != ErrorCode.None && firstError is null)
+            {
+                firstError = new GroupException(errorCode,
+                    $"AlterShareGroupOffsets failed for {partition.Topic}-{partition.Partition}: {errorCode}")
+                {
+                    GroupId = groupId
+                };
+            }
         }
+        if (firstError is not null)
+            throw firstError;
     }
 
     public async ValueTask DeleteShareGroupOffsetsAsync(
@@ -1613,11 +1619,22 @@ public sealed partial class InMemoryAdminClient :
 
         if (topicSet.Count == 0)
             await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
+        GroupException? firstError = null;
         foreach (var topic in topicSet)
         {
             await ApplyAdminFaultAsync(cancellationToken, topic, groupId: groupId).ConfigureAwait(false);
-            _cluster.DeleteShareGroupOffsets(groupId, topic);
+            var errorCode = _cluster.DeleteShareGroupOffsetsDetailed(groupId, topic);
+            if (errorCode != ErrorCode.None && firstError is null)
+            {
+                firstError = new GroupException(errorCode,
+                    $"DeleteShareGroupOffsets failed for topic '{topic}': {errorCode}")
+                {
+                    GroupId = groupId
+                };
+            }
         }
+        if (firstError is not null)
+            throw firstError;
     }
 
     public ValueTask DisposeAsync()
