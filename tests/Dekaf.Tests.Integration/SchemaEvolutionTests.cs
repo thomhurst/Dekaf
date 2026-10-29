@@ -11,6 +11,24 @@ namespace Dekaf.Tests.Integration;
 public sealed class SchemaEvolutionTests(KafkaWithSchemaRegistryContainer testInfra)
 {
     [Test]
+    public async Task ExistingSubject_MissingVersion_ThrowsRegistryError(CancellationToken cancellationToken)
+    {
+        var subject = $"compat-missing-version-{Guid.NewGuid():N}-value";
+        using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = testInfra.RegistryUrl
+        });
+        var schema = new Schema { SchemaType = SchemaType.Avro, SchemaString = "\"string\"" };
+        await registryClient.RegisterSchemaAsync(subject, schema, cancellationToken);
+
+        var exception = await Assert.ThrowsAsync<SchemaRegistryException>(
+            () => registryClient.IsCompatibleAsync(subject, schema, "999", cancellationToken));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(40402);
+        await Assert.That(exception.Message).Contains("999");
+    }
+
+    [Test]
     public async Task BackwardCompatible_AddOptionalField_IsCompatible(CancellationToken cancellationToken)
     {
         var subject = $"compat-backward-{Guid.NewGuid():N}-value";

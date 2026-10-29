@@ -151,6 +151,7 @@ internal sealed class DekDto
 
 internal sealed class CompatibilityResponse
 {
+    [JsonRequired]
     [JsonPropertyName("is_compatible")]
     public bool IsCompatible { get; init; }
 }
