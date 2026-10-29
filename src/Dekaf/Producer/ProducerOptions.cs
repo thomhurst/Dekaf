@@ -400,7 +400,7 @@ public sealed class ProducerOptions
     /// The budget is split into two phases:
     /// <list type="bullet">
     ///   <item><description>
-    ///     <b>Graceful phase</b> (first half): flushes pending messages to Kafka and waits
+    ///     <b>Graceful phase</b> (40% of the budget): flushes pending messages to Kafka and waits
     ///     for the sender to drain remaining batches.
     ///   </description></item>
     ///   <item><description>

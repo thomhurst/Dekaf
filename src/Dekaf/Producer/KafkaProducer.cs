@@ -7694,10 +7694,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         var totalDeadline = hasTimeout
             ? DateTimeOffset.UtcNow.AddMilliseconds(_options.CloseTimeoutMs)
             : DateTimeOffset.MaxValue;
-        var gracefulMs = hasTimeout ? _options.CloseTimeoutMs * 2 / 5 : 0;
+        var gracefulMs = hasTimeout ? (int)(_options.CloseTimeoutMs * 2L / 5) : 0;
 
-        // Local helper: milliseconds remaining until totalDeadline, floored at zero.
-        int RemainingMs() => Math.Max(0, (int)(totalDeadline - DateTimeOffset.UtcNow).TotalMilliseconds);
+        // Clamp before converting to int so large deadlines cannot overflow on older runtimes.
+        // No deadline arithmetic is needed when the shutdown budgets are disabled.
+        int RemainingMs() => hasTimeout
+            ? (int)Math.Clamp((totalDeadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0, int.MaxValue)
+            : 0;
         using var shutdownCts = hasTimeout
             ? new CancellationTokenSource(TimeSpan.FromMilliseconds(gracefulMs))
             : new CancellationTokenSource();
@@ -7771,9 +7774,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
             try
             {
-                await _senderTask
-                    .WaitAsync(TimeSpan.FromMilliseconds(senderWaitMs))
-                    .ConfigureAwait(false);
+                if (hasTimeout)
+                    await _senderTask.WaitAsync(TimeSpan.FromMilliseconds(senderWaitMs)).ConfigureAwait(false);
+                else
+                    await _senderTask.ConfigureAwait(false);
             }
             catch
             {
@@ -7787,7 +7791,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             var lingerWaitMs = Math.Min(1000, Math.Max(250, RemainingMs() / 4));
             try
             {
-                await _lingerTask.WaitAsync(TimeSpan.FromMilliseconds(lingerWaitMs)).ConfigureAwait(false);
+                if (hasTimeout)
+                    await _lingerTask.WaitAsync(TimeSpan.FromMilliseconds(lingerWaitMs)).ConfigureAwait(false);
+                else
+                    await _lingerTask.ConfigureAwait(false);
             }
             catch
             {
@@ -7826,7 +7833,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 // This outer deadline only fires if something beyond the per-sender
                 // timeout hangs (e.g., CancelAsync blocking on a slow callback).
                 var disposeSendersTask = Task.WhenAll(disposeTasks);
-                if (_ownsInfrastructure)
+                if (_ownsInfrastructure || !hasTimeout)
                     await disposeSendersTask.ConfigureAwait(false);
                 else
                     await disposeSendersTask
@@ -7868,11 +7875,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         _transactionLock.Dispose();
         _initLock.Dispose();
 
-        // Post-disposal cleanup: dispose remaining resources with bounded timeouts.
+        // Post-disposal cleanup: apply budgets only when CloseTimeoutMs is positive.
         // Previously these disposals had no time budget, so their internal timeouts
         // (e.g., accumulator's 10s worker+batch wait, connection pool's 30s connection
-        // timeout) could cause DisposeAsync to far exceed CloseTimeoutMs. Now each step
-        // is capped by the remaining time budget so the total dispose time stays bounded.
+        // timeout) could cause DisposeAsync to far exceed CloseTimeoutMs. With a positive
+        // CloseTimeoutMs, each step is capped by the remaining time budget.
 
         // Dispose accumulator — fails any remaining batches if graceful shutdown failed.
         // Has internal 5s+5s timeouts for workers and in-flight batches, but at this point
@@ -7880,7 +7887,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // Reserve half the remaining budget for subsequent disposals (pool, network).
         _appendWorkerCts.Cancel();
         await DisposeWithBudgetAsync(
-            _accumulator.DisposeAsync(), Math.Max(500, RemainingMs() / 2), "accumulator");
+            _accumulator.DisposeAsync(), Math.Max(500, RemainingMs() / 2), "accumulator").ConfigureAwait(false);
         _appendWorkerCts.Dispose();
 
         // Stop the inflight tracker's pruning timer to prevent callbacks after disposal.
@@ -7888,16 +7895,18 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         // Dispose ValueTaskSource pool — prevents resource leaks (usually fast).
         await DisposeWithBudgetAsync(
-            _valueTaskSourcePool.DisposeAsync(), Math.Max(200, RemainingMs() / 10), "valueTaskSourcePool");
+            _valueTaskSourcePool.DisposeAsync(), Math.Max(200, RemainingMs() / 10), "valueTaskSourcePool").ConfigureAwait(false);
 
         var telemetryStopMs = Math.Max(200, Math.Min(5000, RemainingMs()));
         await DisposeWithBudgetAsync(
-            _telemetryManager.StopAsync(TimeSpan.FromMilliseconds(telemetryStopMs)),
+            _telemetryManager.StopAsync(hasTimeout
+                ? TimeSpan.FromMilliseconds(telemetryStopMs)
+                : Timeout.InfiniteTimeSpan),
             telemetryStopMs,
-            "telemetry");
+            "telemetry").ConfigureAwait(false);
 
         await DisposeWithBudgetAsync(
-            _telemetryManager.DisposeAsync(), Math.Max(100, RemainingMs() / 10), "telemetryManager");
+            _telemetryManager.DisposeAsync(), Math.Max(100, RemainingMs() / 10), "telemetryManager").ConfigureAwait(false);
 
         if (_ownsInfrastructure)
         {
@@ -7909,7 +7918,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     _metadataManager.DisposeAsync().AsTask(),
                     _connectionPool.DisposeAsync().AsTask())),
                 Math.Max(500, RemainingMs()),
-                "network");
+                "network").ConfigureAwait(false);
         }
 
         var disposeElapsedMs = Stopwatch.GetElapsedTime(disposeStart).TotalMilliseconds;
@@ -7934,7 +7943,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     }
 
     /// <summary>
-    /// Awaits a disposal ValueTask with a wall-clock timeout, swallowing all exceptions.
+    /// Awaits a disposal ValueTask with a wall-clock timeout when CloseTimeoutMs is positive.
     /// Used during producer shutdown to prevent any single resource disposal from exceeding
     /// the remaining time budget.
     /// </summary>
@@ -7942,9 +7951,16 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     {
         try
         {
-            await disposeTask.AsTask()
-                .WaitAsync(TimeSpan.FromMilliseconds(budgetMs))
-                .ConfigureAwait(false);
+            if (_options.CloseTimeoutMs > 0)
+            {
+                await disposeTask.AsTask()
+                    .WaitAsync(TimeSpan.FromMilliseconds(budgetMs))
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                await disposeTask.ConfigureAwait(false);
+            }
         }
         catch (TimeoutException)
         {
