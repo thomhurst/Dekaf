@@ -50,7 +50,10 @@ public class ProducerDisposalTests
         var disposal = producer.DisposeAsync().AsTask();
         try
         {
-            await Assert.That(disposal.IsCompleted).IsFalse();
+            // The previous linger deadline was capped at one second. Keep the gate
+            // closed beyond that boundary so a timed wait cannot satisfy this test.
+            await Assert.That(async () => await disposal.WaitAsync(TimeSpan.FromSeconds(2)))
+                .Throws<TimeoutException>();
         }
         finally
         {

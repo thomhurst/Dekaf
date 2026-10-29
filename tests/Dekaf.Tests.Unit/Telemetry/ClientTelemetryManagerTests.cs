@@ -347,6 +347,14 @@ public sealed partial class ClientTelemetryManagerTests
         var disposeTask = context.Manager.DisposeAsync().AsTask();
         try
         {
+            if (timeoutMs == Timeout.Infinite)
+            {
+                // The previous normalization imposed a five-second deadline. Keep the
+                // request blocked beyond it to detect that deadline returning.
+                await Assert.That(async () => await stopTask.WaitAsync(TimeSpan.FromSeconds(6)))
+                    .Throws<TimeoutException>();
+            }
+
             await Assert.That(disposeTask.IsCompleted).IsFalse();
         }
         finally
