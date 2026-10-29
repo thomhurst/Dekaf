@@ -25,6 +25,7 @@ public class InMemoryShareRecordAcquisitionBenchmarks
     {
         _cluster.CreateTopic(_topicPartition.Topic);
         _registration = _cluster.RegisterShareGroupMember(GroupId, MemberId);
+        _cluster.CommitShareOffsets(GroupId, [new TopicPartitionOffset(_topicPartition.Topic, _topicPartition.Partition, 0)]);
         _benchmarkLeases = new InMemoryRecord[OperationsPerInvoke];
         await using var producer = new InMemoryProducer<byte[], byte[]>(_cluster);
         await producer.ProduceAsync(_topicPartition.Topic, [], []).ConfigureAwait(false);

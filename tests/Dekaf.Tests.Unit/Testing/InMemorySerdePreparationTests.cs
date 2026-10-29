@@ -122,8 +122,8 @@ public sealed class InMemorySerdePreparationTests
         if (share)
         {
             await using var consumer = prepareKey
-                ? new InMemoryShareConsumer<string, string>(cluster, deserializer, asyncSerde)
-                : new InMemoryShareConsumer<string, string>(cluster, asyncSerde, deserializer);
+                ? new InMemoryShareConsumer<string, string>(cluster, deserializer, asyncSerde, new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest })
+                : new InMemoryShareConsumer<string, string>(cluster, asyncSerde, deserializer, new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
             consumer.Subscribe("prepared");
             var count = 0;
             await foreach (var result in consumer.PollAsync())
@@ -171,7 +171,7 @@ public sealed class InMemorySerdePreparationTests
 
         if (share)
         {
-            await using var consumer = new InMemoryShareConsumer<string, string>(cluster, Serializers.String, deserializer);
+            await using var consumer = new InMemoryShareConsumer<string, string>(cluster, Serializers.String, deserializer, new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
             consumer.Subscribe("prepared");
             await using (var records = consumer.PollAsync(cancellation.Token).GetAsyncEnumerator())
             {
@@ -213,7 +213,7 @@ public sealed class InMemorySerdePreparationTests
         var value = new PreparingDeserializer();
         if (share)
         {
-            await using var consumer = new InMemoryShareConsumer<string, string>(cluster, key, value);
+            await using var consumer = new InMemoryShareConsumer<string, string>(cluster, key, value, new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
             consumer.Subscribe("prepared");
             await using var records = consumer.PollAsync().GetAsyncEnumerator();
             await Assert.That(await records.MoveNextAsync()).IsTrue();
@@ -275,7 +275,7 @@ public sealed class InMemorySerdePreparationTests
 
         if (share)
         {
-            await using var consumer = new InMemoryShareConsumer<string, int>(cluster, Serializers.String, deserializer);
+            await using var consumer = new InMemoryShareConsumer<string, int>(cluster, Serializers.String, deserializer, new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
             consumer.Subscribe("prepared");
             await using var records = consumer.PollAsync().GetAsyncEnumerator();
             await Assert.That(await records.MoveNextAsync()).IsTrue();
@@ -303,7 +303,7 @@ public sealed class InMemorySerdePreparationTests
         var deserializer = new PreparingDeserializer { RequiredPreparations = requiredPreparations };
         if (share)
         {
-            await using var consumer = new InMemoryShareConsumer<string, string>(cluster, Serializers.String, deserializer);
+            await using var consumer = new InMemoryShareConsumer<string, string>(cluster, Serializers.String, deserializer, new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
             consumer.Subscribe("prepared");
             await using (var records = consumer.PollAsync().GetAsyncEnumerator())
             {

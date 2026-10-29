@@ -1,3 +1,4 @@
+using Dekaf.Consumer;
 using System.Text;
 using Dekaf.Consumer.DeadLetter;
 using Dekaf.Producer;
@@ -31,6 +32,7 @@ public sealed class InMemoryShareDeadLetterQueueTests
         await producer.ProduceAsync("orders", "key", "accepted");
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions
         {
+            AutoOffsetReset = AutoOffsetReset.Earliest,
             GroupId = "workers", DeadLetterQueueTopic = "dlq.orders", DeadLetterQueueCopyRecord = copyRecord
         });
         consumer.Subscribe("orders");
@@ -70,6 +72,7 @@ public sealed class InMemoryShareDeadLetterQueueTests
         await producer.ProduceAsync("orders", "key", "replacement");
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions
         {
+            AutoOffsetReset = AutoOffsetReset.Earliest,
             GroupId = "workers", MemberId = "first", DeadLetterQueueTopic = "dlq.orders"
         });
         consumer.Subscribe("orders");
@@ -97,6 +100,7 @@ public sealed class InMemoryShareDeadLetterQueueTests
         cluster.UnregisterShareGroupMember("workers", "first", registration);
         await using var replacement = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions
         {
+            AutoOffsetReset = AutoOffsetReset.Earliest,
             GroupId = "workers", MemberId = sameMemberId ? "first" : "second", DeadLetterQueueTopic = "dlq.orders"
         });
         replacement.Subscribe("orders");
@@ -115,7 +119,7 @@ public sealed class InMemoryShareDeadLetterQueueTests
         var partition = new TopicPartition("orders", 0);
         await Assert.That(cluster.GetCommittedShareOffset("workers", partition)).IsEqualTo(1);
         await using var other = new InMemoryShareConsumer<string, string>(cluster,
-            new InMemoryShareConsumerOptions { GroupId = "workers", MemberId = "third" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "workers", MemberId = "third" });
         other.Subscribe("orders");
         await Assert.That(await other.PollAsync().ToListAsync()).IsEmpty();
 
@@ -136,7 +140,7 @@ public sealed class InMemoryShareDeadLetterQueueTests
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
         await producer.ProduceAsync("orders", "key", "value");
-        await using var consumer = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions { GroupId = "workers" });
+        await using var consumer = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "workers" });
         consumer.Subscribe("orders");
 
         await foreach (var record in consumer.PollAsync())
@@ -158,6 +162,7 @@ public sealed class InMemoryShareDeadLetterQueueTests
         await producer.ProduceAsync("orders", "key", "value");
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions
         {
+            AutoOffsetReset = AutoOffsetReset.Earliest,
             GroupId = "workers", DeadLetterQueueTopic = "dlq.orders"
         });
         consumer.Subscribe("orders");
@@ -180,6 +185,7 @@ public sealed class InMemoryShareDeadLetterQueueTests
         await producer.ProduceAsync("orders", "key", "value");
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions
         {
+            AutoOffsetReset = AutoOffsetReset.Earliest,
             GroupId = "workers", DeadLetterQueueTopic = "dlq.orders"
         });
         consumer.Subscribe("orders");
@@ -208,6 +214,7 @@ public sealed class InMemoryShareDeadLetterQueueTests
         await producer.ProduceAsync("orders", "key", "value");
         await using var consumer = new InMemoryShareConsumer<string, string>(cluster, new InMemoryShareConsumerOptions
         {
+            AutoOffsetReset = AutoOffsetReset.Earliest,
             GroupId = "workers", DeadLetterQueueTopic = "dlq.orders"
         });
         consumer.Subscribe("orders");
@@ -226,6 +233,6 @@ public sealed class InMemoryShareDeadLetterQueueTests
     public async Task InvalidDeadLetterTopic_IsRejected()
     {
         await Assert.That(() => new InMemoryShareConsumer<string, string>(new InMemoryKafkaCluster(),
-            new InMemoryShareConsumerOptions { DeadLetterQueueTopic = "__dlq" })).Throws<ArgumentException>();
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, DeadLetterQueueTopic = "__dlq" })).Throws<ArgumentException>();
     }
 }

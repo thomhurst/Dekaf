@@ -1354,7 +1354,7 @@ public sealed class InMemoryKafkaClusterTests
         var producer = new InMemoryProducer<string, string>(cluster);
         var shareConsumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "share-workers" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "share-workers" });
 
         await producer.ProduceAsync("shared", "k", "v");
         shareConsumer.Subscribe("shared");
@@ -1409,7 +1409,7 @@ public sealed class InMemoryKafkaClusterTests
             [new TopicPartitionOffset(partition.Topic, partition.Partition, 7)]);
         await using var consumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "member-only" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "member-only" });
         consumer.Subscribe("shared");
 
         var activeGroups = await admin.ListShareGroupsAsync();
@@ -1450,7 +1450,7 @@ public sealed class InMemoryKafkaClusterTests
             [new ShareGroupOffsetAlteration { TopicPartition = partition, StartOffset = 3 }]);
         await using var consumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "member-only" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "member-only" });
         consumer.Subscribe(partition.Topic);
 
         var emptyGroups = await admin.ListShareGroupsAsync(new ListShareGroupsOptions
@@ -1511,7 +1511,7 @@ public sealed class InMemoryKafkaClusterTests
         var admin = new InMemoryAdminClient(cluster);
         var consumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "subscribe-close-race" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "subscribe-close-race" });
         await producer.ProduceAsync("shared", "k", "v");
         var gate = typeof(InMemoryShareConsumer<string, string>).GetField(
             "_gate",
@@ -1587,7 +1587,7 @@ public sealed class InMemoryKafkaClusterTests
             [new ShareGroupOffsetAlteration { TopicPartition = partition, StartOffset = 3 }]);
         await using var consumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "share-active" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "share-active" });
         consumer.Subscribe("shared");
 
         var activeResult = await admin.DeleteShareGroupsAsync(["share-active"]);
@@ -1618,10 +1618,10 @@ public sealed class InMemoryKafkaClusterTests
             [new ShareGroupOffsetAlteration { TopicPartition = partition, StartOffset = 3 }]);
         await using var first = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "shared-member-id", MemberId = "worker" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "shared-member-id", MemberId = "worker" });
         await using var second = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "shared-member-id", MemberId = "worker" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "shared-member-id", MemberId = "worker" });
         first.Subscribe("shared");
         second.Subscribe("shared");
 
@@ -1648,7 +1648,7 @@ public sealed class InMemoryKafkaClusterTests
 
         await using (var firstConsumer = new InMemoryShareConsumer<string, string>(
                          cluster,
-                         new InMemoryShareConsumerOptions { GroupId = "share-recreated" }))
+                         new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "share-recreated" }))
         {
             firstConsumer.Subscribe("shared");
             var firstDelivery = await firstConsumer.PollAsync().FirstAsync();
@@ -1662,7 +1662,7 @@ public sealed class InMemoryKafkaClusterTests
 
         await using var recreatedConsumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "share-recreated" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "share-recreated" });
         recreatedConsumer.Subscribe("shared");
         var recreatedDelivery = await recreatedConsumer.PollAsync().FirstAsync();
 
@@ -1681,6 +1681,7 @@ public sealed class InMemoryKafkaClusterTests
             "deleted-share",
             [new ShareGroupOffsetAlteration { TopicPartition = partition, StartOffset = 0 }]);
         const string memberId = "closed-member";
+        cluster.ConfigureShareOffsetReset(new() { GroupId = "deleted-share", AutoOffsetReset = AutoOffsetReset.Earliest });
         var registration = cluster.RegisterShareGroupMember("deleted-share", memberId);
 
         cluster.UnregisterShareGroupMember("deleted-share", memberId, registration);
@@ -1700,7 +1701,7 @@ public sealed class InMemoryKafkaClusterTests
 
         await using var recreatedConsumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "deleted-share" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "deleted-share" });
         recreatedConsumer.Subscribe(partition.Topic);
         var delivery = await recreatedConsumer.PollAsync().FirstAsync();
 
@@ -1714,6 +1715,7 @@ public sealed class InMemoryKafkaClusterTests
         var producer = new InMemoryProducer<string, string>(cluster);
         var partition = new TopicPartition("shared", 0);
         await producer.ProduceAsync(partition.Topic, "k", "v");
+        cluster.ConfigureShareOffsetReset(new() { GroupId = "shared-group", AutoOffsetReset = AutoOffsetReset.Earliest });
         var closedRegistration = cluster.RegisterShareGroupMember("shared-group", "shared-member");
         var activeRegistration = cluster.RegisterShareGroupMember("shared-group", "shared-member");
 
@@ -1748,6 +1750,7 @@ public sealed class InMemoryKafkaClusterTests
         await producer.ProduceAsync(partition.Topic, "k", "v");
         const string groupId = "shared-group";
         const string memberId = "shared-member";
+        cluster.ConfigureShareOffsetReset(new() { GroupId = groupId, AutoOffsetReset = AutoOffsetReset.Earliest });
         var staleRegistration = cluster.RegisterShareGroupMember(groupId, memberId);
         var staleAcquired = cluster.TryAcquireShareRecord(
             groupId,
@@ -1799,7 +1802,7 @@ public sealed class InMemoryKafkaClusterTests
         var producer = new InMemoryProducer<string, string>(cluster);
         var shareConsumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "share-gap" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "share-gap" });
 
         for (var i = 0; i < 3; i++)
         {
@@ -1840,6 +1843,7 @@ public sealed class InMemoryKafkaClusterTests
             cluster,
             new InMemoryShareConsumerOptions
             {
+                AutoOffsetReset = AutoOffsetReset.Earliest,
                 GroupId = "share-partial",
                 MaxPollRecords = 2
             });
@@ -1871,10 +1875,10 @@ public sealed class InMemoryKafkaClusterTests
         var producer = new InMemoryProducer<string, string>(cluster);
         var firstConsumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "share-leases", MemberId = "a" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "share-leases", MemberId = "a" });
         var secondConsumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "share-leases", MemberId = "b" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "share-leases", MemberId = "b" });
 
         await producer.ProduceAsync("leased", "k", "v");
         firstConsumer.Subscribe("leased");

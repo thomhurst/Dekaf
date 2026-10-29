@@ -442,7 +442,7 @@ public sealed class InMemoryAsyncSerdeTests
             cluster,
             serde,
             serde,
-            new InMemoryShareConsumerOptions { GroupId = "async-share" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "async-share" });
         var admin = new InMemoryAdminClient(cluster);
 
         await producer.ProduceAsync("shared", "k", "v");
@@ -471,7 +471,7 @@ public sealed class InMemoryAsyncSerdeTests
             cluster,
             Serializers.String,
             deserializer,
-            new InMemoryShareConsumerOptions { GroupId = "async-header-share" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "async-header-share" });
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -499,7 +499,7 @@ public sealed class InMemoryAsyncSerdeTests
             cluster,
             Serializers.String,
             valueDeserializer,
-            new InMemoryShareConsumerOptions { GroupId = "sync-key-context" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "sync-key-context" });
 
         await producer.ProduceAsync("shared", "key", "value");
         shareConsumer.Subscribe("shared");
@@ -521,7 +521,7 @@ public sealed class InMemoryAsyncSerdeTests
             cluster,
             Serializers.String,
             valueSerde,
-            new InMemoryShareConsumerOptions { GroupId = "mixed-share" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "mixed-share" });
 
         await producer.ProduceAsync("shared", "k", "v");
         shareConsumer.Subscribe("shared");
@@ -542,10 +542,10 @@ public sealed class InMemoryAsyncSerdeTests
             cluster,
             Serializers.String,
             failing,
-            new InMemoryShareConsumerOptions { GroupId = "share-failure", MemberId = "member-1" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "share-failure", MemberId = "member-1" });
         var otherMember = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "share-failure", MemberId = "member-2" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "share-failure", MemberId = "member-2" });
 
         await producer.ProduceAsync("shared", "k", "v");
         failingMember.Subscribe("shared");
@@ -572,7 +572,7 @@ public sealed class InMemoryAsyncSerdeTests
             cluster,
             Serializers.String,
             deserializer,
-            new InMemoryShareConsumerOptions { GroupId = "share-close-race" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "share-close-race" });
         var admin = new InMemoryAdminClient(cluster);
 
         await producer.ProduceAsync("shared", "k", "v");
@@ -608,7 +608,7 @@ public sealed class InMemoryAsyncSerdeTests
             cluster,
             Serializers.String,
             deserializer,
-            new InMemoryShareConsumerOptions { GroupId = "share-unsubscribe-race", MemberId = "first" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "share-unsubscribe-race", MemberId = "first" });
         var admin = new InMemoryAdminClient(cluster);
 
         await producer.ProduceAsync("shared", "k", "v");
@@ -626,11 +626,13 @@ public sealed class InMemoryAsyncSerdeTests
 
         await Assert.That(async () => await poll).Throws<InvalidOperationException>();
         await consumer.CommitAsync();
-        await Assert.That(await admin.DescribeShareGroupOffsetsAsync("share-unsubscribe-race")).IsEmpty();
+        var offsets = await admin.DescribeShareGroupOffsetsAsync("share-unsubscribe-race");
+        await Assert.That(offsets.Count).IsEqualTo(1);
+        await Assert.That(offsets[0].StartOffset).IsEqualTo(0);
 
         await using var otherConsumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "share-unsubscribe-race", MemberId = "second" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "share-unsubscribe-race", MemberId = "second" });
         otherConsumer.Subscribe("shared");
         var redelivery = await otherConsumer.PollAsync()
             .FirstAsync()
@@ -650,10 +652,10 @@ public sealed class InMemoryAsyncSerdeTests
             cluster,
             Serializers.String,
             new ThrowingDeserializer(),
-            new InMemoryShareConsumerOptions { GroupId = "share-sync-failure", MemberId = "member-1" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "share-sync-failure", MemberId = "member-1" });
         var otherMember = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = "share-sync-failure", MemberId = "member-2" });
+            new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "share-sync-failure", MemberId = "member-2" });
 
         await producer.ProduceAsync("shared", "k", "v");
         failingMember.Subscribe("shared");
@@ -687,7 +689,7 @@ public sealed class InMemoryAsyncSerdeTests
                 cluster,
                 (IAsyncDeserializer<string>)null!,
                 new AsyncPrefixSerde("v:"),
-                new InMemoryShareConsumerOptions { GroupId = "g" }))
+                new InMemoryShareConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest, GroupId = "g" }))
             .Throws<ArgumentNullException>();
     }
 

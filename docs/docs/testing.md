@@ -106,6 +106,19 @@ The in-memory clients await asynchronous serdes exactly where the real clients d
 `ProduceAsync`/`FireAsync` and on `ConsumeAsync`/`ConsumeOneAsync` (and `PollAsync` for the share
 consumer). `InMemoryShareConsumer<TKey, TValue>` accepts the same combinations.
 
+## Share consumer offset reset
+
+Share groups start at `Latest` by default, matching Kafka. The first poll of each partition
+persists the group's start offset, even when the poll returns no records. Later members and
+polls reuse that offset. To replay records produced before the first poll, set
+`InMemoryShareConsumerOptions.AutoOffsetReset` to `AutoOffsetReset.Earliest`.
+For a timestamp lookback, use `AutoOffsetReset.ByDuration` and set `AutoOffsetResetDuration`.
+An explicit policy applies to every member of the group and does not rewind initialized partitions.
+Leaving the policy null preserves the group's existing policy.
+
+`AddDekafInMemory` preserves the group ID and reset policy configured through
+`ShareConsumerBuilder`, including keyed and hosted registrations.
+
 ## Dependency Injection
 
 Use `AddDekafInMemory()` to replace producer, consumer, share consumer, and admin client registrations with in-memory doubles backed by one shared cluster:

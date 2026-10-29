@@ -155,3 +155,7 @@ Dekaf.Testing.InMemoryProducer<TKey, TValue>.InMemoryProducer(Dekaf.Testing.InMe
 Dekaf.Testing.InMemoryProducer<TKey, TValue>.InMemoryProducer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.IAsyncSerializer<TKey>! keySerializer, Dekaf.Serialization.IAsyncSerializer<TValue>! valueSerializer, Dekaf.Testing.InMemoryProducerOptions? options) -> void
 Dekaf.Testing.InMemoryProducer<TKey, TValue>.InMemoryProducer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.ISerializer<TKey>! keySerializer, Dekaf.Serialization.IAsyncSerializer<TValue>! valueSerializer, Dekaf.Testing.InMemoryProducerOptions? options) -> void
 Dekaf.Testing.InMemoryProducer<TKey, TValue>.InMemoryProducer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.IAsyncSerializer<TKey>! keySerializer, Dekaf.Serialization.ISerializer<TValue>! valueSerializer, Dekaf.Testing.InMemoryProducerOptions? options) -> void
+Dekaf.Testing.InMemoryShareConsumerOptions.AutoOffsetReset.get -> Dekaf.Consumer.AutoOffsetReset?
+Dekaf.Testing.InMemoryShareConsumerOptions.AutoOffsetReset.init -> void
+Dekaf.Testing.InMemoryShareConsumerOptions.AutoOffsetResetDuration.get -> System.TimeSpan?
+Dekaf.Testing.InMemoryShareConsumerOptions.AutoOffsetResetDuration.init -> void

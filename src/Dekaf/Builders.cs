@@ -4250,6 +4250,30 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
 
     public IKafkaShareConsumer<TKey, TValue> Build()
     {
+        var options = BuildOptions();
+        var keyDeserializer = _keyDeserializer ?? GetDefaultDeserializer<TKey>("key", "WithKeyDeserializer");
+        var valueDeserializer = _valueDeserializer ?? GetDefaultDeserializer<TValue>("value", "WithValueDeserializer");
+
+        var consumer = _clientInfrastructure is null
+            ? new KafkaShareConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory)
+            : new KafkaShareConsumer<TKey, TValue>(
+                options,
+                keyDeserializer,
+                valueDeserializer,
+                _clientInfrastructure.ConnectionPool,
+                _clientInfrastructure.MetadataManager,
+                _loggerFactory);
+
+        if (_topicsToSubscribe.Count > 0)
+        {
+            consumer.Subscribe([.. _topicsToSubscribe]);
+        }
+
+        return consumer;
+    }
+
+    internal ShareConsumerOptions BuildOptions()
+    {
         if (_bootstrapServers.Count == 0)
             throw new InvalidOperationException("Bootstrap servers must be specified. Call WithBootstrapServers() before Build().");
         ArgumentNullException.ThrowIfNullOrEmpty(_groupId, nameof(_groupId));
@@ -4262,10 +4286,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
 
         GssapiConfig.ValidateForBuild(_saslMechanism, _gssapiConfig);
 
-        var keyDeserializer = _keyDeserializer ?? GetDefaultDeserializer<TKey>("key", "WithKeyDeserializer");
-        var valueDeserializer = _valueDeserializer ?? GetDefaultDeserializer<TValue>("value", "WithValueDeserializer");
-
-        var options = new ShareConsumerOptions
+        return new ShareConsumerOptions
         {
             BootstrapServers = _bootstrapServers,
             ClientId = _clientId ?? ShareConsumerOptions.DefaultClientId,
@@ -4319,23 +4340,6 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             RetryPolicy = _retryPolicy,
             ApplicationMetrics = _applicationMetrics.Count > 0 ? _applicationMetrics.Values.ToArray() : []
         };
-
-        var consumer = _clientInfrastructure is null
-            ? new KafkaShareConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory)
-            : new KafkaShareConsumer<TKey, TValue>(
-                options,
-                keyDeserializer,
-                valueDeserializer,
-                _clientInfrastructure.ConnectionPool,
-                _clientInfrastructure.MetadataManager,
-                _loggerFactory);
-
-        if (_topicsToSubscribe.Count > 0)
-        {
-            consumer.Subscribe([.. _topicsToSubscribe]);
-        }
-
-        return consumer;
     }
 
     internal ShareConsumerBuilder<TKey, TValue> WithSaslOptions(
