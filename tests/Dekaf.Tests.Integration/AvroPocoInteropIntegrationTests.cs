@@ -21,6 +21,50 @@ namespace Dekaf.Tests.Integration;
 public sealed class AvroPocoInteropIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
     [Test]
+    public async Task JaggedArrays_InteroperateWithConfluentBothDirections(CancellationToken cancellationToken)
+    {
+        var topic = $"avro-poco-jagged-{Guid.NewGuid():N}";
+        using var dekafRegistry = new DekafRegistryClient(new DekafRegistryConfig { Url = testInfra.RegistryUrl });
+        using var confluentRegistry = new CachedSchemaRegistryClient(
+            new Confluent.SchemaRegistry.SchemaRegistryConfig { Url = testInfra.RegistryUrl });
+        await using var serializer = PocoJaggedInteropRecord.CreateAvroSerializer(dekafRegistry);
+        await using var deserializer = PocoJaggedInteropRecord.CreateAvroDeserializer(dekafRegistry);
+        var confluentSerializer = new AvroSerializer<GenericRecord>(confluentRegistry);
+        var confluentDeserializer = new AvroDeserializer<GenericRecord>(confluentRegistry);
+        var context = new DekafSerializationContext { Topic = topic, Component = SerializationComponent.Value };
+        var confluentContext = new ConfluentContext(MessageComponentType.Value, topic);
+        var expected = new PocoJaggedInteropRecord { Bytes = [[1, 2], []], Values = [[3, -4], []] };
+        await serializer.WarmupAsync(topic, cancellationToken: cancellationToken);
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(expected, ref buffer, context);
+
+        var generic = await confluentDeserializer.DeserializeAsync(buffer.WrittenMemory, isNull: false, confluentContext);
+        var bytes = (object[])generic["Bytes"]!;
+        var values = (object[])generic["Values"]!;
+        await Assert.That(bytes.Length).IsEqualTo(2);
+        await Assert.That((byte[])bytes[0]).IsEquivalentTo(expected.Bytes[0]);
+        await Assert.That((byte[])bytes[1]).IsEmpty();
+        await Assert.That(values.Length).IsEqualTo(2);
+        await Assert.That((object[])values[0]).IsEquivalentTo(new object[] { 3, -4 });
+        await Assert.That((object[])values[1]).IsEmpty();
+
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(PocoJaggedInteropRecord.AvroCodec.SchemaJson);
+        var confluentValue = new GenericRecord(schema);
+        confluentValue.Add("Bytes", new object[] { new byte[] { 5, 6 }, Array.Empty<byte>() });
+        confluentValue.Add("Values", new object[] { new object[] { 7, -8 }, Array.Empty<object>() });
+        var wire = await confluentSerializer.SerializeAsync(confluentValue, confluentContext);
+        await deserializer.WarmupAsync(BinaryPrimitives.ReadInt32BigEndian(wire.AsSpan(1, 4)), cancellationToken);
+        var actual = deserializer.Deserialize(wire, context);
+
+        await Assert.That(actual.Bytes.Length).IsEqualTo(2);
+        await Assert.That(actual.Bytes[0]).IsEquivalentTo(new byte[] { 5, 6 });
+        await Assert.That(actual.Bytes[1]).IsEmpty();
+        await Assert.That(actual.Values.Length).IsEqualTo(2);
+        await Assert.That(actual.Values[0]).IsEquivalentTo([7, -8]);
+        await Assert.That(actual.Values[1]).IsEmpty();
+    }
+
+    [Test]
     public async Task GeneratedPoco_InteroperatesWithConfluentGenericRecordBothDirections(CancellationToken cancellationToken)
     {
         var topic = $"avro-poco-interop-{Guid.NewGuid():N}";
@@ -88,4 +132,11 @@ internal sealed partial class PocoInteropRecord
 
     [AvroField(Name = "amount", Order = 3, Precision = 8, Scale = 2)]
     public decimal Amount { get; init; }
+}
+
+[AvroRecord(Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoJaggedInteropRecord
+{
+    public byte[][] Bytes { get; init; } = [];
+    public int[][] Values { get; init; } = [];
 }
