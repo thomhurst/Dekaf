@@ -2489,7 +2489,10 @@ internal sealed class SchemaCompiler : IDisposable
     {
         var hasPrefixItems = schema.TryGetProperty("prefixItems", out var prefixItems);
         var hasItems = schema.TryGetProperty("items", out var items);
-        if (hasPrefixItems && hasItems && items.ValueKind == JsonValueKind.Array)
+        // Draft 2019-09 is always declared explicitly and defines no 'prefixItems', so the keyword is
+        // ignored there. Elsewhere the mix is ambiguous (an undeclared schema defaults to draft 7).
+        if (hasPrefixItems && hasItems && items.ValueKind == JsonValueKind.Array &&
+            dialect != SchemaDialect.Draft201909)
         {
             throw new NotSupportedException(
                 $"JSON Schema at '{pointer}' cannot combine 'prefixItems' with array-form 'items'.");

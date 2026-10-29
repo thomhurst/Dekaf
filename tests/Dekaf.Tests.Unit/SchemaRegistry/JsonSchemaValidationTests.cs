@@ -400,6 +400,44 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public void Draft201909_ArrayFormItems_ValidatesAsTuple()
+    {
+        var validator = CreateFactory().GetOrCreate(CreateSchema(
+            """{"$schema":"https://json-schema.org/draft/2019-09/schema","type":"array","items":[{"type":"string"},{"type":"integer"}]}"""));
+
+        validator.Validate("""["a",1]"""u8, 38);
+        Assert.Throws<JsonSchemaValidationException>(() => validator.Validate("""[1,"a"]"""u8, 38));
+    }
+
+    [Test]
+    public void Draft201909_PrefixItems_IsIgnored()
+    {
+        var validator = CreateFactory().GetOrCreate(CreateSchema(
+            """{"$schema":"https://json-schema.org/draft/2019-09/schema","type":"array","prefixItems":[{"type":"string"}]}"""));
+
+        validator.Validate("[1]"u8, 39);
+    }
+
+    [Test]
+    public void Draft201909_PrefixItemsWithArrayFormItems_ValidatesItemsTuple()
+    {
+        var validator = CreateFactory().GetOrCreate(CreateSchema(
+            """{"$schema":"https://json-schema.org/draft/2019-09/schema","type":"array","items":[{"type":"string"}],"prefixItems":[{"type":"integer"}]}"""));
+
+        validator.Validate("""["a"]"""u8, 40);
+        Assert.Throws<JsonSchemaValidationException>(() => validator.Validate("[1]"u8, 40));
+    }
+
+    [Test]
+    public void Draft202012_ArrayFormItems_IsRejected()
+    {
+        const string schema =
+            """{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"array","items":[{"type":"string"}]}""";
+
+        Assert.Throws<InvalidOperationException>(() => CreateFactory().GetOrCreate(CreateSchema(schema)));
+    }
+
+    [Test]
     public async Task Validator_ResolvesSchemaRegistryReferences()
     {
         using var registry = new MockSchemaRegistryClient();
