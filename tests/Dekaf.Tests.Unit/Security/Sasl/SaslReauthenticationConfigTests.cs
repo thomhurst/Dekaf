@@ -67,6 +67,22 @@ public sealed class SaslReauthenticationConfigTests
     }
 
     [Test]
+    [Arguments(double.NaN)]
+    [Arguments(double.PositiveInfinity)]
+    [Arguments(double.NegativeInfinity)]
+    public async Task Validate_WithNonFiniteThreshold_ThrowsArgumentOutOfRangeException(double threshold)
+    {
+        var config = new SaslReauthenticationConfig
+        {
+            ReauthenticationThreshold = threshold
+        };
+
+        await Assert.That(() => config.Validate())
+            .Throws<ArgumentOutOfRangeException>()
+            .WithMessageContaining("ReauthenticationThreshold");
+    }
+
+    [Test]
     public async Task Validate_WithNegativeMinSessionLifetime_ThrowsArgumentOutOfRangeException()
     {
         var config = new SaslReauthenticationConfig
