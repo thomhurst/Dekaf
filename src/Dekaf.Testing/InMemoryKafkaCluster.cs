@@ -1390,6 +1390,7 @@ public sealed partial class InMemoryKafkaCluster
             _shareGroupMembers.Remove(groupId);
             _shareRecords.Remove(groupId);
             _shareGroupsWithMemberHistory.Remove(groupId);
+            _shareOffsetResetOptions.Remove(groupId);
             return ErrorCode.None;
         }
     }

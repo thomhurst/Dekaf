@@ -3,6 +3,7 @@ using Dekaf.Consumer;
 using Dekaf.Extensions.DependencyInjection;
 using Dekaf.Extensions.Hosting;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 using Dekaf.ShareConsumer;
 using Dekaf.Testing;
 using Microsoft.Extensions.DependencyInjection;
@@ -78,6 +79,61 @@ public sealed class InMemoryShareOffsetResetTests
             _ => Array.Empty<string>()
         };
         await Assert.That(records.Select(record => record.Value)).IsEquivalentTo(expected);
+    }
+
+    [Test]
+    [Arguments(AutoOffsetReset.Earliest, false)]
+    [Arguments(AutoOffsetReset.Earliest, true)]
+    [Arguments(AutoOffsetReset.ByDuration, false)]
+    [Arguments(AutoOffsetReset.ByDuration, true)]
+    public async Task DeleteGroup_ClearsResetPolicy(AutoOffsetReset policy, bool pollBeforeDeletion)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await using var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "jobs", Key = "key", Value = "before", Timestamp = DateTimeOffset.UtcNow.AddHours(1)
+        });
+        await using (var configured = new InMemoryShareConsumer<string, string>(cluster, new()
+        {
+            GroupId = "workers", AutoOffsetReset = policy,
+            AutoOffsetResetDuration = policy == AutoOffsetReset.ByDuration ? TimeSpan.FromHours(1) : null
+        }))
+        {
+            configured.Subscribe("jobs");
+            if (pollBeforeDeletion)
+                await Assert.That((await configured.PollAsync().ToListAsync()).Count).IsEqualTo(1);
+        }
+
+        await using var admin = new InMemoryAdminClient(cluster);
+        var deleted = await admin.DeleteShareGroupsAsync(["workers"]);
+        await Assert.That(deleted["workers"].ErrorCode).IsEqualTo(ErrorCode.None);
+        await using var recreated = new InMemoryShareConsumer<string, string>(cluster, new() { GroupId = "workers" });
+        recreated.Subscribe("jobs");
+        await Assert.That(await recreated.PollAsync().ToListAsync()).IsEmpty();
+        var offsets = await admin.ListShareGroupOffsetsAsync(new Dictionary<string, ListShareGroupOffsetsSpec> { ["workers"] = new() });
+        await Assert.That(offsets["workers"].Offsets[new TopicPartition("jobs", 0)].StartOffset).IsEqualTo(1);
+        await producer.ProduceAsync("jobs", "key", "after");
+        await Assert.That((await recreated.PollAsync().FirstAsync()).Value).IsEqualTo("after");
+    }
+
+    [Test]
+    public async Task DeleteActiveGroup_PreservesResetPolicy()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await using var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync("jobs", "key", "before");
+        await using var configured = new InMemoryShareConsumer<string, string>(cluster, new()
+        {
+            GroupId = "workers", AutoOffsetReset = AutoOffsetReset.Earliest
+        });
+        configured.Subscribe("jobs");
+        await using var admin = new InMemoryAdminClient(cluster);
+        var deleted = await admin.DeleteShareGroupsAsync(["workers"]);
+        await Assert.That(deleted["workers"].ErrorCode).IsEqualTo(ErrorCode.NonEmptyGroup);
+        await using var member = new InMemoryShareConsumer<string, string>(cluster, new() { GroupId = "workers" });
+        member.Subscribe("jobs");
+        await Assert.That((await member.PollAsync().FirstAsync()).Value).IsEqualTo("before");
     }
 
     [Test]
