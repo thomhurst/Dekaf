@@ -113,20 +113,51 @@ public class MemoryBudgetTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
                 .BuildAsync();
         }
 
-        var builds = new[] { BuildProducerAsync(1), BuildProducerAsync(2), BuildProducerAsync(3) };
+        var buildStart = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var builds = new Task<KafkaProducer<string, string>>[3];
+        for (var i = 0; i < builds.Length; i++)
+        {
+            var index = i + 1;
+            builds[i] = Task.Run(async () =>
+            {
+                await buildStart.Task;
+                return await BuildProducerAsync(index);
+            });
+        }
+
+        buildStart.SetResult();
         try
         {
             var producers = await Task.WhenAll(builds);
             var sharedLimit = budget / 3 / DekafMemoryBudget.ProducerOverheadDivisor;
             foreach (var producer in producers)
             {
+                await WaitForConditionAsync(
+                    () => producer.RecordAccumulator.MaxBufferMemory == sharedLimit,
+                    TimeSpan.FromSeconds(5));
                 await Assert.That(producer.RecordAccumulator.MaxBufferMemory).IsEqualTo(sharedLimit);
                 var result = await producer.ProduceAsync(topic, "shared", "value");
                 await Assert.That(result.Offset).IsGreaterThanOrEqualTo(0);
             }
 
-            await Task.WhenAll(producers[1].DisposeAsync().AsTask(), producers[2].DisposeAsync().AsTask());
+            var disposeStart = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var disposals = new Task[2];
+            for (var i = 0; i < disposals.Length; i++)
+            {
+                var producer = producers[i + 1];
+                disposals[i] = Task.Run(async () =>
+                {
+                    await disposeStart.Task;
+                    await producer.DisposeAsync();
+                });
+            }
 
+            disposeStart.SetResult();
+            await Task.WhenAll(disposals);
+
+            await WaitForConditionAsync(
+                () => producers[0].RecordAccumulator.MaxBufferMemory == budget / DekafMemoryBudget.ProducerOverheadDivisor,
+                TimeSpan.FromSeconds(5));
             await Assert.That(producers[0].RecordAccumulator.MaxBufferMemory)
                 .IsEqualTo(budget / DekafMemoryBudget.ProducerOverheadDivisor);
             var finalResult = await producers[0].ProduceAsync(topic, "survivor", "value");

@@ -17,6 +17,11 @@ internal sealed class MemoryBudgetDispatcher
         Volatile.Write(ref _pending, new Snapshot(producers, consumers, producerLimit, consumerLimit));
     }
 
+    /// <summary>
+    /// Applies pending snapshots inline when idle. If callbacks are already running, returns
+    /// without waiting, so registration and unregistration limits are eventually consistent:
+    /// the active dispatcher applies the latest snapshot after its current callbacks finish.
+    /// </summary>
     public void Dispatch()
     {
         do
