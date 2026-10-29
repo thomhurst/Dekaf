@@ -10,7 +10,7 @@ namespace Dekaf.Tests.Integration;
 [Category("Telemetry")]
 [SupportsKafka(420)]
 [ClassDataSource<TelemetryReceiverKafkaContainer>(Shared = SharedType.PerTestSession)]
-public sealed class ClientTelemetryReceiverIntegrationTests(TelemetryReceiverKafkaContainer kafka)
+public sealed partial class ClientTelemetryReceiverIntegrationTests(TelemetryReceiverKafkaContainer kafka)
 {
     [Test]
     [Timeout(90_000)]

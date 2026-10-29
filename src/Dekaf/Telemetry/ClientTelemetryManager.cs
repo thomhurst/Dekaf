@@ -51,6 +51,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
     private readonly IClientTelemetryPayloadProvider _payloadProvider;
     private readonly ILogger<ClientTelemetryManager> _logger;
     private readonly SemaphoreSlim _startLock = new(1, 1);
+    private readonly CancellationTokenSource _shutdownCts = new();
     private readonly TaskCompletionSource<bool> _stopCompletion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -113,7 +114,8 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
 
             // A null subscription that did not disable telemetry is transient: the loop starts anyway
             // and keeps requesting one with backoff.
-            var subscription = await TryFetchSubscriptionAsync(Guid.Empty, cancellationToken).ConfigureAwait(false);
+            using var startupCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdownCts.Token);
+            var subscription = await TryFetchSubscriptionAsync(Guid.Empty, startupCts.Token).ConfigureAwait(false);
 
             if (Volatile.Read(ref _disposed) != 0 ||
                 Volatile.Read(ref _stopRequested) != 0 ||
@@ -127,10 +129,14 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
                 ApplySubscription(subscription);
             }
 
-            var loopCts = new CancellationTokenSource();
+            var loopCts = CancellationTokenSource.CreateLinkedTokenSource(_shutdownCts.Token);
             _loopCts = loopCts;
             Volatile.Write(ref _started, 1);
             _loopTask = Task.Run(() => RunLoopAsync(loopCts.Token), CancellationToken.None);
+        }
+        catch (OperationCanceledException) when (_shutdownCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            // Stop owns this cancellation; the start caller did not cancel its operation.
         }
         finally
         {
@@ -150,8 +156,29 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
             timeout = DefaultStopTimeout;
         }
 
+        using var timeoutCts = new CancellationTokenSource(timeout);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, cancellationToken);
+        var stopToken = linkedCts.Token;
+
         Volatile.Write(ref _stopRequested, 1);
-        await _startLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        _shutdownCts.Cancel();
+        try
+        {
+            await _startLock.WaitAsync(stopToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            if (Interlocked.Exchange(ref _stopped, 1) == 0)
+            {
+                _metricCollector?.Disable();
+                // A connection can finish cancellation late. Startup retains its lease and token
+                // until it drains; cleanup owns the loop resources without extending disposal.
+                _ = CleanupAfterStartupAsync();
+                _stopCompletion.TrySetResult(true);
+            }
+
+            return;
+        }
         var completesStop = false;
         try
         {
@@ -161,10 +188,6 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
             }
 
             completesStop = true;
-
-            using var timeoutCts = new CancellationTokenSource(timeout);
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, cancellationToken);
-            var stopToken = linkedCts.Token;
 
             _loopCts?.Cancel();
 
@@ -191,28 +214,79 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
             {
                 try
                 {
-                    _ = await PushTelemetryAsync(subscription, terminating: true, stopToken).ConfigureAwait(false);
+                    await SendTerminatingPushAsync(subscription, stopToken).WaitAsync(stopToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
                     // Shutdown is bounded by stopToken.
                 }
-                catch (Exception ex)
-                {
-                    LogTerminatingPushFailed(ex);
-                }
             }
 
             _metricCollector?.Disable();
-            _loopCts?.Dispose();
-            _loopCts = null;
-            _loopTask = null;
+            CleanupLoop();
         }
         finally
         {
             _startLock.Release();
             if (completesStop)
                 _stopCompletion.TrySetResult(true);
+        }
+    }
+
+    private async Task SendTerminatingPushAsync(ClientTelemetrySubscription subscription, CancellationToken cancellationToken)
+    {
+        try
+        {
+            _ = await PushTelemetryAsync(subscription, terminating: true, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The send retains its lease until a connection finishes observing cancellation.
+        }
+        catch (Exception ex)
+        {
+            LogTerminatingPushFailed(ex);
+        }
+    }
+
+    private async Task CleanupAfterStartupAsync()
+    {
+        await _startLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            CleanupLoop();
+        }
+        finally
+        {
+            _startLock.Release();
+        }
+    }
+
+    private void CleanupLoop()
+    {
+        var loopTask = _loopTask;
+        var loopCts = _loopCts;
+        _loopCts = null;
+        _loopTask = null;
+        if (loopTask is not null)
+            _ = DisposeLoopAsync(loopTask, loopCts);
+        else
+            loopCts?.Dispose();
+    }
+
+    private async Task DisposeLoopAsync(Task loopTask, CancellationTokenSource? loopCts)
+    {
+        try
+        {
+            await loopTask.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LogTelemetryLoopFailed(ex);
+        }
+        finally
+        {
+            loopCts?.Dispose();
         }
     }
 
@@ -227,8 +301,8 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         await _stopCompletion.Task.ConfigureAwait(false);
 
         // A caller can pass the lifecycle pre-check immediately before disposal marks the manager
-        // disposed, then queue on this semaphore. Keep it alive until the manager becomes
-        // unreachable so those callers can drain without ObjectDisposedException.
+        // disposed, then queue on this semaphore. Keep it and the shutdown source alive until
+        // the manager becomes unreachable so those callers can drain without ObjectDisposedException.
     }
 
     private async Task RunLoopAsync(CancellationToken cancellationToken)
