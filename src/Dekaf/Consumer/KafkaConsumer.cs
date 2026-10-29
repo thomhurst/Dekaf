@@ -11958,6 +11958,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 .ConfigureAwait(false);
         }
 
+        var resets = new Dictionary<TopicPartition, OffsetResolution>();
+        foreach (var partition in partitions)
+        {
+            if ((committedOffsets is null
+                    || !committedOffsets.TryGetValue(partition, out var committed)
+                    || committed.Offset < 0)
+                && !_fetchPositions.ContainsKey(partition))
+                resets.Add(partition, CreateAutoResetResolution(partition));
+        }
+        await ResolveOffsetsAsync(resets, cancellationToken).ConfigureAwait(false);
+
+        Exception? resetFailure = null;
         foreach (var partition in partitions)
         {
             long offset;
@@ -11978,7 +11990,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
             else
             {
-                offset = await GetResetOffsetAsync(partition, cancellationToken).ConfigureAwait(false);
+                var reset = resets[partition];
+                if (reset.Error is not null)
+                {
+                    resetFailure ??= reset.Error;
+                    continue;
+                }
+                offset = reset.Offset!.Value;
             }
 
             // Seek does not take the assignment lock, so it can position the partition while the
@@ -11996,6 +12014,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 SetFetchPosition(partition, offset);
             }
         }
+        if (resetFailure is not null)
+            ExceptionDispatchInfo.Capture(resetFailure).Throw();
     }
 
     private async ValueTask InitializePositionsAsync(
@@ -12040,6 +12060,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 lookupFailure = ex;
             }
 
+            var resets = new Dictionary<TopicPartition, OffsetResolution>();
+            if (committedOffsets is not null)
+            {
+                foreach (var partition in partitions)
+                {
+                    if (!unstablePartitions.Contains(partition)
+                        && (!committedOffsets.TryGetValue(partition, out var committed) || committed.Offset < 0))
+                        resets.Add(partition, CreateAutoResetResolution(partition, newlyExpandedPartitions.Contains(partition)));
+                }
+            }
+            await ResolveOffsetsAsync(resets, cancellationToken).ConfigureAwait(false);
+
+            Exception? resetFailure = null;
             var deferredCount = 0;
             foreach (var partition in partitions)
             {
@@ -12063,11 +12096,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 else if (!deferred)
                 {
                     // No committed offset, use auto offset reset
-                    var offset = await GetResetOffsetAsync(
-                            partition,
-                            cancellationToken,
-                            isNewlyExpanded)
-                        .ConfigureAwait(false);
+                    var reset = resets[partition];
+                    if (reset.Error is not null)
+                    {
+                        resetFailure ??= reset.Error;
+                        ApplyPendingRebalanceSeek(partition, untilSyncAcknowledged: true);
+                        continue;
+                    }
+                    var offset = reset.Offset!.Value;
                     SetPosition(partition, offset, dirty: false);
                     ClearLastConsumedLeaderEpoch(partition);
                     SetFetchPosition(partition, offset);
@@ -12086,6 +12122,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 if (isNewlyExpanded)
                     (initializedNewPartitions ??= []).Add(partition);
             }
+
+            if (resetFailure is not null)
+                ExceptionDispatchInfo.Capture(resetFailure).Throw();
 
             if (deferredCount == 0)
             {
@@ -12221,17 +12260,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _unacknowledgedAppliedRebalanceSeeks.Clear();
     }
 
-    private async ValueTask<long> GetResetOffsetAsync(
-        TopicPartition partition,
-        CancellationToken cancellationToken,
-        bool isNewPartition = false)
+    private OffsetResolution CreateAutoResetResolution(TopicPartition partition, bool isNewPartition = false)
     {
-        var timestamp = AutoOffsetResetStrategy.GetListOffsetsTimestamp(
-            _options,
-            DateTimeOffset.UtcNow,
-            partition,
-            isNewPartition);
-        return await ResolveAutoResetOffsetAsync(partition, timestamp, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return new OffsetResolution(AutoOffsetResetStrategy.GetListOffsetsTimestamp(
+                _options, DateTimeOffset.UtcNow, partition, isNewPartition));
+        }
+        catch (KafkaException ex)
+        {
+            // AutoOffsetReset.None is a partition failure; still initialize committed partitions.
+            return new OffsetResolution(0) { Error = ex };
+        }
     }
 
     private string GetAutoOffsetResetName() =>
@@ -12244,142 +12284,52 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         long timestamp,
         CancellationToken cancellationToken)
     {
-        var offset = await ResolveOffsetAsync(partition, timestamp, cancellationToken).ConfigureAwait(false);
-        if (timestamp >= 0 && offset == TopicPartitionTimestamp.Latest)
-        {
-            return await ResolveOffsetAsync(partition, TopicPartitionTimestamp.Latest, cancellationToken)
-                .ConfigureAwait(false);
-        }
-
-        return offset;
+        var resolution = new OffsetResolution(timestamp);
+        await ResolveOffsetsAsync(new Dictionary<TopicPartition, OffsetResolution> { [partition] = resolution }, cancellationToken)
+            .ConfigureAwait(false);
+        if (resolution.Error is not null)
+            ExceptionDispatchInfo.Capture(resolution.Error).Throw();
+        return resolution.Offset!.Value;
     }
 
     private async ValueTask ResolveSpecialOffsetsAsync(
         List<TopicPartition> partitions, int startIndex, int count, CancellationToken cancellationToken)
     {
-        // Check for partitions with special offset values (-1 for end, -2 for beginning)
-        // and resolve them to actual offsets using ListOffsets
+        Dictionary<TopicPartition, OffsetResolution>? resolutions = null;
         var endIndex = startIndex + count;
         for (var i = startIndex; i < endIndex; i++)
         {
             var partition = partitions[i];
-            if (!_fetchPositions.TryGetValue(partition, out var fetchPosition))
-                continue;
+            if (_fetchPositions.TryGetValue(partition, out var position) && position is -1 or -2)
+                (resolutions ??= []).Add(partition, new OffsetResolution(position));
+        }
 
-            if (fetchPosition == -1 || fetchPosition == -2)
+        if (resolutions is null)
+            return;
+
+        await ResolveOffsetsAsync(resolutions, cancellationToken).ConfigureAwait(false);
+        Exception? failure = null;
+        foreach (var (partition, resolution) in resolutions)
+        {
+            // Seeks write positions under this lock. A seek during ListOffsets must win.
+            lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
             {
-                // -1 = latest, -2 = earliest
-                var resolvedOffset = await ResolveOffsetAsync(partition, fetchPosition, cancellationToken).ConfigureAwait(false);
-
-                // Seeks write positions under this lock. One made while ListOffsets was in flight
-                // replaced the sentinel, and its position must not be overwritten by this result.
-                lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+                if (!_fetchPositions.TryGetValue(partition, out var current) || current != resolution.Timestamp)
+                    continue;
+                if (resolution.Error is not null)
                 {
-                    if (!_fetchPositions.TryGetValue(partition, out var current) || current != fetchPosition)
-                        continue;
-
-                    SetFetchPosition(partition, resolvedOffset);
-                    SetPosition(partition, resolvedOffset, dirty: false);
-                    ClearLastConsumedLeaderEpoch(partition);
+                    failure ??= resolution.Error;
+                    continue;
                 }
+
+                var offset = resolution.Offset!.Value;
+                SetFetchPosition(partition, offset);
+                SetPosition(partition, offset, dirty: false);
+                ClearLastConsumedLeaderEpoch(partition);
             }
         }
-    }
-
-    private ValueTask<long> ResolveOffsetAsync(TopicPartition partition, long timestamp, CancellationToken cancellationToken)
-    {
-        return RetryHelper.WithRetryAsync(async () =>
-        {
-            var connectionLease = await GetPartitionLeaderControlConnectionAsync(partition, cancellationToken)
-                .ConfigureAwait(false);
-            if (connectionLease is null)
-                throw CreateOffsetResolutionUnavailableException(partition);
-            using var lease = connectionLease.Value;
-            var connection = lease.Connection;
-
-            var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
-                connection,
-                ApiKey.ListOffsets,
-                ListOffsetsRequest.LowestSupportedVersion,
-                ListOffsetsRequest.HighestSupportedVersion);
-
-            var request = new ListOffsetsRequest
-            {
-                ReplicaId = -1,
-                IsolationLevel = _options.IsolationLevel,
-                Topics =
-                [
-                    new ListOffsetsRequestTopic
-                    {
-                        Name = partition.Topic,
-                        Partitions =
-                        [
-                            new ListOffsetsRequestPartition
-                            {
-                                PartitionIndex = partition.Partition,
-                                Timestamp = timestamp,
-                                CurrentLeaderEpoch = GetCurrentLeaderEpoch(partition)
-                            }
-                        ]
-                    }
-                ]
-            };
-
-            ListOffsetsResponse response;
-            try
-            {
-                response = await connection.SendWithClientTelemetryAsync<ListOffsetsRequest, ListOffsetsResponse>(
-                    request,
-                    listOffsetsVersion, _telemetryMetricCollector,
-                    cancellationToken).ConfigureAwait(false);
-            }
-            catch (TimeoutException ex)
-            {
-                throw new KafkaException(
-                    ErrorCode.RequestTimedOut,
-                    $"ListOffsets request timed out for {partition}.",
-                    ex);
-            }
-
-            ListOffsetsResponsePartition? partitionResponse = null;
-            foreach (var topic in response.Topics)
-            {
-                if (topic.Name == partition.Topic)
-                {
-                    foreach (var p in topic.Partitions)
-                    {
-                        if (p.PartitionIndex == partition.Partition)
-                        {
-                            partitionResponse = p;
-                            break;
-                        }
-                    }
-                    break;
-                }
-            }
-
-            if (partitionResponse is not null && partitionResponse.ErrorCode != ErrorCode.None)
-            {
-                throw new Errors.ConsumeException(partitionResponse.ErrorCode,
-                    $"ListOffsets failed for {partition}: {partitionResponse.ErrorCode}");
-            }
-
-            if (partitionResponse is null)
-            {
-                throw new KafkaException(
-                    ErrorCode.UnknownTopicOrPartition,
-                    $"ListOffsets response did not contain {partition}.");
-            }
-
-            return partitionResponse.Offset;
-        }, _metadataManager, cancellationToken, _options.RetryBackoffMs, _options.RetryBackoffMaxMs,
-            // Position initialization and offset reset run on the application's poll with no
-            // aggregate deadline of their own. A leader that refuses connections while cluster
-            // metadata still names it is retried for one request timeout, and the final error is
-            // typed, instead of three quick attempts ending in a raw socket exception.
-            deadline: OffsetLookupDeadline(
-                "ListOffsets",
-                TimeSpan.FromMilliseconds(_options.RequestTimeoutMs)));
+        if (failure is not null)
+            ExceptionDispatchInfo.Capture(failure).Throw();
     }
 
     // Deadline-mode retry (see RetryDeadline) for idempotent offset lookups.
