@@ -353,6 +353,99 @@ public sealed class KafkaConnectionPipelinedTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    [Timeout(10_000)]
+    public async Task PendingRequests_ConnectionTeardown_CompletesOutsideShardLock(
+        bool dispose, CancellationToken cancellationToken)
+    {
+        var connection = new KafkaConnection("localhost", 9092);
+        using var stream = new ScriptedReadStream([]);
+        using var frameReader = CreateFrameReader(stream);
+        SetPrivateField(connection, "_frameReader", frameReader);
+        var shards = GetPrivateField<Array>(connection, "_pendingRequestShards");
+        var inlineCompletions = new Task<(Exception Error, bool LockHeld, bool Removed)>[32];
+        var ordinaryRequests = new Task<PooledResponseBuffer>[16];
+
+        try
+        {
+            // Two inline completions and one ordinary waiter per shard. Inline owners
+            // remove their entries, as PooledPipelinedResponse does on connection failure.
+            for (var i = 0; i < inlineCompletions.Length + ordinaryRequests.Length; i++)
+            {
+                var correlationId = i;
+                await ReservePendingRequestSlotAsync(connection);
+                var request = new PooledPendingRequest();
+                request.Initialize(responseHeaderVersion: 0, CancellationToken.None,
+                    registerCancellation: false, runContinuationsAsynchronously: i >= inlineCompletions.Length);
+                AddPendingRequest(connection, correlationId, request);
+
+                if (i >= inlineCompletions.Length)
+                {
+                    ordinaryRequests[i - inlineCompletions.Length] = request.AsValueTask().AsTask();
+                    continue;
+                }
+
+                var shard = shards.GetValue(correlationId % shards.Length)!;
+                var gate = shard.GetType().GetProperty("Gate")!.GetValue(shard)!;
+                var completion = new TaskCompletionSource<(Exception, bool, bool)>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                inlineCompletions[i] = completion.Task;
+                var awaiter = request.AsValueTask().GetAwaiter();
+                awaiter.UnsafeOnCompleted(() =>
+                {
+                    try
+                    {
+                        awaiter.GetResult().Dispose();
+                        completion.TrySetException(new InvalidOperationException("Expected connection failure."));
+                    }
+                    catch (Exception error)
+                    {
+                        var lockHeld = Monitor.IsEntered(gate);
+                        var removed = TryRemovePendingRequest(connection, correlationId);
+                        completion.TrySetResult((error, lockHeld, removed));
+                    }
+                });
+            }
+
+            var teardown = dispose
+                ? connection.DisposeAsync().AsTask()
+                : StartReceiveLoop(connection, cancellationToken);
+
+            foreach (var completion in inlineCompletions)
+            {
+                var result = await completion.WaitAsync(cancellationToken);
+                await Assert.That(result.LockHeld).IsFalse();
+                await Assert.That(result.Removed).IsTrue();
+                if (dispose)
+                    await Assert.That(result.Error).IsTypeOf<ObjectDisposedException>();
+                else
+                    await Assert.That(result.Error).IsTypeOf<KafkaException>();
+            }
+
+            for (var i = 0; i < ordinaryRequests.Length; i++)
+            {
+                if (dispose)
+                    await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+                        await ordinaryRequests[i].WaitAsync(cancellationToken));
+                else
+                    await Assert.ThrowsAsync<KafkaException>(async () =>
+                        await ordinaryRequests[i].WaitAsync(cancellationToken));
+                await Assert.That(TryRemovePendingRequest(connection, i + inlineCompletions.Length)).IsTrue();
+            }
+
+            await teardown.WaitAsync(cancellationToken);
+            await Assert.That(GetPrivateField<int>(connection, "_pendingRequestCount")).IsEqualTo(0);
+        }
+        finally
+        {
+            for (var i = 0; i < inlineCompletions.Length + ordinaryRequests.Length; i++)
+                TryRemovePendingRequest(connection, i);
+            await connection.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task ReceiveLoop_DispatchesFrameToPendingRequest()
     {
         var connection = new KafkaConnection("localhost", 9092);

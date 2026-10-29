@@ -1,10 +1,14 @@
 using System.Diagnostics;
+using Dekaf.Errors;
+using Dekaf.Networking;
+using Dekaf.Protocol;
+using Dekaf.Protocol.Messages;
 
 namespace Dekaf.Tests.Integration.NetworkFault;
 
 /// <summary>
-/// Client disposal while a real connection setup is stuck in its handshake: the proxy accepts the
-/// TCP connection and forwards the ApiVersions request, but no response comes back.
+/// Connection lifecycle under TCP faults: disposal during a black-holed handshake and
+/// prompt failure of pipelined requests when the remote peer disconnects.
 /// </summary>
 [ClassDataSource<TransactionFaultKafkaContainer>(Shared = SharedType.PerTestSession)]
 [Category("NetworkPartition")]
@@ -16,6 +20,51 @@ public sealed class ConnectionSetupNetworkFaultTests(TransactionFaultKafkaContai
     // Far longer than the bound asserted below, so only disposal can end the setup in time.
     private static readonly TimeSpan SetupTimeout = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan DisposalBound = TimeSpan.FromSeconds(10);
+
+    [Test]
+    public async Task ConnectionDisconnect_WithMultiplePipelinedRequests_FailsEveryRequestPromptly()
+    {
+        using var testTimeout = new CancellationTokenSource(TestTimeout);
+        var cancellationToken = testTimeout.Token;
+        var endpoint = new Uri($"tcp://{kafka.ProducerBootstrapServers}");
+        await using var connection = new KafkaConnection(endpoint.Host, endpoint.Port,
+            options: new ConnectionOptions { RequestTimeout = SetupTimeout });
+        await connection.ConnectAsync(cancellationToken);
+        var requests = new List<Task<ApiVersionsResponse>>();
+
+        try
+        {
+            // Keep responses pending without delaying the writes. Two requests per shard
+            // exercise the inline completion that removes entries during connection teardown.
+            await kafka.AddTimeoutAsync(ToxiproxyLane.Producer, cancellationToken);
+            for (var i = 0; i < 32; i++)
+            {
+                var response = await ((IKafkaPipelinedWriteCompletionConnection)connection)
+                    .SendPipelinedAfterWriteAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                        new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
+                        apiVersion: 3, cancellationToken);
+                requests.Add(response.AsTask());
+            }
+
+            await Assert.That(requests.All(static request => !request.IsCompleted)).IsTrue();
+            await kafka.DisableLaneAsync(ToxiproxyLane.Producer, cancellationToken);
+            using var failureBound = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            failureBound.CancelAfter(DisposalBound);
+            foreach (var request in requests)
+            {
+                var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+                    await request.WaitAsync(failureBound.Token));
+                await Assert.That(exception!.IsRetriable).IsTrue();
+                await Assert.That(exception.ErrorCode).IsEqualTo(ErrorCode.NetworkException);
+            }
+
+            await connection.DisposeAsync().AsTask().WaitAsync(failureBound.Token);
+        }
+        finally
+        {
+            await kafka.HealNetworkFaultsAsync(CancellationToken.None);
+        }
+    }
 
     [Test]
     public async Task AdminDisposeAsync_DuringABlackHoledHandshake_EndsTheSetupAndThePendingCallPromptly()
