@@ -96,6 +96,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     // different partitions. Ordering relies on broker idempotent producer support.
     private readonly ConcurrentDictionary<int, BrokerSender> _brokerSenders = new();
 
+    // Cold-path handoffs. The sender loop acknowledges each request only after every
+    // batch from its preceding accumulator drain has been published to broker senders.
+    private readonly ConcurrentQueue<BrokerSender> _rerouteBarriers = new();
+    private int _hasRerouteBarriers;
+
     // Bridges internal controller state (buffer memory, broker budgets, connection
     // scaling) to the "Dekaf" meter's observable gauges. Pull-based: costs nothing
     // unless a metrics listener polls.
@@ -5167,6 +5172,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
             while (!cancellationToken.IsCancellationRequested)
             {
+                if (Volatile.Read(ref _hasRerouteBarriers) != 0)
+                {
+                    Volatile.Write(ref _hasRerouteBarriers, 0);
+                    while (_rerouteBarriers.TryDequeue(out var sender))
+                        sender.PublishRerouteBarrier();
+                }
+
                 // 1. Check which brokers have sendable data
                 readyNodes.Clear();
                 var (nextCheckDelayMs, unknownLeadersExist) = _accumulator.Ready(
@@ -5452,7 +5464,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 ? _telemetryMetricCollector.RecordBrokerThrottle
                 : null,
             unackedBudget: _accumulator.GetBrokerUnackedBudget(brokerId),
-            usesTransactionV2: () => _currentTransactionUsesTV2)
+            usesTransactionV2: () => _currentTransactionUsesTV2,
+            requestRerouteBarrier: RequestRerouteBarrier)
         {
             TelemetryMetricCollector = _telemetryMetricCollector
         };
@@ -5464,6 +5477,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// </summary>
     private int ResolveLeaderIdForUnackedBudget(string topic, int partition)
         => _metadataManager.TryGetCachedPartitionLeader(topic, partition)?.NodeId ?? -1;
+
+    private void RequestRerouteBarrier(BrokerSender sender)
+    {
+        _rerouteBarriers.Enqueue(sender);
+        Volatile.Write(ref _hasRerouteBarriers, 1);
+        _accumulator.SignalWakeup();
+    }
 
     /// <summary>
     /// Routes a batch to the current leader's BrokerSender.

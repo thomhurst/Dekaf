@@ -167,6 +167,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly CompressionCodecRegistry _compressionCodecs;
     private readonly PartitionInflightTracker _inflightTracker;
     private readonly Action<ReadyBatch, int>? _rerouteBatch;
+    private readonly Action<BrokerSender>? _requestRerouteBarrier;
     private readonly Action<TopicPartition, long, DateTimeOffset, int, Exception?>? _onAcknowledgement;
     // Epoch recovery hooks for idempotent (non-transactional) producers; null otherwise.
     // _bumpEpoch completes synchronously for a local epoch bump and asynchronously when the
@@ -383,6 +384,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         NewBatch,
         ResponseReady, // Lightweight signal: a response task completed, poll _pendingResponsesByConnection
         Unmute,
+        RerouteBarrier,
         TransactionEnrollmentReady
     }
 
@@ -431,6 +433,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         public static SendLoopEvent ResponseReady() => new(SendLoopEventType.ResponseReady);
 
         public static SendLoopEvent Unmute() => new(SendLoopEventType.Unmute);
+
+        public static SendLoopEvent RerouteBarrier() => new(SendLoopEventType.RerouteBarrier);
 
         public static SendLoopEvent TransactionEnrollmentReady(Exception? error) =>
             new(SendLoopEventType.TransactionEnrollmentReady, enrollmentError: error);
@@ -814,6 +818,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private int _mutedPartitionCount;
     private int _mutedPartitionHighWatermark;
 
+    // Allocated only on a leader handoff. Keep the source mute until its carry-over and
+    // the producer's preceding drain have followed the retry to the leader.
+    // Only the send loop accesses this state.
+    private HashSet<TopicPartition>? _partitionsRerouting;
+    private int _rerouteBarriersPending;
+
     // Epoch bump recovery flag (Java Kafka Sender pattern): set by response handlers
     // when OutOfOrderSequenceNumber is received. The single-threaded send loop checks
     // this before coalescing and bumps the epoch if needed, eliminating all races
@@ -1076,7 +1086,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Action<TopicPartition>? onSequenceRestartHeld = null,
         Channel<SendLoopEvent>? eventChannel = null,
         Action<TopicPartition>? onRestampRegistered = null,
-        Action? onIdlePendingSendAwaitStarted = null)
+        Action? onIdlePendingSendAwaitStarted = null,
+        Action<BrokerSender>? requestRerouteBarrier = null)
     {
         _unackedBudget = unackedBudget;
         _brokerId = brokerId;
@@ -1094,6 +1105,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _bumpEpoch = bumpEpoch;
         _getProducerState = getProducerState;
         _rerouteBatch = rerouteBatch;
+        _requestRerouteBarrier = requestRerouteBarrier;
         _onAcknowledgement = onAcknowledgement;
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
         _onBrokerThrottle = onBrokerThrottle;
@@ -1748,8 +1760,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     var carryOverBudget = maxCoalesce - carryOver.Count;
                     var channelReads = 0;
                     var channelCarryOvers = 0;
-                    while (coalescedCount < maxCoalesce
-                        && channelReads < maxCoalesce
+                    while (((coalescedCount < maxCoalesce && channelReads < maxCoalesce)
+                            || _rerouteBarriersPending > 0)
                         && eventReader.TryRead(out var evt))
                     {
                         if (evt.Type == SendLoopEventType.NewBatch)
@@ -1762,9 +1774,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             if (carryOver.Count > carryBefore)
                             {
                                 channelCarryOvers++;
-                                if (channelCarryOvers >= carryOverBudget)
+                                if (channelCarryOvers >= carryOverBudget && _rerouteBarriersPending == 0)
                                     break;
                             }
+                        }
+                        else if (evt.Type == SendLoopEventType.RerouteBarrier)
+                        {
+                            _rerouteBarriersPending--;
                         }
                         else if (evt.Type == SendLoopEventType.TransactionEnrollmentReady)
                         {
@@ -1852,6 +1868,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 quietDeadline = Math.Min(now + tailTicks, hardDeadline);
                             }
                         }
+                        else if (evt.Type == SendLoopEventType.RerouteBarrier)
+                        {
+                            _rerouteBarriersPending--;
+                        }
                         else if (evt.Type == SendLoopEventType.TransactionEnrollmentReady)
                         {
                             if (evt.EnrollmentError is not null)
@@ -1876,6 +1896,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 // ── 6. Send or wait ──
+                if (_partitionsRerouting is not null)
+                    CompletePartitionReroutes(carryOver);
+
                 var sentThisIteration = false;
                 var requeuedBlockedBuckets = false;
                 if (coalescedCount > 0)
@@ -2653,7 +2676,21 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     batch.RetryNotBefore = 0;
                     if (!batch.IsLoopExitRedelivery)
                         batch.IsRetry = false;
-                    UnmutePartition(batch.TopicPartition);
+                    if (!_isIdempotent && _muteOnSend)
+                    {
+                        (_partitionsRerouting ??= []).Add(batch.TopicPartition);
+                        // The producer publishes the barrier after its current drain is fully
+                        // enqueued, including batches detached before this partition was muted.
+                        _rerouteBarriersPending++;
+                        if (_requestRerouteBarrier is not null)
+                            _requestRerouteBarrier(this);
+                        else
+                            PublishRerouteBarrier();
+                    }
+                    else
+                    {
+                        UnmutePartition(batch.TopicPartition);
+                    }
                     _rerouteBatch(batch, batchRef.Generation);
                     return;
                 }
@@ -2706,6 +2743,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return;
         }
 
+        if (_partitionsRerouting is not null && _partitionsRerouting.Contains(batch.TopicPartition))
+        {
+            // A channel batch follows any unready suffix still owned by carry-over.
+            if (!fromCarryOver
+                && carryOver.Partitions.TryGetValue(batch.TopicPartition, out var queue) && queue.Count > 0)
+            {
+                RequeueBatch(carryOver, batchRef, fromCarryOver);
+                return;
+            }
+
+            _rerouteBatch!(batch, batchRef.Generation);
+            return;
+        }
+
         // Normal batch: skip any local retry/recovery mute and crash barriers owned by
         // another sender. The accumulator check closes the handoff gap before the first
         // recovered batch reaches this replacement sender.
@@ -2750,6 +2801,29 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             ref coalescedCount,
             ref coalescedRequestBudgetUsed,
             normalBatchRequestBodySize);
+    }
+
+    internal void PublishRerouteBarrier() =>
+        _eventChannel.Writer.TryWrite(SendLoopEvent.RerouteBarrier());
+
+    private void CompletePartitionReroutes(PartitionCarryOver carryOver)
+    {
+        if (_rerouteBarriersPending > 0)
+            return;
+
+        foreach (var topicPartition in _partitionsRerouting!)
+        {
+            // An unready split suffix or a retry still in backoff can span passes. Its
+            // successors stay behind the source mute until that suffix has transferred.
+            if (carryOver.Partitions.TryGetValue(topicPartition, out var queue) && queue.Count > 0)
+                continue;
+
+            UnmutePartition(topicPartition);
+            _partitionsRerouting.Remove(topicPartition);
+        }
+
+        if (_partitionsRerouting.Count == 0)
+            _partitionsRerouting = null;
     }
 
     /// <summary>
@@ -6163,7 +6237,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private void UnmuteUnlessRetryQueued(TopicPartition tp, PartitionCarryOver carryOver)
     {
-        if (!carryOver.HasRetry(tp))
+        if (!carryOver.HasRetry(tp) && !(_partitionsRerouting?.Contains(tp) ?? false))
             UnmutePartition(tp);
     }
 

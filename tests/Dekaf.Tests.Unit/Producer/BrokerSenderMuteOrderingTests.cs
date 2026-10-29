@@ -236,7 +236,8 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         Action<ReadyBatch, int>? rerouteBatch = null,
         ILogger? logger = null,
         int brokerId = 1,
-        Func<long>? getTimestamp = null) =>
+        Func<long>? getTimestamp = null,
+        Action<BrokerSender>? requestRerouteBarrier = null) =>
         new(
             brokerId, pool,
             metadataManager ?? new MetadataManager(pool, options.BootstrapServers),
@@ -252,7 +253,8 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             rerouteBatch: rerouteBatch,
             onAcknowledgement: onAcknowledgement,
             logger: logger,
-            getTimestamp: getTimestamp);
+            getTimestamp: getTimestamp,
+            requestRerouteBarrier: requestRerouteBarrier);
 
     private static object CreateCarryOver()
     {
@@ -1298,6 +1300,100 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             await accumulator.DisposeAsync();
             await metadataManager.DisposeAsync();
             await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Arguments(2, false)]
+    [Arguments(100, false)]
+    [Arguments(2, true)]
+    [Timeout(60_000)]
+    public async Task RetriableError_WithInlineLeader_ReroutesQueuedBatchesBeforeUnmuting(
+        int batchCount, bool deferBarrier, CancellationToken ct)
+    {
+        var response = new TaskCompletionSource<ProduceResponse>();
+        var requestSent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (pool, connection) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>([response]),
+            onSend: () => requestSent.TrySetResult());
+        ct = GuardUnscriptedSends(ct);
+        var options = CreateOptions(enableIdempotence: false);
+        await using var accumulator = new RecordAccumulator(options);
+        await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        await using var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        metadataManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers = [new BrokerMetadata { NodeId = 1, Host = "broker-1", Port = 9093 }],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None,
+                    Name = "test-topic",
+                    Partitions =
+                    [
+                        new PartitionMetadata
+                        {
+                            ErrorCode = ErrorCode.None,
+                            PartitionIndex = 0,
+                            LeaderId = 1,
+                            LeaderEpoch = 5,
+                            ReplicaNodes = [1],
+                            IsrNodes = [1]
+                        }
+                    ]
+                }
+            ]
+        });
+        var totalBatches = batchCount + (deferBarrier ? 1 : 0);
+        var batches = Enumerable.Range(0, totalBatches).Select(_ => CreateTestBatch(vtPool, "test-topic", 0)).ToList();
+        var rerouted = new List<ReadyBatch>();
+        var mutedDuringReroute = new List<bool>();
+        var handoffComplete = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var barrierRequested = new TaskCompletionSource<BrokerSender>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var iterationGate = new TwoIterationGateLogger();
+        iterationGate.ReleaseSecond();
+        await using var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { },
+            metadataManager, rerouteBatch: (batch, _) =>
+            {
+                rerouted.Add(batch);
+                mutedDuringReroute.Add(accumulator.IsMuted(batch.TopicPartition));
+                if (rerouted.Count == totalBatches)
+                    handoffComplete.TrySetResult();
+            }, logger: iterationGate,
+            requestRerouteBarrier: deferBarrier ? source => barrierRequested.TrySetResult(source) : null);
+
+        try
+        {
+            await iterationGate.FirstIteration.Task.WaitAsync(DiagnosticWaitTimeout, ct);
+            sender.EnqueueBulk(batches.GetRange(0, batchCount));
+            iterationGate.ReleaseFirst();
+            await requestSent.Task.WaitAsync(DiagnosticWaitTimeout, ct);
+            // The first coalesce pass must carry over its same-partition successor before sending.
+            await WaitForDiagAsync(batches[1], 'O', DiagnosticWaitTimeout, ct);
+            response.SetResult(CreateInlineLeaderErrorResponse("test-topic", 0, leaderId: 2, leaderEpoch: 6));
+            if (deferBarrier)
+            {
+                var source = await barrierRequested.Task.WaitAsync(DiagnosticWaitTimeout, ct);
+                // Model an accumulator drain already in progress when the retry reroutes.
+                // Its last batch must publish before the producer acknowledges the barrier.
+                sender.Enqueue(batches[^1]);
+                source.PublishRerouteBarrier();
+            }
+            await handoffComplete.Task.WaitAsync(DiagnosticWaitTimeout, ct);
+
+            await Assert.That(rerouted).Count().IsEqualTo(totalBatches);
+            for (var i = 0; i < totalBatches; i++)
+            {
+                await Assert.That(rerouted[i]).IsSameReferenceAs(batches[i]);
+                await Assert.That(mutedDuringReroute[i]).IsTrue();
+            }
+            await Assert.That(connection.CapturedProduceRequestCount).IsEqualTo(1);
+            await TestWait.UntilAsync(() => !accumulator.IsMuted(batches[0].TopicPartition),
+                DiagnosticWaitTimeout, () => "Partition stayed muted after reroute handoff", ct);
+        }
+        finally
+        {
+            iterationGate.ReleaseFirst();
         }
     }
 
