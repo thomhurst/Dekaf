@@ -2031,7 +2031,7 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
-    public async Task Consumer_AssignFailureDoesNotLeavePartialState()
+    public async Task Consumer_AssignWithNone_DefersMissingOffsetFailureUntilConsume()
     {
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic("strict");
@@ -2040,11 +2040,11 @@ public sealed class InMemoryKafkaClusterTests
             new InMemoryConsumerOptions { AutoOffsetReset = AutoOffsetReset.None });
         var partition = new TopicPartition("strict", 0);
 
-        await Assert.That(() => consumer.Assign(partition)).Throws<InvalidOperationException>();
-        await Assert.That(() => consumer.IncrementalAssign([new TopicPartitionOffset("strict", 0, -1)]))
-            .Throws<InvalidOperationException>();
+        consumer.Assign(partition);
+        consumer.IncrementalAssign([new TopicPartitionOffset("strict", 0, -1)]);
 
-        await Assert.That(consumer.Assignment).IsEmpty();
+        await Assert.That(consumer.Assignment).Contains(partition);
+        await Assert.That(async () => await consumer.ConsumeOneAsync(TimeSpan.Zero)).Throws<KafkaException>();
         await Assert.That(consumer.GetPosition(partition)).IsNull();
     }
 

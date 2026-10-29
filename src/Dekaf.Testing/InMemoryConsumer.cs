@@ -64,6 +64,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private readonly bool _requiresAsyncDeserialization;
     private readonly bool _borrowStoredRecords;
     private readonly InMemoryConsumerOptions _options;
+    private readonly ConsumerOptions _offsetResetOptions;
     private readonly HashSet<string> _subscription = new(StringComparer.Ordinal);
     private readonly HashSet<TopicPartition> _assignment = [];
     private readonly HashSet<TopicPartition> _paused = [];
@@ -293,6 +294,13 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         // code path in this class consistent with production behavior.
         _groupId = string.IsNullOrEmpty(options.GroupId) ? null : options.GroupId;
         _memberId = _groupId is null ? null : options.MemberId ?? Guid.NewGuid().ToString("N");
+        _offsetResetOptions = new ConsumerOptions
+        {
+            BootstrapServers = [],
+            GroupId = _groupId,
+            AutoOffsetReset = options.AutoOffsetReset,
+            AutoOffsetResetDuration = options.AutoOffsetResetDuration
+        };
     }
 
     public IReadOnlySet<string> Subscription
@@ -1642,8 +1650,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 return false;
             }
 
-            if (_positions.TryGetValue(bound.Partition, out var position) &&
-                position < bound.EndOffset)
+            var hasPosition = _positions.TryGetValue(bound.Partition, out var position);
+            // A snapshot already past its captured end does not fetch or rewind.
+            if (hasPosition && position < bound.EndOffset)
+                position = ResolveFetchPositionUnderLock(bound.Partition, position);
+
+            if (hasPosition && position < bound.EndOffset)
             {
                 if (_cluster.TryRead(
                         bound.Partition,
@@ -1914,6 +1926,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 if (!_positions.TryGetValue(partition, out var position))
                     continue;
 
+                position = ResolveFetchPositionUnderLock(partition, position);
                 if (!_cluster.TryRead(
                         partition,
                         position,
@@ -2416,16 +2429,42 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             return committed;
         }
 
-        return _options.AutoOffsetReset switch
+        // Keep an unresolved position until consumption so None does not fail assignment.
+        return _options.AutoOffsetReset == AutoOffsetReset.None ? -3 : GetResetOffset(partition);
+    }
+
+    private long GetResetOffset(TopicPartition partition)
+    {
+        var timestamp = AutoOffsetResetStrategy.GetListOffsetsTimestamp(
+            _offsetResetOptions, DateTimeOffset.UtcNow, partition);
+        var offset = _cluster.GetOffsetForTimestamp(partition, timestamp);
+        // A missing topic returns -1 for every timestamp; retain the earliest policy sentinel.
+        if (timestamp == TopicPartitionTimestamp.Earliest && offset == TopicPartitionTimestamp.Latest)
+            return TopicPartitionTimestamp.Earliest;
+
+        return timestamp >= 0 && offset == TopicPartitionTimestamp.Latest
+            ? _cluster.GetWatermarks(partition).High
+            : offset;
+    }
+
+    private long ResolveFetchPositionUnderLock(TopicPartition partition, long position)
+    {
+        // Range validation uses the log end, not the read-committed transaction boundary.
+        var watermarks = _cluster.GetWatermarks(partition);
+        if (position >= watermarks.Low && position <= watermarks.High)
+            return position;
+
+        var resolved = position switch
         {
-            AutoOffsetReset.Earliest => _cluster.GetWatermarks(partition).Low,
-            AutoOffsetReset.Latest => _cluster.GetWatermarks(partition).High,
-            AutoOffsetReset.ByDuration => _cluster.GetOffsetForTimestamp(
-                partition,
-                DateTimeOffset.UtcNow.Subtract(_options.AutoOffsetResetDuration ?? TimeSpan.Zero).ToUnixTimeMilliseconds()),
-            AutoOffsetReset.None => throw new InvalidOperationException($"No committed offset exists for {partition}."),
-            _ => _cluster.GetWatermarks(partition).High
+            TopicPartitionTimestamp.Latest => watermarks.High,
+            TopicPartitionTimestamp.Earliest => watermarks.Low,
+            _ => GetResetOffset(partition)
         };
+        _positions[partition] = resolved;
+        // A reset is not consumed progress, and invalidates any previously stored offset.
+        if (_storedOffsets.Remove(partition))
+            _storedOffsetsVersion++;
+        return resolved;
     }
 
     private IEnumerable<TopicPartition> SelectTargetPartitions(TopicPartition[] partitions)
