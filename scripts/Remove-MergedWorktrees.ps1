@@ -57,8 +57,8 @@
 #     for registered or convention-named work items, and fails closed on lock errors
 #   - skip a branch/tip that has an OPEN PR (branch reused for active work)
 #   - PRESERVE tracked changes and untracked files outside known generated directories
-#     or recognized root-level logs/PR notes covered by .gitignore, except that a closed
-#     work item's changes move to a retained branch (tier 5); unknown ignored files
+#     or recognized root-level logs/PR notes covered by .gitignore, except that the changes
+#     of a merged PR or closed work item move to a retained branch; unknown ignored files
 #     are always preserved
 #   - preserve local commits not contained in the merged PR's recorded head (tier 5
 #     removes the checkout but keeps the branch)
@@ -237,6 +237,8 @@ try {
             continue
         }
 
+        # A merged PR is a closed work item too: leftover changes move to a retained branch.
+        if ($why -like 'merged PR*') { $retainWork = $true }
         Remove-MergedWorktree -Repo $mainRepo -Worktree $w.Path -Label "($why)" -ExpectedHead $sha -RetainWork:$retainWork -WhatIf:$WhatIf
         if ($WhatIf) { continue }
         if (-not (Test-Path -LiteralPath $w.Path)) {

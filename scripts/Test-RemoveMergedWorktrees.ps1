@@ -120,8 +120,7 @@ exit 3
 
         $preview = (& $sweep -Repo fixture/repo -WhatIf 6>&1) -join "`n"
         Assert-True ($preview -match 'WOULD remove .*[\\/]merged') 'Preview did not identify merged worktree.'
-        Assert-True ($preview -match 'NewFeature.cs') 'Preview did not report untracked source blocker.'
-        Assert-True ($preview -notmatch 'WOULD remove .*[\\/]dirty') 'Preview claimed a dirty worktree would be removed.'
+        Assert-True ($preview -match 'WOULD remove .*[\/]dirty -- .*\(saving 1') 'Preview did not report saving merged leftover work.'
         Assert-True (Test-Path -LiteralPath $mergedWorktree) 'Preview removed worktree.'
         Assert-True ($preview -match 'WOULD remove stale evidence .*issue-1') 'Preview did not identify stale evidence.'
         Assert-True (Test-Path -LiteralPath (Join-Path $evidenceRoot 'issue-1')) 'Preview removed evidence.'
@@ -130,7 +129,10 @@ exit 3
 
         & $sweep -Repo fixture/repo
         Assert-True (-not (Test-Path -LiteralPath $mergedWorktree)) 'Merged worktree was not removed autonomously.'
-        Assert-True (Test-Path -LiteralPath $dirtyWorktree) 'Dirty worktree was removed.'
+        Assert-True (-not (Test-Path -LiteralPath $dirtyWorktree)) 'Merged worktree with leftover changes was not removed.'
+        $dirtyWip = @(git -C $repo for-each-ref --format='%(refname:short)' 'refs/heads/retained-worktrees/dirty-wip-*')
+        Assert-True ($dirtyWip.Count -eq 1) 'Merged leftover changes were not saved to a retained branch.'
+        Assert-True ((git -C $repo show "$($dirtyWip[0]):NewFeature.cs") -eq 'untracked source') 'Saved merged leftover file is wrong.'
         Assert-True (Test-Path -LiteralPath $divergentWorktree) 'Divergent local commit was removed.'
         Assert-True (Test-Path -LiteralPath $openWorktree) 'Open PR worktree was removed.'
         Assert-True (Test-Path -LiteralPath $owned) 'Redis-owned detached main checkout was removed.'
