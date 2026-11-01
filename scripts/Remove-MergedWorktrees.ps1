@@ -19,6 +19,17 @@
 #                                     window aging out). Named worktrees must match the
 #                                     associated PR's head branch; a shared commit alone
 #                                     does not prove that a new branch was merged.
+#     5. closed work item            (`gh api repos/../issues/<N>`, one call per worktree
+#                                     still unmatched whose identity is `pr-<N>` or
+#                                     `issue-<N>`: the marker, else the directory name).
+#                                     Catches review branches whose name differs from the
+#                                     PR head, local commits after a merge, and PRs closed
+#                                     unmerged. Nothing comes back for such a checkout, so
+#                                     its work is retained instead of the directory: the
+#                                     branch is kept, uncommitted changes are saved to
+#                                     `retained-worktrees/<item>-wip-<sha>` (restore with
+#                                     `git cherry-pick --no-commit`), and a detached HEAD
+#                                     to `retained-worktrees/<SHA>`.
 #
 #   DELIBERATELY NOT a signal: a [gone] upstream branch. [gone] only means the remote
 #   ref was deleted — which also happens when a PR is CLOSED UNMERGED and its branch
@@ -46,8 +57,11 @@
 #     for registered or convention-named work items, and fails closed on lock errors
 #   - skip a branch/tip that has an OPEN PR (branch reused for active work)
 #   - PRESERVE tracked changes and untracked files outside known generated directories
-#     or recognized root-level logs/PR notes covered by .gitignore
-#   - preserve local commits not contained in the merged PR's recorded head
+#     or recognized root-level logs/PR notes covered by .gitignore, except that a closed
+#     work item's changes move to a retained branch (tier 5); unknown ignored files
+#     are always preserved
+#   - preserve local commits not contained in the merged PR's recorded head (tier 5
+#     removes the checkout but keeps the branch)
 #   - worktrees with NO merge evidence are kept and listed; opt in to reaping old
 #     clean ones with -StaleDays <n>
 #
@@ -153,6 +167,8 @@ try {
         # Tier 1: a merged branch name identifies the PR, but a reused branch or
         # local commits after the merge must not be discarded.
         $why = $null
+        $diverged = $false
+        $retainWork = $false
         if ($w.Branch -and $mergedNames.ContainsKey($w.Branch)) {
             foreach ($mergedHead in $mergedNames[$w.Branch]) {
                 if (Test-WorktreeHeadMerged -Repo $mainRepo -Head $sha -MergedHead $mergedHead) {
@@ -160,14 +176,13 @@ try {
                     break
                 }
             }
-            if (-not $why) {
-                Write-Host "sweep: preserving '$($w.Branch)' (local HEAD is not contained in a recorded merged PR head): $($w.Path)"
-                continue
-            }
+            # Local commits after the merge: only the closed-item tier below may remove
+            # this checkout, and it keeps the branch.
+            if (-not $why) { $diverged = $true }
         }
 
         # Tier 2: detached checkout sitting exactly on a merged PR's tip.
-        if (-not $why -and $w.Detached -and $mergedOids.ContainsKey($sha)) { $why = 'merged PR head tip SHA' }
+        if (-not $why -and -not $diverged -and $w.Detached -and $mergedOids.ContainsKey($sha)) { $why = 'merged PR head tip SHA' }
 
         # Tier 3 (detached only): checkout of a commit already reachable from main —
         # A/B baselines and gate parents. A named branch never qualifies here; it needs
@@ -179,7 +194,7 @@ try {
 
         # Tier 4: GitHub's commit→PR association. Survives squash merges, branch
         # deletion, and the 1000-PR list window. One API call, only for leftovers.
-        if (-not $why -and $sha -and $slug) {
+        if (-not $why -and -not $diverged -and $sha -and $slug) {
             $assocRaw = gh api "repos/$slug/commits/$sha/pulls" 2>$null
             if ($LASTEXITCODE -eq 0 -and $assocRaw) {
                 $assoc = @(($assocRaw -join "`n") | ConvertFrom-Json)
@@ -195,18 +210,34 @@ try {
             }
         }
 
+        # Tier 5: the checkout's work item is closed. Removal retains its work (see header).
+        if (-not $why -and $slug) {
+            try { $itemName = Get-WorktreeCleanupLockName -Worktree $w.Path } catch { $itemName = $null }
+            if ($itemName -cmatch '^(pr|issue)-(\d+)$') {
+                $state = gh api "repos/$slug/issues/$($Matches[2])" --jq .state 2>$null
+                if ($LASTEXITCODE -eq 0 -and ($state | Out-String).Trim() -ceq 'closed') {
+                    $why = "closed work item $itemName"
+                    $retainWork = $true
+                }
+            }
+        }
+
         # Opt-in stale tier: no PR evidence anywhere (never-pushed scratch). Only age
         # can justify removal, and only when the caller asked for it.
-        if (-not $why -and $StaleDays -gt 0 -and $sha) {
+        if (-not $why -and -not $diverged -and $StaleDays -gt 0 -and $sha) {
             $commitEpoch = git -C $w.Path log -1 --format=%ct 2>$null
             if ($LASTEXITCODE -eq 0 -and $commitEpoch -and (($nowEpoch - [long]$commitEpoch) -gt ($StaleDays * 86400L))) {
                 $why = "no PR evidence, HEAD commit older than $StaleDays day(s)"
             }
         }
 
-        if (-not $why) { $unmatched += $w; continue }
+        if (-not $why) {
+            if ($diverged) { Write-Host "sweep: preserving '$($w.Branch)' (local HEAD is not contained in a recorded merged PR head): $($w.Path)" }
+            else { $unmatched += $w }
+            continue
+        }
 
-        Remove-MergedWorktree -Repo $mainRepo -Worktree $w.Path -Label "($why)" -ExpectedHead $sha -WhatIf:$WhatIf
+        Remove-MergedWorktree -Repo $mainRepo -Worktree $w.Path -Label "($why)" -ExpectedHead $sha -RetainWork:$retainWork -WhatIf:$WhatIf
         if ($WhatIf) { continue }
         if (-not (Test-Path -LiteralPath $w.Path)) {
             $removed++

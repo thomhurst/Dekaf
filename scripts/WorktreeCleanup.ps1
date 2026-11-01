@@ -190,6 +190,9 @@ function Remove-MergedWorktree {
         [string]$Label = '',
         [string]$ExpectedHead,
         [switch]$AllowCurrentOwner,
+        # The work item is closed: save uncommitted work and detached commits to
+        # retained branches instead of preserving the checkout (see Remove-MergedWorktreeCore).
+        [switch]$RetainWork,
         [switch]$WhatIf
     )
 
@@ -280,6 +283,7 @@ function Remove-MergedWorktreeCore {
         [string]$Label = '',                       # e.g. "#1234" for log lines
         [string]$ExpectedHead,
         [string]$ExpectedLockName,
+        [switch]$RetainWork,
         [switch]$WhatIf
     )
 
@@ -327,24 +331,41 @@ function Remove-MergedWorktreeCore {
         return
     }
 
-    $work = @($status | Where-Object {
-        if ($_ -notmatch '^(\?\?|!!) ') { return $true }
-        return -not (Test-DisposableWorktreePath -Path $_.Substring(3))
-    })
-    if ($work.Count -gt 0) {
+    $work = @(Get-WorktreeUncommittedWork -Status $status)
+    # A retained snapshot cannot carry ignored files (secrets, local settings), so they
+    # always preserve the checkout.
+    if ($work.Count -gt 0 -and (-not $RetainWork -or @($work | Where-Object { $_.StartsWith('!! ') }).Count -gt 0)) {
         Write-Host "Preserving dirty worktree $Label : $Worktree (uncommitted work)"
         foreach ($entry in $work) { Write-Host "  $entry" }
         return
     }
 
     if ($WhatIf) {
-        Write-Host "sweep: WOULD remove $Worktree -- $Label"
+        $retained = if ($work.Count -gt 0) { " (saving $($work.Count) uncommitted entr(ies) to a retained branch)" } else { '' }
+        Write-Host "sweep: WOULD remove $Worktree -- $Label$retained"
         return
     }
 
     if ($ExpectedLockName -and (Get-WorktreeCleanupLockName -Worktree $Worktree) -cne $ExpectedLockName) {
         Write-Host "Preserving worktree $Label : $Worktree (ownership identity changed during cleanup)"
         return
+    }
+
+    if ($RetainWork) {
+        # The work item is closed, so nothing will come back for this checkout. Keep
+        # everything it holds reachable from a branch instead of keeping the directory.
+        $name = if ($ExpectedLockName) { $ExpectedLockName } else { [IO.Path]::GetFileName($worktreePath) }
+        try {
+            if ($work.Count -gt 0) {
+                $saved = Save-WorktreeUncommittedWork -Repo $Repo -Worktree $Worktree -Name $name
+                Write-Host "Saved uncommitted work of $Worktree to $saved (restore with: git cherry-pick --no-commit $saved)"
+            }
+            Save-DetachedWorktreeHead -Repo $Repo -Worktree $Worktree
+        }
+        catch {
+            Write-Host "Preserving worktree $Label : $Worktree (could not retain its work: $_)"
+            return
+        }
     }
 
     $pending = Register-PendingWorktreeRemoval -Repo $Repo -Worktree $Worktree -LockNames @($ExpectedLockName)
@@ -355,6 +376,78 @@ function Remove-MergedWorktreeCore {
         Write-Host "WARNING: could not fully remove $Worktree; Remove-MergedWorktrees.ps1 retries the pending removal"
     } else {
         Write-Host "WARNING: could not fully remove $Worktree"
+    }
+}
+
+# Returns the porcelain status entries that are not disposable generated output.
+function Get-WorktreeUncommittedWork {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Status)
+
+    return @($Status | Where-Object {
+        if ($_ -notmatch '^(\?\?|!!) ') { return $true }
+        return -not (Test-DisposableWorktreePath -Path $_.Substring(3))
+    })
+}
+
+# Commits the tracked and untracked (not ignored) changes of a worktree on top of its
+# HEAD and returns the new branch `retained-worktrees/<name>-wip-<sha>`. A copy of the
+# index takes the snapshot, so the checkout, its index and the stash list that every
+# worktree shares stay untouched. Restore it with `git cherry-pick --no-commit <branch>`.
+# Throws when the snapshot could not be saved.
+function Save-WorktreeUncommittedWork {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Repo,
+        [Parameter(Mandatory)][string]$Worktree,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    $index = git -C $Worktree rev-parse --path-format=absolute --git-path index 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $index) { throw 'could not locate the index' }
+    $snapshotIndex = Join-Path ([IO.Path]::GetTempPath()) "retained-index-$([Guid]::NewGuid().ToString('N'))"
+    $previousIndex = $env:GIT_INDEX_FILE
+    try {
+        # Copying keeps the stat cache, so only changed files are hashed.
+        if (Test-Path -LiteralPath $index) { Copy-Item -LiteralPath $index -Destination $snapshotIndex }
+        $env:GIT_INDEX_FILE = $snapshotIndex
+        git -C $Worktree add --all 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'could not stage the changes' }
+        $tree = git -C $Worktree write-tree 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $tree) { throw 'could not write the snapshot tree' }
+    }
+    finally {
+        $env:GIT_INDEX_FILE = $previousIndex
+        Remove-Item -LiteralPath $snapshotIndex -Force -ErrorAction SilentlyContinue
+    }
+    $commit = git -C $Worktree commit-tree $tree -p HEAD -m "Uncommitted work of $Name retained by the worktree sweep" 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $commit) { throw 'could not commit the snapshot' }
+    $branch = "retained-worktrees/$Name-wip-$($commit.Substring(0, 12))"
+    git -C $Repo branch $branch $commit 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "could not create $branch" }
+    return $branch
+}
+
+# Keeps a detached HEAD reachable from `retained-worktrees/<SHA>` after Git prunes the
+# worktree reflog. Never moves an existing branch. Throws when HEAD cannot be retained.
+function Save-DetachedWorktreeHead {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Repo,
+        [Parameter(Mandatory)][string]$Worktree
+    )
+
+    git -C $Worktree symbolic-ref -q HEAD 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) { return }
+    $head = git -C $Worktree rev-parse HEAD 2>$null
+    if ($LASTEXITCODE -ne 0) { throw "Cannot resolve HEAD: $Worktree" }
+    $branch = "retained-worktrees/$head"
+    $existing = git -C $Repo rev-parse -q --verify "refs/heads/$branch" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        git -C $Repo branch $branch $head 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Cannot retain detached HEAD: $Worktree" }
+    } elseif ($existing -ne $head) {
+        throw "Retention branch has moved: $branch"
     }
 }
 

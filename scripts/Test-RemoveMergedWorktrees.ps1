@@ -19,7 +19,10 @@ function gh {
         if ($failOpenQuery) { $global:LASTEXITCODE = 1; return }
         return $openJson
     }
-    if ($args[0] -eq 'api') { return '[]' }
+    if ($args[0] -eq 'api') {
+        if ($args[1] -match '/issues/(\d+)$') { return $(if ($Matches[1] -in $closedItems) { 'closed' } else { 'open' }) }
+        return '[]'
+    }
     throw "Unexpected gh call: $args"
 }
 
@@ -65,6 +68,26 @@ try {
     # `git worktree add` copies config.worktree; the copied marker names $owned.
     $inherited = Join-Path $testRoot 'inherited-detached'
     git -C $owned worktree add --quiet --detach $inherited $mainHead
+    # Closed work items whose checkouts no merge tier recognizes.
+    $closedItems = @('500', '501', '503')
+    $review = Join-Path $testRoot 'pr-500-review'
+    git -C $repo worktree add --quiet -b pr-500-review $review $mainHead
+    Set-Content -LiteralPath (Join-Path $review 'README.md') -Value 'local review commit'
+    git -C $review commit --quiet -am 'local review commit'
+    $reviewHead = git -C $review rev-parse HEAD
+    Set-Content -LiteralPath (Join-Path $review 'README.md') -Value 'uncommitted edit'
+    Set-Content -LiteralPath (Join-Path $review 'Draft.cs') -Value 'untracked draft'
+    $closedDetached = Join-Path $testRoot 'issue-501-detached'
+    git -C $repo worktree add --quiet --detach $closedDetached $mainHead
+    Set-Content -LiteralPath (Join-Path $closedDetached 'README.md') -Value 'detached commit'
+    git -C $closedDetached commit --quiet -am 'detached commit'
+    $detachedHead = git -C $closedDetached rev-parse HEAD
+    $openItem = Join-Path $testRoot 'pr-502-open'
+    git -C $repo worktree add --quiet -b pr-502-open $openItem $mainHead
+    $ignoredItem = Join-Path $testRoot 'pr-503-ignored'
+    git -C $repo worktree add --quiet -b pr-503-ignored $ignoredItem $mainHead
+    # Ignored by .gitignore and not generated output: local settings.
+    Set-Content -LiteralPath (Join-Path $ignoredItem '.claude.local.md') -Value 'local notes'
     $evidenceRoot = "$repo-evidence"
     foreach ($entry in @('issue-1/build.log', 'issue-2/build.log')) {
         $file = Join-Path $evidenceRoot $entry
@@ -77,6 +100,7 @@ try {
     # Live Redis semantics are tested separately; this verifies sweep routing.
     Set-Content -LiteralPath (Join-Path $repo 'scripts/AgentLocks.ps1') -Value @'
 param($Verb, $LockName, $OwnerId)
+if ($LockName -ne 'fixture-owned') { if ($Verb -eq 'status') { 'FREE' }; exit 0 }
 if ($Verb -eq 'status') { 'HELD'; exit 0 }
 exit 3
 '@
@@ -101,6 +125,8 @@ exit 3
         Assert-True (Test-Path -LiteralPath $mergedWorktree) 'Preview removed worktree.'
         Assert-True ($preview -match 'WOULD remove stale evidence .*issue-1') 'Preview did not identify stale evidence.'
         Assert-True (Test-Path -LiteralPath (Join-Path $evidenceRoot 'issue-1')) 'Preview removed evidence.'
+        Assert-True ($preview -match 'WOULD remove .*pr-500-review -- \(closed work item pr-500\) \(saving 2') 'Preview did not report retained work.'
+        Assert-True (Test-Path -LiteralPath (Join-Path $review 'Draft.cs')) 'Preview saved or removed closed-item work.'
 
         & $sweep -Repo fixture/repo
         Assert-True (-not (Test-Path -LiteralPath $mergedWorktree)) 'Merged worktree was not removed autonomously.'
@@ -116,6 +142,19 @@ exit 3
         Assert-True ($LASTEXITCODE -ne 0) 'Merged branch was not cleaned up.'
         git -C $repo show-ref --verify --quiet refs/heads/divergent
         Assert-True ($LASTEXITCODE -eq 0) 'Divergent branch was deleted.'
+
+        Assert-True (-not (Test-Path -LiteralPath $review)) 'Closed PR review checkout was not removed.'
+        Assert-True ((git -C $repo rev-parse refs/heads/pr-500-review) -eq $reviewHead) 'Closed item branch was not kept.'
+        $wip = @(git -C $repo for-each-ref --format='%(refname:short)' 'refs/heads/retained-worktrees/pr-500-wip-*')
+        Assert-True ($wip.Count -eq 1) 'Uncommitted work was not saved to a retained branch.'
+        Assert-True ((git -C $repo show "$($wip[0]):README.md") -eq 'uncommitted edit') 'Saved tracked change is wrong.'
+        Assert-True ((git -C $repo show "$($wip[0]):Draft.cs") -eq 'untracked draft') 'Saved untracked file is wrong.'
+        Assert-True ((git -C $repo rev-parse "$($wip[0])^") -eq $reviewHead) 'Saved work is not based on the checkout HEAD.'
+        Assert-True (@(git -C $repo stash list).Count -eq 0) 'Saving work touched the shared stash list.'
+        Assert-True (-not (Test-Path -LiteralPath $closedDetached)) 'Closed detached checkout was not removed.'
+        Assert-True ((git -C $repo rev-parse "refs/heads/retained-worktrees/$detachedHead") -eq $detachedHead) 'Detached commit was not retained.'
+        Assert-True (Test-Path -LiteralPath $openItem) 'Open item checkout was removed.'
+        Assert-True (Test-Path -LiteralPath (Join-Path $ignoredItem '.claude.local.md')) 'Unknown ignored file of a closed item was removed.'
     }
     finally { Pop-Location }
     Write-Host 'OK merged-worktree sweep tests passed.'
