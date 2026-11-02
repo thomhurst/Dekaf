@@ -7,6 +7,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Dekaf.Networking;
 using Dekaf.Security;
+using TUnit.Core.Enums;
 
 namespace Dekaf.Tests.Unit.Security;
 
@@ -122,7 +123,10 @@ public class CustomCaServerCertificateValidationTests
         await Assert.That(detail).Contains(nameof(X509ChainStatusFlags.RevocationStatusUnknown));
     }
 
+    // macOS evaluates revocation through OCSP only and never fetches CRL distribution points, so both
+    // leaves come back RevocationStatusUnknown there. Linux and Windows fetch the CRLs this test serves.
     [Test]
+    [ExcludeOn(OS.MacOs)]
     public async Task OnlineRevocation_RejectsRevokedLeafAndAcceptsGoodLeaf()
     {
         await using var crlServer = CrlServer.Start();
