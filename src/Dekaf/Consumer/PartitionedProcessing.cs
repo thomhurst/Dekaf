@@ -469,6 +469,10 @@ public sealed class PartitionProcessorContext<TKey, TValue>
     /// The caller releases them through the returned budget when a handler takes them.
     /// </summary>
     internal PartitionedBufferBudget? DeferBufferRelease() => _lane.DeferBufferRelease();
+
+    internal bool IsDiscardingQueuedRecords => _lane.IsDiscardingQueuedRecords;
+
+    internal void WakeOnDiscard(AsyncAutoResetSignal signal) => _lane.WakeOnDiscard(signal);
 }
 
 /// <summary>
@@ -654,6 +658,19 @@ public sealed class PartitionedProcessingOptions
     public PartitionedProcessingMonitor? Monitor { get; init; }
 
     /// <summary>
+    /// Gets an optional control that seeks partitions while the run is active.
+    /// </summary>
+    /// <remarks>
+    /// A control attaches to one active run at a time; starting a second run with the same control
+    /// while the first is active throws <see cref="InvalidOperationException"/>.
+    /// </remarks>
+    public PartitionedProcessingControl? Control { get; init; }
+
+    // Runs on the runtime loop after a seek marks a lane to discard its queued records and before
+    // the lane stops, so tests can release an in-flight handler at a deterministic point.
+    internal Action<TopicPartition>? SeekDiscardingLaneForTest { get; init; }
+
+    /// <summary>
     /// True when the runtime itself commits completed offsets based on MarkProcessed tracking.
     /// </summary>
     internal bool IsRuntimeManagedCommitPolicy => CommitPolicy
@@ -806,10 +823,11 @@ internal enum PartitionStopReason
     Revoke,
     Lost,
     Shutdown,
-    Failure
+    Failure,
+    Seek
 }
 
-internal sealed class PartitionedConsumerRuntime<TKey, TValue>
+internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedProcessingSeekTarget
 {
     private const int MaximumCompletionReservation = 1024;
     private static readonly TimeSpan ConsumePollTimeout = TimeSpan.FromMilliseconds(100);
@@ -834,6 +852,10 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     private readonly HashSet<TopicPartition> _assignedAheadOfSnapshot = [];
     private readonly HashSet<TopicPartition> _revokedAheadOfSnapshot = [];
     private readonly List<TopicPartition> _reconciledTransitions = [];
+    // Partitions seeked since the runtime last asked the consumer for a batch. A batch fetched
+    // before a seek holds records from the old position, so the runtime leaves it unenumerated
+    // and the consumer fetches the partition again from the new position.
+    private HashSet<TopicPartition>? _seekedPartitions;
     private readonly Channel<RuntimeCommand<TKey, TValue>> _commands;
     private AsyncAutoResetSignal? _capacitySignal;
     private AsyncAutoResetSignal? _stopSignal;
@@ -871,12 +893,15 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     {
         var monitor = _options.Monitor;
         monitor?.Attach();
+        var control = _options.Control;
+        control?.Attach(this);
         try
         {
             await RunAttachedAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
+            control?.Detach(this);
             monitor?.Detach();
         }
     }
@@ -911,6 +936,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
 
                     if (pendingBatchMove is null)
                     {
+                        _seekedPartitions?.Clear();
                         var moveNext = batchEnumerator.MoveNextAsync();
                         if (moveNext.IsCompleted)
                         {
@@ -1000,6 +1026,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             finally
             {
                 await StopScheduledRestartsAsync().ConfigureAwait(false);
+                _options.Control?.Detach(this);
                 _commands.Writer.TryComplete();
                 CompletePendingCommands();
                 // Cancel releases the deadline timer while allowing a timed-out handler's
@@ -1142,6 +1169,154 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         return new ValueTask(completion.Task.WaitAsync(cancellationToken));
     }
 
+    public ValueTask SeekAsync(TopicPartitionOffset offset, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+            return new ValueTask(Task.FromCanceled(cancellationToken));
+
+        // Seeks are rare control operations, so each allocates its completion.
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!TryQueueCommand(RuntimeCommand<TKey, TValue>.Seek(offset, completion, cancellationToken)))
+            return new ValueTask(Task.FromException(CreateSeekStoppedException(offset)));
+
+        return new ValueTask(completion.Task.WaitAsync(cancellationToken));
+    }
+
+    public async ValueTask SeekAsync(TopicPartitionTimestamp timestamp, CancellationToken cancellationToken)
+    {
+        var partition = timestamp.TopicPartition;
+        var offsets = await _consumer.Offsets
+            .GetOffsetsForTimesAsync([timestamp], cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!offsets.TryGetValue(partition, out var offset) || offset < 0)
+        {
+            // No record at or after the timestamp: there is nothing to replay, so start at the end.
+            var end = await _consumer.Offsets
+                .GetOffsetsForTimesAsync(
+                    [new TopicPartitionTimestamp(partition, TopicPartitionTimestamp.Latest)],
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!end.TryGetValue(partition, out offset) || offset < 0)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot seek {partition.Topic}-{partition.Partition} to timestamp {timestamp.Timestamp}: the broker returned no offset for the partition.");
+            }
+        }
+
+        await SeekAsync(
+            new TopicPartitionOffset(partition.Topic, partition.Partition, offset),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Runs on the runtime loop. Stops the partition's lane without dispatching its buffered
+    /// records, commits the seek position under a runtime-managed policy, seeks the consumer,
+    /// and starts a new lane at the target.
+    /// </summary>
+    private async ValueTask SeekPartitionAsync(
+        RuntimeCommand<TKey, TValue> command,
+        CancellationToken cancellationToken)
+    {
+        var completion = command.Completion!;
+        if (command.CancellationToken.IsCancellationRequested)
+        {
+            completion.TrySetCanceled(command.CancellationToken);
+            return;
+        }
+
+        var target = command.SeekOffset;
+        var partition = new TopicPartition(target.Topic, target.Partition);
+        if (!IsAssigned(partition, ReadAssignment()))
+        {
+            completion.TrySetException(new InvalidOperationException(
+                $"Cannot seek {partition.Topic}-{partition.Partition}: the partition is not assigned to this consumer."));
+            return;
+        }
+
+        try
+        {
+            _lanes.Remove(partition, out var lane);
+            _stoppedByFailure.Remove(partition);
+            _pendingIgnoreRestarts.Remove(partition);
+            _ignoreRestartFailures.Remove(partition);
+
+            if (lane is not null)
+            {
+                lane.DiscardQueuedRecords();
+                _options.SeekDiscardingLaneForTest?.Invoke(partition);
+                var exception = await WaitLaneStopAsync(
+                    PartitionStopReason.Seek,
+                    BeginLaneStop(lane, PartitionStopReason.Seek, cancellationToken),
+                    cancellationToken).ConfigureAwait(false);
+                FailOnLaneStopException(exception);
+            }
+
+            if (cancellationToken.IsCancellationRequested || _shutdownCancellation.IsCancellationRequested)
+            {
+                completion.TrySetException(CreateSeekStoppedException(target));
+                return;
+            }
+
+            if (ShouldCommitOnPartitionStop())
+                await CommitSeekPositionAsync(lane, target, cancellationToken).ConfigureAwait(false);
+
+            _consumer.Seek(target);
+            (_seekedPartitions ??= []).Add(partition);
+            if (_pausedByRuntime.Remove(partition))
+                _consumer.Partitions.Resume(partition);
+
+            StartLane(partition);
+            completion.TrySetResult();
+        }
+        catch (Exception exception)
+        {
+            completion.TrySetException(exception);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Commits the lower of the stopped lane's completed offset and the seek target, so a restart
+    /// resumes from the seek position. A failed commit does not fail the seek: the new lane commits
+    /// its own progress, and until then the group keeps its previous committed offset.
+    /// </summary>
+    private async ValueTask CommitSeekPositionAsync(
+        PartitionLane<TKey, TValue>? lane,
+        TopicPartitionOffset target,
+        CancellationToken cancellationToken)
+    {
+        var offset = target;
+        if (lane?.GetCommitOffset() is { } completed && completed.Offset < target.Offset)
+        {
+            if (lane.GetUncommittedOffset() is null)
+                return;
+
+            offset = completed;
+        }
+
+        using var commitCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (_options.StopTimeout != Timeout.InfiniteTimeSpan)
+            commitCancellation.CancelAfter(_options.StopTimeout);
+
+        try
+        {
+            await _consumer.CommitAsync([offset], commitCancellation.Token).ConfigureAwait(false);
+        }
+        catch (GroupException exception) when (IsMembershipLoss(exception))
+        {
+            LogRuntimeCommitRejected(exception);
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            LogSeekCommitFailed(offset, exception);
+        }
+    }
+
+    private static InvalidOperationException CreateSeekStoppedException(TopicPartitionOffset offset)
+        => new($"Partitioned processing stopped before the seek of {offset.Topic}-{offset.Partition} to offset {offset.Offset} completed.");
+
     private async ValueTask SyncAssignmentAsync(CancellationToken cancellationToken)
     {
         var assignment = ReadAssignment();
@@ -1254,6 +1429,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             return default;
 
         var partition = batch.TopicPartition;
+        if (_seekedPartitions is { Count: > 0 } seeked && seeked.Contains(partition))
+            return default;
+
         if (!_lanes.TryGetValue(partition, out var lane) && !TryStartLaneForUnroutedBatch(partition, out lane))
             return default;
 
@@ -1579,6 +1757,10 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                     StartAssignedPartitions(command.Partitions!);
                     break;
 
+                case RuntimeCommandKind.Seek:
+                    await SeekPartitionAsync(command, cancellationToken).ConfigureAwait(false);
+                    break;
+
                 case RuntimeCommandKind.StopPartitions:
                     try
                     {
@@ -1640,9 +1822,12 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         Exception exception,
         CancellationToken cancellationToken)
     {
-        if (!_lanes.Remove(lane.TopicPartition))
+        // A seek, or a revoke followed by an assignment, can replace the lane before its failure
+        // arrives. The failure belongs to the lane that reported it, not to its replacement.
+        if (!_lanes.TryGetValue(lane.TopicPartition, out var current) || !ReferenceEquals(current, lane))
             return;
 
+        _lanes.Remove(lane.TopicPartition);
         if (_options.ErrorPolicy == PartitionWorkerErrorPolicy.StopPartition)
         {
             _stoppedByFailure.Add(lane.TopicPartition);
@@ -2180,6 +2365,8 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             // for a stop command is released; a commit request that never ran is cancelled.
             if (command.Kind == RuntimeCommandKind.Commit)
                 command.Completion!.TrySetCanceled();
+            else if (command.Kind == RuntimeCommandKind.Seek)
+                command.Completion!.TrySetException(CreateSeekStoppedException(command.SeekOffset));
             else
                 command.Completion?.TrySetResult();
         }
@@ -2212,6 +2399,16 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         _logger.LogWarning(
             "Partitioned consumer commit for {PartitionCount} revoked partitions did not finish within StopTimeout; releasing them uncommitted, so their next owner processes the completed records again.",
             partitionCount);
+    }
+
+    private void LogSeekCommitFailed(TopicPartitionOffset offset, Exception exception)
+    {
+        _logger.LogWarning(
+            exception,
+            "Partitioned consumer commit of seek position {Offset} for {Topic}-{Partition} failed; the partition seeks anyway and its processor commits its own progress.",
+            offset.Offset,
+            offset.Topic,
+            offset.Partition);
     }
 
     private void LogRuntimeCommitRejected(GroupException exception)
@@ -2277,6 +2474,8 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     private TopicPartitionOffset? _firstUndeliveredOffset;
     private readonly PartitionedProcessingMonitor? _monitor;
     private readonly OutstandingRecordTimeline? _timeline;
+    private int _discardQueuedRecords;
+    private AsyncAutoResetSignal? _discardWake;
 
     public PartitionLane(
         TopicPartition topicPartition,
@@ -2346,6 +2545,29 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     public TopicPartitionOffset? HeldRecordOffset { get; set; }
 
     public bool IsFull => Volatile.Read(ref _bufferedCount) >= _capacity;
+
+    /// <summary>
+    /// True once a seek stops this lane: its processor receives no further queued records.
+    /// </summary>
+    public bool IsDiscardingQueuedRecords => Volatile.Read(ref _discardQueuedRecords) != 0;
+
+    /// <summary>
+    /// Stops delivering queued records before the lane stops for a seek. Records the processor
+    /// already received finish under the stop policy; the rest are released unprocessed.
+    /// </summary>
+    public void DiscardQueuedRecords()
+    {
+        // Full fence: a key-ordered dispatcher registers its wake signal and then reads this flag
+        // before it waits, so either it sees the flag or this call sees and wakes its signal.
+        Interlocked.Exchange(ref _discardQueuedRecords, 1);
+        Volatile.Read(ref _discardWake)?.Signal();
+    }
+
+    /// <summary>
+    /// Wakes <paramref name="signal"/> when a seek marks this lane to discard its queued records,
+    /// so a dispatcher waiting with no pending read observes the flag.
+    /// </summary>
+    public void WakeOnDiscard(AsyncAutoResetSignal signal) => Interlocked.Exchange(ref _discardWake, signal);
 
     public bool HasCapacity => Volatile.Read(ref _bufferedCount) < _capacity;
 
@@ -2529,6 +2751,24 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     {
         if (!_channel.Reader.TryRead(out message))
             return false;
+
+        if (Volatile.Read(ref _discardQueuedRecords) != 0)
+        {
+            // The processor is the channel's only reader, so it releases what the seek discards.
+            // Discarded records never reach the processor, so they leave the consumer-wide
+            // buffer here even when the processor defers its releases.
+            var discardedCount = 1;
+            message.ReleaseStorage();
+            while (_channel.Reader.TryRead(out var discarded))
+            {
+                discarded.ReleaseStorage();
+                discardedCount++;
+            }
+
+            _budget?.Release(discardedCount);
+            message = default!;
+            return false;
+        }
 
         _readBudget?.Release();
         var bufferedCount = Interlocked.Decrement(ref _bufferedCount);
@@ -2728,7 +2968,8 @@ internal enum RuntimeCommandKind
     RestartLane,
     AssignPartitions,
     StopPartitions,
-    ResumeBudgetPaused
+    ResumeBudgetPaused,
+    Seek
 }
 
 internal readonly record struct RuntimeCommand<TKey, TValue>(
@@ -2739,7 +2980,8 @@ internal readonly record struct RuntimeCommand<TKey, TValue>(
     PartitionStopReason StopReason,
     TaskCompletionSource? Completion,
     Exception? Exception,
-    CancellationToken CancellationToken)
+    CancellationToken CancellationToken,
+    TopicPartitionOffset SeekOffset = default)
 {
     public static RuntimeCommand<TKey, TValue> Resume(PartitionLane<TKey, TValue> lane)
         => new(RuntimeCommandKind.Resume, lane, null, default, default, null, null, CancellationToken.None);
@@ -2769,4 +3011,10 @@ internal readonly record struct RuntimeCommand<TKey, TValue>(
         PartitionStopReason stopReason,
         TaskCompletionSource? completion)
         => new(RuntimeCommandKind.StopPartitions, null, partitions, default, stopReason, completion, null, CancellationToken.None);
+
+    public static RuntimeCommand<TKey, TValue> Seek(
+        TopicPartitionOffset offset,
+        TaskCompletionSource completion,
+        CancellationToken cancellationToken)
+        => new(RuntimeCommandKind.Seek, null, null, default, default, completion, null, cancellationToken, offset);
 }

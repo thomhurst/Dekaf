@@ -2549,8 +2549,12 @@ public sealed partial class PartitionedConsumerRuntimeTests
                     _paused.Add(partition);
             }
 
+            PausedCallback?.Invoke(partitions);
             _changed.Release();
         }
+
+        /// <summary>Runs after each Pause call records its partitions.</summary>
+        public Action<TopicPartition[]>? PausedCallback { get; init; }
 
         public void Resume(params TopicPartition[] partitions)
         {
@@ -2566,10 +2570,22 @@ public sealed partial class PartitionedConsumerRuntimeTests
             _changed.Release();
         }
 
+        /// <summary>Resolves offsets-for-times lookups; no partition resolves when unset.</summary>
+        public Func<TopicPartitionTimestamp, long>? OffsetForTime { get; init; }
+
         public ValueTask<IReadOnlyDictionary<TopicPartition, long>> GetOffsetsForTimesAsync(
             IEnumerable<TopicPartitionTimestamp> timestampsToSearch,
             CancellationToken cancellationToken = default)
-            => ValueTask.FromResult<IReadOnlyDictionary<TopicPartition, long>>(new Dictionary<TopicPartition, long>());
+        {
+            var offsets = new Dictionary<TopicPartition, long>();
+            if (OffsetForTime is { } offsetForTime)
+            {
+                foreach (var timestamp in timestampsToSearch)
+                    offsets[timestamp.TopicPartition] = offsetForTime(timestamp);
+            }
+
+            return ValueTask.FromResult<IReadOnlyDictionary<TopicPartition, long>>(offsets);
+        }
 
         public WatermarkOffsets? GetWatermarkOffsets(TopicPartition topicPartition)
             => null;
