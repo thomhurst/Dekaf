@@ -320,6 +320,81 @@ public sealed class PartitionedConsumerWideLimitsTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Discard_InterruptsPartitionOrderedWaitForHandlerSlot(bool batches)
+    {
+        // B's handler holds the only slot and A's loop waits for it with A's record still queued.
+        // A has no handler running, so a seek's drain of A must not wait for B's handler.
+        var slots = new HandlerSlotLimiter(1);
+        var limits = new PartitionedProcessingLimits(null, slots);
+        var a = CreateLane(new TopicPartition("limits", 0), limits);
+        var b = CreateLane(new TopicPartition("limits", 1), limits);
+        var aEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseB = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        async ValueTask HandleAsync(int partition, CancellationToken token)
+        {
+            if (partition == 0)
+            {
+                aEntered.TrySetResult();
+                return;
+            }
+
+            bEntered.TrySetResult();
+            await releaseB.Task.WaitAsync(token);
+        }
+
+        var options = new PartitionedProcessingOptions { MaxConcurrentHandlers = 1 };
+        var processor = batches
+            ? PartitionedConsumerExtensions.CreateBatchProcessor<string, string>(
+                (_, records, token) => HandleAsync(records[0].Partition, token), options, null)
+            : PartitionedConsumerExtensions.CreateRecordProcessor<string, string>(
+                (_, message, token) => HandleAsync(message.Partition, token), options, null);
+
+        await Assert.That(b.TryEnqueueForTest(CreateResult(b.TopicPartition, 0))).IsTrue();
+        b.Start(processor);
+        await bEntered.Task.WaitAsync(Timeout);
+
+        await Assert.That(a.TryEnqueueForTest(CreateResult(a.TopicPartition, 0))).IsTrue();
+        a.Start(processor);
+        while (slots.Queued == 0)
+            await Task.Yield();
+
+        a.DiscardQueuedRecords();
+        var aStop = await a.StopAsync(PartitionStopPolicy.Drain, TimeSpan.FromSeconds(5));
+        await Assert.That(aStop).IsNull();
+        await Assert.That(aEntered.Task.IsCompleted).IsFalse();
+
+        releaseB.TrySetResult();
+        var bStop = await b.StopAsync(PartitionStopPolicy.Drain, Timeout);
+        await Assert.That(bStop).IsNull();
+        await Assert.That(slots.Available).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task HandlerSlots_InterruptEndsCurrentAndLaterWaitsWithoutSlot()
+    {
+        var slots = new HandlerSlotLimiter(1);
+        await Assert.That(slots.TryAcquire()).IsTrue();
+        var waiter = new AsyncHandlerSlotWaiter(slots);
+
+        var waiting = waiter.AcquireAsync(CancellationToken.None).AsTask();
+        await Assert.That(waiting.IsCompleted).IsFalse();
+
+        waiter.Interrupt();
+        await Assert.That(await waiting.WaitAsync(Timeout)).IsFalse();
+        await Assert.That(await waiter.AcquireAsync(CancellationToken.None)).IsFalse();
+
+        // The interrupted waiter took no slot: the next caller gets the released one.
+        slots.Release();
+        await Assert.That(slots.Available).IsEqualTo(1);
+        await Assert.That(slots.TryAcquire()).IsTrue();
+        await Assert.That(slots.Queued).IsEqualTo(0);
+    }
+
+    [Test]
     [Arguments(PartitionedProcessingOrder.Partition, false)]
     [Arguments(PartitionedProcessingOrder.Partition, true)]
     [Arguments(PartitionedProcessingOrder.Key, false)]

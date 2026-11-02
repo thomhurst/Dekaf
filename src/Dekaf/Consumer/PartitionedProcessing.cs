@@ -176,7 +176,7 @@ public static class PartitionedConsumerExtensions
             : (context, cancellationToken) => RunPartitionOrderedRecordsAsync(context, processor, cancellationToken);
     }
 
-    private static PartitionProcessor<TKey, TValue> CreateBatchProcessor<TKey, TValue>(
+    internal static PartitionProcessor<TKey, TValue> CreateBatchProcessor<TKey, TValue>(
         PartitionBatchProcessor<TKey, TValue> processor,
         PartitionedProcessingOptions options,
         IEqualityComparer<TKey>? keyComparer)
@@ -207,7 +207,12 @@ public static class PartitionedConsumerExtensions
                 {
                     if (!context.HasQueuedMessage)
                         break;
-                    await slot.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    if (!await slot.WaitAsync(cancellationToken).ConfigureAwait(false))
+                    {
+                        // A seek is discarding this lane: release its queued records without a slot.
+                        context.TryReadMessage(out _);
+                        break;
+                    }
                 }
 
                 if (!context.TryReadMessage(out var message))
@@ -247,8 +252,12 @@ public static class PartitionedConsumerExtensions
 
         while (await context.WaitToReadMessageAsync(cancellationToken).ConfigureAwait(false))
         {
-            if (slot is not null)
-                await slot.AcquireAsync(cancellationToken).ConfigureAwait(false);
+            if (slot is not null && !await slot.AcquireAsync(cancellationToken).ConfigureAwait(false))
+            {
+                // A seek is discarding this lane: release its queued records without a slot.
+                context.TryReadMessage(out _);
+                continue;
+            }
 
             var records = batch;
             try
@@ -461,8 +470,19 @@ public sealed class PartitionProcessorContext<TKey, TValue>
     /// <summary>Gets the consumer-wide handler limit, or null when handlers are not limited across lanes.</summary>
     internal HandlerSlotLimiter? HandlerSlots => _lane.HandlerSlots;
 
+    /// <summary>
+    /// Creates this processor's handler slot waiter. A seek that discards the lane's queued
+    /// records interrupts its waits, so the processor never waits on another lane's handler to stop.
+    /// </summary>
     internal AsyncHandlerSlotWaiter? CreateHandlerSlotWaiter()
-        => _lane.HandlerSlots is { } slots ? new AsyncHandlerSlotWaiter(slots) : null;
+    {
+        if (_lane.HandlerSlots is not { } slots)
+            return null;
+
+        var waiter = new AsyncHandlerSlotWaiter(slots);
+        _lane.InterruptOnDiscard(waiter);
+        return waiter;
+    }
 
     /// <summary>
     /// Keeps records counted against the consumer-wide buffer after this lane's processor reads them.
@@ -2496,6 +2516,7 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     private readonly OutstandingRecordTimeline? _timeline;
     private int _discardQueuedRecords;
     private AsyncAutoResetSignal? _discardWake;
+    private AsyncHandlerSlotWaiter? _discardSlotWaiter;
 
     public PartitionLane(
         TopicPartition topicPartition,
@@ -2581,6 +2602,19 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
         // before it waits, so either it sees the flag or this call sees and wakes its signal.
         Interlocked.Exchange(ref _discardQueuedRecords, 1);
         Volatile.Read(ref _discardWake)?.Signal();
+        Volatile.Read(ref _discardSlotWaiter)?.Interrupt();
+    }
+
+    /// <summary>
+    /// Interrupts <paramref name="waiter"/> when a seek marks this lane to discard its queued
+    /// records, so a partition-ordered loop waiting for another lane's handler slot stops waiting.
+    /// </summary>
+    public void InterruptOnDiscard(AsyncHandlerSlotWaiter waiter)
+    {
+        // Full fence on both sides: either DiscardQueuedRecords sees the waiter or this sees the flag.
+        Interlocked.Exchange(ref _discardSlotWaiter, waiter);
+        if (Volatile.Read(ref _discardQueuedRecords) != 0)
+            waiter.Interrupt();
     }
 
     /// <summary>
