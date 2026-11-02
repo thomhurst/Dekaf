@@ -2574,6 +2574,10 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         }
         finally
         {
+            // A cancelled gate wait skips the releases above; release both so the send loop
+            // is not left blocked in the logger when the sender is disposed.
+            iterationGate.ReleaseFirst();
+            iterationGate.ReleaseSecond();
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
