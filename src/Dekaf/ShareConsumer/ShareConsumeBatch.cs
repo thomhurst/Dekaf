@@ -348,17 +348,19 @@ internal sealed class ShareBatchStorage<TKey, TValue>
         RemovePending();
     }
 
-    // Unsubscribe releases every tracked acquisition, including records the caller
-    // has not enumerated. This scan runs once when leaving the subscription.
+    // Unsubscribe releases every tracked acquisition without an outcome, including
+    // records the caller has not enumerated. Explicit, implicit and in-flight outcomes
+    // are kept, as on close; the flush releases implicit deliveries. This scan runs
+    // once when leaving the subscription.
     internal void ReleaseActiveAcquisitions()
     {
         for (var index = 0; index < Count; index++)
         {
             ref var entry = ref Entries[index];
-            if (entry.Settled || entry.Superseded)
+            if (entry.Settled || entry.Superseded
+                || entry.PendingAcknowledgement != 0 || entry.SubmittedAcknowledgement != 0)
                 continue;
-            if (entry.PendingAcknowledgement == 0)
-                AddPending(index);
+            AddPending(index);
             entry.PendingAcknowledgement = (byte)AcknowledgeType.Release;
             entry.Renewed = false;
         }

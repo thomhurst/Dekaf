@@ -52,6 +52,7 @@ public interface IKafkaShareConsumer<TKey, TValue> : IInitializableKafkaClient, 
     /// Unsubscribes from all topics and leaves the share group.
     /// Any pending unacknowledged records are released back to the group (best-effort)
     /// so other members can claim them without waiting for the acquisition lock to expire.
+    /// Acknowledgements the application already recorded are sent unchanged, as on <c>CloseAsync</c>.
     /// <para>
     /// The release and the leave run in the background; the next poll, <c>CloseAsync</c> and
     /// <c>DisposeAsync</c> wait for them. A later <see cref="Subscribe"/> and poll rejoin the group.
