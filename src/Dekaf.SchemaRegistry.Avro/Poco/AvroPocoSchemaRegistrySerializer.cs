@@ -55,13 +55,21 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         _schemaIdStrategy == SchemaIdSerializerStrategy.Header;
 
     /// <summary>Creates a generated POCO Avro serializer.</summary>
+    /// <remarks>
+    /// Under NativeAOT, <see cref="AvroSerializerConfig.RuleExecutor"/> and
+    /// <see cref="AvroSerializerConfig.ValidationRulesExecution"/> are not supported: rule processing parses
+    /// schemas with Apache.Avro, which requires dynamic code. Without them the serializer reaches no
+    /// Apache.Avro code and publishes without trim or AOT warnings.
+    /// </remarks>
+    /// <exception cref="NotSupportedException">
+    /// Rules or inline validation are configured and the process runs under NativeAOT.
+    /// </exception>
     public AvroPocoSchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
         AvroSerializerConfig? config = null,
         bool ownsClient = false)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
-        _taggedFieldTransformers = new AvroTaggedFieldTransformerProvider();
         _config = config ?? new AvroSerializerConfig();
         _schemaIdStrategy = _config.SchemaIdStrategy;
         _schemaSelectionMode = SchemaRegistrySerializerConfigValidator.ValidateAndResolve(
@@ -70,10 +78,22 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             _config.AutoRegisterSchemas);
         if (_schemaIdStrategy is not (SchemaIdSerializerStrategy.Prefix or SchemaIdSerializerStrategy.Header))
             throw new ArgumentOutOfRangeException(nameof(config), _schemaIdStrategy, "Unknown schema identity strategy.");
-        _inlineRuleValidators = AvroValidationConfiguration.Create(
-            schemaRegistry,
-            _config.ValidationRulesExecution,
-            _config.RuleExecutor);
+        if (RuntimeFeature.IsDynamicCodeSupported)
+        {
+            _taggedFieldTransformers = new AvroTaggedFieldTransformerProvider();
+            _inlineRuleValidators = AvroValidationConfiguration.Create(
+                schemaRegistry,
+                _config.ValidationRulesExecution,
+                _config.RuleExecutor);
+        }
+        else
+        {
+            AvroPocoRuleSupport.ThrowIfConfigured(
+                _config.RuleExecutor,
+                _config.ValidationRulesExecution,
+                migrations: false);
+            _taggedFieldTransformers = null!;
+        }
         if (_config.CustomSubjectNameStrategy is null)
         {
             _asyncSubjectNameStrategy = _config.AsyncSubjectNameStrategy
@@ -163,7 +183,8 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         ValueTask<ResolvedSchemaContext> preparation,
         CancellationToken cancellationToken)
     {
-        if (_inlineRuleValidators is null)
+        // NativeAOT compiles the feature check as false, removing the Apache.Avro validation path.
+        if (!RuntimeFeature.IsDynamicCodeSupported || _inlineRuleValidators is null)
             return preparation;
         if (preparation.IsCompletedSuccessfully)
         {
@@ -303,9 +324,11 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             context.Topic,
             context.Component == SerializationComponent.Key);
         AvroInlineRuleValidator? inlineValidator = null;
-        if (_config.RuleExecutor is null &&
-            (_inlineRuleValidators is null ||
-             (inlineValidator = GetInlineValidator(entry.SchemaId, entry.Schema!)) is null))
+        // The JIT folds the feature check away; NativeAOT folds it to true, removing the rule paths below.
+        if (!RuntimeFeature.IsDynamicCodeSupported ||
+            (_config.RuleExecutor is null &&
+             (_inlineRuleValidators is null ||
+              (inlineValidator = GetInlineValidator(entry.SchemaId, entry.Schema!)) is null)))
         {
             if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
                 SerializeDirect(value, ref destination, entry.SchemaId);
@@ -358,9 +381,11 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
 #endif
     {
         AvroInlineRuleValidator? inlineValidator = null;
-        if (_config.RuleExecutor is null &&
-            (_inlineRuleValidators is null ||
-             (inlineValidator = GetInlineValidator(entry.SchemaId, entry.Schema!)) is null))
+        // The JIT folds the feature check away; NativeAOT folds it to true, removing the rule paths below.
+        if (!RuntimeFeature.IsDynamicCodeSupported ||
+            (_config.RuleExecutor is null &&
+             (_inlineRuleValidators is null ||
+              (inlineValidator = GetInlineValidator(entry.SchemaId, entry.Schema!)) is null)))
         {
             if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
                 SerializeDirect(value, ref destination, entry.SchemaId);

@@ -805,6 +805,21 @@ jobs:
             -p:TreatWarningsAsErrors=true
           ./artifacts/aot/core/Dekaf.Tests.Aot
 
+      # POCO-only app: the project sets TrimmerSingleWarn=false and treats every trim/AOT
+      # warning as an error, so any Apache.Avro path reachable without rules fails the publish.
+      - name: Publish and run Avro POCO trim/AOT warning check
+        run: |
+          dotnet publish tests/Dekaf.Tests.Aot.AvroPoco/Dekaf.Tests.Aot.AvroPoco.csproj \
+            --configuration Release \
+            --framework net10.0 \
+            --runtime linux-x64 \
+            --self-contained true \
+            --output artifacts/aot/avro-poco \
+            -p:PublishAot=true \
+            -p:ContinuousIntegrationBuild=true \
+            -p:TreatWarningsAsErrors=true
+          ./artifacts/aot/avro-poco/Dekaf.Tests.Aot.AvroPoco
+
       - name: Publish and run dependency-injection smoke test
         run: |
           for framework in net8.0 net10.0; do

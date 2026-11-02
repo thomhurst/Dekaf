@@ -244,6 +244,21 @@ cold plan and fail fast, so call `WarmupAsync(schemaId)` before using `ConsumeBa
 generated consumer convenience extension cannot pre-warm unknown writer schema IDs before the
 first record arrives.
 
+#### NativeAOT
+
+Generated POCO serializers and deserializers are trim- and NativeAOT-safe without rules: they
+parse schemas with an internal `System.Text.Json` model and publish with no trim or AOT warnings.
+Rule features still parse schemas with Apache.Avro, which uses Newtonsoft.Json reflection, so they
+are not supported under NativeAOT. Constructing a generated POCO serializer or deserializer under
+NativeAOT throws `NotSupportedException` when any of these settings is configured:
+
+- `RuleExecutor` (serializer or deserializer)
+- `ValidationRulesExecution` other than `Disabled` (serializer or deserializer)
+- `UseLatestVersion` on the deserializer, which runs migrations to the latest reader schema
+
+The same settings behave as documented when the application runs with the JIT. The NativeAOT
+compiler removes the rule code, so these features add no Apache.Avro code to a POCO-only app.
+
 ## Protobuf Serialization
 
 ```csharp
