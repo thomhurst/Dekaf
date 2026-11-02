@@ -3,6 +3,14 @@
   <PropertyGroup>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <!--
+      Zero-allocation tests measure GC.GetAllocatedBytesForCurrentThread. While a background
+      (concurrent) gen2 GC runs, the runtime can charge a thread's unused allocation-context
+      space to that counter with no allocation and no collection inside the measured window
+      (dotnet/runtime#134724), so those tests fail under parallel load. Blocking GCs do not
+      have this effect.
+    -->
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
   </PropertyGroup>
 
   <ItemGroup>
