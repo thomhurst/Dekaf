@@ -1279,8 +1279,10 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
     /// <summary>
     /// Commits the lower of the stopped lane's completed offset and the seek target, so a restart
-    /// resumes from the seek position. A failed commit does not fail the seek: the new lane commits
-    /// its own progress, and until then the group keeps its previous committed offset.
+    /// resumes from the seek position. When no record finished, the lower bound is the group's
+    /// committed offset, so a forward seek never commits past records nobody processed. A failed
+    /// commit does not fail the seek: the new lane commits its own progress, and until then the
+    /// group keeps its previous committed offset.
     /// </summary>
     private async ValueTask CommitSeekPositionAsync(
         PartitionLane<TKey, TValue>? lane,
@@ -1288,12 +1290,13 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         CancellationToken cancellationToken)
     {
         var offset = target;
-        if (lane?.GetCommitOffset() is { } completed && completed.Offset < target.Offset)
+        var completed = lane?.GetCommitOffset();
+        if (completed is { } value && value.Offset < target.Offset)
         {
-            if (lane.GetUncommittedOffset() is null)
+            if (lane!.GetUncommittedOffset() is null)
                 return;
 
-            offset = completed;
+            offset = value;
         }
 
         using var commitCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -1302,6 +1305,17 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
         try
         {
+            if (completed is null)
+            {
+                // Without completed progress, only a seek behind the committed offset moves the
+                // restart position without skipping unprocessed records.
+                var committed = await _consumer.GetCommittedOffsetAsync(
+                    new TopicPartition(target.Topic, target.Partition),
+                    commitCancellation.Token).ConfigureAwait(false);
+                if (committed is not { } committedOffset || committedOffset <= target.Offset)
+                    return;
+            }
+
             await _consumer.CommitAsync([offset], commitCancellation.Token).ConfigureAwait(false);
         }
         catch (GroupException exception) when (IsMembershipLoss(exception))
@@ -2587,7 +2601,9 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
             try
             {
                 await processor(_context, _stopping.Token).ConfigureAwait(false);
-                if (Volatile.Read(ref _completed) == 0)
+                // A seek publishes the discard flag before it stops the lane, and a key-ordered
+                // dispatcher returns as soon as it sees the flag. That exit is part of the stop.
+                if (Volatile.Read(ref _completed) == 0 && Volatile.Read(ref _discardQueuedRecords) == 0)
                 {
                     _failed(
                         this,

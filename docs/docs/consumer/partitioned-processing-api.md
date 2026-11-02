@@ -395,8 +395,11 @@ For the target partition, the seek:
    lets them finish, `Cancel` cancels them.
 3. With `CommitCompletedOnRevoke` or `CommitCompletedPeriodically`, commits the
    lower of the partition's completed offset and the target, so a restart
-   resumes from the seek position. Completion tracking for the old position is
-   discarded. A failed commit is logged and does not fail the seek.
+   resumes from the seek position. When no record has completed, it commits the
+   target only when the target is behind the group's committed offset, so a
+   forward seek never commits past records that were not processed. Completion
+   tracking for the old position is discarded. A failed commit is logged and
+   does not fail the seek.
 4. Seeks the consumer and starts a new lane at the target.
 
 The seek also restarts a partition that `StopPartition` stopped. Other
@@ -408,7 +411,9 @@ the start and end of the partition.
 
 `SeekAsync` throws `InvalidOperationException` when the partition is not
 assigned, when no run is active for the control, or when the run stops before
-the seek completes. A control attaches to one active run at a time. Cancelling
+the seek completes. Any other failure while the runtime seeks, for example the
+consumer rejecting the seek, fails both `SeekAsync` and the run. A control
+attaches to one active run at a time. Cancelling
 the seek's token before the runtime starts the seek prevents it; later
 cancellation stops only the caller's wait.
 

@@ -2244,6 +2244,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
 
         public List<TopicPartitionOffset[]> CommitCalls { get; } = [];
 
+        /// <summary>The offset <see cref="GetCommittedOffsetAsync"/> reports for every partition.</summary>
+        public long? CommittedOffset { get; set; }
+
         /// <summary>Failures thrown, one per call, by the next offset commits.</summary>
         public ConcurrentQueue<Exception> CommitFailures { get; } = new();
 
@@ -2463,7 +2466,7 @@ public sealed partial class PartitionedConsumerRuntimeTests
         public ValueTask<long?> GetCommittedOffsetAsync(
             TopicPartition partition,
             CancellationToken cancellationToken = default)
-            => ValueTask.FromResult<long?>(null);
+            => ValueTask.FromResult(CommittedOffset);
 
         public long? GetPosition(TopicPartition partition)
             => null;

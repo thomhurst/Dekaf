@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Reflection;
 using Dekaf.Consumer;
 
 namespace Dekaf.Tests.Unit.Consumer;
@@ -247,6 +248,77 @@ public sealed partial class PartitionedConsumerRuntimeTests
 
         await Assert.That(string.Join(",", seekCommits)).IsEqualTo("5");
         await Assert.That(string.Join(",", consumer.SeekCalls.Select(offset => offset.Offset))).IsEqualTo("8");
+    }
+
+    [Test]
+    [Arguments(7L, 0L, "")]
+    [Arguments(2L, 5L, "2")]
+    public async Task SeekAsync_WithoutCompletedRecordsCommitsOnlyBehindCommittedOffset(
+        long target,
+        long committed,
+        string expectedCommits)
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer { RedeliverUnenumeratedBatches = true, CommittedOffset = committed };
+        consumer.SetAssignment(partition);
+        consumer.Enqueue(Enumerable.Range(0, 10).Select(offset => CreateResult(partition, offset)).ToArray());
+
+        var control = new PartitionedProcessingControl();
+        var firstRecordStarted = NewCompletionSource();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            async (_, message, cancellationToken) =>
+            {
+                if (message.Offset != 0)
+                    return;
+
+                // Seeking cancels the only record the lane received, so nothing completes.
+                firstRecordStarted.TrySetResult();
+                await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
+            },
+            new PartitionedProcessingOptions
+            {
+                Control = control,
+                CommitPolicy = PartitionCommitPolicy.CommitCompletedOnRevoke,
+                StopPolicy = PartitionStopPolicy.Cancel
+            },
+            cts.Token).AsTask();
+
+        await firstRecordStarted.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        await control.SeekAsync(new TopicPartitionOffset(partition.Topic, partition.Partition, target), cts.Token)
+            .ConfigureAwait(false);
+        var seekCommits = consumer.CommitCalls.SelectMany(offsets => offsets).Select(offset => offset.Offset).ToArray();
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+
+        await Assert.That(string.Join(",", seekCommits)).IsEqualTo(expectedCommits);
+    }
+
+    [Test]
+    public async Task SeekAsync_ProcessorReturningOnDiscardIsNotAFailure()
+    {
+        // A key-ordered dispatcher returns as soon as it sees the discard flag, which can be
+        // before the seek's stop completes the lane. That exit must not count as a failure.
+        Exception? failure = null;
+        var lane = new PartitionLane<string, string>(
+            new TopicPartition("topic-a", 0), 16,
+            static (_, _) => default, static _ => { }, (_, exception) => failure = exception);
+        var discarding = NewCompletionSource();
+        lane.Start(async (context, cancellationToken) =>
+        {
+            await discarding.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            if (!context.IsDiscardingQueuedRecords)
+                throw new InvalidOperationException("The discard flag was not published.");
+        });
+
+        lane.DiscardQueuedRecords();
+        discarding.TrySetResult();
+        var processorTask = (Task)typeof(PartitionLane<string, string>)
+            .GetField("_processorTask", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(lane)!;
+        await processorTask.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+
+        await Assert.That(failure).IsNull();
+        await Assert.That(await lane.StopAsync(PartitionStopPolicy.Drain, TimeSpan.FromSeconds(10)).ConfigureAwait(false))
+            .IsNull();
     }
 
     [Test]
