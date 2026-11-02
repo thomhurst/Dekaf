@@ -775,6 +775,12 @@ internal sealed class PendingFetchData : IDisposable
                 batch.EnsureAllRecordsParsed();
                 if (batch.Records is Protocol.Records.LazyRecordList lazyList)
                     lazyList.EnsureAllParsed();
+
+                // A batch frame is complete here (ReadCore rejects partial frames), so fewer
+                // records than declared is corruption. The fetch end covers the missing
+                // offsets; delivering the prefix would let commits skip them (#4027).
+                if (batch.HasTruncatedRecordTail)
+                    ThrowTruncatedRecordTail(batch);
             }
         }
         catch (Exception ex) when (ex is InsufficientDataException or MalformedProtocolDataException)
@@ -784,6 +790,12 @@ internal sealed class PendingFetchData : IDisposable
 
         _eagerParsed = true;
     }
+
+    [DoesNotReturn]
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowTruncatedRecordTail(RecordBatch batch) =>
+        throw new MalformedProtocolDataException(
+            $"Record batch at base offset {batch.BaseOffset} ended after {batch.Records.Count} records; its header declares more.");
 
     internal void ConfigureHeaderRouting(RecordHeaderRoutingPlan headerRoutingPlan)
     {

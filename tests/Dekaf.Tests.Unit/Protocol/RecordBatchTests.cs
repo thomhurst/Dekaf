@@ -85,11 +85,14 @@ public class RecordBatchTests
         });
         using var pending = PendingFetchData.Create("topic", 0, [truncated, next]);
 
-        pending.EagerParseAll();
+        // A complete frame with fewer records than declared is corruption (#4027).
+        await AssertEagerParseRejectsCorruption(pending, "topic-0");
 
+        // Parsing the batches directly still honours each batch's own slab slice.
+        next.EnsureAllRecordsParsed();
         var slab = truncated.GetParsedRecordsArray();
+        await Assert.That(truncated.HasTruncatedRecordTail).IsTrue();
         await Assert.That(truncated.Records.Count).IsEqualTo(1);
-        await Assert.That(pending.GetMaximumRecordCount(int.MaxValue)).IsEqualTo(2);
         await Assert.That(next.GetParsedRecordsArray()).IsSameReferenceAs(slab);
         await Assert.That(next.GetParsedRecordsOffset()).IsEqualTo(3);
         await Assert.That(slab![0].Value.ToArray()).IsEquivalentTo("first"u8.ToArray());
@@ -110,7 +113,7 @@ public class RecordBatchTests
         // Bound the reservation before parsing an untrusted count. This frame
         // contains fewer than two minimum-size records, regardless of its header.
         await Assert.That(pending.GetMaximumRecordCount(int.MaxValue)).IsEqualTo(1);
-        pending.EagerParseAll();
+        await AssertEagerParseRejectsCorruption(pending, "topic-0");
         await Assert.That(batch.Records.Count).IsEqualTo(1);
         await Assert.That(batch.Records[0].Value.ToArray()).IsEquivalentTo("first"u8.ToArray());
     }
@@ -249,7 +252,7 @@ public class RecordBatchTests
     }
 
     [Test]
-    public async Task PendingFetchData_TruncatedPayloadEndingInRecordLikeBytes_CapsRecordCount()
+    public async Task PendingFetchData_TruncatedPayloadEndingInRecordLikeBytes_ThrowsConsumeException()
     {
         var records = new[]
         {
@@ -274,13 +277,15 @@ public class RecordBatchTests
         var corrupt = ReadBatch(bytes, checkCrcs: false);
         using var pending = PendingFetchData.Create("topic", 7, [corrupt]);
 
-        pending.EagerParseAll();
+        await AssertEagerParseRejectsCorruption(pending, "topic-7");
 
+        // The batch itself keeps the parseable prefix and reports the shortfall.
+        await Assert.That(corrupt.HasTruncatedRecordTail).IsTrue();
         await Assert.That(corrupt.Records.Count).IsEqualTo(1);
     }
 
     [Test]
-    public async Task PendingFetchData_LongTruncatedTail_CapsRecordCount()
+    public async Task PendingFetchData_LongTruncatedTail_ThrowsConsumeException()
     {
         var records = new[]
         {
@@ -308,13 +313,15 @@ public class RecordBatchTests
         var truncated = ReadBatch(bytes, checkCrcs: false);
         using var pending = PendingFetchData.Create("topic", 7, [truncated]);
 
-        pending.EagerParseAll();
+        await AssertEagerParseRejectsCorruption(pending, "topic-7");
 
+        // The batch itself keeps the parseable prefix and reports the shortfall.
+        await Assert.That(truncated.HasTruncatedRecordTail).IsTrue();
         await Assert.That(truncated.Records.Count).IsEqualTo(2);
     }
 
     [Test]
-    public async Task PendingFetchData_ShortMalformedTail_CapsRecordCount()
+    public async Task PendingFetchData_ShortMalformedTail_ThrowsConsumeException()
     {
         var records = new[]
         {
@@ -343,9 +350,101 @@ public class RecordBatchTests
         var truncated = ReadBatch(bytes, checkCrcs: false);
         using var pending = PendingFetchData.Create("topic", 7, [truncated]);
 
-        pending.EagerParseAll();
+        await AssertEagerParseRejectsCorruption(pending, "topic-7");
 
+        // The batch itself keeps the parseable prefix and reports the shortfall.
+        await Assert.That(truncated.HasTruncatedRecordTail).IsTrue();
         await Assert.That(truncated.Records.Count).IsEqualTo(2);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task PendingFetchData_FinalRecordCorruption_ThrowsConsumeException(bool checkCrcs)
+    {
+        var corrupt = ReadBatchWithMalformedFinalRecord(checkCrcs);
+        using var pending = PendingFetchData.Create("topic", 7, [corrupt]);
+
+        var exception = await AssertEagerParseRejectsCorruption(pending, "topic-7");
+
+        // The malformed record itself surfaces, not a truncation diagnostic.
+        await Assert.That(exception.InnerException!.Message).DoesNotContain("declares more");
+        await Assert.That(corrupt.HasTruncatedRecordTail).IsFalse();
+    }
+
+    [Test]
+    public async Task LazyRecords_FinalRecordCorruption_ThrowsMalformedProtocolData()
+    {
+        using var corrupt = ReadBatchWithMalformedFinalRecord(checkCrcs: false);
+
+        var yielded = new List<long>();
+        MalformedProtocolDataException? exception = null;
+        try
+        {
+            foreach (var record in corrupt.Records)
+                yielded.Add(record.OffsetDelta);
+        }
+        catch (MalformedProtocolDataException caught)
+        {
+            exception = caught;
+        }
+
+        await Assert.That(exception).IsNotNull();
+        await Assert.That(yielded).IsEquivalentTo(new long[] { 0, 1 });
+    }
+
+    // Three records at offsets 0..2 whose final record starts with a malformed varint. With
+    // checkCrcs the CRC is recomputed, modelling structurally invalid data with a valid checksum.
+    internal static RecordBatch ReadBatchWithMalformedFinalRecord(bool checkCrcs)
+    {
+        var records = new[]
+        {
+            new Record { OffsetDelta = 0, Value = "value-0"u8.ToArray() },
+            new Record { OffsetDelta = 1, Value = "value-1"u8.ToArray() },
+            new Record { OffsetDelta = 2, Value = "value-2"u8.ToArray() }
+        };
+        using var original = new RecordBatch { LastOffsetDelta = 2, Records = records };
+        var buffer = new ArrayBufferWriter<byte>();
+        original.Write(buffer);
+
+        var firstTwoBuffer = new ArrayBufferWriter<byte>();
+        var firstTwoWriter = new KafkaProtocolWriter(firstTwoBuffer);
+        records[0].Write(ref firstTwoWriter);
+        records[1].Write(ref firstTwoWriter);
+
+        var bytes = buffer.WrittenSpan.ToArray();
+        bytes.AsSpan(RecordBatch.TotalBatchHeaderSize + firstTwoBuffer.WrittenCount, 6).Fill(0x80);
+        if (checkCrcs)
+        {
+            // CRC-32C covers everything after the CRC field (attributes onward).
+            const int crcOffset = 17;
+            BinaryPrimitives.WriteUInt32BigEndian(
+                bytes.AsSpan(crcOffset),
+                Crc32C.Compute(bytes.AsSpan(crcOffset + sizeof(uint))));
+        }
+
+        return ReadBatch(bytes, checkCrcs);
+    }
+
+    internal static async Task<ConsumeException> AssertEagerParseRejectsCorruption(
+        PendingFetchData pending,
+        string topicPartition)
+    {
+        ConsumeException? exception = null;
+        try
+        {
+            pending.EagerParseAll();
+        }
+        catch (ConsumeException caught)
+        {
+            exception = caught;
+        }
+
+        await Assert.That(exception).IsNotNull();
+        await Assert.That(exception!.Message).Contains(topicPartition);
+        await Assert.That(exception.IsRetriable).IsFalse();
+        await Assert.That(exception.InnerException).IsTypeOf<MalformedProtocolDataException>();
+        return exception;
     }
 
     private static RecordBatch ReadWrittenBatch(RecordBatch batch)
