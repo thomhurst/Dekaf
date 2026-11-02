@@ -363,6 +363,60 @@ When partitions are lost involuntarily, such as after a heartbeat timeout, Dekaf
 cancels those partition lanes and completes their streams. It does not commit
 offsets for lost partitions because ownership is no longer guaranteed.
 
+## Seek And Replay
+
+Calling `consumer.Seek` while `RunPartitionedAsync` runs leaves records from the
+old position in the partition's lane. To move a partition while processing runs,
+pass a `PartitionedProcessingControl` in the options and seek through it:
+
+```csharp
+var control = new PartitionedProcessingControl();
+
+var run = consumer.RunPartitionedAsync(
+    async (partition, message, ct) =>
+    {
+        await HandleOrderAsync(message.Key, message.Value, ct);
+    },
+    new PartitionedProcessingOptions { Control = control },
+    stoppingToken);
+
+// Later, for example after fixing a bug in the handler:
+await control.SeekAsync(new TopicPartitionOffset("orders", 3, 1_000), cancellationToken);
+await control.SeekAsync(
+    new TopicPartitionTimestamp(new TopicPartition("orders", 4), DateTimeOffset.UtcNow.AddHours(-1)),
+    cancellationToken);
+```
+
+For the target partition, the seek:
+
+1. Stops dispatching the records already buffered for the partition. They are
+   discarded, not processed.
+2. Stops the in-flight handlers under `StopPolicy` and `StopTimeout`: `Drain`
+   lets them finish, `Cancel` cancels them.
+3. With `CommitCompletedOnRevoke` or `CommitCompletedPeriodically`, commits the
+   lower of the partition's completed offset and the target, so a restart
+   resumes from the seek position. When no record has completed, it commits the
+   target only when the target is behind the group's committed offset, so a
+   forward seek never commits past records that were not processed. Completion
+   tracking for the old position is discarded. A failed commit is logged and
+   does not fail the seek.
+4. Seeks the consumer and starts a new lane at the target.
+
+The seek also restarts a partition that `StopPartition` stopped. Other
+partitions keep processing their buffered records, but Dekaf routes no new
+batches until the seek completes. A timestamp seek resolves the first offset at
+or after the timestamp before the partition stops, and seeks to the end when no
+record is that recent. `TopicPartitionTimestamp.Earliest` and `Latest` seek to
+the start and end of the partition.
+
+`SeekAsync` throws `InvalidOperationException` when the partition is not
+assigned, when no run is active for the control, or when the run stops before
+the seek completes. Any other failure while the runtime seeks, for example the
+consumer rejecting the seek, fails both `SeekAsync` and the run. A control
+attaches to one active run at a time. Cancelling
+the seek's token before the runtime starts the seek prevents it; later
+cancellation stops only the caller's wait.
+
 ## Shutdown
 
 Cancelling the token passed to `RunPartitionedAsync` stops the consume loop and

@@ -272,3 +272,9 @@ Dekaf.KafkaClientBuilder.WithAllowAutoCreateTopics(bool allow = true) -> Dekaf.K
 Dekaf.ProducerBuilder<TKey, TValue>.WithAllowAutoCreateTopics(bool allow = true) -> Dekaf.ProducerBuilder<TKey, TValue>!
 Dekaf.Producer.ProducerOptions.AllowAutoCreateTopics.get -> bool
 Dekaf.Producer.ProducerOptions.AllowAutoCreateTopics.init -> void
+Dekaf.Consumer.PartitionedProcessingControl
+Dekaf.Consumer.PartitionedProcessingControl.PartitionedProcessingControl() -> void
+Dekaf.Consumer.PartitionedProcessingControl.SeekAsync(Dekaf.TopicPartitionOffset offset, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Consumer.PartitionedProcessingControl.SeekAsync(Dekaf.TopicPartitionTimestamp timestamp, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Consumer.PartitionedProcessingOptions.Control.get -> Dekaf.Consumer.PartitionedProcessingControl?
+Dekaf.Consumer.PartitionedProcessingOptions.Control.init -> void

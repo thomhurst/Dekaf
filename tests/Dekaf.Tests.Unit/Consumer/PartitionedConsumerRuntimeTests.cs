@@ -2244,6 +2244,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
 
         public List<TopicPartitionOffset[]> CommitCalls { get; } = [];
 
+        /// <summary>The offset <see cref="GetCommittedOffsetAsync"/> reports for every partition.</summary>
+        public long? CommittedOffset { get; set; }
+
         /// <summary>Failures thrown, one per call, by the next offset commits.</summary>
         public ConcurrentQueue<Exception> CommitFailures { get; } = new();
 
@@ -2369,6 +2372,10 @@ public sealed partial class PartitionedConsumerRuntimeTests
                     continue;
                 }
 
+                int seeksBeforeBatch;
+                lock (_gate)
+                    seeksBeforeBatch = SeekCalls.Count;
+
                 using var pending = CreatePendingFetchData(results);
                 yield return new ConsumeBatch<string, string>(
                     pending,
@@ -2381,7 +2388,8 @@ public sealed partial class PartitionedConsumerRuntimeTests
                             ? BatchIterationStatus.Continue
                             : BatchIterationStatus.Stopped));
 
-                if (RedeliverUnenumeratedBatches && !pending.IsExhausted)
+                // Like KafkaConsumer, a seek drops the partition's stale fetched records.
+                if (RedeliverUnenumeratedBatches && !pending.IsExhausted && !WasSeekedSince(results, seeksBeforeBatch))
                     RequeueAtFront(results);
             }
         }
@@ -2463,7 +2471,7 @@ public sealed partial class PartitionedConsumerRuntimeTests
         public ValueTask<long?> GetCommittedOffsetAsync(
             TopicPartition partition,
             CancellationToken cancellationToken = default)
-            => ValueTask.FromResult<long?>(null);
+            => ValueTask.FromResult(CommittedOffset);
 
         public long? GetPosition(TopicPartition partition)
             => null;
@@ -2549,8 +2557,12 @@ public sealed partial class PartitionedConsumerRuntimeTests
                     _paused.Add(partition);
             }
 
+            PausedCallback?.Invoke(partitions);
             _changed.Release();
         }
+
+        /// <summary>Runs after each Pause call records its partitions.</summary>
+        public Action<TopicPartition[]>? PausedCallback { get; init; }
 
         public void Resume(params TopicPartition[] partitions)
         {
@@ -2566,10 +2578,22 @@ public sealed partial class PartitionedConsumerRuntimeTests
             _changed.Release();
         }
 
+        /// <summary>Resolves offsets-for-times lookups; no partition resolves when unset.</summary>
+        public Func<TopicPartitionTimestamp, long>? OffsetForTime { get; init; }
+
         public ValueTask<IReadOnlyDictionary<TopicPartition, long>> GetOffsetsForTimesAsync(
             IEnumerable<TopicPartitionTimestamp> timestampsToSearch,
             CancellationToken cancellationToken = default)
-            => ValueTask.FromResult<IReadOnlyDictionary<TopicPartition, long>>(new Dictionary<TopicPartition, long>());
+        {
+            var offsets = new Dictionary<TopicPartition, long>();
+            if (OffsetForTime is { } offsetForTime)
+            {
+                foreach (var timestamp in timestampsToSearch)
+                    offsets[timestamp.TopicPartition] = offsetForTime(timestamp);
+            }
+
+            return ValueTask.FromResult<IReadOnlyDictionary<TopicPartition, long>>(offsets);
+        }
 
         public WatermarkOffsets? GetWatermarkOffsets(TopicPartition topicPartition)
             => null;
@@ -2717,6 +2741,25 @@ public sealed partial class PartitionedConsumerRuntimeTests
 
                 return results.Count != 0;
             }
+        }
+
+        private bool WasSeekedSince(List<ConsumeResult<string, string>> results, int seekIndex)
+        {
+            if (results.Count == 0)
+                return false;
+
+            // A batch holds one partition.
+            var partition = new TopicPartition(results[0].Topic, results[0].Partition);
+            lock (_gate)
+            {
+                for (var i = seekIndex; i < SeekCalls.Count; i++)
+                {
+                    if (SeekCalls[i].Topic == partition.Topic && SeekCalls[i].Partition == partition.Partition)
+                        return true;
+                }
+            }
+
+            return false;
         }
 
         private void RequeueAtFront(List<ConsumeResult<string, string>> results)

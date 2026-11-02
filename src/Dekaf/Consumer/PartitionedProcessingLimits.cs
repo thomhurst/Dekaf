@@ -247,12 +247,13 @@ internal abstract class HandlerSlotWaiter
 /// <summary>
 /// A reusable awaitable waiter for one lane's handler loop.
 /// </summary>
-internal sealed class AsyncHandlerSlotWaiter : HandlerSlotWaiter, IValueTaskSource
+internal sealed class AsyncHandlerSlotWaiter : HandlerSlotWaiter, IValueTaskSource<bool>
 {
     private readonly HandlerSlotLimiter _limiter;
     private ManualResetValueTaskSourceCore<bool> _core;
     private CancellationTokenRegistration _registration;
     private CancellationToken _cancellationToken;
+    private int _interrupted;
 
     public AsyncHandlerSlotWaiter(HandlerSlotLimiter limiter)
     {
@@ -261,10 +262,14 @@ internal sealed class AsyncHandlerSlotWaiter : HandlerSlotWaiter, IValueTaskSour
         _core.RunContinuationsAsynchronously = true;
     }
 
-    public ValueTask AcquireAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Takes a slot, waiting if none is free. Returns false without a slot once
+    /// <see cref="Interrupt"/> has been called.
+    /// </summary>
+    public ValueTask<bool> AcquireAsync(CancellationToken cancellationToken)
     {
         if (_limiter.TryAcquire())
-            return default;
+            return new ValueTask<bool>(true);
 
         return WaitAsync(cancellationToken);
     }
@@ -275,18 +280,32 @@ internal sealed class AsyncHandlerSlotWaiter : HandlerSlotWaiter, IValueTaskSour
     /// <summary>Returns the slot taken by the last completed <see cref="AcquireAsync"/>.</summary>
     public void Release() => _limiter.Release();
 
-    /// <summary>Queues for a slot after <see cref="TryAcquire"/> failed.</summary>
-    public ValueTask WaitAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Queues for a slot after <see cref="TryAcquire"/> failed. Returns false without a slot once
+    /// <see cref="Interrupt"/> has been called.
+    /// </summary>
+    public ValueTask<bool> WaitAsync(CancellationToken cancellationToken)
     {
+        if (Volatile.Read(ref _interrupted) != 0)
+            return new ValueTask<bool>(false);
+
         if (Volatile.Read(ref State) == Cancelled || cancellationToken.IsCancellationRequested)
-            return new ValueTask(Task.FromCanceled(cancellationToken.IsCancellationRequested ? cancellationToken : new CancellationToken(true)));
+            return new ValueTask<bool>(Task.FromCanceled<bool>(cancellationToken.IsCancellationRequested ? cancellationToken : new CancellationToken(true)));
 
         _core.Reset();
         _cancellationToken = cancellationToken;
         if (_limiter.AcquireOrEnqueue(this))
         {
             Volatile.Write(ref State, Idle);
-            return default;
+            return new ValueTask<bool>(true);
+        }
+
+        // AcquireOrEnqueue published Waiting with a full fence, and Interrupt sets its flag before
+        // it reads the state, so either Interrupt completes this wait or this read sees its flag.
+        if (Volatile.Read(ref _interrupted) != 0
+            && Interlocked.CompareExchange(ref State, Cancelled, Waiting) == Waiting)
+        {
+            return new ValueTask<bool>(false);
         }
 
         if (cancellationToken.CanBeCanceled)
@@ -295,7 +314,18 @@ internal sealed class AsyncHandlerSlotWaiter : HandlerSlotWaiter, IValueTaskSour
                 static state => ((AsyncHandlerSlotWaiter)state!).OnCancelled(), this);
         }
 
-        return new ValueTask(this, _core.Version);
+        return new ValueTask<bool>(this, _core.Version);
+    }
+
+    /// <summary>
+    /// Ends the current wait and every later wait without a slot, because the owning lane is
+    /// discarding its queued records. A slot already granted stays with the owner, which releases it.
+    /// </summary>
+    internal void Interrupt()
+    {
+        Interlocked.Exchange(ref _interrupted, 1);
+        if (Interlocked.CompareExchange(ref State, Cancelled, Waiting) == Waiting)
+            _core.SetResult(false);
     }
 
     internal override void OnGranted() => _core.SetResult(true);
@@ -306,18 +336,20 @@ internal sealed class AsyncHandlerSlotWaiter : HandlerSlotWaiter, IValueTaskSour
             _core.SetException(new OperationCanceledException(_cancellationToken));
     }
 
-    void IValueTaskSource.GetResult(short token)
+    bool IValueTaskSource<bool>.GetResult(short token)
     {
         _registration.Dispose();
         _registration = default;
-        _core.GetResult(token);
-        // Granted: the slot now belongs to the caller.
-        Volatile.Write(ref State, Idle);
+        var granted = _core.GetResult(token);
+        // Granted: the slot now belongs to the caller. Interrupted: the waiter stays cancelled.
+        if (granted)
+            Volatile.Write(ref State, Idle);
+        return granted;
     }
 
-    ValueTaskSourceStatus IValueTaskSource.GetStatus(short token) => _core.GetStatus(token);
+    ValueTaskSourceStatus IValueTaskSource<bool>.GetStatus(short token) => _core.GetStatus(token);
 
-    void IValueTaskSource.OnCompleted(
+    void IValueTaskSource<bool>.OnCompleted(
         Action<object?> continuation,
         object? state,
         short token,

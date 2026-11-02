@@ -104,6 +104,8 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
             _progress = _context.EnableAutomaticCompletion();
         _budget = _context.DeferBufferRelease();
         _slots = _context.HandlerSlots;
+        // A seek can mark the lane while this loop waits for a handler slot with no pending read.
+        _context.WakeOnDiscard(_signal);
 
         try
         {
@@ -142,6 +144,11 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
                 DispatchReadyLanes();
                 _failure?.Throw();
                 if (_inputCompleted && _used == 0)
+                    return;
+
+                // A seek stopped the lane: let in-flight handlers finish, dispatch nothing new.
+                // The finally block releases the records still buffered here.
+                if (_activeWorkers == 0 && !_inputPending && _context.IsDiscardingQueuedRecords)
                     return;
 
                 await _signal.WaitAsync(Timeout.Infinite).ConfigureAwait(false);
@@ -389,7 +396,10 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
 
     private void DispatchReadyLanes()
     {
-        while (_failure is null && _activeWorkers < _maxWorkers && _readyLanes.Count != 0)
+        while (_failure is null
+            && _activeWorkers < _maxWorkers
+            && !_context.IsDiscardingQueuedRecords
+            && _readyLanes.Count != 0)
         {
             _processingToken.ThrowIfCancellationRequested();
             if (_slots is not null && !TryTakeHandlerSlot(_slots))
