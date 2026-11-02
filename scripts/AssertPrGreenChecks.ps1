@@ -1,3 +1,4 @@
+#!/usr/bin/env pwsh
 # Check evaluation for Assert-PrGreen.ps1, kept free of `gh` calls so it can be unit tested
 # (scripts/Test-AssertPrGreenChecks.ps1).
 

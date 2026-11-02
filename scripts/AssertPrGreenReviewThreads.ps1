@@ -1,3 +1,4 @@
+#!/usr/bin/env pwsh
 function Get-AllReviewThreads {
     [CmdletBinding()]
     param(

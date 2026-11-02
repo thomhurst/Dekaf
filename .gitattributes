@@ -5,3 +5,4 @@
 
 # Fuzz corpora are byte-exact binary regression fixtures.
 tools/Dekaf.Fuzzing/Corpus/** -text -diff
+*.ps1 text eol=lf

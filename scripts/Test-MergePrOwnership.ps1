@@ -1,3 +1,4 @@
+#!/usr/bin/env pwsh
 # Executes the real merge wrapper against local Git remotes and isolated Redis keys.
 # Only GitHub's gate/merge responses are substituted; no real PR is merged.
 param([string]$AgentLocksScript)

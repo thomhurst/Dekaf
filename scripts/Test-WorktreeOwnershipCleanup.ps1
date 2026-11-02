@@ -1,3 +1,4 @@
+#!/usr/bin/env pwsh
 # Uses isolated Git repositories and unique Redis keys; requires PowerShell 7 and Docker.
 param([string]$AgentLocksScript)
 $ErrorActionPreference = 'Stop'

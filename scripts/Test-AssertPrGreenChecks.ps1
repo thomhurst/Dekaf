@@ -1,3 +1,4 @@
+#!/usr/bin/env pwsh
 # Exercises the merge/auto-merge check gate in AssertPrGreenChecks.ps1 and pins the workflow
 # contracts it relies on, without GitHub.
 $ErrorActionPreference = 'Stop'
