@@ -47,17 +47,21 @@ public sealed partial class ShareConsumerRenewalTests
     }
 
     [Test]
-    public async Task ShareFetch_Renewal_OnV1Broker_FailsLocally()
+    public async Task ShareFetch_Renewal_OnV1Broker_SendsOtherPartitionsWithoutRenewal()
     {
         var connection = new CapturingConnection(ApiKey.ShareFetch, 1);
         await using var fixture = CreateFixture(connection);
 
-        var exception = await Assert.That(async () =>
-                await InvokeShareFetchAsync(fixture.Consumer, RenewalAcknowledgements()))
-            .Throws<BrokerVersionException>();
+        await InvokeShareFetchAsync(
+            fixture.Consumer,
+            MixedAcknowledgements(),
+            [new TopicPartition("topic", 0), new TopicPartition("topic", 1)]);
 
-        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.UnsupportedVersion);
-        await Assert.That(connection.SendCount).IsEqualTo(0);
+        var request = connection.ShareFetchRequest!;
+        await Assert.That(connection.SendCount).IsEqualTo(1);
+        await Assert.That(request.IsRenewAck).IsFalse();
+        await Assert.That(request.MaxWaitMs).IsGreaterThan(0);
+        await Assert.That(AcknowledgedPartitions(request)).IsEquivalentTo([0]);
     }
 
     [Test]
@@ -84,17 +88,60 @@ public sealed partial class ShareConsumerRenewalTests
     }
 
     [Test]
-    public async Task ShareAcknowledge_Renewal_OnV1Broker_FailsLocally()
+    public async Task ShareAcknowledge_OnlyRenewal_OnV1Broker_SendsNothing()
     {
         var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 1);
         await using var fixture = CreateFixture(connection);
 
-        var exception = await Assert.That(async () =>
-                await InvokeShareAcknowledgeAsync(fixture.Consumer, RenewalAcknowledgements()))
+        await InvokeShareAcknowledgeAsync(fixture.Consumer, RenewalAcknowledgements());
+
+        await Assert.That(connection.SendCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Commit_RenewalOnV1Broker_SendsOtherPartitionsAndDropsRenewal()
+    {
+        ShareAcknowledgementCommitResult[]? outcomes = null;
+        var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 1);
+        await using var fixture = CreateFixture(
+            connection,
+            acknowledgementCommitCallback: results => outcomes = results.ToArray());
+        PrepareForPoll(
+            fixture.Consumer,
+            new TopicPartition("topic", 0),
+            new TopicPartition("topic", 1));
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 39), AcknowledgeType.Accept);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 40), AcknowledgeType.Renew);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 1, offset: 41), AcknowledgeType.Accept);
+
+        var exception = await Assert.That(async () => await fixture.Consumer.CommitAsync())
             .Throws<BrokerVersionException>();
 
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.UnsupportedVersion);
-        await Assert.That(connection.SendCount).IsEqualTo(0);
+        await Assert.That(connection.ShareAcknowledgeRequests).HasSingleItem();
+        var first = connection.ShareAcknowledgeRequests[0];
+        await Assert.That(first.IsRenewAck).IsFalse();
+        await Assert.That(first.Topics.SelectMany(static topic => topic.Partitions)
+                .Select(static partition => partition.PartitionIndex).ToArray())
+            .IsEquivalentTo([1]);
+        await Assert.That(outcomes!.Single(static outcome => outcome.TopicPartition.Partition == 0).Exception)
+            .IsTypeOf<BrokerVersionException>();
+        await Assert.That(outcomes!.Single(static outcome => outcome.TopicPartition.Partition == 1).Succeeded)
+            .IsTrue();
+        await Assert.That(GetActiveRenewedRecords(fixture.Consumer, new HashSet<TopicPartition> { new("topic", 0) }))
+            .IsEmpty();
+
+        // The Renew is not queued again, so the next commit sends the partition's Accept and succeeds.
+        await fixture.Consumer.CommitAsync();
+
+        await Assert.That(connection.ShareAcknowledgeRequests).Count().IsEqualTo(2);
+        var retried = connection.ShareAcknowledgeRequests[1].Topics.Single().Partitions.Single();
+        await Assert.That(retried.PartitionIndex).IsEqualTo(0);
+        var retriedBatch = retried.AcknowledgementBatches.Single();
+        await Assert.That(retriedBatch.FirstOffset).IsEqualTo(39);
+        await Assert.That(retriedBatch.LastOffset).IsEqualTo(39);
+        await Assert.That(retriedBatch.AcknowledgeTypes).IsEquivalentTo(new[] { (byte)AcknowledgeType.Accept });
+        await Assert.That(HasPendingAcknowledgements(fixture.Consumer)).IsFalse();
     }
 
     [Test]
@@ -330,37 +377,46 @@ public sealed partial class ShareConsumerRenewalTests
     }
 
     [Test]
-    public async Task Poll_BrokerFailure_RequeuesOnlyFailedBrokerAcknowledgements()
+    public async Task Poll_RenewalOnV1Broker_SendsOtherAcknowledgementsAndDropsRenewal()
     {
-        var firstConnection = new CapturingConnection(ApiKey.ShareFetch, 1);
-        var secondConnection = new CapturingConnection(ApiKey.ShareFetch, 2, brokerId: 2)
+        using var cancellation = new CancellationTokenSource();
+        ShareAcknowledgementCommitResult[]? outcomes = null;
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 1)
         {
-            ShareFetchResponse = new ShareFetchResponse
-            {
-                ErrorCode = ErrorCode.None,
-                Responses = [],
-                NodeEndpoints = []
-            }
+            OnSend = cancellation.Cancel
         };
         await using var fixture = CreateFixture(
-            firstConnection,
-            secondConnection: secondConnection);
+            connection,
+            acknowledgementCommitCallback: results => outcomes = results.ToArray());
         PrepareForPoll(
             fixture.Consumer,
             new TopicPartition("topic", 0),
             new TopicPartition("topic", 1));
         fixture.Consumer.Subscribe("topic");
-        EstablishSessions(fixture.Consumer, 1, 2);
+        EstablishSessions(fixture.Consumer, 1);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 39), AcknowledgeType.Accept);
         fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 40), AcknowledgeType.Renew);
         fixture.Consumer.Acknowledge(CreateRecord(partition: 1, offset: 41), AcknowledgeType.Accept);
 
-        await using var poll = fixture.Consumer.PollAsync().GetAsyncEnumerator();
-        await Assert.That(async () => await poll.MoveNextAsync())
-            .Throws<BrokerVersionException>();
+        await using var poll = fixture.Consumer.PollAsync(cancellation.Token).GetAsyncEnumerator();
+        await poll.MoveNextAsync();
 
+        var request = connection.ShareFetchRequest!;
+        await Assert.That(request.IsRenewAck).IsFalse();
+        await Assert.That(AcknowledgedPartitions(request)).IsEquivalentTo([1]);
+        await Assert.That(GetSessionEpoch(fixture.Consumer, 1)).IsEqualTo(2);
+        await Assert.That(outcomes!.Single(static outcome => outcome.TopicPartition.Partition == 0).Exception)
+            .IsTypeOf<BrokerVersionException>();
+        await Assert.That(GetActiveRenewedRecords(fixture.Consumer, new HashSet<TopicPartition> { new("topic", 0) }))
+            .IsEmpty();
+
+        // The Renew is not queued again; the partition's Accept goes out with the next request.
         var pending = FlushPendingAcknowledgements(fixture.Consumer);
         await Assert.That(pending.Keys).IsEquivalentTo([new TopicPartition("topic", 0)]);
-        await Assert.That(GetSessionEpoch(fixture.Consumer, 2)).IsEqualTo(2);
+        var batch = pending[new TopicPartition("topic", 0)].Single();
+        await Assert.That(batch.FirstOffset).IsEqualTo(39);
+        await Assert.That(batch.LastOffset).IsEqualTo(39);
+        await Assert.That(batch.AcknowledgeTypes).IsEquivalentTo(new[] { (byte)AcknowledgeType.Accept });
     }
 
     [Test]
@@ -1554,6 +1610,13 @@ public sealed partial class ShareConsumerRenewalTests
                     [(byte)AcknowledgeType.Renew, (byte)AcknowledgeType.Reject])
             ]
         };
+
+    private static int[] AcknowledgedPartitions(ShareFetchRequest request)
+        => request.Topics
+            .SelectMany(static topic => topic.Partitions)
+            .Where(static partition => partition.AcknowledgementBatches is { Count: > 0 })
+            .Select(static partition => partition.PartitionIndex)
+            .ToArray();
 
     private static ShareConsumeResult<string, string> CreateRecord(
         int partition = 0,

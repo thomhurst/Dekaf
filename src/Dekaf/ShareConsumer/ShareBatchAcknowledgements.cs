@@ -89,10 +89,17 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
     internal void ApplySuccessfulAcknowledgements(Dictionary<TopicPartition, List<AcknowledgementBatchData>>? acknowledgements)
         => Complete(acknowledgements, successful: true);
 
-    internal void RequeueAcknowledgements(Dictionary<TopicPartition, List<AcknowledgementBatchData>>? acknowledgements)
-        => Complete(acknowledgements, successful: false);
+    // dropRenewals: a broker that cannot renew never accepts these Renew acknowledgements, so
+    // their records stay delivered without a disposition instead of being queued again.
+    internal void RequeueAcknowledgements(
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? acknowledgements,
+        bool dropRenewals = false)
+        => Complete(acknowledgements, successful: false, dropRenewals);
 
-    private void Complete(Dictionary<TopicPartition, List<AcknowledgementBatchData>>? acknowledgements, bool successful)
+    private void Complete(
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? acknowledgements,
+        bool successful,
+        bool dropRenewals = false)
     {
         if (acknowledgements is null)
             return;
@@ -101,7 +108,7 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
             if (!_partitions.TryGetValue(partition, out var index))
                 continue;
             foreach (var batch in batches)
-                index.Complete(batch, successful);
+                index.Complete(batch, successful, dropRenewals);
         }
     }
 
@@ -454,7 +461,7 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
             return TakeGaps(batches);
         }
 
-        internal void Complete(AcknowledgementBatchData batch, bool successful)
+        internal void Complete(AcknowledgementBatchData batch, bool successful, bool dropRenewals = false)
         {
             if (batch.IsGapOnly)
             {
@@ -475,7 +482,7 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
                 var type = batch.GetAcknowledgeType((int)typeIndex);
                 if (type != 0)
                 {
-                    record.Storage.Complete(record.Index, type, batch.AcknowledgeTypes, successful);
+                    record.Storage.Complete(record.Index, type, batch.AcknowledgeTypes, successful, dropRenewals);
                     PruneRecord(position);
                 }
             }

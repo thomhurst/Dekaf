@@ -151,6 +151,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         {
             // In-flight requests still read the routing scratch and acknowledgement lists.
             AbandonPollPartitionGroups();
+            // This requeues every acknowledgement, so drop what the requests exclude later.
+            Interlocked.Increment(ref _unsupportedRenewalGeneration);
             RequeueAcknowledgements(detached.PendingAcks);
             InvokeAcknowledgementCommitCallback(detached.PendingAcks, new OperationCanceledException(
                 "The share consumer stopped before an in-flight ShareFetch completed."));

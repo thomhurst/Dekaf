@@ -364,7 +364,7 @@ internal sealed class ShareBatchStorage<TKey, TValue>
         }
     }
 
-    internal void Complete(int index, byte type, byte[] acknowledgements, bool successful)
+    internal void Complete(int index, byte type, byte[] acknowledgements, bool successful, bool dropRenewal = false)
     {
         ref var entry = ref Entries[index];
         if (!ReferenceEquals(entry.SubmittedAcknowledgements, acknowledgements)
@@ -376,6 +376,13 @@ internal sealed class ShareBatchStorage<TKey, TValue>
             return;
         if (!successful)
         {
+            // The record keeps its acquisition until the lock expires; the caller can still
+            // acknowledge it with another type.
+            if (dropRenewal && type == (byte)AcknowledgeType.Renew)
+            {
+                entry.Renewed = false;
+                return;
+            }
             entry.PendingAcknowledgement = type;
             AddPending(index);
             return;
