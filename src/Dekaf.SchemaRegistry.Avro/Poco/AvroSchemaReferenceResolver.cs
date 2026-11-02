@@ -7,7 +7,7 @@ namespace Dekaf.SchemaRegistry.Avro.Poco;
 
 internal static class AvroSchemaReferenceResolver
 {
-    private const int MaxReferenceDepth = 128;
+    internal const int MaxReferenceDepth = 128;
 
     internal static async Task<AvroSchema> ParseAsync(
         ISchemaRegistryClient schemaRegistry,

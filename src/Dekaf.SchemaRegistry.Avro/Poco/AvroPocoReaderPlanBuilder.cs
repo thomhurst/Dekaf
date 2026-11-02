@@ -14,7 +14,7 @@ internal static class AvroPocoReaderPlanBuilder
     /// <remarks>Apache.Avro writes every named type in full, so its JSON needs no reference names.</remarks>
     internal static AvroPocoReaderPlan Build<T, TCodec>(global::Avro.RecordSchema writerSchema)
         where TCodec : struct, IAvroPocoCodec<T> =>
-        Build<T, TCodec>(writerSchema.ToString());
+        Build<T, TCodec>(AvroWriterSchema.ParseExpanded(writerSchema.ToString()));
 
     internal static AvroPocoReaderPlan Build<T, TCodec>(AvroWriterSchema writerSchema)
         where TCodec : struct, IAvroPocoCodec<T>
