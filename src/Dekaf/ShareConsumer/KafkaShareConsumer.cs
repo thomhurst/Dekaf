@@ -313,8 +313,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         AbandonDetachedFetch();
         _batchAcknowledgements?.ReleaseActiveAcquisitions();
         ClearBufferedRecords(releaseAcquisitions: true);
-        // Release any pending acks back to the group so other members can claim them,
+        // Release implicit deliveries back to the group so other members can claim them,
         // rather than waiting for the broker's acquisition lock timeout to expire.
+        // Explicit outcomes are sent unchanged, as on close.
         // Sessions can outlive the assignment, even with no local acknowledgements left.
         ReleasePendingAcks();
 
@@ -1102,36 +1103,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     }
 
     /// <summary>
-    /// Overrides all pending acks to Release and sends them via ShareAcknowledge.
+    /// Sends pending acks via ShareAcknowledge, releasing implicit deliveries.
     /// Best-effort — errors are logged but not thrown.
     /// </summary>
     private void ReleasePendingAcks()
     {
-        var pending = FlushAcknowledgements();
-        // Override ack types to Release so the broker redelivers to other members.
-        // Gaps have no data record to redeliver and stay gaps.
-        var released = new Dictionary<TopicPartition, List<AcknowledgementBatchData>>();
-        foreach (var (tp, batches) in pending)
-        {
-            var releasedBatches = new List<AcknowledgementBatchData>(batches.Count);
-            foreach (var batch in batches)
-            {
-                if (batch.IsGapOnly)
-                {
-                    releasedBatches.Add(batch);
-                    continue;
-                }
-                var types = new byte[batch.AcknowledgeTypes.Length];
-                for (var i = 0; i < types.Length; i++)
-                {
-                    types[i] = batch.AcknowledgeTypes[i] == (byte)AcknowledgeType.Gap
-                        ? (byte)AcknowledgeType.Gap
-                        : (byte)AcknowledgeType.Release;
-                }
-                releasedBatches.Add(new AcknowledgementBatchData(batch.FirstOffset, batch.LastOffset, types));
-            }
-            released[tp] = releasedBatches;
-        }
+        // Match close: release implicit deliveries so the broker redelivers them to other
+        // members, and keep explicit and re-queued outcomes. Gaps stay gaps.
+        var released = FlushAcknowledgements(releaseImplicit: true);
 
         // Best-effort send — fire and forget since Unsubscribe is synchronous
         var acksByBroker = GroupAcksByLeader(released);

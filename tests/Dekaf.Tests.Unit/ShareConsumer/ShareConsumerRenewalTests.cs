@@ -1070,6 +1070,41 @@ public sealed partial class ShareConsumerRenewalTests
     }
 
     [Test]
+    [Arguments(AcknowledgeType.Accept)]
+    [Arguments(AcknowledgeType.Release)]
+    [Arguments(AcknowledgeType.Reject)]
+    [Arguments(AcknowledgeType.Renew)]
+    public async Task Unsubscribe_ExplicitDisposition_PreservesSelectedOutcome(AcknowledgeType type)
+    {
+        var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 2);
+        await using var fixture = CreateFixture(connection);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Acknowledge(CreateRecord(), type);
+
+        fixture.Consumer.Unsubscribe();
+        // Disposal awaits the tracked best-effort release task.
+        await fixture.Consumer.DisposeAsync();
+
+        var acknowledgement = connection.ShareAcknowledgeRequest!.Topics[0].Partitions[0].AcknowledgementBatches[0];
+        await Assert.That(acknowledgement.AcknowledgeTypes[0]).IsEqualTo((byte)type);
+    }
+
+    [Test]
+    public async Task Unsubscribe_ImplicitDelivery_ReleasesInsteadOfAccepting()
+    {
+        var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 2);
+        await using var fixture = CreateFixture(connection, ShareAcknowledgementMode.Implicit);
+        PrepareForPoll(fixture.Consumer);
+        TrackDeliveredRecord(fixture.Consumer, new TopicPartition("topic", 0), 42);
+
+        fixture.Consumer.Unsubscribe();
+        await fixture.Consumer.DisposeAsync();
+
+        var acknowledgement = connection.ShareAcknowledgeRequest!.Topics[0].Partitions[0].AcknowledgementBatches[0];
+        await Assert.That(acknowledgement.AcknowledgeTypes[0]).IsEqualTo((byte)AcknowledgeType.Release);
+    }
+
+    [Test]
     public async Task Close_CancelledAcknowledgement_NeverRequeuesImplicitAccept()
     {
         using var cancellation = new CancellationTokenSource();

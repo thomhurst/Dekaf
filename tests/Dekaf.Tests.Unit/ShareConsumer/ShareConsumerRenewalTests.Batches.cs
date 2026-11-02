@@ -206,6 +206,37 @@ public sealed partial class ShareConsumerRenewalTests
     }
 
     [Test]
+    public async Task PollBatches_UnsubscribePreservesExplicitOutcomes()
+    {
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2, includeShareAcknowledge: true)
+        {
+            ShareFetchResponse = CreateFetchResponse(0, 100, 3)
+        };
+        await using var fixture = CreateFixture(connection, acknowledgementMode: ShareAcknowledgementMode.Explicit);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Subscribe("topic");
+        await using var poll = fixture.Consumer.PollBatchesAsync().GetAsyncEnumerator();
+        await Assert.That(await poll.MoveNextAsync()).IsTrue();
+        var records = poll.Current.GetEnumerator();
+        await Assert.That(records.MoveNext()).IsTrue();
+        poll.Current.Acknowledge(records.Current);
+        await Assert.That(records.MoveNext()).IsTrue();
+        poll.Current.Acknowledge(records.Current, AcknowledgeType.Reject);
+
+        fixture.Consumer.Unsubscribe();
+        await fixture.Consumer.DisposeAsync();
+
+        // Only the unacknowledged record is released, as on close.
+        var sent = connection.ShareAcknowledgeRequest!.Topics[0].Partitions[0].AcknowledgementBatches!;
+        await Assert.That(sent).HasSingleItem();
+        await Assert.That(sent[0].FirstOffset).IsEqualTo(100);
+        await Assert.That(sent[0].LastOffset).IsEqualTo(102);
+        await Assert.That(sent[0].AcknowledgeTypes[0]).IsEqualTo((byte)AcknowledgeType.Accept);
+        await Assert.That(sent[0].AcknowledgeTypes[1]).IsEqualTo((byte)AcknowledgeType.Reject);
+        await Assert.That(sent[0].AcknowledgeTypes[2]).IsEqualTo((byte)AcknowledgeType.Release);
+    }
+
+    [Test]
     [Arguments(32)]
     [Arguments(131072)]
     public async Task PollBatches_RenewedRawPayloadSurvivesResponseDisposal(int payloadBytes)
