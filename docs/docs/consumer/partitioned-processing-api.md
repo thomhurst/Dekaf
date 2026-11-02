@@ -402,6 +402,9 @@ Memory for partition lanes is bounded by:
 assigned partition count * MaxBufferedRecordsPerPartition * average record size
 ```
 
+With `MaxBufferedRecords` set, the record count is also capped at
+`MaxBufferedRecords`, whatever the assignment size.
+
 Backpressure modes:
 
 | Mode | Behavior | Use when |
@@ -411,6 +414,38 @@ Backpressure modes:
 
 While `RunPartitionedAsync` is active, Dekaf owns pause and resume for its
 backpressure. Do not manually pause or resume partitions on the same consumer.
+
+### Consumer-wide limits
+
+Per-partition limits grow with the assignment: 256 buffered records per
+partition across 200 partitions is 51,200 records. Set consumer-wide limits when
+memory or a shared downstream resource, such as a connection pool or a
+rate-limited API, needs a cap that does not depend on how many partitions the
+group assigns:
+
+```csharp
+new PartitionedProcessingOptions
+{
+    Ordering = PartitionedProcessingOrder.Key,
+    MaxConcurrentHandlersPerPartition = 4,
+    MaxConcurrentHandlers = 16,   // across all partitions; null = unlimited
+    MaxBufferedRecords = 1024     // across all partitions; null = unlimited
+};
+```
+
+- `MaxConcurrentHandlers` caps record and batch handler invocations across all
+  partitions. Partitions waiting for a handler are served in arrival order, and
+  each partition waits for one handler at a time, so a busy partition cannot
+  starve the others. It requires a record or batch handler overload.
+- `MaxBufferedRecords` caps records Dekaf holds for handlers across all
+  partitions. A record counts from when the runtime queues it until a handler
+  receives it, including records a key-ordered partition holds while their key
+  or a handler is busy. When a record would exceed the limit, `BackpressureMode`
+  applies to its partition: `PauseResume` pauses it until the consumer-wide
+  buffer drains to half the limit, and `AwaitCapacity` waits for capacity.
+
+The per-partition limits still apply. Revoke, drain and commit behavior does not
+change.
 
 Bounded partition queues do not replace Kafka fetch limits such as
 `QueuedMaxMessagesKbytes`; they add an application-processing boundary after

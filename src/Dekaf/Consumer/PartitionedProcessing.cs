@@ -166,7 +166,7 @@ public static class PartitionedConsumerExtensions
         await runtime.RunAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static PartitionProcessor<TKey, TValue> CreateRecordProcessor<TKey, TValue>(
+    internal static PartitionProcessor<TKey, TValue> CreateRecordProcessor<TKey, TValue>(
         PartitionRecordProcessor<TKey, TValue> processor,
         PartitionedProcessingOptions options,
         IEqualityComparer<TKey>? keyComparer)
@@ -193,11 +193,29 @@ public static class PartitionedConsumerExtensions
     {
         var handlerContext = new PartitionRecordProcessorContext<TKey, TValue>(context);
         var progress = context.EnableAutomaticCompletion();
+        var slot = context.CreateHandlerSlotWaiter();
 
         while (await context.WaitToReadMessageAsync(cancellationToken).ConfigureAwait(false))
         {
-            while (context.TryReadMessage(out var message))
+            while (true)
             {
+                // A consumer-wide handler slot is taken before the record leaves the lane queue,
+                // so a record waiting for a handler still counts as buffered. Queue for a slot only
+                // while a record is waiting: an empty lane must return to the channel wait so that a
+                // drain completing its input ends the loop instead of waiting on another lane's handler.
+                if (slot is not null && !slot.TryAcquire())
+                {
+                    if (!context.HasQueuedMessage)
+                        break;
+                    await slot.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                if (!context.TryReadMessage(out var message))
+                {
+                    slot?.Release();
+                    break;
+                }
+
                 try
                 {
                     await processor(handlerContext, message, cancellationToken).ConfigureAwait(false);
@@ -210,6 +228,7 @@ public static class PartitionedConsumerExtensions
                 finally
                 {
                     message.ReleaseStorage();
+                    slot?.Release();
                 }
             }
         }
@@ -224,9 +243,13 @@ public static class PartitionedConsumerExtensions
         var handlerContext = new PartitionBatchProcessorContext<TKey, TValue>(context);
         var batch = new PartitionRecordBatch<TKey, TValue>(options.MaxHandlerBatchSize);
         var progress = context.EnableAutomaticCompletion();
+        var slot = context.CreateHandlerSlotWaiter();
 
         while (await context.WaitToReadMessageAsync(cancellationToken).ConfigureAwait(false))
         {
+            if (slot is not null)
+                await slot.AcquireAsync(cancellationToken).ConfigureAwait(false);
+
             var records = batch;
             try
             {
@@ -267,6 +290,7 @@ public static class PartitionedConsumerExtensions
                 for (var i = 0; i < records.Count; i++)
                     records[i].ReleaseStorage();
                 batch.Clear();
+                slot?.Release();
             }
         }
     }
@@ -429,7 +453,22 @@ public sealed class PartitionProcessorContext<TKey, TValue>
         return _lane.TryReadMessage(out message);
     }
 
+    /// <summary>Gets whether a record is queued for this processor, without reading it.</summary>
+    internal bool HasQueuedMessage => _lane.HasQueuedMessage;
+
     internal AutomaticPartitionProgress EnableAutomaticCompletion() => _lane.EnableAutomaticCompletion();
+
+    /// <summary>Gets the consumer-wide handler limit, or null when handlers are not limited across lanes.</summary>
+    internal HandlerSlotLimiter? HandlerSlots => _lane.HandlerSlots;
+
+    internal AsyncHandlerSlotWaiter? CreateHandlerSlotWaiter()
+        => _lane.HandlerSlots is { } slots ? new AsyncHandlerSlotWaiter(slots) : null;
+
+    /// <summary>
+    /// Keeps records counted against the consumer-wide buffer after this lane's processor reads them.
+    /// The caller releases them through the returned budget when a handler takes them.
+    /// </summary>
+    internal PartitionedBufferBudget? DeferBufferRelease() => _lane.DeferBufferRelease();
 }
 
 /// <summary>
@@ -525,6 +564,31 @@ public sealed class PartitionedProcessingOptions
     public int MaxConcurrentHandlersPerPartition { get; init; } = 1;
 
     /// <summary>
+    /// Gets the maximum concurrent record or batch handlers across all partitions, or null for no
+    /// consumer-wide limit.
+    /// </summary>
+    /// <remarks>
+    /// Partitions waiting for a handler are served in arrival order, and each partition waits for
+    /// at most one handler at a time, so a busy partition cannot starve the others. Records waiting
+    /// for a handler stay buffered. Requires a record or batch handler overload.
+    /// </remarks>
+    public int? MaxConcurrentHandlers { get; init; }
+
+    /// <summary>
+    /// Gets the maximum records buffered across all partitions, or null for no consumer-wide limit.
+    /// </summary>
+    /// <remarks>
+    /// A record counts from when the runtime queues it until a handler receives it, including
+    /// records a key-ordered partition holds while their key or a handler is busy.
+    /// When a record would exceed the limit, <see cref="BackpressureMode"/> applies to its
+    /// partition: <see cref="PartitionBackpressureMode.PauseResume"/> pauses it until the
+    /// consumer-wide buffer drains to half the limit, and
+    /// <see cref="PartitionBackpressureMode.AwaitCapacity"/> waits for capacity.
+    /// <see cref="MaxBufferedRecordsPerPartition"/> still applies to each partition.
+    /// </remarks>
+    public int? MaxBufferedRecords { get; init; }
+
+    /// <summary>
     /// Gets the maximum number of records passed to a batch handler invocation.
     /// </summary>
     /// <remarks>
@@ -593,6 +657,12 @@ public sealed class PartitionedProcessingOptions
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxConcurrentHandlersPerPartition, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxHandlerBatchSize, 1);
 
+        if (MaxConcurrentHandlers < 1)
+            throw new ArgumentOutOfRangeException(nameof(MaxConcurrentHandlers));
+
+        if (MaxBufferedRecords < 1)
+            throw new ArgumentOutOfRangeException(nameof(MaxBufferedRecords));
+
         if (StopTimeout < TimeSpan.Zero && StopTimeout != Timeout.InfiniteTimeSpan)
             throw new ArgumentOutOfRangeException(nameof(StopTimeout));
 
@@ -613,6 +683,21 @@ public sealed class PartitionedProcessingOptions
     {
         if (Ordering != PartitionedProcessingOrder.Partition)
             throw new InvalidOperationException("Key-ordered partitioned processing requires a record or batch handler overload.");
+
+        if (MaxConcurrentHandlers.HasValue)
+            throw new InvalidOperationException($"{nameof(MaxConcurrentHandlers)} requires a record or batch handler overload.");
+    }
+
+    internal PartitionedProcessingLimits? CreateLimits(Action bufferCapacityAvailable, Action bufferResumeAvailable)
+    {
+        if (MaxConcurrentHandlers is null && MaxBufferedRecords is null)
+            return null;
+
+        return new PartitionedProcessingLimits(
+            MaxBufferedRecords is { } maxBuffered
+                ? new PartitionedBufferBudget(maxBuffered, bufferCapacityAvailable, bufferResumeAvailable)
+                : null,
+            MaxConcurrentHandlers is { } maxHandlers ? new HandlerSlotLimiter(maxHandlers) : null);
     }
 }
 
@@ -731,6 +816,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     private readonly Dictionary<TopicPartition, int> _ignoreRestartFailures = [];
     private readonly ConcurrentDictionary<Task, byte> _ignoreRestartTasks = [];
     private readonly List<TopicPartition> _partitionsToStop = [];
+    private readonly List<PartitionLane<TKey, TValue>> _lanesToResume = [];
+    private readonly PartitionedProcessingLimits? _limits;
+    private readonly PartitionedBufferBudget? _bufferBudget;
     // Rebalance callbacks run before the consumer publishes Partitions.Assignment, often tens of
     // milliseconds earlier. These hold callback transitions the published snapshot has not caught
     // up with, so a stale snapshot neither stops a newly assigned lane nor restarts a revoked one.
@@ -764,6 +852,10 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             SingleWriter = false
         });
         _nextPeriodicCommit = DateTimeOffset.UtcNow.Add(_options.CommitInterval);
+        _limits = options.CreateLimits(
+            () => Volatile.Read(ref _capacitySignal)?.Signal(),
+            () => TryQueueCommand(RuntimeCommand<TKey, TValue>.ResumeBudgetPaused()));
+        _bufferBudget = _limits?.Buffer;
     }
 
     public async ValueTask RunAsync(CancellationToken cancellationToken)
@@ -1291,7 +1383,8 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             _options.MaxBufferedRecordsPerPartition,
             CommitProcessedAsync,
             OnLaneCapacityAvailable,
-            OnLaneFailed);
+            OnLaneFailed,
+            _limits);
 
         _lanes.Add(partition, lane);
         lane.Start(_processor);
@@ -1330,12 +1423,18 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
 
     private void PauseIfNeeded(PartitionLane<TKey, TValue> lane)
     {
-        if (_options.BackpressureMode != PartitionBackpressureMode.PauseResume || !lane.IsFull)
+        if (_options.BackpressureMode != PartitionBackpressureMode.PauseResume)
+            return;
+
+        var budget = _bufferBudget;
+        if (!lane.IsFull && (budget is null || !budget.IsFull))
             return;
 
         if (_pausedByRuntime.Add(lane.TopicPartition))
         {
             _consumer.Partitions.Pause(lane.TopicPartition);
+            // A lane paused only for the consumer-wide buffer resumes when that buffer drains.
+            budget?.RequestResume();
         }
     }
 
@@ -1344,9 +1443,40 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         if (_options.BackpressureMode != PartitionBackpressureMode.PauseResume || !lane.HasCapacity)
             return;
 
+        if (_bufferBudget is { IsFull: true } budget)
+        {
+            if (_pausedByRuntime.Contains(lane.TopicPartition))
+                budget.RequestResume();
+            return;
+        }
+
         if (_pausedByRuntime.Remove(lane.TopicPartition))
         {
             _consumer.Partitions.Resume(lane.TopicPartition);
+        }
+    }
+
+    /// <summary>
+    /// Resumes lanes paused while the consumer-wide buffer was full. Runs once each time the
+    /// buffer drains to half its limit after a pause, not once per released record.
+    /// </summary>
+    private void ResumeBudgetPausedLanes()
+    {
+        foreach (var partition in _pausedByRuntime)
+        {
+            // A paused partition without a lane is held for a failure or a restart backoff.
+            if (_lanes.TryGetValue(partition, out var lane))
+                _lanesToResume.Add(lane);
+        }
+
+        try
+        {
+            for (var i = 0; i < _lanesToResume.Count; i++)
+                ResumeIfNeeded(_lanesToResume[i]);
+        }
+        finally
+        {
+            _lanesToResume.Clear();
         }
     }
 
@@ -1397,6 +1527,10 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                     if (_lanes.TryGetValue(command.Lane!.TopicPartition, out var lane))
                         ResumeIfNeeded(lane);
 
+                    break;
+
+                case RuntimeCommandKind.ResumeBudgetPaused:
+                    ResumeBudgetPausedLanes();
                     break;
 
                 case RuntimeCommandKind.Commit:
@@ -2098,6 +2232,11 @@ internal sealed class PartitionLane<TKey, TValue>
     private readonly CancellationTokenSource _stopping = new();
     private readonly PartitionProcessorContext<TKey, TValue> _context;
     private readonly int _capacity;
+    private readonly PartitionedProcessingLimits? _limits;
+    private readonly PartitionedBufferBudget? _budget;
+    // The budget released when the processor reads a record, or null when the processor
+    // releases records itself (key ordering holds read records until a handler takes them).
+    private PartitionedBufferBudget? _readBudget;
     private Task? _processorTask;
     private int _bufferedCount;
     private int _completed;
@@ -2116,10 +2255,14 @@ internal sealed class PartitionLane<TKey, TValue>
         int capacity,
         Func<PartitionLane<TKey, TValue>, CancellationToken, ValueTask> commitProcessed,
         Action<PartitionLane<TKey, TValue>> capacityAvailable,
-        Action<PartitionLane<TKey, TValue>, Exception> failed)
+        Action<PartitionLane<TKey, TValue>, Exception> failed,
+        PartitionedProcessingLimits? limits = null)
     {
         TopicPartition = topicPartition;
         _capacity = capacity;
+        _limits = limits;
+        _budget = limits?.Buffer;
+        _readBudget = _budget;
         _commitProcessed = commitProcessed;
         _capacityAvailable = capacityAvailable;
         _failed = failed;
@@ -2171,6 +2314,15 @@ internal sealed class PartitionLane<TKey, TValue>
 
     public bool HasCapacity => Volatile.Read(ref _bufferedCount) < _capacity;
 
+    public HandlerSlotLimiter? HandlerSlots => _limits?.Handlers;
+
+    /// <summary>Called by the processor before it reads its first record.</summary>
+    public PartitionedBufferBudget? DeferBufferRelease()
+    {
+        _readBudget = null;
+        return _budget;
+    }
+
     public void Start(PartitionProcessor<TKey, TValue> processor)
     {
         _processorTask = Task.Run(async () =>
@@ -2199,8 +2351,10 @@ internal sealed class PartitionLane<TKey, TValue>
                 // A timed-out handler still owns its active records until it actually exits.
                 // StopAsync must not release these buffers while user code is running.
                 CompleteWriter();
+                var abandonedCount = 0;
                 while (_channel.Reader.TryRead(out var abandoned))
                 {
+                    abandonedCount++;
                     if (!abandoned.IsPartitionEof && _firstUndeliveredOffset is null)
                     {
                         _firstUndeliveredOffset = new TopicPartitionOffset(
@@ -2212,6 +2366,7 @@ internal sealed class PartitionLane<TKey, TValue>
 
                     abandoned.ReleaseStorage();
                 }
+                _budget?.Release(abandonedCount);
                 lock (_completedRanges)
                     _completedRanges.Retire();
             }
@@ -2222,6 +2377,12 @@ internal sealed class PartitionLane<TKey, TValue>
     public bool TryEnqueue(in ConsumeResult<TKey, TValue> result, OffsetCompletionBatch? completionBatch)
     {
         if (Volatile.Read(ref _completed) != 0)
+            return false;
+
+        // A full lane is rejected before reserving, so a reservation never fails only because
+        // this queue is full and never wakes the route for capacity it cannot use.
+        var budget = _budget;
+        if (budget is not null && (IsFull || !budget.TryReserve()))
             return false;
 
         result.RetainStorage();
@@ -2235,6 +2396,7 @@ internal sealed class PartitionLane<TKey, TValue>
         if (!_channel.Writer.TryWrite(queued))
         {
             result.ReleaseStorage();
+            budget?.Release();
             return false;
         }
 
@@ -2279,11 +2441,14 @@ internal sealed class PartitionLane<TKey, TValue>
         return _channel.Reader.WaitToReadAsync(cancellationToken);
     }
 
+    public bool HasQueuedMessage => _channel.Reader.TryPeek(out _);
+
     public bool TryReadMessage(out ConsumeResult<TKey, TValue> message)
     {
         if (!_channel.Reader.TryRead(out message))
             return false;
 
+        _readBudget?.Release();
         var bufferedCount = Interlocked.Decrement(ref _bufferedCount);
         if (bufferedCount == _capacity - 1)
             _capacityAvailable(this);
@@ -2475,7 +2640,8 @@ internal enum RuntimeCommandKind
     StopFailed,
     RestartLane,
     AssignPartitions,
-    StopPartitions
+    StopPartitions,
+    ResumeBudgetPaused
 }
 
 internal readonly record struct RuntimeCommand<TKey, TValue>(
@@ -2504,6 +2670,9 @@ internal readonly record struct RuntimeCommand<TKey, TValue>(
 
     public static RuntimeCommand<TKey, TValue> RestartLane(TopicPartition partition)
         => new(RuntimeCommandKind.RestartLane, null, null, partition, default, null, null, CancellationToken.None);
+
+    public static RuntimeCommand<TKey, TValue> ResumeBudgetPaused()
+        => new(RuntimeCommandKind.ResumeBudgetPaused, null, null, default, default, null, null, CancellationToken.None);
 
     public static RuntimeCommand<TKey, TValue> AssignPartitions(TopicPartition[] partitions)
         => new(RuntimeCommandKind.AssignPartitions, null, partitions, default, default, null, null, CancellationToken.None);
