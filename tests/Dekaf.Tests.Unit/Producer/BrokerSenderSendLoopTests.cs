@@ -690,6 +690,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         // and posts a wake event. When an earlier step of the same iteration consumed that event,
         // the loop must still drain the deferral before its untimed idle wait, or the partition
         // stays muted with nothing left to wake the loop.
+        var writeFailure = new AuthenticationException(
+            ErrorCode.SaslAuthenticationFailed,
+            "revoked credential");
         var firstWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var wakeConsumed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var connection = new TestKafkaConnection();
@@ -722,9 +725,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
                 // On the send loop, about to await the write: fail it fatally, wait until its
                 // catch block has deferred the unmute and failed the batch, then consume the
                 // wake event, as an earlier step of this iteration would have.
-                firstWrite.SetException(new AuthenticationException(
-                    ErrorCode.SaslAuthenticationFailed,
-                    "revoked credential"));
+                firstWrite.SetException(writeFailure);
                 ((IAsyncResult)produced.Delivery).AsyncWaitHandle.WaitOne(TimeSpan.FromSeconds(20));
                 var reader = ((Channel<BrokerSender.SendLoopEvent>)eventChannelField.GetValue(sender)!).Reader;
                 while (reader.TryRead(out _))
@@ -741,7 +742,11 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             sender.Enqueue(produced.Batch);
 
             await wakeConsumed.Task.WaitAsync(cancellationToken);
-            await Assert.That(produced.Delivery.IsFaulted).IsTrue();
+            // Await the delivery, rather than only checking IsFaulted, so its exception is observed
+            // and does not surface later as an unobserved task exception.
+            var deliveryFailure = await Assert.That(async () => await produced.Delivery)
+                .Throws<AuthenticationException>();
+            await Assert.That(deliveryFailure).IsSameReferenceAs(writeFailure);
 
             await WaitUntilAsync(() => !accumulator.IsMuted(partition), cancellationToken);
         }
