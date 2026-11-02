@@ -4424,6 +4424,58 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task CommitOffsetsAsync_RetryUntilApiTimeout_CoordinatorStillLoading_RediscoversAndRetries()
+    {
+        // #4037: a fresh broker's coordinator answered NOT_COORDINATOR while loading its offsets
+        // partition for longer than the broker-answered retry count, failing a manual commit.
+        await using var topology = new SplitCoordinatorTopology();
+        topology.MetadataManager.SetApiVersion(ApiKey.OffsetCommit, 8, 8);
+        const int notCoordinatorAnswers = RetryHelper.MaxRetries + 3;
+        var commitRequests = 0;
+        topology.CoordinatorConnection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromResult(new OffsetCommitResponse
+            {
+                Topics =
+                [
+                    new OffsetCommitResponseTopic
+                    {
+                        Name = "test-topic",
+                        Partitions =
+                        [
+                            new OffsetCommitResponsePartition
+                            {
+                                PartitionIndex = 0,
+                                ErrorCode = Interlocked.Increment(ref commitRequests) <= notCoordinatorAnswers
+                                    ? ErrorCode.NotCoordinator
+                                    : ErrorCode.None
+                            }
+                        ]
+                    }
+                ]
+            }));
+        var options = CreateConsumerProtocolOptions(
+            heartbeatIntervalMs: 60_000,
+            retryBackoffMs: 1,
+            retryBackoffMaxMs: 1);
+        await using var coordinator = new ConsumerCoordinator(options, topology.Pool, topology.MetadataManager);
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        var lookupsAfterJoin = topology.FindCoordinatorCount;
+
+        await coordinator.CommitOffsetsAsync(
+            [new TopicPartitionOffset("test-topic", 0, 1)],
+            retryUntilApiTimeout: true,
+            coordinator.MembershipVersion,
+            CancellationToken.None);
+
+        await Assert.That(commitRequests).IsEqualTo(notCoordinatorAnswers + 1);
+        await Assert.That(topology.FindCoordinatorCount).IsEqualTo(lookupsAfterJoin + notCoordinatorAnswers);
+    }
+
+    [Test]
     public async Task CommitOffsetsAsync_RetryUntilApiTimeout_PersistentFailure_ThrowsTypedTimeoutWithTheCause()
     {
         await using var topology = new SplitCoordinatorTopology();

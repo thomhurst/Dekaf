@@ -348,6 +348,86 @@ public sealed class RetryHelperTests
     }
 
     [Test]
+    [Arguments(ErrorCode.NotCoordinator)]
+    [Arguments(ErrorCode.CoordinatorNotAvailable)]
+    [Arguments(ErrorCode.CoordinatorLoadInProgress)]
+    public async Task DeadlineMode_CoordinatorRequest_CoordinatorErrorsRetriedUntilTheCoordinatorLoads(ErrorCode errorCode)
+    {
+        // A fresh broker's group coordinator can answer NOT_COORDINATOR while it loads its
+        // offsets partition for longer than the broker-answered retry count allows (#4037).
+        await using var metadataManager = CreateUnavailableMetadataManager();
+        var attempts = 0;
+        var recoveries = 0;
+
+        var result = await RetryHelper.WithRetryAsync(
+            () => Interlocked.Increment(ref attempts) <= 10
+                ? ValueTask.FromException<int>(new GroupException(errorCode, "coordinator loading"))
+                : ValueTask.FromResult(42),
+            metadataManager,
+            CancellationToken.None,
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            onRetry: _ =>
+            {
+                Interlocked.Increment(ref recoveries);
+                return ValueTask.CompletedTask;
+            },
+            deadline: new RetryDeadline("TestOperation", TimeSpan.FromSeconds(30), RetryCoordinatorErrors: true));
+
+        await Assert.That(result).IsEqualTo(42);
+        await Assert.That(attempts).IsEqualTo(11);
+        await Assert.That(recoveries).IsEqualTo(10);
+    }
+
+    [Test]
+    public async Task DeadlineMode_CoordinatorErrorWithoutOptIn_KeepsTheCountBound()
+    {
+        await using var metadataManager = CreateUnavailableMetadataManager();
+        var attempts = 0;
+
+        var exception = await Assert.ThrowsAsync<GroupException>(async () =>
+            await RetryHelper.WithRetryAsync<int>(
+                () =>
+                {
+                    Interlocked.Increment(ref attempts);
+                    return ValueTask.FromException<int>(new GroupException(ErrorCode.NotCoordinator, "moved"));
+                },
+                metadataManager,
+                CancellationToken.None,
+                retryBackoffMs: 0,
+                retryBackoffMaxMs: 0,
+                deadline: new RetryDeadline("TestOperation", TimeSpan.FromSeconds(30))));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.NotCoordinator);
+        await Assert.That(attempts).IsEqualTo(RetryHelper.MaxRetries + 1);
+    }
+
+    [Test]
+    public async Task DeadlineMode_CoordinatorRequest_BudgetExhausted_ThrowsTheCoordinatorError()
+    {
+        // The broker answered: its typed error stays the final failure, not a timeout.
+        await using var metadataManager = CreateUnavailableMetadataManager();
+        var failure = new GroupException(ErrorCode.NotCoordinator, "still loading");
+        var attempts = 0;
+
+        var exception = await Assert.ThrowsAsync<GroupException>(async () =>
+            await RetryHelper.WithRetryAsync<int>(
+                () =>
+                {
+                    Interlocked.Increment(ref attempts);
+                    return ValueTask.FromException<int>(failure);
+                },
+                metadataManager,
+                CancellationToken.None,
+                retryBackoffMs: 5,
+                retryBackoffMaxMs: 5,
+                deadline: new RetryDeadline("TestOperation", TimeSpan.FromMilliseconds(100), RetryCoordinatorErrors: true)));
+
+        await Assert.That(exception).IsSameReferenceAs(failure);
+        await Assert.That(attempts).IsGreaterThan(RetryHelper.MaxRetries + 1);
+    }
+
+    [Test]
     public async Task DeadlineMode_PeerClosedConnection_IsTransportLevelNotBrokerAnswered()
     {
         // NETWORK_EXCEPTION is the connection's own report that the peer went away before a

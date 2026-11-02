@@ -2195,7 +2195,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     ? new RetryDeadline(
                         $"OffsetCommit for group '{_options.GroupId}'",
                         TimeSpan.FromMilliseconds(_options.DefaultApiTimeoutMs),
-                        _isDisposed)
+                        _isDisposed,
+                        RetryCoordinatorErrors: true)
                     : null).ConfigureAwait(false);
         }
         finally
@@ -2522,7 +2523,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         deadline: retryOnFailure ? new RetryDeadline(
                             "OffsetFetch",
                             Timeout.InfiniteTimeSpan,
-                            _isDisposed) : null).ConfigureAwait(false);
+                            _isDisposed,
+                            RetryCoordinatorErrors: true) : null).ConfigureAwait(false);
                     }
                     catch (Exception ex) when (!retryOnFailure && IsRetriableLookupFailure(ex))
                     {
