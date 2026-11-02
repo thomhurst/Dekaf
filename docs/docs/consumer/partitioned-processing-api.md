@@ -373,7 +373,10 @@ pass a `PartitionedProcessingControl` in the options and seek through it:
 var control = new PartitionedProcessingControl();
 
 var run = consumer.RunPartitionedAsync(
-    handler,
+    async (partition, message, ct) =>
+    {
+        await HandleOrderAsync(message.Key, message.Value, ct);
+    },
     new PartitionedProcessingOptions { Control = control },
     stoppingToken);
 
