@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using Dekaf.Consumer;
 using Dekaf.Errors;
+using Dekaf.Internal;
 using Dekaf.Serialization;
 using Dekaf.Telemetry;
 
@@ -2850,8 +2851,15 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                     cancellationToken,
                     out faultApplication))
             {
-                // Fault observers run synchronously and may re-enter this consumer.
-                ThrowIfDisposed();
+                // Fault observers run synchronously and may re-enter this consumer. A close
+                // from the observer abandons the fault application; observe its failure.
+                if (_disposed)
+                {
+                    TaskFaultObserver.ObserveFault(faultApplication.AsTask());
+                    faultApplication = ValueTask.CompletedTask;
+                    ThrowIfDisposed();
+                }
+
                 return true;
             }
         }

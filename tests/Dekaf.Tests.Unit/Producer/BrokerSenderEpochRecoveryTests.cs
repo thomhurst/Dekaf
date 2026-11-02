@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Threading.Tasks.Sources;
+using Dekaf.Internal;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
@@ -1553,6 +1554,7 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         var state = new ProducerStateHolder(new ProducerIdAndEpoch(1234, 5));
         accumulator.PublishProducerState(state.Value);
         var bumpRequests = new List<short>();
+        var deliveries = new List<Task<RecordMetadata>>();
         var sender = CreateSender(
             pool, options, accumulator, (_, _, _, _, _) => { },
             bumpEpoch: LocalBump(accumulator, bumpRequests, state),
@@ -1560,10 +1562,12 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
 
         try
         {
-            var (batchA, _) = CreateTrackedBatch(valueTaskSourcePool, Partition0, producerId: 1234, producerEpoch: 5);
+            var (batchA, deliveryA) = CreateTrackedBatch(valueTaskSourcePool, Partition0, producerId: 1234, producerEpoch: 5);
+            deliveries.Add(deliveryA);
             sender.Enqueue(batchA);
             await WaitForSendsAsync(connection, 1, cancellationToken);
-            var (batchB, _) = CreateTrackedBatch(valueTaskSourcePool, Partition0, producerId: 1234, producerEpoch: 5, recordCount: 2);
+            var (batchB, deliveryB) = CreateTrackedBatch(valueTaskSourcePool, Partition0, producerId: 1234, producerEpoch: 5, recordCount: 2);
+            deliveries.Add(deliveryB);
             sender.Enqueue(batchB);
             await WaitForSendsAsync(connection, 2, cancellationToken);
 
@@ -1581,6 +1585,9 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
             foreach (var response in responses)
                 response.TrySetResult(CreateSuccessResponse(Topic, 0, baseOffset: 0));
             await sender.DisposeAsync();
+            // The test checks only the bump; disposal can fail the recovered deliveries.
+            foreach (var delivery in deliveries)
+                TaskFaultObserver.ObserveFault(delivery);
             await accumulator.DisposeAsync();
             await valueTaskSourcePool.DisposeAsync();
         }

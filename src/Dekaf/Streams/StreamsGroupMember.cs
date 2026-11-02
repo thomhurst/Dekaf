@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.ExceptionServices;
 using System.Threading.Channels;
 using Dekaf.Errors;
+using Dekaf.Internal;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -218,7 +219,7 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
-                    ObserveFault(command.Completion.Task);
+                    TaskFaultObserver.ObserveFault(command.Completion.Task);
                     throw;
                 }
                 finally
@@ -235,7 +236,7 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            ObserveFault(command.Completion.Task);
+            TaskFaultObserver.ObserveFault(command.Completion.Task);
             throw;
         }
         await _workerTask.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -293,7 +294,7 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            ObserveFault(command.Completion.Task);
+            TaskFaultObserver.ObserveFault(command.Completion.Task);
             throw;
         }
     }
@@ -1115,21 +1116,6 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember
             exception,
             TransportRetryPolicy.Request,
             ownerDisposed: Volatile.Read(ref _disposed) != 0);
-
-    private static void ObserveFault(Task task)
-    {
-        if (task.IsCompleted)
-        {
-            _ = task.Exception;
-            return;
-        }
-
-        _ = task.ContinueWith(
-            static completed => _ = completed.Exception,
-            CancellationToken.None,
-            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
-    }
 
     private Task DelayForRetryAsync(int failureCount, CancellationToken cancellationToken) =>
         Task.Delay(

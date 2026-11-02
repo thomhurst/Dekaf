@@ -179,7 +179,7 @@ public class GcpKmsProviderTests
     {
         var client = Substitute.For<KeyManagementServiceClient>();
         client.DecryptAsync(Arg.Any<DecryptRequest>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException<DecryptResponse>(CreateRpcException(StatusCode.NotFound, "wrong key")));
+            .Returns(_ => Task.FromException<DecryptResponse>(CreateRpcException(StatusCode.NotFound, "wrong key")));
         var provider = new GcpKmsProvider(client);
 
         var exception = await Assert.ThrowsAsync<SchemaRegistryKmsException>(
@@ -195,7 +195,7 @@ public class GcpKmsProviderTests
         var client = Substitute.For<KeyManagementServiceClient>();
         var denied = CreateRpcException(StatusCode.PermissionDenied, "authorization: sensitive");
         client.EncryptAsync(Arg.Any<EncryptRequest>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException<EncryptResponse>(denied));
+            .Returns(_ => Task.FromException<EncryptResponse>(denied));
         var provider = new GcpKmsProvider(client);
 
         var exception = await Assert.ThrowsAsync<SchemaRegistryKmsException>(
@@ -212,7 +212,7 @@ public class GcpKmsProviderTests
     {
         var client = Substitute.For<KeyManagementServiceClient>();
         client.DecryptAsync(Arg.Any<DecryptRequest>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException<DecryptResponse>(
+            .Returns(_ => Task.FromException<DecryptResponse>(
                 CreateRpcException(StatusCode.InvalidArgument, "ciphertext: sensitive")));
         var provider = new GcpKmsProvider(client);
 

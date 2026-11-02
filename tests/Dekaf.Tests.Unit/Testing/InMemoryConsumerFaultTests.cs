@@ -923,27 +923,36 @@ public sealed class InMemoryConsumerFaultTests
     [Test]
     public async Task OnDeliveryAutoCommit_FaultObserverClosePreventsReservation()
     {
-        var cluster = new InMemoryKafkaCluster();
-        var producer = new InMemoryProducer<string, string>(cluster);
-        await producer.ProduceAsync(Topic, "key", "value");
-        var consumer = CreateConsumer(
-            cluster,
-            enableAutoOffsetStore: true,
-            offsetCommitMode: OffsetCommitMode.Auto);
-        consumer.Assign(Partition);
         var failure = new InvalidOperationException("commit failed");
-        cluster.FaultPlan.Fail(
-            new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId),
-            failure);
-        Task? closeTask = null;
-        cluster.FaultPlan.FaultConsumed += _ => closeTask = consumer.CloseAsync().AsTask();
+        using var probe = new UnobservedTaskExceptionProbe(failure);
 
-        _ = await Assert.ThrowsAsync<ObjectDisposedException>(() =>
-            consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask());
+        var unobserved = await probe.RunAndCollectAsync(async () =>
+        {
+            var cluster = new InMemoryKafkaCluster();
+            var producer = new InMemoryProducer<string, string>(cluster);
+            await producer.ProduceAsync(Topic, "key", "value");
+            var consumer = CreateConsumer(
+                cluster,
+                enableAutoOffsetStore: true,
+                offsetCommitMode: OffsetCommitMode.Auto);
+            consumer.Assign(Partition);
+            cluster.FaultPlan.Fail(
+                new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId),
+                failure);
+            Task? closeTask = null;
+            cluster.FaultPlan.FaultConsumed += _ => closeTask = consumer.CloseAsync().AsTask();
 
-        await Assert.That((object?)closeTask).IsNotNull();
-        await closeTask!;
-        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(0);
+            _ = await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+                consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask());
+
+            await Assert.That((object?)closeTask).IsNotNull();
+            await closeTask!;
+            await Assert.That(cluster.FaultPlan.Count).IsEqualTo(0);
+        });
+
+        // Closing from the fault observer abandons the injected commit failure; it must still
+        // be observed rather than surface on the finalizer thread.
+        await Assert.That(unobserved).IsFalse();
     }
 
     [Test]

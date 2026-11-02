@@ -636,7 +636,7 @@ public sealed class RetryHelperTests
                 Arg.Any<string>(),
                 Arg.Any<int>(),
                 Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromException<IKafkaConnection>(new TimeoutException("broker unavailable")));
+            .Returns(_ => ValueTask.FromException<IKafkaConnection>(new TimeoutException("broker unavailable")));
 
         return new MetadataManager(
             connectionPool,

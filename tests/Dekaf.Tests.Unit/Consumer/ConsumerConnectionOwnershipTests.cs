@@ -695,7 +695,12 @@ public sealed class ConsumerConnectionOwnershipTests
         {
             Interlocked.Increment(ref _disposeCount);
             _disposalStarted.TrySetResult();
-            _activeRequest.TrySetException(new ObjectDisposedException(nameof(TrackedConnection)));
+            if (_activeRequest.TrySetException(new ObjectDisposedException(nameof(TrackedConnection))))
+            {
+                // Most tests never await the request; reading Exception marks the fault observed.
+                _ = _activeRequest.Task.Exception;
+            }
+
             return ValueTask.CompletedTask;
         }
     }
