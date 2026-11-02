@@ -8903,8 +8903,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Gives a new transaction its own generation (called by BeginTransaction before the state
     /// becomes InTransaction), so a generation read before the transaction began, including
     /// one read during the previous transaction's abort, is stale for it. A commit also calls it
-    /// after its first flush, so a produce admitted before the commit that has not appended yet
-    /// is rejected instead of being sent after EndTxn. Twice per transaction at most.
+    /// after its first flush, and a prepare after it moves to PreparedTransaction, so a produce
+    /// admitted before the commit or prepare that has not appended yet is rejected instead of
+    /// being sent after EndTxn or joining a prepared transaction. A few times per transaction at most.
     /// </summary>
     internal void AdvanceTransactionalAppendGeneration() =>
         Interlocked.Increment(ref _transactionalAppendGeneration);
@@ -8916,7 +8917,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal void ReopenTransactionalAppends() => Volatile.Write(ref _transactionalAppendsClosed, 0);
 
     /// <summary>
-    /// Advances once per transaction begin, commit and abort (<see cref="CloseTransactionalAppends"/>,
+    /// Advances once per transaction begin, prepare, commit and abort (<see cref="CloseTransactionalAppends"/>,
     /// <see cref="AdvanceTransactionalAppendGeneration"/>). A produce that leaves the synchronous
     /// path captures it, and its append is rejected with
     /// <see cref="ProduceErrorKind.TransactionAborted"/> when the value has changed by the time

@@ -420,6 +420,212 @@ public sealed class TransactionalProduceFaultTests
     }
 
     /// <summary>
+    /// The KIP-939 prepare form of the commit test above. A produce admitted while the transaction
+    /// was open but still awaiting its async serializer when the prepare ends is not part of the
+    /// prepared transaction, whose contents are fixed once PrepareAsync returns. Once it resumes it
+    /// must fail with <see cref="ProduceErrorKind.TransactionAborted"/>; it must not be appended
+    /// and then sent while the prepared transaction waits for completion, where it would join the
+    /// transaction or race its EndTxn. A record that appended before the prepare is sent first.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task PrepareAsync_ProduceStillSerializingWhenThePrepareEnds_FailsAndIsNeverSent(
+        CancellationToken cancellationToken)
+    {
+        var serializer = new HeldAsyncStringSerializer(heldValue: "admitted-before-prepare");
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion: 3,
+            produceError: static (_, _) => ErrorCode.None,
+            asyncValueSerializer: serializer,
+            enableTwoPhaseCommit: true);
+
+        var prepared = harness.Producer.BeginTransaction();
+        await prepared.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "prepared",
+            Partition = 0
+        }, cancellationToken);
+        var stale = prepared.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "admitted-before-prepare",
+            Partition = 0
+        }, cancellationToken).AsTask();
+        await serializer.Entered.WaitAsync(cancellationToken);
+
+        var preparedState = await prepared.PrepareAsync(cancellationToken);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.PreparedTransaction);
+        await Assert.That(harness.Broker.ProducedBatches.Sum(batch => batch.RecordCount)).IsEqualTo(1);
+        var sentBeforeRelease = harness.Broker.ProducedBatches.Count;
+
+        serializer.Release();
+        var exception = await Assert.That(async () => await stale).Throws<ProduceException>();
+        await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+        await Assert.That(harness.Broker.ProducedBatches.Count).IsEqualTo(sentBeforeRelease);
+
+        await harness.Producer.CompletePreparedTransactionAsync(preparedState, committed: true, cancellationToken);
+        await prepared.DisposeAsync();
+        await Assert.That(harness.Broker.CommitRequests).IsEqualTo(1);
+        await Assert.That(harness.Broker.ProducedBatches.Count).IsEqualTo(sentBeforeRelease);
+    }
+
+    /// <summary>
+    /// The prepare's second flush (after the fence) waits for a record that appended before the
+    /// fence, so it is part of the prepared transaction, and only then publishes the prepared
+    /// state. The prepare is driven in its two steps, and the record's produce response is held,
+    /// so the record is still undelivered when the second flush starts.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task PrepareFlush_RecordAppendedBeforeTheFence_IsSentBeforeThePreparedStateIsPublished(
+        CancellationToken cancellationToken)
+    {
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion: 3,
+            produceError: static (_, _) => ErrorCode.None,
+            enableTwoPhaseCommit: true);
+        harness.Broker.HoldProduceResponse = attempt => attempt == 1 ? releaseFirst.Task : null;
+
+        var transaction = harness.Producer.BeginTransaction();
+        var ownerToken = harness.Producer.TransactionOwnerToken;
+        var appended = transaction.ProduceAsync(Message(partition: 0), cancellationToken).AsTask();
+        await harness.Broker.WaitForProduceAttemptsAsync(1, cancellationToken);
+
+        var preparedState = harness.Producer.PrepareCurrentTransaction(ownerToken);
+        var flush = harness.Producer.FlushPreparedTransactionAsync(preparedState, ownerToken, cancellationToken).AsTask();
+        // The record's response is held, so a second flush that waits for it cannot have finished.
+        await Assert.That(flush.IsCompleted).IsFalse();
+        await Assert.That(harness.Producer._preparedTransactionState.HasTransaction).IsFalse();
+
+        releaseFirst.SetResult();
+        await flush;
+        await Assert.That(appended.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(harness.Producer._preparedTransactionState).IsEqualTo(preparedState);
+        await appended;
+
+        await harness.Producer.CompletePreparedTransactionAsync(preparedState, committed: true, cancellationToken);
+        await transaction.DisposeAsync();
+        await Assert.That(harness.Broker.ProducedBatches.Sum(batch => batch.RecordCount)).IsEqualTo(1);
+        await Assert.That(harness.Broker.CommitRequests).IsEqualTo(1);
+    }
+
+    /// <summary>
+    /// A batch that fails during the prepare's second flush makes the transaction abortable: the
+    /// prepare fails, the prepared state is never published, and the caller can abort. The
+    /// produce response is held until the second flush runs, so the batch fails during it.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task PrepareFlush_BatchFailsDuringTheSecondFlush_ThrowsAbortableAndPublishesNothing(
+        CancellationToken cancellationToken)
+    {
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion: 3,
+            produceError: static (partition, _) => partition == 1 ? ErrorCode.MessageTooLarge : ErrorCode.None,
+            enableTwoPhaseCommit: true);
+        harness.Broker.HoldProduceResponse = attempt => attempt == 1 ? releaseFirst.Task : null;
+
+        await using var transaction = harness.Producer.BeginTransaction();
+        var ownerToken = harness.Producer.TransactionOwnerToken;
+        var failing = transaction.ProduceAsync(Message(partition: 1), cancellationToken).AsTask();
+        await harness.Broker.WaitForProduceAttemptsAsync(1, cancellationToken);
+
+        var preparedState = harness.Producer.PrepareCurrentTransaction(ownerToken);
+        var flush = harness.Producer.FlushPreparedTransactionAsync(preparedState, ownerToken, cancellationToken).AsTask();
+        releaseFirst.SetResult();
+        var exception = await Assert.That(async () => await flush).Throws<AbortableTransactionException>();
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.MessageTooLarge);
+        await Assert.That(async () => await failing).Throws<ProduceException>();
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.AbortableError);
+        await Assert.That(harness.Producer._preparedTransactionState.HasTransaction).IsFalse();
+
+        await transaction.AbortAsync(cancellationToken);
+        await Assert.That(harness.Broker.CommitRequests).IsEqualTo(0);
+        await Assert.That(harness.Broker.AbortRequests).IsEqualTo(1);
+    }
+
+    /// <summary>
+    /// A second flush that is cancelled leaves records possibly unsent, so the transaction becomes
+    /// abortable instead of staying prepared, and the prepared state is never published. The
+    /// produce response is held, so the record is still undelivered when the flush is cancelled.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task PrepareFlush_Cancelled_MakesTheTransactionAbortableAndPublishesNothing(
+        CancellationToken cancellationToken)
+    {
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion: 3,
+            produceError: static (_, _) => ErrorCode.None,
+            enableTwoPhaseCommit: true);
+        harness.Broker.HoldProduceResponse = attempt => attempt == 1 ? releaseFirst.Task : null;
+
+        await using var transaction = harness.Producer.BeginTransaction();
+        var ownerToken = harness.Producer.TransactionOwnerToken;
+        var pending = transaction.ProduceAsync(Message(partition: 0), cancellationToken).AsTask();
+        await harness.Broker.WaitForProduceAttemptsAsync(1, cancellationToken);
+
+        var preparedState = harness.Producer.PrepareCurrentTransaction(ownerToken);
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
+        await Assert.That(async () =>
+                await harness.Producer.FlushPreparedTransactionAsync(preparedState, ownerToken, cancelled.Token))
+            .Throws<OperationCanceledException>();
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.AbortableError);
+        await Assert.That(harness.Producer._preparedTransactionState.HasTransaction).IsFalse();
+
+        releaseFirst.SetResult();
+        await pending;
+        await transaction.AbortAsync(cancellationToken);
+        await Assert.That(harness.Broker.CommitRequests).IsEqualTo(0);
+        await Assert.That(harness.Broker.AbortRequests).IsEqualTo(1);
+    }
+
+    /// <summary>
+    /// A prepare whose second flush resumes after its transaction was aborted and a later one was
+    /// prepared fails without touching the later transaction: it must not overwrite the prepared
+    /// state the later transaction completes with, nor make it abortable.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task PrepareFlush_ResumingAfterALaterTransactionWasPrepared_LeavesThatTransactionAlone(
+        CancellationToken cancellationToken)
+    {
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion: 3,
+            produceError: static (_, _) => ErrorCode.None,
+            enableTwoPhaseCommit: true);
+
+        var first = harness.Producer.BeginTransaction();
+        var firstOwnerToken = harness.Producer.TransactionOwnerToken;
+        await first.ProduceAsync(Message(partition: 0), cancellationToken);
+        var firstState = harness.Producer.PrepareCurrentTransaction(firstOwnerToken);
+        await first.AbortAsync(cancellationToken);
+        await first.DisposeAsync();
+
+        var second = harness.Producer.BeginTransaction();
+        await second.ProduceAsync(Message(partition: 0), cancellationToken);
+        var secondState = await second.PrepareAsync(cancellationToken);
+        await Assert.That(secondState).IsNotEqualTo(firstState);
+
+        await Assert.That(async () =>
+                await harness.Producer.FlushPreparedTransactionAsync(firstState, firstOwnerToken, cancellationToken))
+            .Throws<InvalidOperationException>();
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.PreparedTransaction);
+        await Assert.That(harness.Producer._preparedTransactionState).IsEqualTo(secondState);
+
+        await harness.Producer.CompletePreparedTransactionAsync(secondState, committed: true, cancellationToken);
+        await second.DisposeAsync();
+        await Assert.That(harness.Broker.CommitRequests).IsEqualTo(1);
+    }
+
+    /// <summary>
     /// The fire-and-forget form of the abort test above: a FireAsync admitted before the abort that is
     /// still awaiting its async serializer when the abort ends must not append after the abort
     /// reopens appends. With a delivery handler the handler receives
@@ -885,7 +1091,8 @@ public sealed class TransactionalProduceFaultTests
             IAsyncSerializer<string>? asyncValueSerializer = null,
             ISerializer<string>? valueSerializer = null,
             Dekaf.Retry.IRetryPolicy? retryPolicy = null,
-            IReadOnlyList<object>? interceptors = null)
+            IReadOnlyList<object>? interceptors = null,
+            bool enableTwoPhaseCommit = false)
         {
             var broker = new ScriptedTransactionalBroker(produceError, bumpsEpochAtEndTxn: transactionVersion >= 2);
             var pool = new ConnectionPool(
@@ -944,6 +1151,7 @@ public sealed class TransactionalProduceFaultTests
                 {
                     BootstrapServers = ["localhost:9092"],
                     TransactionalId = "txn-produce-fault",
+                    EnableTwoPhaseCommit = enableTwoPhaseCommit,
                     LingerMs = lingerMs,
                     DeliveryTimeoutMs = deliveryTimeoutMs,
                     RequestTimeoutMs = Math.Min(deliveryTimeoutMs, 30_000),
