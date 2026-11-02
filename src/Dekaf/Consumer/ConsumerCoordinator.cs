@@ -2690,9 +2690,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// <summary>
     /// The coordinator fenced this member: it no longer owns its partitions. Clears the
     /// assignment, queues it for OnPartitionsLost, and fences commits until the member rejoins.
-    /// A member fenced by epoch keeps its member id and rejoins with epoch 0 (-2 for static
-    /// members); an unknown member rejoins from scratch. Matches the Java client, which treats
-    /// both errors as partitions lost.
+    /// A member fenced by epoch keeps its member id and rejoins with epoch 0, static or not
+    /// (epoch -2 is a temporary static leave); an unknown member rejoins from scratch. Matches
+    /// the Java client, which treats both errors as partitions lost.
     /// </summary>
     private void FenceMembership(bool forgetMember)
     {
@@ -2707,7 +2707,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
         else
         {
-            _generationId = _options.GroupInstanceId is not null ? -2 : 0;
+            _generationId = 0;
         }
 
         _state = CoordinatorState.Unjoined;
@@ -2967,11 +2967,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
             var memberId = memberIdSnapshot ?? string.Empty;
 
-            // MemberEpoch: 0 for initial join, -2 for static rejoin (set by fencing handler),
-            // or the current epoch for steady-state heartbeats
-            var memberEpoch = isInitial
-                ? (memberEpochSnapshot == -2 && _options.GroupInstanceId is not null ? -2 : 0)
-                : memberEpochSnapshot;
+            // MemberEpoch: 0 for every join and rejoin, static or dynamic (the broker matches a
+            // static member by its instance id, and treats -2 as a temporary static leave), or
+            // the current epoch for steady-state heartbeats.
+            var memberEpoch = isInitial ? 0 : memberEpochSnapshot;
 
             // On initial join, send empty array (owns nothing). null means "unchanged" in KIP-848
             // which is invalid when there's no previous state.
@@ -3822,9 +3821,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     return;
 
                 // Keep the marker until this join succeeds so commits stay locally fenced.
-                // Reuse the member identity for this process. Static members must rejoin with
-                // epoch -2; dynamic members rejoin with the initial epoch 0.
-                _generationId = _options.GroupInstanceId is null ? 0 : -2;
+                // Reuse the member identity for this process. Static and dynamic members both
+                // rejoin with epoch 0; -2 would be another temporary static leave.
+                _generationId = 0;
             }
 
             LogEnsureActiveGroupStarted(_options.GroupId!, _state);
@@ -3903,7 +3902,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 catch (Errors.GroupException ex) when (ex.ErrorCode == ErrorCode.FencedMemberEpoch)
                 {
                     // Stale epoch: the partitions are lost; the next attempt sends MemberEpoch=0
-                    // (or -2 for static members) and owns nothing.
+                    // and owns nothing.
                     LogRetriableCoordinatorError(ex.ErrorCode);
                     FenceMembership(forgetMember: false);
                 }
@@ -4133,7 +4132,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     {
                         case ErrorCode.FencedMemberEpoch:
                         case ErrorCode.UnknownMemberId:
-                            // The next EnsureActiveGroup rejoins with MemberEpoch=0 (or -2 for static).
+                            // The next EnsureActiveGroup rejoins with MemberEpoch=0.
                             if (!await TryFenceFromHeartbeatAsync(
                                     joinStateVersion.Value,
                                     forgetMember: ge.ErrorCode == ErrorCode.UnknownMemberId).ConfigureAwait(false))

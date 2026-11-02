@@ -685,6 +685,72 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
         await Assert.That(assignment2).IsEquivalentTo(expectedPartitions);
     }
 
+    [Test]
+    [Timeout(120_000)]
+    public async Task StaticMember_RejoinsAfterMaxPollIntervalExpiry_RegainsItsPartitions(
+        CancellationToken cancellationToken)
+    {
+        // Exceeding max.poll.interval makes a static member leave temporarily (epoch -2). Its
+        // rejoin must use epoch 0: the broker treats another -2 as a further temporary leave,
+        // so the member would stay out of the group with no partitions and no error.
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
+        var groupId = $"static-max-poll-rejoin-{Guid.NewGuid():N}";
+        var instanceId = $"static-instance-{Guid.NewGuid():N}";
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        for (var p = 0; p < 2; p++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"key-{p}",
+                Value = $"value-{p}",
+                Partition = p
+            }, cancellationToken);
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("static-max-poll-consumer")
+            .WithGroupId(groupId)
+            .WithGroupInstanceId(instanceId)
+            .WithSessionTimeout(TimeSpan.FromSeconds(30))
+            .WithMaxPollInterval(TimeSpan.FromSeconds(2))
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        consumer.Subscribe(topic);
+
+        var first = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cancellationToken);
+        await Assert.That(first).IsNotNull();
+        await Assert.That(consumer.Assignment.Count).IsEqualTo(2);
+        var memberId = consumer.MemberId;
+
+        // Stop polling until the max poll interval expires and the member gives up its partitions.
+        await TestWait.WaitForConditionAsync(
+            () => consumer.Assignment.Count == 0,
+            TimeSpan.FromSeconds(60),
+            description: "the max poll interval to expire");
+
+        // Nothing was committed, so the rejoined member reads from the earliest offset again.
+        var afterRejoin = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cancellationToken);
+        await Assert.That(afterRejoin).IsNotNull();
+        await Assert.That(consumer.Assignment.Count).IsEqualTo(2);
+        await Assert.That(consumer.MemberId).IsEqualTo(memberId);
+
+        await using var admin = Kafka.CreateAdminClient()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .Build();
+        var description = (await admin.DescribeConsumerGroupsAsync([groupId], cancellationToken))[groupId];
+        var member = description.Members.Single(m => m.GroupInstanceId == instanceId);
+        await Assert.That(member.MemberId).IsEqualTo(memberId);
+        await Assert.That(member.MemberEpoch).IsNotNull().And.IsGreaterThan(0);
+    }
+
     /// <summary>
     /// Rebalance listener that tracks the number of times each callback is invoked.
     /// </summary>

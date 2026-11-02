@@ -791,7 +791,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     [Test]
     [NotInParallel]
     [Timeout(5_000)]
-    public async Task ConsumerProtocol_StaticMaxPollExpiry_RejoinsWithNegativeTwoAndSameMemberId(
+    public async Task ConsumerProtocol_StaticMaxPollExpiry_RejoinsWithEpochZeroAndSameMemberId(
         CancellationToken cancellationToken)
     {
         SetupFindCoordinator();
@@ -857,7 +857,8 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 
         var rejoin = await rejoinRequest.Task.WaitAsync(cancellationToken);
         await Assert.That(rejoin.MemberId).IsEqualTo("member-1");
-        await Assert.That(rejoin.MemberEpoch).IsEqualTo(-2);
+        // Epoch -2 would be another temporary static leave; a static member rejoins with 0.
+        await Assert.That(rejoin.MemberEpoch).IsEqualTo(0);
         await Assert.That(rejoin.InstanceId).IsEqualTo("static-1");
     }
 
@@ -3773,7 +3774,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
-    public async Task ConsumerProtocol_StaticMember_FencedDuringHeartbeat_RejoinsWithEpochNegativeTwo()
+    public async Task ConsumerProtocol_StaticMember_FencedDuringHeartbeat_RejoinsWithEpochZero()
     {
         SetupFindCoordinator();
 
@@ -3839,19 +3840,21 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         // until the explicit rejoin below.
         await fencingProcessed.Task;
         await TestWait.UntilAsync(
-            () => coordinator.State == CoordinatorState.Unjoined && coordinator.GenerationId == -2,
+            () => coordinator.State == CoordinatorState.Unjoined && coordinator.GenerationId == 0,
             CancellationToken.None);
 
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
-        // Static member resets _generationId to -2 (triggers MemberEpoch=-2 on rejoin)
-        await Assert.That(coordinator.GenerationId).IsEqualTo(-2);
+        await Assert.That(coordinator.GenerationId).IsEqualTo(0);
 
-        // Rejoin — static member should send MemberEpoch=-2
+        // Rejoin: a static member sends MemberEpoch=0 like a dynamic one, keeping its member id
+        // and instance id. Epoch -2 would make the broker treat it as a temporary static leave.
         await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
 
         var rejoinReq = Volatile.Read(ref lastRequest);
         await Assert.That(rejoinReq).IsNotNull();
-        await Assert.That(rejoinReq!.MemberEpoch).IsEqualTo(-2);
+        await Assert.That(rejoinReq!.MemberEpoch).IsEqualTo(0);
+        await Assert.That(rejoinReq.MemberId).IsEqualTo("member-1");
+        await Assert.That(rejoinReq.InstanceId).IsEqualTo("static-1");
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
         await Assert.That(coordinator.GenerationId).IsEqualTo(4);
     }
