@@ -20,7 +20,9 @@ public sealed partial class ShareConsumerRenewalTests
             OnSend = cancellation.Cancel
         };
         await using var fixture = CreateFixture(connection, acknowledgementCommitCallback: static _ => { });
-        PrepareForPoll(fixture.Consumer);
+        // Assign the leaderless partition too: an acknowledgement outside the assignment is
+        // drained by a commit before the fetch (#4045), not carried inline.
+        PrepareForPoll(fixture.Consumer, new TopicPartition("topic", 0), new TopicPartition("missing-topic", 0));
         fixture.Consumer.Subscribe("topic");
         EstablishSessions(fixture.Consumer, 1);
         fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 39), AcknowledgeType.Accept);
@@ -61,6 +63,33 @@ public sealed partial class ShareConsumerRenewalTests
         await Assert.That(batch.FirstOffset).IsEqualTo(39);
         await Assert.That(batch.LastOffset).IsEqualTo(39);
         await Assert.That(batch.AcknowledgeTypes).IsEquivalentTo(new[] { (byte)AcknowledgeType.Accept });
+        await Assert.That(HasPendingAcknowledgements(fixture.Consumer)).IsFalse();
+    }
+
+    [Test]
+    public async Task Unsubscribe_RenewalOnV1Broker_ReleasesItInTheClosingRequest()
+    {
+        var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 1);
+        await using var fixture = CreateFixture(connection);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 39), AcknowledgeType.Accept);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 40), AcknowledgeType.Renew);
+
+        fixture.Consumer.Unsubscribe();
+        // Disposal awaits the tracked best-effort release task.
+        await fixture.Consumer.DisposeAsync();
+
+        // Closing the session releases the record anyway, so the Renew goes out as Release and
+        // the partition's other outcome is not left out of the request that closes the session.
+        var request = connection.ShareAcknowledgeRequests.Single();
+        await Assert.That(request.IsRenewAck).IsFalse();
+        var partition = request.Topics.Single().Partitions.Single();
+        await Assert.That(partition.PartitionIndex).IsEqualTo(0);
+        var batch = partition.AcknowledgementBatches.Single();
+        await Assert.That(batch.FirstOffset).IsEqualTo(39);
+        await Assert.That(batch.LastOffset).IsEqualTo(40);
+        await Assert.That(batch.AcknowledgeTypes).IsEquivalentTo(
+            new[] { (byte)AcknowledgeType.Accept, (byte)AcknowledgeType.Release });
         await Assert.That(HasPendingAcknowledgements(fixture.Consumer)).IsFalse();
     }
 
