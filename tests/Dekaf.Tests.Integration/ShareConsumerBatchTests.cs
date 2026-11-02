@@ -232,6 +232,72 @@ public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegratio
     }
 
     [Test]
+    [Arguments(false, AcknowledgeType.Accept)]
+    [Arguments(false, AcknowledgeType.Reject)]
+    [Arguments(true, AcknowledgeType.Accept)]
+    [Arguments(true, AcknowledgeType.Reject)]
+    public async Task Unsubscribe_SendsExplicitOutcomeAndReleasesRemainingRecords(bool batches, AcknowledgeType type)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        var group = $"share-unsubscribe-explicit-{Guid.NewGuid():N}";
+        await ConfigureEarliestAsync(group);
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync();
+        await ShareConsumerTestHelper.ProduceAsync(producer, topic, count: 3);
+        await using var first = await Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(group)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit).BuildAsync();
+        first.Subscribe(topic);
+        using var initialTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        string? acknowledgedValue;
+        // Keep both enumerators alive until the end: disposing a poll must not mask the
+        // outcome Unsubscribe sends.
+        await using var recordPoll = first.PollAsync(initialTimeout.Token).GetAsyncEnumerator();
+        await using var batchPoll = first.PollBatchesAsync(initialTimeout.Token).GetAsyncEnumerator();
+        if (batches)
+        {
+            await Assert.That(await batchPoll.MoveNextAsync()).IsTrue();
+            var batch = batchPoll.Current;
+            await Assert.That(batch.Count).IsEqualTo(1);
+            acknowledgedValue = null;
+            foreach (var record in batch)
+            {
+                acknowledgedValue = record.Value;
+                batch.Acknowledge(record, type);
+            }
+        }
+        else
+        {
+            await Assert.That(await recordPoll.MoveNextAsync()).IsTrue();
+            acknowledgedValue = recordPoll.Current.Value;
+            first.Acknowledge(recordPoll.Current, type);
+        }
+
+        // No commit: Unsubscribe itself must send the recorded outcome, and release the
+        // records the application never acknowledged.
+        first.Unsubscribe();
+
+        // The broker's acquisition timeout is 30 seconds; release must happen sooner.
+        using var releaseTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await using var second = await Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(group)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync(releaseTimeout.Token);
+        second.Subscribe(topic);
+        var values = new List<string?>();
+        await foreach (var record in second.PollAsync(releaseTimeout.Token))
+        {
+            values.Add(record.Value);
+            second.Acknowledge(record);
+            if (values.Count == 2) break;
+        }
+        // One partition redelivers in offset order, so a released first record would come first.
+        string?[] produced = ["value-0", "value-1", "value-2"];
+        await Assert.That(values).IsEquivalentTo(produced.Where(value => value != acknowledgedValue));
+        await second.CommitAsync(releaseTimeout.Token);
+    }
+
+    [Test]
     [Arguments(1)]
     [Arguments(4)]
     public async Task NativeResponsePayload_RemainsReadableThroughBatchDelivery(int messageCount)
