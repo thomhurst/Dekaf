@@ -683,6 +683,78 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
 
     [Test]
     [Timeout(30_000)]
+    public async Task SendLoop_FatalWriteFailureWakeConsumedBeforeIdleWait_UnmutesPartition(
+        CancellationToken cancellationToken)
+    {
+        // A fire-and-forget write that fails fatally defers its partition's unmute to the loop
+        // and posts a wake event. When an earlier step of the same iteration consumed that event,
+        // the loop must still drain the deferral before its untimed idle wait, or the partition
+        // stays muted with nothing left to wake the loop.
+        var firstWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var wakeConsumed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = new TestKafkaConnection();
+        connection.SendProduceFireAndForgetWithCallerTimeout = () =>
+            Volatile.Read(ref connection.SendFireAndForgetWithCallerTimeoutCalls) == 1
+                ? new ValueTask(firstWrite.Task)
+                : ValueTask.CompletedTask;
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection);
+
+        // Disable the periodic routing recheck, so the idle wait is untimed.
+        var options = CreateOptions(
+            acks: Acks.None,
+            enableIdempotence: false,
+            saslMechanism: SaslMechanism.ScramSha256,
+            connectionsMaxIdleMs: -1);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var produced = CreateTestBatchWithDelivery(valueTaskSourcePool, "test-topic", 0);
+        var eventChannelField = typeof(BrokerSender).GetField(
+            "_eventChannel", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        BrokerSender? sender = null;
+        sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { },
+            onIdlePendingSendAwaitStarted: () =>
+            {
+                if (wakeConsumed.Task.IsCompleted)
+                    return;
+
+                // On the send loop, about to await the write: fail it fatally, wait until its
+                // catch block has deferred the unmute and failed the batch, then consume the
+                // wake event, as an earlier step of this iteration would have.
+                firstWrite.SetException(new AuthenticationException(
+                    ErrorCode.SaslAuthenticationFailed,
+                    "revoked credential"));
+                ((IAsyncResult)produced.Delivery).AsyncWaitHandle.WaitOne(TimeSpan.FromSeconds(20));
+                var reader = ((Channel<BrokerSender.SendLoopEvent>)eventChannelField.GetValue(sender)!).Reader;
+                while (reader.TryRead(out _))
+                {
+                }
+
+                wakeConsumed.TrySetResult();
+            });
+
+        try
+        {
+            var partition = produced.Batch.TopicPartition;
+            produced.Batch.MarkPreSerialized();
+            sender.Enqueue(produced.Batch);
+
+            await wakeConsumed.Task.WaitAsync(cancellationToken);
+            await Assert.That(produced.Delivery.IsFaulted).IsTrue();
+
+            await WaitUntilAsync(() => !accumulator.IsMuted(partition), cancellationToken);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
     public async Task SendLoop_UnexpectedExit_TerminatesEverySurvivingDelivery(
         CancellationToken cancellationToken)
     {
@@ -998,7 +1070,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         string? transactionalId = null, int lingerMs = 0,
         bool enableDeliveryDiagnostics = false,
         SaslMechanism saslMechanism = SaslMechanism.None,
-        bool useTls = false) => new()
+        bool useTls = false, int? connectionsMaxIdleMs = null) => new()
         {
             BootstrapServers = ["localhost:9092"],
             MaxInFlightRequestsPerConnection = maxInFlight,
@@ -1017,7 +1089,8 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             ScaleCooldownMsOverride = scaleCooldownMsOverride,
             TransactionalId = transactionalId,
             SaslMechanism = saslMechanism,
-            UseTls = useTls
+            UseTls = useTls,
+            ConnectionsMaxIdleMs = connectionsMaxIdleMs ?? ConnectionOptions.DefaultConnectionsMaxIdleMs
         };
 
     private sealed class ThrowingCompressionCodec : ICompressionCodec
