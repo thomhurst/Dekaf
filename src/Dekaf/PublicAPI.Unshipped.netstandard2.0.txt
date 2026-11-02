@@ -934,3 +934,7 @@ Dekaf.Admin.AclOperation.CreateTokens = 13 -> Dekaf.Admin.AclOperation
 Dekaf.Admin.AclOperation.DescribeTokens = 14 -> Dekaf.Admin.AclOperation
 Dekaf.Admin.AclOperation.TwoPhaseCommit = 15 -> Dekaf.Admin.AclOperation
 static Dekaf.Admin.ResourcePattern.User(string! name, Dekaf.Admin.PatternType patternType = Dekaf.Admin.PatternType.Literal) -> Dekaf.Admin.ResourcePattern!
+Dekaf.Consumer.PartitionedProcessingOptions.MaxBufferedRecords.get -> int?
+Dekaf.Consumer.PartitionedProcessingOptions.MaxBufferedRecords.init -> void
+Dekaf.Consumer.PartitionedProcessingOptions.MaxConcurrentHandlers.get -> int?
+Dekaf.Consumer.PartitionedProcessingOptions.MaxConcurrentHandlers.init -> void

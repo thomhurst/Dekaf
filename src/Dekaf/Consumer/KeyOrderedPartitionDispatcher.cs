@@ -28,6 +28,10 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
     private ConfiguredValueTaskAwaitable<bool>.ConfiguredValueTaskAwaiter _inputAwaiter;
     private Worker? _completedWorkers;
     private AutomaticPartitionProgress? _progress;
+    // Consumer-wide limits. Records stay counted in the buffer budget until a worker takes them.
+    private PartitionedBufferBudget? _budget;
+    private HandlerSlotLimiter? _slots;
+    private SlotWaiter? _slotWaiter;
     private CancellationToken _processingToken;
     private ExceptionDispatchInfo? _failure;
     private int _inputReady;
@@ -98,6 +102,8 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
             static state => ((AsyncAutoResetSignal)state!).Signal(), _signal);
         if (_automaticCompletion)
             _progress = _context.EnableAutomaticCompletion();
+        _budget = _context.DeferBufferRelease();
+        _slots = _context.HandlerSlots;
 
         try
         {
@@ -174,12 +180,20 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
                     await _signal.WaitAsync(Timeout.Infinite).ConfigureAwait(false);
             }
 
+            // Every worker has finished, so a record still owned here never reached a handler.
+            var undispatched = 0;
             for (var index = 0; index < _records.Length; index++)
             {
                 if (_records[index].OwnsStorage)
+                {
+                    undispatched++;
                     _records[index].Record.ReleaseStorage();
+                }
                 _records[index] = default;
             }
+            _budget?.Release(undispatched);
+            if (_slotWaiter is not null && _slotWaiter.Cancel())
+                _slots!.Release();
 
             ReleaseLanes();
             if (_hasBinaryKeyComparer)
@@ -375,9 +389,13 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
 
     private void DispatchReadyLanes()
     {
-        while (_failure is null && _activeWorkers < _maxWorkers && _readyLanes.TryDequeue(out var lane))
+        while (_failure is null && _activeWorkers < _maxWorkers && _readyLanes.Count != 0)
         {
             _processingToken.ThrowIfCancellationRequested();
+            if (_slots is not null && !TryTakeHandlerSlot(_slots))
+                return;
+
+            var lane = _readyLanes.Dequeue();
             var worker = _freeWorkers.Count != 0
                 ? _freeWorkers.Pop()
                 : new Worker(this, _batchSize);
@@ -389,6 +407,7 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
                 worker.Add(_records[index].Record, index);
             }
 
+            _budget?.Release(worker.Batch.Count);
             _activeWorkers++;
             bool completed;
             try
@@ -473,6 +492,7 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
         worker.Batch.Clear();
         worker.Awaiter = default;
         _activeWorkers--;
+        _slots?.Release();
         _freeWorkers.Push(worker);
         var lane = worker.Lane!;
         worker.Lane = null;
@@ -513,6 +533,26 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
 
         if (frontierChanged)
             PublishCommit();
+    }
+
+    /// <summary>
+    /// Takes a consumer-wide handler slot, or queues this partition's single waiter. A granted
+    /// waiter wakes the coordinator, which takes the slot on its next dispatch.
+    /// </summary>
+    private bool TryTakeHandlerSlot(HandlerSlotLimiter slots)
+    {
+        var waiter = _slotWaiter ??= new SlotWaiter(_signal);
+        switch (Volatile.Read(ref waiter.State))
+        {
+            case HandlerSlotWaiter.Granted:
+                Volatile.Write(ref waiter.State, HandlerSlotWaiter.Idle);
+                return true;
+            case HandlerSlotWaiter.Waiting:
+            case HandlerSlotWaiter.Cancelled:
+                return false;
+        }
+
+        return slots.TryAcquire() || slots.AcquireOrEnqueue(waiter);
     }
 
     private void PublishCommit()
@@ -579,6 +619,24 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
             CompleteWorker(worker);
             worker = next;
         }
+    }
+
+    // The coordinator's signal resumes it inline. A grant comes from another partition's handler
+    // completion, so wake this coordinator on the thread pool instead of inside that completion.
+    private sealed class SlotWaiter(AsyncAutoResetSignal signal) : HandlerSlotWaiter
+#if NET
+        , IThreadPoolWorkItem
+#endif
+    {
+#if NET
+        internal override void OnGranted() => ThreadPool.UnsafeQueueUserWorkItem(this, preferLocal: false);
+
+        void IThreadPoolWorkItem.Execute() => signal.Signal();
+#else
+        private static readonly WaitCallback SignalCallback = static state => ((AsyncAutoResetSignal)state!).Signal();
+
+        internal override void OnGranted() => ThreadPool.UnsafeQueueUserWorkItem(SignalCallback, signal);
+#endif
     }
 
     private struct PendingRecord
