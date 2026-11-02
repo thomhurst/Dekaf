@@ -90,6 +90,55 @@ public sealed partial class PartitionedConsumerRuntimeTests
     }
 
     [Test]
+    [Arguments(PartitionedProcessingOrder.Partition)]
+    [Arguments(PartitionedProcessingOrder.Key)]
+    public async Task SeekAsync_DiscardedRecordsReleaseConsumerWideBuffer(PartitionedProcessingOrder ordering)
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer { RedeliverUnenumeratedBatches = true };
+        consumer.SetAssignment(partition);
+        consumer.Enqueue(Enumerable.Range(0, 10).Select(offset => CreateResult(partition, offset)).ToArray());
+
+        var control = new PartitionedProcessingControl();
+        var received = new ConcurrentQueue<long>();
+        var firstRecordStarted = NewCompletionSource();
+        var releaseFirstRecord = NewCompletionSource();
+        var replayed = NewCompletionSource();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            async (_, message, cancellationToken) =>
+            {
+                received.Enqueue(message.Offset);
+                if (message.Offset == 0 && firstRecordStarted.TrySetResult())
+                    await releaseFirstRecord.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+                if (message.Offset == 9 && received.Count > 1)
+                    replayed.TrySetResult();
+            },
+            new PartitionedProcessingOptions
+            {
+                Control = control,
+                Ordering = ordering,
+                CommitPolicy = PartitionCommitPolicy.UserManaged,
+                StopPolicy = PartitionStopPolicy.Drain,
+                MaxBufferedRecords = 5,
+                SeekDiscardingLaneForTest = _ => releaseFirstRecord.TrySetResult()
+            },
+            cts.Token).AsTask();
+
+        await firstRecordStarted.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        await control.SeekAsync(new TopicPartitionOffset(partition.Topic, partition.Partition, 0), cts.Token)
+            .ConfigureAwait(false);
+
+        // The replay needs the whole consumer-wide buffer again, so it completes only when the
+        // seek released every record it discarded.
+        await replayed.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+
+        await Assert.That(string.Join(",", received)).IsEqualTo("0,0,1,2,3,4,5,6,7,8,9");
+    }
+
+    [Test]
     public async Task SeekAsync_CancelPolicyCancelsInFlightHandler()
     {
         var partition = new TopicPartition("topic-a", 0);

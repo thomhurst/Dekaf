@@ -2372,6 +2372,10 @@ public sealed partial class PartitionedConsumerRuntimeTests
                     continue;
                 }
 
+                int seeksBeforeBatch;
+                lock (_gate)
+                    seeksBeforeBatch = SeekCalls.Count;
+
                 using var pending = CreatePendingFetchData(results);
                 yield return new ConsumeBatch<string, string>(
                     pending,
@@ -2384,7 +2388,8 @@ public sealed partial class PartitionedConsumerRuntimeTests
                             ? BatchIterationStatus.Continue
                             : BatchIterationStatus.Stopped));
 
-                if (RedeliverUnenumeratedBatches && !pending.IsExhausted)
+                // Like KafkaConsumer, a seek drops the partition's stale fetched records.
+                if (RedeliverUnenumeratedBatches && !pending.IsExhausted && !WasSeekedSince(results, seeksBeforeBatch))
                     RequeueAtFront(results);
             }
         }
@@ -2736,6 +2741,25 @@ public sealed partial class PartitionedConsumerRuntimeTests
 
                 return results.Count != 0;
             }
+        }
+
+        private bool WasSeekedSince(List<ConsumeResult<string, string>> results, int seekIndex)
+        {
+            if (results.Count == 0)
+                return false;
+
+            // A batch holds one partition.
+            var partition = new TopicPartition(results[0].Topic, results[0].Partition);
+            lock (_gate)
+            {
+                for (var i = seekIndex; i < SeekCalls.Count; i++)
+                {
+                    if (SeekCalls[i].Topic == partition.Topic && SeekCalls[i].Partition == partition.Partition)
+                        return true;
+                }
+            }
+
+            return false;
         }
 
         private void RequeueAtFront(List<ConsumeResult<string, string>> results)
