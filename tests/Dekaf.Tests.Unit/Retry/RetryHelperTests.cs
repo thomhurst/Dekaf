@@ -406,17 +406,14 @@ public sealed class RetryHelperTests
     public async Task DeadlineMode_CoordinatorRequest_BudgetExhausted_ThrowsTheCoordinatorError()
     {
         // The broker answered: its typed error stays the final failure, not a timeout.
+        // No attempt-count bound here: a slow worker can spend the wall-clock budget in few
+        // attempts. The success test above proves that retries pass MaxRetries.
         await using var metadataManager = CreateUnavailableMetadataManager();
         var failure = new GroupException(ErrorCode.NotCoordinator, "still loading");
-        var attempts = 0;
 
         var exception = await Assert.ThrowsAsync<GroupException>(async () =>
             await RetryHelper.WithRetryAsync<int>(
-                () =>
-                {
-                    Interlocked.Increment(ref attempts);
-                    return ValueTask.FromException<int>(failure);
-                },
+                () => ValueTask.FromException<int>(failure),
                 metadataManager,
                 CancellationToken.None,
                 retryBackoffMs: 5,
@@ -424,7 +421,6 @@ public sealed class RetryHelperTests
                 deadline: new RetryDeadline("TestOperation", TimeSpan.FromMilliseconds(100), RetryCoordinatorErrors: true)));
 
         await Assert.That(exception).IsSameReferenceAs(failure);
-        await Assert.That(attempts).IsGreaterThan(RetryHelper.MaxRetries + 1);
     }
 
     [Test]
