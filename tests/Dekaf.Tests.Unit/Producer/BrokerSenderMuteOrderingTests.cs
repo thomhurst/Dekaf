@@ -2528,41 +2528,44 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         var options = CreateOptions(deliveryTimeoutMs: 120_000);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+        var iterationGate = new TwoIterationGateLogger();
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { }, logger: iterationGate);
         var mutePartition = typeof(BrokerSender).GetMethod(
             "MutePartition", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var deferUnmute = typeof(BrokerSender).GetMethod(
             "DeferUnmuteUnlessRetryQueued", BindingFlags.Instance | BindingFlags.NonPublic)!;
-        var knownPartitions = (HashSet<TopicPartition>)typeof(BrokerSender).GetField(
-            "_knownPartitions", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
 
         try
         {
             var retriedPartition = new TopicPartition("test-topic", 0);
-            var otherPartition = new TopicPartition("test-topic", 1);
+            var wakePartition = new TopicPartition("test-topic", 1);
+            var markerPartition = new TopicPartition("test-topic", 2);
             mutePartition.Invoke(sender, [retriedPartition]);
-            mutePartition.Invoke(sender, [otherPartition]);
+            mutePartition.Invoke(sender, [wakePartition]);
+            mutePartition.Invoke(sender, [markerPartition]);
 
             var queuedRetry = CreateTestBatch(vtPool, "test-topic", partition: 0);
             queuedRetry.IsRetry = true;
             queuedRetry.RetryNotBefore = Stopwatch.GetTimestamp() + 60 * Stopwatch.Frequency;
             sender.Enqueue(queuedRetry);
 
-            // CoalesceBatch records the partition, then puts the backing-off retry in carry-over
-            // in the same loop step, before the loop next drains deferred unmutes.
-            await TestWait.UntilAsync(
-                () => knownPartitions.Contains(retriedPartition),
-                DiagnosticWaitTimeout,
-                () => "The send loop did not take the queued retry.",
-                ct);
+            // The first iteration takes the backing-off retry into carry-over and parks in the
+            // timed carry-over wait. A deferred unmute of another partition wakes it.
+            await iterationGate.FirstIteration.Task.WaitAsync(ct);
+            iterationGate.ReleaseFirst();
+            deferUnmute.Invoke(sender, [wakePartition]);
 
+            // The second iteration is held before it drains deferred unmutes, with the retry in
+            // carry-over, so both deferrals below are decided in the same drain.
+            await iterationGate.SecondIteration.Task.WaitAsync(ct);
             deferUnmute.Invoke(sender, [retriedPartition]);
-            deferUnmute.Invoke(sender, [otherPartition]);
+            deferUnmute.Invoke(sender, [markerPartition]);
+            iterationGate.ReleaseSecond();
 
-            // Deferred unmutes drain in order, so once the partition without a queued retry is
+            // Deferred unmutes drain in order, so once the marker partition (no queued retry) is
             // unmuted, the loop has already decided the retried partition.
             await TestWait.UntilAsync(
-                () => !accumulator.IsMuted(otherPartition),
+                () => !accumulator.IsMuted(markerPartition),
                 DiagnosticWaitTimeout,
                 () => "The send loop did not drain the deferred unmutes.",
                 ct);
