@@ -3282,8 +3282,75 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             "Cannot prepare transaction",
             refuseAbortable: true,
             ownerToken);
-        _preparedTransactionState = preparedState;
+
+        // The state write refuses every produce that starts from here on. A produce admitted
+        // before it can still be awaiting topic metadata or a serializer, or append while the
+        // first flush sealed; appended after the prepare, its record would join a transaction
+        // whose contents are already fixed and race the EndTxn that completes it. Advancing the
+        // generation after the state write rejects every such append (TransactionAborted), as
+        // the commit does; FlushPreparedTransactionAsync sends what appended before that.
+        // Prepare path only.
+        _accumulator.AdvanceTransactionalAppendGeneration();
         return preparedState;
+    }
+
+    /// <summary>
+    /// The second flush of a prepare, run in <see cref="TransactionState.PreparedTransaction"/>
+    /// after <see cref="PrepareCurrentTransaction"/> fenced late appends: it sends the records
+    /// that appended between the first flush and the fence, so they are in the prepared
+    /// transaction. Usually the fast path: nothing appended since the first flush. A batch that
+    /// fails, or a flush that is cancelled or fails, makes the transaction abortable, so the
+    /// prepare fails and the caller must abort; only a completed flush publishes the prepared
+    /// state that <see cref="CompletePreparedTransactionAsync"/> and a re-initialization act on.
+    /// Prepare path only.
+    /// </summary>
+    internal async ValueTask FlushPreparedTransactionAsync(
+        PreparedTransactionState preparedState,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            // Records may still be unsent, so the transaction cannot stay prepared. Only this
+            // prepare's state is replaced: a concurrent abort or a fatal error is left alone.
+            lock (_partitionsInTransactionLock)
+            {
+                if (_transactionState == TransactionState.PreparedTransaction)
+                {
+                    _lastTransactionError = exception is OperationCanceledException
+                        ? ErrorCode.RequestTimedOut
+                        : ErrorCode.UnknownServerError;
+                    _transactionState = TransactionState.AbortableError;
+                }
+            }
+
+            throw;
+        }
+
+        ThrowIfTransactionFailedDuringFlush("Cannot prepare transaction");
+
+        TransactionState state;
+        lock (_partitionsInTransactionLock)
+        {
+            // A send loop may have failed a batch or fenced the producer, or the handle may have
+            // ended the transaction, since the check above.
+            state = _transactionState;
+            if (state == TransactionState.PreparedTransaction)
+            {
+                _preparedTransactionState = preparedState;
+                return;
+            }
+        }
+
+        ThrowIfTransactionFailedDuringFlush("Cannot prepare transaction");
+        throw new TransactionException(ErrorCode.InvalidTxnState,
+            $"Cannot prepare transaction: it moved to {state} while the prepare flushed.")
+        {
+            TransactionalId = _options.TransactionalId
+        };
     }
 
     internal void ThrowIfInPreparedTransaction()
@@ -5877,7 +5944,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 return true;
             }
 
-            if (state is not (TransactionState.InTransaction or TransactionState.CommittingTransaction))
+            // PreparedTransaction: the prepare's second flush runs in it
+            // (FlushPreparedTransactionAsync); once the prepare returns no batch of it remains.
+            if (state is not (TransactionState.InTransaction
+                or TransactionState.CommittingTransaction
+                or TransactionState.PreparedTransaction))
                 return true;
 
             _transactionBatchFailure ??= failure;
@@ -6238,6 +6309,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 "Cannot produce: transactions are not initialized. Call InitTransactionsAsync(), then BeginTransaction(), before producing.",
             TransactionState.Ready =>
                 "Cannot produce: no transaction is open. Call BeginTransaction() before producing.",
+            // The prepare also fences produces admitted before it that have not appended yet
+            // (KafkaProducer.PrepareCurrentTransaction).
             TransactionState.PreparedTransaction =>
                 "Cannot produce: the current transaction is prepared. Only commit, abort, or complete are permitted.",
             // The commit also fences produces admitted before it that have not appended yet
@@ -8314,7 +8387,9 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         await _producer.FlushAsync(cancellationToken).ConfigureAwait(false);
         _producer.ThrowIfTransactionFailedDuringFlush("Cannot prepare transaction");
         // Checks ownership again with the state write: the transaction may have ended during the flush.
-        return _producer.PrepareCurrentTransaction(_ownerToken);
+        var preparedState = _producer.PrepareCurrentTransaction(_ownerToken);
+        await _producer.FlushPreparedTransactionAsync(preparedState, cancellationToken).ConfigureAwait(false);
+        return preparedState;
     }
 
     /// <summary>

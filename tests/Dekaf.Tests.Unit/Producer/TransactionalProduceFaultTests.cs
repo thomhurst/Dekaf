@@ -420,6 +420,59 @@ public sealed class TransactionalProduceFaultTests
     }
 
     /// <summary>
+    /// The KIP-939 prepare form of the commit test above. A produce admitted while the transaction
+    /// was open but still awaiting its async serializer when the prepare ends is not part of the
+    /// prepared transaction, whose contents are fixed once PrepareAsync returns. Once it resumes it
+    /// must fail with <see cref="ProduceErrorKind.TransactionAborted"/>; it must not be appended
+    /// and then sent while the prepared transaction waits for completion, where it would join the
+    /// transaction or race its EndTxn. A record that appended before the prepare is sent first.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task PrepareAsync_ProduceStillSerializingWhenThePrepareEnds_FailsAndIsNeverSent(
+        CancellationToken cancellationToken)
+    {
+        var serializer = new HeldAsyncStringSerializer(heldValue: "admitted-before-prepare");
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion: 3,
+            produceError: static (_, _) => ErrorCode.None,
+            asyncValueSerializer: serializer,
+            enableTwoPhaseCommit: true);
+
+        var prepared = harness.Producer.BeginTransaction();
+        await prepared.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "prepared",
+            Partition = 0
+        }, cancellationToken);
+        var stale = prepared.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "admitted-before-prepare",
+            Partition = 0
+        }, cancellationToken).AsTask();
+        await serializer.Entered.WaitAsync(cancellationToken);
+
+        var preparedState = await prepared.PrepareAsync(cancellationToken);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.PreparedTransaction);
+        await Assert.That(harness.Broker.ProducedBatches.Sum(batch => batch.RecordCount)).IsEqualTo(1);
+        var sentBeforeRelease = harness.Broker.ProducedBatches.Count;
+
+        serializer.Release();
+        var exception = await Assert.That(async () => await stale).Throws<ProduceException>();
+        await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+        await Assert.That(harness.Broker.ProducedBatches.Count).IsEqualTo(sentBeforeRelease);
+
+        await harness.Producer.CompletePreparedTransactionAsync(preparedState, committed: true, cancellationToken);
+        await prepared.DisposeAsync();
+        await Assert.That(harness.Broker.CommitRequests).IsEqualTo(1);
+        await Assert.That(harness.Broker.ProducedBatches.Count).IsEqualTo(sentBeforeRelease);
+    }
+
+    /// <summary>
     /// The fire-and-forget form of the abort test above: a FireAsync admitted before the abort that is
     /// still awaiting its async serializer when the abort ends must not append after the abort
     /// reopens appends. With a delivery handler the handler receives
@@ -885,7 +938,8 @@ public sealed class TransactionalProduceFaultTests
             IAsyncSerializer<string>? asyncValueSerializer = null,
             ISerializer<string>? valueSerializer = null,
             Dekaf.Retry.IRetryPolicy? retryPolicy = null,
-            IReadOnlyList<object>? interceptors = null)
+            IReadOnlyList<object>? interceptors = null,
+            bool enableTwoPhaseCommit = false)
         {
             var broker = new ScriptedTransactionalBroker(produceError, bumpsEpochAtEndTxn: transactionVersion >= 2);
             var pool = new ConnectionPool(
@@ -944,6 +998,7 @@ public sealed class TransactionalProduceFaultTests
                 {
                     BootstrapServers = ["localhost:9092"],
                     TransactionalId = "txn-produce-fault",
+                    EnableTwoPhaseCommit = enableTwoPhaseCommit,
                     LingerMs = lingerMs,
                     DeliveryTimeoutMs = deliveryTimeoutMs,
                     RequestTimeoutMs = Math.Min(deliveryTimeoutMs, 30_000),
