@@ -1353,9 +1353,22 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private async ValueTask FindCoordinatorCoreAsync(bool retryOnFailure, CancellationToken cancellationToken)
     {
         var brokers = _metadataManager.Metadata.GetBrokers();
+        if (brokers.Count == 0 && retryOnFailure)
+        {
+            // A graceful broker shutdown can publish an empty broker list. Refresh from
+            // bootstrap before discovery; a still-empty snapshot belongs to the caller's
+            // existing coordinator retry/deadline policy, not a fatal consumer invariant.
+            await RetryHelper.RefreshMetadataForRetryAsync(_metadataManager, cancellationToken)
+                .ConfigureAwait(false);
+            brokers = _metadataManager.Metadata.GetBrokers();
+        }
         if (brokers.Count == 0)
         {
-            throw new InvalidOperationException("No brokers available");
+            throw new Errors.GroupException(ErrorCode.CoordinatorNotAvailable,
+                "No brokers available for coordinator discovery")
+            {
+                GroupId = _options.GroupId
+            };
         }
 
         var request = new FindCoordinatorRequest

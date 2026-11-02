@@ -33,6 +33,12 @@ Group "my-group" with 4 consumers:
 
 ## Creating Consumer Group Members
 
+During coordinator discovery, an empty broker list in cached metadata is a transient
+condition, including during a graceful broker restart. Dekaf refreshes metadata from
+the bootstrap servers and retries group discovery with the existing backoff and
+rebalance timeout. Caller cancellation and fatal authentication or authorization
+errors still stop the operation.
+
 Each consumer instance needs the same group ID:
 
 ```csharp
