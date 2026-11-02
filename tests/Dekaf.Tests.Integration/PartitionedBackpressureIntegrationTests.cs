@@ -113,6 +113,93 @@ public sealed class PartitionedBackpressureIntegrationTests(KafkaTestContainer k
         }
     }
 
+    [Test]
+    [Arguments(PartitionBackpressureMode.PauseResume, PartitionedProcessingOrder.Partition)]
+    [Arguments(PartitionBackpressureMode.AwaitCapacity, PartitionedProcessingOrder.Key)]
+    public async Task ConsumerWideLimits_BoundHandlersAndCommitEveryPartition(
+        PartitionBackpressureMode mode,
+        PartitionedProcessingOrder ordering)
+    {
+        const int partitionCount = 6;
+        const int recordsPerPartition = 50;
+        const int handlerLimit = 2;
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: partitionCount);
+        var groupId = $"consumer-wide-limits-{Guid.NewGuid():N}";
+        await using (var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync())
+        {
+            for (var partition = 0; partition < partitionCount; partition++)
+            {
+                for (var offset = 0; offset < recordsPerPartition; offset++)
+                {
+                    await producer.ProduceAsync(new ProducerMessage<string, string>
+                    {
+                        Topic = topic,
+                        Partition = partition,
+                        Key = $"key-{offset % 5}",
+                        Value = offset.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    });
+                }
+            }
+        }
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        using var stop = new CancellationTokenSource();
+        var allProcessed = NewSignal();
+        var active = 0;
+        var maxActive = 0;
+        var processed = 0;
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .BuildAsync();
+        await using var admin = Kafka.CreateAdminClient()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).Build();
+        consumer.Subscribe(topic);
+
+        var running = consumer.RunPartitionedAsync(async (_, _, token) =>
+        {
+            var now = Interlocked.Increment(ref active);
+            var observed = Volatile.Read(ref maxActive);
+            while (now > observed && Interlocked.CompareExchange(ref maxActive, now, observed) != observed)
+                observed = Volatile.Read(ref maxActive);
+
+            await Task.Yield();
+            Interlocked.Decrement(ref active);
+            if (Interlocked.Increment(ref processed) == partitionCount * recordsPerPartition)
+                allProcessed.TrySetResult();
+        }, new PartitionedProcessingOptions
+        {
+            Ordering = ordering,
+            BackpressureMode = mode,
+            MaxConcurrentHandlersPerPartition = 4,
+            MaxConcurrentHandlers = handlerLimit,
+            MaxBufferedRecords = 8,
+            CommitPolicy = PartitionCommitPolicy.CommitCompletedOnRevoke
+        }, stop.Token).AsTask();
+
+        try
+        {
+            await allProcessed.Task.WaitAsync(timeout.Token);
+            await Assert.That(Volatile.Read(ref maxActive)).IsLessThanOrEqualTo(handlerLimit);
+        }
+        finally
+        {
+            await stop.CancelAsync();
+            try { await running.WaitAsync(timeout.Token); }
+            catch (OperationCanceledException) when (stop.IsCancellationRequested)
+            {
+            }
+        }
+
+        // Shutdown commits every partition's completed offset, so no paused partition was left behind.
+        var offsets = await admin.ListConsumerGroupOffsetsAsync(groupId, timeout.Token);
+        for (var partition = 0; partition < partitionCount; partition++)
+            await Assert.That(offsets[new TopicPartition(topic, partition)]).IsEqualTo(recordsPerPartition);
+    }
+
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private sealed class ThirdRecordDeserializer(TaskCompletionSource thirdRecordRead, Action? beforeReturn) : IDeserializer<string>
