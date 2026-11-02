@@ -432,6 +432,7 @@ internal sealed class SubjectSchemaIdCache
             }
 
             var candidate = activeIndex == 0 ? _firstValue : _secondValue;
+            ReadBarrier();
             if (activeIndex != Volatile.Read(ref _activeIndex)
                 || version != Volatile.Read(ref _version)
                 || !candidate.Key.Equals(key))
@@ -466,6 +467,7 @@ internal sealed class SubjectSchemaIdCache
             }
 
             var candidate = retainedIndex == 0 ? _firstValue : _secondValue;
+            ReadBarrier();
             if (activeIndex != Volatile.Read(ref _activeIndex)
                 || version != Volatile.Read(ref _version)
                 || !candidate.Key.Equals(key))
@@ -476,6 +478,20 @@ internal sealed class SubjectSchemaIdCache
 
             value = candidate;
             return true;
+        }
+
+        // The candidate copy is a multi-word plain load. A volatile read is only an acquire, so on
+        // weakly ordered CPUs (ARM64) those earlier loads may complete after the validating re-reads
+        // of _activeIndex/_version and observe a concurrent publish, tearing the entry. This barrier
+        // orders the copy before validation. It runs only on turnover lookups whose hash matched.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void ReadBarrier()
+        {
+#if NET10_0_OR_GREATER
+            Volatile.ReadBarrier();
+#else
+            Interlocked.MemoryBarrier();
+#endif
         }
 
         internal bool TryPublish(SubjectSchemaIdCacheEntry value, int hashCode)
