@@ -729,22 +729,31 @@ public sealed partial class ConnectionPool :
         int port,
         CancellationToken cancellationToken)
     {
+        var setups = Task.WhenAll(tasks);
         try
         {
             // The round token carries pool disposal as well as the caller's cancellation, so
             // disposal ends the wait instead of leaving the caller parked until the timeout.
-            await Task.WhenAll(tasks)
+            await setups
                 .WaitAsync(operationTimeout, setupRoundCts.Token)
                 .ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
+            // The abandoned setups fail once the round is cancelled; nothing else awaits them.
+            TaskFaultObserver.ObserveFault(setups);
             setupRoundCts.Cancel();
             throw CreateConnectionSetupTimeoutException(operationTimeout, brokerId, host, port);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && Volatile.Read(ref _disposed) != 0)
         {
+            TaskFaultObserver.ObserveFault(setups);
             throw new ObjectDisposedException(nameof(ConnectionPool));
+        }
+        catch (OperationCanceledException)
+        {
+            TaskFaultObserver.ObserveFault(setups);
+            throw;
         }
     }
 
@@ -2767,6 +2776,7 @@ public sealed partial class ConnectionPool :
             // max(individual) time rather than sum(individual) time.
             if (tasks.Count > 0)
             {
+                Task? disposals = null;
                 try
                 {
                     var allTasks = new Task[tasks.Count];
@@ -2775,12 +2785,15 @@ public sealed partial class ConnectionPool :
                         allTasks[i] = tasks[i].AsTask();
                     }
 
-                    await Task.WhenAll(allTasks)
+                    disposals = Task.WhenAll(allTasks);
+                    await disposals
                         .WaitAsync(_connectionOptions.ConnectionTimeout)
                         .ConfigureAwait(false);
                 }
                 catch (TimeoutException)
                 {
+                    // Late disposal failures have no other observer once the wait gives up.
+                    TaskFaultObserver.ObserveFault(disposals!);
                     LogConnectionDisposalExceededTimeout(_connectionOptions.ConnectionTimeout.TotalMilliseconds);
                 }
                 catch (Exception ex)

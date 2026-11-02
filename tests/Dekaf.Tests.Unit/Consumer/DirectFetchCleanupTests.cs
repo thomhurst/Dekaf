@@ -21,6 +21,8 @@ public sealed class DirectFetchCleanupTests
         KafkaConsumer<string, string>.DisposeCompletedFetchResults([completed, faulted], 2);
 
         await Assert.That(memory.DisposeCount).IsEqualTo(1);
+        // The direct-fetch caller observes faults through Task.WhenAll; observe this one here.
+        await Assert.That(faulted.Exception).IsNotNull();
     }
 
     private sealed class TrackingPooledMemory : IPooledMemory

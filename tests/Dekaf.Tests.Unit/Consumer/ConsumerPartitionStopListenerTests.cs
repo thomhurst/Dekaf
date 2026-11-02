@@ -229,6 +229,7 @@ public sealed class ConsumerPartitionStopListenerTests
             await lostStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
             var completed = await Task.WhenAny(close, Task.Delay(TimeSpan.FromSeconds(3)));
             await Assert.That(completed).IsSameReferenceAs(close);
+            await Assert.That(async () => await close).Throws<KafkaTimeoutException>();
         }
         finally
         {

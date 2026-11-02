@@ -58,8 +58,8 @@ public partial class AwsKmsProviderTests
     {
         var client = Substitute.For<IAmazonKeyManagementService>();
         var failure = new AmazonKeyManagementServiceException("secret provider response");
-        client.EncryptAsync(Arg.Any<EncryptRequest>(), Arg.Any<CancellationToken>()).Returns(Task.FromException<EncryptResponse>(failure));
-        client.DecryptAsync(Arg.Any<DecryptRequest>(), Arg.Any<CancellationToken>()).Returns(Task.FromException<DecryptResponse>(failure));
+        client.EncryptAsync(Arg.Any<EncryptRequest>(), Arg.Any<CancellationToken>()).Returns(_ => Task.FromException<EncryptResponse>(failure));
+        client.DecryptAsync(Arg.Any<DecryptRequest>(), Arg.Any<CancellationToken>()).Returns(_ => Task.FromException<DecryptResponse>(failure));
         using var provider = new AwsKmsProvider(client);
 
         var exception = wrap
@@ -79,9 +79,9 @@ public partial class AwsKmsProviderTests
         var client = Substitute.For<IAmazonKeyManagementService>();
         var failure = new AmazonClientException("credential provider response: sensitive");
         client.EncryptAsync(Arg.Any<EncryptRequest>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException<EncryptResponse>(failure));
+            .Returns(_ => Task.FromException<EncryptResponse>(failure));
         client.DecryptAsync(Arg.Any<DecryptRequest>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException<DecryptResponse>(failure));
+            .Returns(_ => Task.FromException<DecryptResponse>(failure));
         using var provider = new AwsKmsProvider(client);
 
         var exception = wrap
@@ -107,9 +107,9 @@ public partial class AwsKmsProviderTests
             ? new HttpRequestException("transport response: sensitive")
             : new TimeoutException("timeout response: sensitive");
         client.EncryptAsync(Arg.Any<EncryptRequest>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException<EncryptResponse>(failure));
+            .Returns(_ => Task.FromException<EncryptResponse>(failure));
         client.DecryptAsync(Arg.Any<DecryptRequest>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException<DecryptResponse>(failure));
+            .Returns(_ => Task.FromException<DecryptResponse>(failure));
         using var provider = new AwsKmsProvider(client);
 
         var exception = wrap
@@ -132,9 +132,9 @@ public partial class AwsKmsProviderTests
         var client = Substitute.For<IAmazonKeyManagementService>();
         var failure = new ObjectDisposedException("HttpClient", "disposed transport: sensitive");
         client.EncryptAsync(Arg.Any<EncryptRequest>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException<EncryptResponse>(failure));
+            .Returns(_ => Task.FromException<EncryptResponse>(failure));
         client.DecryptAsync(Arg.Any<DecryptRequest>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException<DecryptResponse>(failure));
+            .Returns(_ => Task.FromException<DecryptResponse>(failure));
         using var provider = new AwsKmsProvider(client);
 
         var exception = wrap
@@ -154,7 +154,7 @@ public partial class AwsKmsProviderTests
     {
         var client = Substitute.For<IAmazonKeyManagementService>();
         client.DecryptAsync(Arg.Any<DecryptRequest>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException<DecryptResponse>(new InvalidCiphertextException("ciphertext: sensitive")));
+            .Returns(_ => Task.FromException<DecryptResponse>(new InvalidCiphertextException("ciphertext: sensitive")));
         using var provider = new AwsKmsProvider(client);
 
         var exception = await Assert.ThrowsAsync<SchemaRegistryKmsException>(
@@ -186,7 +186,7 @@ public partial class AwsKmsProviderTests
     {
         var client = Substitute.For<IAmazonKeyManagementService>();
         client.DecryptAsync(Arg.Any<DecryptRequest>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException<DecryptResponse>(new IncorrectKeyException("wrong key: sensitive")));
+            .Returns(_ => Task.FromException<DecryptResponse>(new IncorrectKeyException("wrong key: sensitive")));
         using var provider = new AwsKmsProvider(client);
 
         var exception = await Assert.ThrowsAsync<SchemaRegistryKmsException>(
@@ -207,7 +207,7 @@ public partial class AwsKmsProviderTests
             "request-id",
             HttpStatusCode.Forbidden);
         client.EncryptAsync(Arg.Any<EncryptRequest>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException<EncryptResponse>(denied));
+            .Returns(_ => Task.FromException<EncryptResponse>(denied));
         using var provider = new AwsKmsProvider(client);
 
         var exception = await Assert.ThrowsAsync<SchemaRegistryKmsException>(

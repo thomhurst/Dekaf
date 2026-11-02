@@ -20,6 +20,44 @@ public sealed class ConnectionPoolTests
     private const int IdleThresholdMs = 60000;
 
     [Test]
+    public async Task ConnectionGroupSetupTimeout_LateSetupFailures_AreObserved()
+    {
+        var lateFailure = new InvalidOperationException("late group setup failure");
+        using var probe = new UnobservedTaskExceptionProbe(lateFailure);
+
+        var unobserved = await probe.RunAndCollectAsync(async () =>
+        {
+            await using var pool = new ConnectionPool(
+                clientId: "test-client",
+                connectionOptions: new ConnectionOptions(),
+                connectionsPerBroker: 2,
+                connectionFactory: (_, _, _, _, _) => throw new NotSupportedException());
+            var first = new TaskCompletionSource<IKafkaConnection>();
+            var second = new TaskCompletionSource<IKafkaConnection>();
+            using var setupRound = new CancellationTokenSource();
+            var wait = (ValueTask)typeof(ConnectionPool)
+                .GetMethod("WaitForConnectionGroupSetupAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(pool, [
+                    new[] { first.Task, second.Task },
+                    TimeSpan.FromMilliseconds(1),
+                    setupRound,
+                    1,
+                    "broker-a",
+                    9092,
+                    CancellationToken.None])!;
+
+            await Assert.That(async () => await wait).Throws<KafkaException>()
+                .WithMessageContaining("Connection setup timeout");
+
+            // The setups fail only after the group wait has given up on them.
+            first.SetException(lateFailure);
+            second.SetException(lateFailure);
+        });
+
+        await Assert.That(unobserved).IsFalse();
+    }
+
+    [Test]
     public async Task StatusSnapshot_ReportsPerBrokerConnectionStateAndRequestFreshness()
     {
         var connection = new TestIdleConnection(7, "broker-a", 9092)

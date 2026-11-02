@@ -224,8 +224,14 @@ public sealed class ConsumerFetchPartitionErrorTests
             return consumer;
         }
 
-        public void FailMetadataRefresh() =>
-            _metadataConnection.TrySetException(new InvalidOperationException("stop refresh"));
+        public void FailMetadataRefresh()
+        {
+            if (_metadataConnection.TrySetException(new InvalidOperationException("stop refresh")))
+            {
+                // Tests that never start a refresh leave nothing awaiting this fault; mark it observed.
+                _ = _metadataConnection.Task.Exception;
+            }
+        }
 
         public void Dispose() => FailMetadataRefresh();
 

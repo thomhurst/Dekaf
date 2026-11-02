@@ -116,7 +116,7 @@ public class AzureKeyVaultKmsProviderTests
     {
         var client = CreateClient(KeyUri);
         client.UnwrapKeyAsync(Arg.Any<KeyWrapAlgorithm>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException<UnwrapResult>(new RequestFailedException(404, "wrong key: sensitive")));
+            .Returns(_ => Task.FromException<UnwrapResult>(new RequestFailedException(404, "wrong key: sensitive")));
         var provider = new AzureKeyVaultKmsProvider(new RecordingFactory(_ => client));
 
         var exception = await Assert.ThrowsAsync<SchemaRegistryKmsException>(
@@ -132,7 +132,7 @@ public class AzureKeyVaultKmsProviderTests
         var client = CreateClient(KeyUri);
         var denied = new RequestFailedException(403, "authorization: sensitive");
         client.WrapKeyAsync(Arg.Any<KeyWrapAlgorithm>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException<WrapResult>(denied));
+            .Returns(_ => Task.FromException<WrapResult>(denied));
         var provider = new AzureKeyVaultKmsProvider(new RecordingFactory(_ => client));
 
         var exception = await Assert.ThrowsAsync<SchemaRegistryKmsException>(
@@ -152,9 +152,9 @@ public class AzureKeyVaultKmsProviderTests
         var client = CreateClient(KeyUri);
         var cancellation = new OperationCanceledException("internal timeout: sensitive");
         client.WrapKeyAsync(Arg.Any<KeyWrapAlgorithm>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException<WrapResult>(cancellation));
+            .Returns(_ => Task.FromException<WrapResult>(cancellation));
         client.UnwrapKeyAsync(Arg.Any<KeyWrapAlgorithm>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException<UnwrapResult>(cancellation));
+            .Returns(_ => Task.FromException<UnwrapResult>(cancellation));
         var factory = new RecordingFactory(_ => client);
         var provider = new AzureKeyVaultKmsProvider(factory);
         var material = unwrap
@@ -224,7 +224,7 @@ public class AzureKeyVaultKmsProviderTests
     {
         var client = CreateClient(KeyUri);
         client.UnwrapKeyAsync(Arg.Any<KeyWrapAlgorithm>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException<UnwrapResult>(new RequestFailedException(400, "ciphertext: sensitive")));
+            .Returns(_ => Task.FromException<UnwrapResult>(new RequestFailedException(400, "ciphertext: sensitive")));
         var provider = new AzureKeyVaultKmsProvider(new RecordingFactory(_ => client));
 
         var exception = await Assert.ThrowsAsync<SchemaRegistryKmsException>(
@@ -239,7 +239,7 @@ public class AzureKeyVaultKmsProviderTests
     {
         var client = CreateClient(KeyUri);
         client.UnwrapKeyAsync(Arg.Any<KeyWrapAlgorithm>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException<UnwrapResult>(new RequestFailedException(400, "invalid ciphertext")));
+            .Returns(_ => Task.FromException<UnwrapResult>(new RequestFailedException(400, "invalid ciphertext")));
         var factory = new RecordingFactory(_ => client);
         var provider = new AzureKeyVaultKmsProvider(factory);
 
@@ -267,7 +267,7 @@ public class AzureKeyVaultKmsProviderTests
     {
         var client = CreateClient(VersionedKeyUri);
         client.UnwrapKeyAsync(Arg.Any<KeyWrapAlgorithm>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException<UnwrapResult>(new RequestFailedException(status, "transient")));
+            .Returns(_ => Task.FromException<UnwrapResult>(new RequestFailedException(status, "transient")));
         var factory = new RecordingFactory(_ => client);
         var provider = new AzureKeyVaultKmsProvider(factory);
         var ciphertext = Encoding.ASCII.GetBytes($"azure:v1:{KeyVersion}:wrapped");
@@ -286,7 +286,7 @@ public class AzureKeyVaultKmsProviderTests
     {
         var client = CreateClient(VersionedKeyUri);
         client.UnwrapKeyAsync(Arg.Any<KeyWrapAlgorithm>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException<UnwrapResult>(new RequestFailedException(503, "Unavailable")));
+            .Returns(_ => Task.FromException<UnwrapResult>(new RequestFailedException(503, "Unavailable")));
         var factory = new RecordingFactory(_ => client);
         var provider = new AzureKeyVaultKmsProvider(factory);
 
@@ -308,7 +308,7 @@ public class AzureKeyVaultKmsProviderTests
         const string otherKeyUri = "https://orders.vault.azure.net/keys/kek";
         var client = CreateClient(VersionedKeyUri);
         client.UnwrapKeyAsync(Arg.Any<KeyWrapAlgorithm>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException<UnwrapResult>(new RequestFailedException(503, "Unavailable")));
+            .Returns(_ => Task.FromException<UnwrapResult>(new RequestFailedException(503, "Unavailable")));
         var factory = new RecordingFactory(_ => client);
         var provider = new AzureKeyVaultKmsProvider(factory);
         var ciphertext = Encoding.ASCII.GetBytes($"azure:v1:{KeyVersion}:wrapped");

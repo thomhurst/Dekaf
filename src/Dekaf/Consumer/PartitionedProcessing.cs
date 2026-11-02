@@ -2960,8 +2960,8 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
         {
             // The budget is exhausted. Signal cancellation without waiting for user
             // callbacks, and observe both operations when their owners eventually exit.
-            ObserveFailure(stopping);
-            ObserveFailure(_stopping.CancelAsync());
+            TaskFaultObserver.ObserveFault(stopping);
+            TaskFaultObserver.ObserveFault(_stopping.CancelAsync());
 
             return new TimeoutException(
                 $"Partition processor for {TopicPartition.Topic}:{TopicPartition.Partition} did not stop within {timeout}.");
@@ -3004,15 +3004,6 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     {
         if (Interlocked.Exchange(ref _completed, 1) == 0)
             _channel.Writer.TryComplete();
-    }
-
-    private static void ObserveFailure(Task task)
-    {
-        _ = task.ContinueWith(
-            static completed => _ = completed.Exception,
-            CancellationToken.None,
-            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
     }
 }
 
