@@ -925,31 +925,36 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         string selection,
         CancellationToken cancellationToken)
     {
-        AvroSchema? selectedSchema = null;
+        AvroWriterSchema? selectedSchema = null;
         if (registrySchema.SchemaType == SchemaType.Avro)
         {
             var names = registrySchema.References is { Count: > 0 }
-                ? await AvroSchemaReferenceResolver.ResolveAsync(
+                ? await AvroSchemaReferenceResolver.ResolveWriterSchemaNamesAsync(
                         _schemaRegistry,
                         registrySchema,
                         cancellationToken)
                     .ConfigureAwait(false)
                 : null;
-            selectedSchema = names is null
-                ? AvroSchema.Parse(registrySchema.SchemaString)
-                : AvroSchema.Parse(registrySchema.SchemaString, names);
+            selectedSchema = AvroWriterSchema.Parse(registrySchema.SchemaString, names);
         }
 
-        if (!GeneratedSchema.Value.Equals(selectedSchema))
+        if (selectedSchema is null ||
+            !AvroWriterSchemaComparer.SchemaEquals(GeneratedWriterSchema.Value, selectedSchema))
         {
             throw new InvalidOperationException(
                 $"{selection} does not match generated POCO schema '{TCodec.FullName}'.");
         }
     }
 
+    /// <summary>Generated schema as Apache.Avro parses it, for rule processing only.</summary>
     private static class GeneratedSchema
     {
         internal static readonly AvroSchema Value = AvroSchema.Parse(TCodec.SchemaJson);
+    }
+
+    private static class GeneratedWriterSchema
+    {
+        internal static readonly AvroWriterSchema Value = AvroWriterSchema.Parse(TCodec.SchemaJson);
     }
 
     private string GetSubjectName(string topic, bool isKey) =>

@@ -1,6 +1,4 @@
-using Avro;
 using System.Globalization;
-using AvroSchema = Avro.Schema;
 
 namespace Dekaf.SchemaRegistry.Avro.Poco;
 
@@ -8,20 +6,21 @@ internal static class AvroPocoReaderPlanBuilder
 {
     internal static AvroPocoReaderPlan Build<T, TCodec>(
         string writerSchemaJson,
-        SchemaNames? names = null)
-        where TCodec : struct, IAvroPocoCodec<T>
-    {
-        var parsed = names is null
-            ? AvroSchema.Parse(writerSchemaJson)
-            : AvroSchema.Parse(writerSchemaJson, names);
-        var writerSchema = parsed as RecordSchema
-            ?? throw new InvalidOperationException("POCO Avro writer schema must be a record.");
-        return Build<T, TCodec>(writerSchema);
-    }
+        AvroWriterSchemaNames? names = null)
+        where TCodec : struct, IAvroPocoCodec<T> =>
+        Build<T, TCodec>(AvroWriterSchema.Parse(writerSchemaJson, names));
 
-    internal static AvroPocoReaderPlan Build<T, TCodec>(RecordSchema writerSchema)
+    /// <summary>Builds a plan from an Apache.Avro schema that rule processing already resolved.</summary>
+    /// <remarks>Apache.Avro writes every named type in full, so its JSON needs no reference names.</remarks>
+    internal static AvroPocoReaderPlan Build<T, TCodec>(global::Avro.RecordSchema writerSchema)
+        where TCodec : struct, IAvroPocoCodec<T> =>
+        Build<T, TCodec>(writerSchema.ToString());
+
+    internal static AvroPocoReaderPlan Build<T, TCodec>(AvroWriterSchema writerSchema)
         where TCodec : struct, IAvroPocoCodec<T>
     {
+        if (writerSchema.Tag != AvroWriterSchemaTag.Record)
+            throw new InvalidOperationException("POCO Avro writer schema must be a record.");
         if (!string.Equals(writerSchema.Fullname, TCodec.FullName, StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
@@ -31,15 +30,16 @@ internal static class AvroPocoReaderPlanBuilder
     }
 
     private static AvroPocoReaderPlan BuildRecord(
-        RecordSchema writerSchema,
+        AvroWriterSchema writerSchema,
         ReadOnlySpan<AvroPocoField> readerFields)
     {
-        var operations = new AvroPocoReadOperation[writerSchema.Count];
+        var writerFields = writerSchema.Fields;
+        var operations = new AvroPocoReadOperation[writerFields.Length];
         var matched = new bool[readerFields.Length];
 
-        for (var writerIndex = 0; writerIndex < writerSchema.Count; writerIndex++)
+        for (var writerIndex = 0; writerIndex < writerFields.Length; writerIndex++)
         {
-            var writerField = writerSchema.Fields[writerIndex];
+            var writerField = writerFields[writerIndex];
             var readerIndex = FindReaderField(readerFields, writerField.Name);
             if (readerIndex < 0)
             {
@@ -90,22 +90,23 @@ internal static class AvroPocoReaderPlanBuilder
         return -1;
     }
 
-    private static AvroPocoReadNode BuildNode(AvroSchema writer, AvroPocoType reader)
+    private static AvroPocoReadNode BuildNode(AvroWriterSchema writer, AvroPocoType reader)
     {
-        if (writer is LogicalSchema logical)
-            return BuildLogicalNode(logical, reader);
+        if (writer.Tag == AvroWriterSchemaTag.Logical)
+            return BuildLogicalNode(writer, reader);
 
-        if (writer is UnionSchema union)
+        if (writer.Tag == AvroWriterSchemaTag.Union)
         {
             var readerIsUnion = reader.Kind == AvroPocoTypeKind.Union;
             var readerBranches = readerIsUnion
                 ? reader.Branches.Span
                 : new ReadOnlySpan<AvroPocoType>([reader]);
-            var branches = new AvroPocoReadNode[union.Count];
+            var writerBranches = writer.Branches;
+            var branches = new AvroPocoReadNode[writerBranches.Length];
             var requiresWriterUnionDispatch = !readerIsUnion;
-            for (var index = 0; index < union.Count; index++)
+            for (var index = 0; index < writerBranches.Length; index++)
             {
-                var writerBranch = union[index];
+                var writerBranch = writerBranches[index];
                 var readerBranchIndex = TryFindCompatibleReaderIndex(writerBranch, readerBranches);
                 if (readerBranchIndex < 0)
                 {
@@ -117,7 +118,6 @@ internal static class AvroPocoReaderPlanBuilder
                 branches[index].ReaderUnionBranchIndex = readerBranchIndex;
                 requiresWriterUnionDispatch |= branches[index].RequiresWriterUnionDispatch;
             }
-
             return new AvroPocoReadNode(AvroPocoTypeKind.Union)
             {
                 Branches = branches,
@@ -133,29 +133,29 @@ internal static class AvroPocoReaderPlanBuilder
             return node;
         }
 
-        return writer switch
+        return writer.Tag switch
         {
-            RecordSchema record when reader.Kind == AvroPocoTypeKind.Record &&
-                                     string.Equals(record.Fullname, reader.FullName, StringComparison.Ordinal) =>
-                BuildRecordNode(record, reader),
-            EnumSchema @enum when reader.Kind == AvroPocoTypeKind.Enum &&
-                                  string.Equals(@enum.Fullname, reader.FullName, StringComparison.Ordinal) =>
+            AvroWriterSchemaTag.Record when reader.Kind == AvroPocoTypeKind.Record &&
+                                            string.Equals(writer.Fullname, reader.FullName, StringComparison.Ordinal) =>
+                BuildRecordNode(writer, reader),
+            AvroWriterSchemaTag.Enumeration when reader.Kind == AvroPocoTypeKind.Enum &&
+                                                 string.Equals(writer.Fullname, reader.FullName, StringComparison.Ordinal) =>
                 new AvroPocoReadNode(AvroPocoTypeKind.Enum)
                 {
-                    EnumMap = BuildEnumMap(@enum, reader.Symbols.Span),
-                    EnumSymbolCount = @enum.Count
+                    EnumMap = BuildEnumMap(writer, reader.Symbols.Span),
+                    EnumSymbolCount = writer.Symbols.Length
                 },
-            ArraySchema array when reader.Kind == AvroPocoTypeKind.Array =>
-                BuildCollectionNode(AvroPocoTypeKind.Array, array.ItemSchema, reader.Item!),
-            MapSchema map when reader.Kind == AvroPocoTypeKind.Map =>
-                BuildCollectionNode(AvroPocoTypeKind.Map, map.ValueSchema, reader.Item!),
+            AvroWriterSchemaTag.Array when reader.Kind == AvroPocoTypeKind.Array =>
+                BuildCollectionNode(AvroPocoTypeKind.Array, writer.Child!, reader.Item!),
+            AvroWriterSchemaTag.Map when reader.Kind == AvroPocoTypeKind.Map =>
+                BuildCollectionNode(AvroPocoTypeKind.Map, writer.Child!, reader.Item!),
             _ when IsPrimitiveCompatible(writer.Tag, reader.Kind) =>
                 new AvroPocoReadNode(ToKind(writer.Tag)),
             _ => throw Incompatible(writer, reader)
         };
     }
 
-    private static AvroPocoReadNode BuildRecordNode(RecordSchema writer, AvroPocoType reader)
+    private static AvroPocoReadNode BuildRecordNode(AvroWriterSchema writer, AvroPocoType reader)
     {
         var plan = BuildRecord(writer, reader.Fields.Span);
         return new AvroPocoReadNode(AvroPocoTypeKind.Record)
@@ -168,7 +168,7 @@ internal static class AvroPocoReaderPlanBuilder
 
     private static AvroPocoReadNode BuildCollectionNode(
         AvroPocoTypeKind kind,
-        AvroSchema writerItem,
+        AvroWriterSchema writerItem,
         AvroPocoType readerItem)
     {
         var item = BuildNode(writerItem, readerItem);
@@ -179,7 +179,7 @@ internal static class AvroPocoReaderPlanBuilder
         };
     }
 
-    private static AvroPocoReadNode BuildLogicalNode(LogicalSchema writer, AvroPocoType reader)
+    private static AvroPocoReadNode BuildLogicalNode(AvroWriterSchema writer, AvroPocoType reader)
     {
         if (reader.Kind == AvroPocoTypeKind.Union)
         {
@@ -189,28 +189,31 @@ internal static class AvroPocoReaderPlanBuilder
             return node;
         }
 
-        var kind = GetLogicalKind(writer.LogicalTypeName);
+        var kind = GetLogicalKind(writer.LogicalTypeName!);
 
         if (kind is not { } logicalKind)
-            return BuildNode(writer.BaseSchema, reader);
+            return BuildNode(writer.Child!, reader);
 
         if (reader.Kind != logicalKind)
         {
             if (IsLogicalKind(reader.Kind))
                 throw Incompatible(writer, reader);
 
-            return BuildNode(writer.BaseSchema, reader);
+            return BuildNode(writer.Child!, reader);
         }
         if (logicalKind == AvroPocoTypeKind.Decimal && !DecimalMatches(writer, reader))
             throw Incompatible(writer, reader);
         return new AvroPocoReadNode(logicalKind)
         {
-            FixedSize = writer.BaseSchema is FixedSchema fixedSchema ? fixedSchema.Size : 0
+            FixedSize = GetFixedSize(writer.Child!)
         };
     }
 
+    private static int GetFixedSize(AvroWriterSchema schema) =>
+        schema.Tag == AvroWriterSchemaTag.Fixed ? schema.Size : 0;
+
     private static int FindCompatibleReaderIndex(
-        AvroSchema writer,
+        AvroWriterSchema writer,
         ReadOnlySpan<AvroPocoType> readers)
     {
         var index = TryFindCompatibleReaderIndex(writer, readers);
@@ -222,7 +225,7 @@ internal static class AvroPocoReaderPlanBuilder
     }
 
     private static int TryFindCompatibleReaderIndex(
-        AvroSchema writer,
+        AvroWriterSchema writer,
         ReadOnlySpan<AvroPocoType> readers)
     {
         for (var index = 0; index < readers.Length; index++)
@@ -240,36 +243,36 @@ internal static class AvroPocoReaderPlanBuilder
         return -1;
     }
 
-    private static bool IsExactMatch(AvroSchema writer, AvroPocoType reader)
+    private static bool IsExactMatch(AvroWriterSchema writer, AvroPocoType reader)
     {
-        if (writer is LogicalSchema logical)
+        if (writer.Tag == AvroWriterSchemaTag.Logical)
         {
-            var logicalKind = GetLogicalKind(logical.LogicalTypeName);
+            var logicalKind = GetLogicalKind(writer.LogicalTypeName!);
             return logicalKind is null
-                ? IsExactMatch(logical.BaseSchema, reader)
+                ? IsExactMatch(writer.Child!, reader)
                 : reader.Kind == logicalKind && IsCompatible(writer, reader);
         }
 
         var kind = writer.Tag switch
         {
-            AvroSchema.Type.Null => AvroPocoTypeKind.Null,
-            AvroSchema.Type.Boolean => AvroPocoTypeKind.Boolean,
-            AvroSchema.Type.Int => AvroPocoTypeKind.Int,
-            AvroSchema.Type.Long => AvroPocoTypeKind.Long,
-            AvroSchema.Type.Float => AvroPocoTypeKind.Float,
-            AvroSchema.Type.Double => AvroPocoTypeKind.Double,
-            AvroSchema.Type.Bytes => AvroPocoTypeKind.Bytes,
-            AvroSchema.Type.String => AvroPocoTypeKind.String,
-            AvroSchema.Type.Record => AvroPocoTypeKind.Record,
-            AvroSchema.Type.Enumeration => AvroPocoTypeKind.Enum,
-            AvroSchema.Type.Array => AvroPocoTypeKind.Array,
-            AvroSchema.Type.Map => AvroPocoTypeKind.Map,
+            AvroWriterSchemaTag.Null => AvroPocoTypeKind.Null,
+            AvroWriterSchemaTag.Boolean => AvroPocoTypeKind.Boolean,
+            AvroWriterSchemaTag.Int => AvroPocoTypeKind.Int,
+            AvroWriterSchemaTag.Long => AvroPocoTypeKind.Long,
+            AvroWriterSchemaTag.Float => AvroPocoTypeKind.Float,
+            AvroWriterSchemaTag.Double => AvroPocoTypeKind.Double,
+            AvroWriterSchemaTag.Bytes => AvroPocoTypeKind.Bytes,
+            AvroWriterSchemaTag.String => AvroPocoTypeKind.String,
+            AvroWriterSchemaTag.Record => AvroPocoTypeKind.Record,
+            AvroWriterSchemaTag.Enumeration => AvroPocoTypeKind.Enum,
+            AvroWriterSchemaTag.Array => AvroPocoTypeKind.Array,
+            AvroWriterSchemaTag.Map => AvroPocoTypeKind.Map,
             _ => (AvroPocoTypeKind?)null
         };
         return reader.Kind == kind && IsCompatible(writer, reader);
     }
 
-    private static bool IsCompatible(AvroSchema writer, AvroPocoType reader)
+    private static bool IsCompatible(AvroWriterSchema writer, AvroPocoType reader)
     {
         if (reader.Kind == AvroPocoTypeKind.Union)
         {
@@ -282,100 +285,100 @@ internal static class AvroPocoReaderPlanBuilder
             return false;
         }
 
-        if (writer is LogicalSchema logical)
+        if (writer.Tag == AvroWriterSchemaTag.Logical)
         {
-            var logicalKind = GetLogicalKind(logical.LogicalTypeName);
+            var logicalKind = GetLogicalKind(writer.LogicalTypeName!);
             if (logicalKind is null)
-                return IsCompatible(logical.BaseSchema, reader);
+                return IsCompatible(writer.Child!, reader);
             if (reader.Kind != logicalKind)
-                return !IsLogicalKind(reader.Kind) && IsCompatible(logical.BaseSchema, reader);
-            return logicalKind != AvroPocoTypeKind.Decimal || DecimalMatches(logical, reader);
+                return !IsLogicalKind(reader.Kind) && IsCompatible(writer.Child!, reader);
+            return logicalKind != AvroPocoTypeKind.Decimal || DecimalMatches(writer, reader);
         }
 
-        return writer switch
+        return writer.Tag switch
         {
-            RecordSchema record => reader.Kind == AvroPocoTypeKind.Record &&
-                string.Equals(record.Fullname, reader.FullName, StringComparison.Ordinal),
-            EnumSchema @enum => reader.Kind == AvroPocoTypeKind.Enum &&
-                string.Equals(@enum.Fullname, reader.FullName, StringComparison.Ordinal),
-            ArraySchema array => reader.Kind == AvroPocoTypeKind.Array &&
-                IsCompatible(array.ItemSchema, reader.Item!),
-            MapSchema map => reader.Kind == AvroPocoTypeKind.Map &&
-                IsCompatible(map.ValueSchema, reader.Item!),
+            AvroWriterSchemaTag.Record => reader.Kind == AvroPocoTypeKind.Record &&
+                string.Equals(writer.Fullname, reader.FullName, StringComparison.Ordinal),
+            AvroWriterSchemaTag.Enumeration => reader.Kind == AvroPocoTypeKind.Enum &&
+                string.Equals(writer.Fullname, reader.FullName, StringComparison.Ordinal),
+            AvroWriterSchemaTag.Array => reader.Kind == AvroPocoTypeKind.Array &&
+                IsCompatible(writer.Child!, reader.Item!),
+            AvroWriterSchemaTag.Map => reader.Kind == AvroPocoTypeKind.Map &&
+                IsCompatible(writer.Child!, reader.Item!),
             _ => IsPrimitiveCompatible(writer.Tag, reader.Kind)
         };
     }
 
-    private static bool IsPrimitiveCompatible(AvroSchema.Type writer, AvroPocoTypeKind reader) =>
+    private static bool IsPrimitiveCompatible(AvroWriterSchemaTag writer, AvroPocoTypeKind reader) =>
         writer switch
         {
-            AvroSchema.Type.Null => reader == AvroPocoTypeKind.Null,
-            AvroSchema.Type.Boolean => reader == AvroPocoTypeKind.Boolean,
-            AvroSchema.Type.Int => reader is AvroPocoTypeKind.Int or AvroPocoTypeKind.Long or
+            AvroWriterSchemaTag.Null => reader == AvroPocoTypeKind.Null,
+            AvroWriterSchemaTag.Boolean => reader == AvroPocoTypeKind.Boolean,
+            AvroWriterSchemaTag.Int => reader is AvroPocoTypeKind.Int or AvroPocoTypeKind.Long or
                 AvroPocoTypeKind.Float or AvroPocoTypeKind.Double or AvroPocoTypeKind.Date or
                 AvroPocoTypeKind.TimeMilliseconds,
-            AvroSchema.Type.Long => reader is AvroPocoTypeKind.Long or AvroPocoTypeKind.Float or
+            AvroWriterSchemaTag.Long => reader is AvroPocoTypeKind.Long or AvroPocoTypeKind.Float or
                 AvroPocoTypeKind.Double or AvroPocoTypeKind.TimeMicroseconds or
                 AvroPocoTypeKind.TimestampMilliseconds or AvroPocoTypeKind.TimestampMicroseconds,
-            AvroSchema.Type.Float => reader is AvroPocoTypeKind.Float or AvroPocoTypeKind.Double,
-            AvroSchema.Type.Double => reader == AvroPocoTypeKind.Double,
-            AvroSchema.Type.Bytes => reader is AvroPocoTypeKind.Bytes or AvroPocoTypeKind.String,
-            AvroSchema.Type.String => reader is AvroPocoTypeKind.String or AvroPocoTypeKind.Bytes or
+            AvroWriterSchemaTag.Float => reader is AvroPocoTypeKind.Float or AvroPocoTypeKind.Double,
+            AvroWriterSchemaTag.Double => reader == AvroPocoTypeKind.Double,
+            AvroWriterSchemaTag.Bytes => reader is AvroPocoTypeKind.Bytes or AvroPocoTypeKind.String,
+            AvroWriterSchemaTag.String => reader is AvroPocoTypeKind.String or AvroPocoTypeKind.Bytes or
                 AvroPocoTypeKind.Uuid,
             _ => false
         };
 
-    private static AvroPocoReadNode BuildSkipNode(AvroSchema writer) =>
+    private static AvroPocoReadNode BuildSkipNode(AvroWriterSchema writer) =>
         BuildSkipNode(
             writer,
-            new Dictionary<RecordSchema, AvroPocoReadNode>(ReferenceEqualityComparer.Instance));
+            new Dictionary<AvroWriterSchema, AvroPocoReadNode>(ReferenceEqualityComparer.Instance));
 
     private static AvroPocoReadNode BuildSkipNode(
-        AvroSchema writer,
-        Dictionary<RecordSchema, AvroPocoReadNode> records)
+        AvroWriterSchema writer,
+        Dictionary<AvroWriterSchema, AvroPocoReadNode> records)
     {
-        if (writer is LogicalSchema logical)
+        if (writer.Tag == AvroWriterSchemaTag.Logical)
         {
-            var kind = GetLogicalKind(logical.LogicalTypeName);
+            var kind = GetLogicalKind(writer.LogicalTypeName!);
             if (kind is not { } logicalKind)
-                return BuildSkipNode(logical.BaseSchema, records);
+                return BuildSkipNode(writer.Child!, records);
 
             return new AvroPocoReadNode(logicalKind)
             {
-                FixedSize = logical.BaseSchema is FixedSchema fixedSchema ? fixedSchema.Size : 0
+                FixedSize = GetFixedSize(writer.Child!)
             };
         }
 
-        return writer switch
+        return writer.Tag switch
         {
-            RecordSchema record => BuildSkipRecord(record, records),
-            ArraySchema array => BuildSkipCollection(array, records),
-            MapSchema map => new AvroPocoReadNode(AvroPocoTypeKind.Map)
+            AvroWriterSchemaTag.Record => BuildSkipRecord(writer, records),
+            AvroWriterSchemaTag.Array => BuildSkipCollection(writer, records),
+            AvroWriterSchemaTag.Map => new AvroPocoReadNode(AvroPocoTypeKind.Map)
             {
-                Item = BuildSkipNode(map.ValueSchema, records)
+                Item = BuildSkipNode(writer.Child!, records)
             },
-            UnionSchema union => new AvroPocoReadNode(AvroPocoTypeKind.Union)
+            AvroWriterSchemaTag.Union => new AvroPocoReadNode(AvroPocoTypeKind.Union)
             {
-                Branches = BuildSkipBranches(union, records)
+                Branches = BuildSkipBranches(writer, records)
             },
-            EnumSchema @enum => new AvroPocoReadNode(AvroPocoTypeKind.Enum)
+            AvroWriterSchemaTag.Enumeration => new AvroPocoReadNode(AvroPocoTypeKind.Enum)
             {
-                EnumSymbolCount = @enum.Count
+                EnumSymbolCount = writer.Symbols.Length
             },
-            FixedSchema fixedSchema => new AvroPocoReadNode(AvroPocoTypeKind.Bytes)
+            AvroWriterSchemaTag.Fixed => new AvroPocoReadNode(AvroPocoTypeKind.Bytes)
             {
-                FixedSize = fixedSchema.Size
+                FixedSize = writer.Size
             },
             _ => new AvroPocoReadNode(ToKind(writer.Tag))
             {
-                IsZeroWidth = writer.Tag == AvroSchema.Type.Null
+                IsZeroWidth = writer.Tag == AvroWriterSchemaTag.Null
             }
         };
     }
 
     private static AvroPocoReadNode BuildSkipRecord(
-        RecordSchema record,
-        Dictionary<RecordSchema, AvroPocoReadNode> records)
+        AvroWriterSchema record,
+        Dictionary<AvroWriterSchema, AvroPocoReadNode> records)
     {
         if (records.TryGetValue(record, out var existing))
             return existing;
@@ -388,10 +391,10 @@ internal static class AvroPocoReaderPlanBuilder
     }
 
     private static AvroPocoReadNode BuildSkipCollection(
-        ArraySchema array,
-        Dictionary<RecordSchema, AvroPocoReadNode> records)
+        AvroWriterSchema array,
+        Dictionary<AvroWriterSchema, AvroPocoReadNode> records)
     {
-        var item = BuildSkipNode(array.ItemSchema, records);
+        var item = BuildSkipNode(array.Child!, records);
         return new AvroPocoReadNode(item.IsZeroWidth
             ? AvroPocoTypeKind.ZeroWidthArray
             : AvroPocoTypeKind.Array)
@@ -412,51 +415,50 @@ internal static class AvroPocoReaderPlanBuilder
     }
 
     private static AvroPocoReadNode[] BuildSkipFields(
-        RecordSchema record,
-        Dictionary<RecordSchema, AvroPocoReadNode> records)
+        AvroWriterSchema record,
+        Dictionary<AvroWriterSchema, AvroPocoReadNode> records)
     {
-        var nodes = new AvroPocoReadNode[record.Count];
+        var fields = record.Fields;
+        var nodes = new AvroPocoReadNode[fields.Length];
         for (var index = 0; index < nodes.Length; index++)
-            nodes[index] = BuildSkipNode(record.Fields[index].Schema, records);
+            nodes[index] = BuildSkipNode(fields[index].Schema, records);
         return nodes;
     }
 
     private static AvroPocoReadNode[] BuildSkipBranches(
-        UnionSchema union,
-        Dictionary<RecordSchema, AvroPocoReadNode> records)
+        AvroWriterSchema union,
+        Dictionary<AvroWriterSchema, AvroPocoReadNode> records)
     {
-        var nodes = new AvroPocoReadNode[union.Count];
+        var branches = union.Branches;
+        var nodes = new AvroPocoReadNode[branches.Length];
         for (var index = 0; index < nodes.Length; index++)
-            nodes[index] = BuildSkipNode(union[index], records);
+            nodes[index] = BuildSkipNode(branches[index], records);
         return nodes;
     }
 
-    private static int[] BuildEnumMap(EnumSchema writer, ReadOnlySpan<string> readerSymbols)
+    private static int[] BuildEnumMap(AvroWriterSchema writer, ReadOnlySpan<string> readerSymbols)
     {
-        var map = new int[writer.Count];
-        for (var writerIndex = 0; writerIndex < writer.Count; writerIndex++)
-        {
-            var symbol = writer[writerIndex];
-            var readerIndex = readerSymbols.IndexOf(symbol);
-            map[writerIndex] = readerIndex;
-        }
+        var symbols = writer.Symbols;
+        var map = new int[symbols.Length];
+        for (var writerIndex = 0; writerIndex < symbols.Length; writerIndex++)
+            map[writerIndex] = readerSymbols.IndexOf(symbols[writerIndex]);
         return map;
     }
 
-    private static AvroPocoTypeKind ToKind(AvroSchema.Type type) => type switch
+    private static AvroPocoTypeKind ToKind(AvroWriterSchemaTag type) => type switch
     {
-        AvroSchema.Type.Null => AvroPocoTypeKind.Null,
-        AvroSchema.Type.Boolean => AvroPocoTypeKind.Boolean,
-        AvroSchema.Type.Int => AvroPocoTypeKind.Int,
-        AvroSchema.Type.Long => AvroPocoTypeKind.Long,
-        AvroSchema.Type.Float => AvroPocoTypeKind.Float,
-        AvroSchema.Type.Double => AvroPocoTypeKind.Double,
-        AvroSchema.Type.Bytes => AvroPocoTypeKind.Bytes,
-        AvroSchema.Type.String => AvroPocoTypeKind.String,
+        AvroWriterSchemaTag.Null => AvroPocoTypeKind.Null,
+        AvroWriterSchemaTag.Boolean => AvroPocoTypeKind.Boolean,
+        AvroWriterSchemaTag.Int => AvroPocoTypeKind.Int,
+        AvroWriterSchemaTag.Long => AvroPocoTypeKind.Long,
+        AvroWriterSchemaTag.Float => AvroPocoTypeKind.Float,
+        AvroWriterSchemaTag.Double => AvroPocoTypeKind.Double,
+        AvroWriterSchemaTag.Bytes => AvroPocoTypeKind.Bytes,
+        AvroWriterSchemaTag.String => AvroPocoTypeKind.String,
         _ => throw new InvalidOperationException($"Unsupported Avro writer type '{type}'.")
     };
 
-    private static InvalidOperationException Incompatible(AvroSchema writer, AvroPocoType reader) =>
+    private static InvalidOperationException Incompatible(AvroWriterSchema writer, AvroPocoType reader) =>
         new($"Writer Avro type '{writer.Tag}' is incompatible with generated POCO type '{reader.Kind}'.");
 
     private static AvroPocoTypeKind? GetLogicalKind(string logicalTypeName) => logicalTypeName switch
@@ -477,8 +479,8 @@ internal static class AvroPocoReaderPlanBuilder
             AvroPocoTypeKind.TimestampMilliseconds or AvroPocoTypeKind.TimestampMicroseconds or
             AvroPocoTypeKind.Decimal or AvroPocoTypeKind.Uuid;
 
-    private static bool DecimalMatches(LogicalSchema writer, AvroPocoType reader) =>
-        int.TryParse(writer.GetProperty("precision"), NumberStyles.None, CultureInfo.InvariantCulture, out var precision) &&
-        int.TryParse(writer.GetProperty("scale") ?? "0", NumberStyles.None, CultureInfo.InvariantCulture, out var scale) &&
+    private static bool DecimalMatches(AvroWriterSchema writer, AvroPocoType reader) =>
+        int.TryParse(writer.GetPropertyText("precision"), NumberStyles.None, CultureInfo.InvariantCulture, out var precision) &&
+        int.TryParse(writer.GetPropertyText("scale") ?? "0", NumberStyles.None, CultureInfo.InvariantCulture, out var scale) &&
         precision == reader.Precision && scale == reader.Scale;
 }
