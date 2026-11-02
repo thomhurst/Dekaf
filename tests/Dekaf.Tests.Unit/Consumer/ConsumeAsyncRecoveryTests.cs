@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Reflection;
 using System.Text;
@@ -816,6 +817,196 @@ public sealed class ConsumeAsyncRecoveryTests
         var errorLog = logger.Entries.First(e => e.LogLevel == LogLevel.Error && e.Message.Contains("Record parsing error"));
         await Assert.That(errorLog.Message).Contains("orders");
         await Assert.That(errorLog.Message).Contains("5");
+    }
+
+    #endregion
+
+    #region Eager parse failure keeps the unread range (#4026)
+
+    public enum EagerParseConsumeMode
+    {
+        ConsumeAsync,
+        ConsumeOne,
+        ConsumeBatchAsync,
+        ConsumeRawBatchAsync,
+    }
+
+    [Test]
+    [Arguments(EagerParseConsumeMode.ConsumeAsync)]
+    [Arguments(EagerParseConsumeMode.ConsumeOne)]
+    [Arguments(EagerParseConsumeMode.ConsumeBatchAsync)]
+    [Arguments(EagerParseConsumeMode.ConsumeRawBatchAsync)]
+    public async Task EagerParseFailure_RewindsPartitionAndDropsLaterFetches(EagerParseConsumeMode mode)
+    {
+        var tp = new TopicPartition(Topic, Partition);
+        // Offsets 0..2 with an interior malformed record, published with fetch floor 0.
+        var malformed = PendingFetchData.Create(
+            Topic,
+            Partition,
+            [CreateMalformedInteriorBatch(baseOffset: 0)],
+            skipRecordsBelowOffset: 0);
+        // Prefetch already advanced past the malformed fetch and queued the next one.
+        var later = PendingFetchData.Create(
+            Topic,
+            Partition,
+            [CreateBatch(3, CreateRecord(0, "later", "value"))],
+            skipRecordsBelowOffset: 3);
+        await using var consumer = CreateConsumerWithPendingFetches(null, malformed, later);
+        GetFetchPositions(consumer)[tp] = 4;
+
+        var error = await ConsumeExpectingFailureAsync(consumer, mode);
+
+        await Assert.That(error).IsTypeOf<ConsumeException>();
+        // The later fetch of the same partition must not be delivered past the unread range.
+        await Assert.That(GetPendingFetchCount(consumer)).IsEqualTo(0);
+        await Assert.That(GetFetchPositions(consumer)[tp]).IsEqualTo(0L);
+        await Assert.That(consumer.GetPosition(tp)).IsEqualTo(0L);
+        await Assert.That(consumer.DirtyStoredOffsetsForTest.ContainsKey(tp)).IsFalse();
+    }
+
+    [Test]
+    public async Task EagerParseFailure_RewindsToFetchFloorNotEarlierBatchRecords()
+    {
+        var tp = new TopicPartition(Topic, Partition);
+        // A fetch positioned at offset 1 receives the whole batch starting at 0.
+        var malformed = PendingFetchData.Create(
+            Topic,
+            Partition,
+            [CreateMalformedInteriorBatch(baseOffset: 0)],
+            skipRecordsBelowOffset: 1);
+        await using var consumer = CreateConsumerWithPendingFetches(null, malformed);
+        GetFetchPositions(consumer)[tp] = 3;
+
+        var error = await ConsumeExpectingFailureAsync(consumer, EagerParseConsumeMode.ConsumeAsync);
+
+        await Assert.That(error).IsTypeOf<ConsumeException>();
+        await Assert.That(GetFetchPositions(consumer)[tp]).IsEqualTo(1L);
+        await Assert.That(consumer.GetPosition(tp)).IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task PublishedRecordlessError_KeepsLaterFetchesAndFetchPosition()
+    {
+        var tp = new TopicPartition(Topic, Partition);
+        // Prefetch publication raises the floor of every item, including response-level errors.
+        var error = PendingFetchData.CreateError(
+            Topic,
+            Partition,
+            new ConsumeException($"Failed to parse record batch for {Topic}-{Partition}"));
+        error.RaiseStartOffset(0);
+        var later = PendingFetchData.Create(
+            Topic,
+            Partition,
+            [CreateBatch(3, CreateRecord(0, "later", "value"))],
+            skipRecordsBelowOffset: 3);
+        await using var consumer = CreateConsumerWithPendingFetches(null, error, later);
+        GetFetchPositions(consumer)[tp] = 4;
+
+        var thrown = await ConsumeExpectingFailureAsync(consumer, EagerParseConsumeMode.ConsumeAsync);
+
+        await Assert.That(thrown).IsTypeOf<ConsumeException>();
+        // A recordless error never advanced the fetch position, so nothing is rewound or dropped.
+        await Assert.That(GetPendingFetchCount(consumer)).IsEqualTo(1);
+        await Assert.That(GetFetchPositions(consumer)[tp]).IsEqualTo(4L);
+    }
+
+    private static async Task<Exception?> ConsumeExpectingFailureAsync(
+        KafkaConsumer<string, string> consumer,
+        EagerParseConsumeMode mode)
+    {
+        try
+        {
+            switch (mode)
+            {
+                case EagerParseConsumeMode.ConsumeAsync:
+                    await foreach (var _ in consumer.ConsumeAsync()) { }
+                    break;
+                case EagerParseConsumeMode.ConsumeOne:
+                    var method = typeof(KafkaConsumer<string, string>)
+                        .GetMethod("TryConsumeOneFromPendingFetches", BindingFlags.NonPublic | BindingFlags.Instance)
+                        ?? throw new InvalidOperationException("TryConsumeOneFromPendingFetches method not found.");
+                    try
+                    {
+                        method.Invoke(consumer, [null]);
+                    }
+                    catch (TargetInvocationException exception)
+                    {
+                        return exception.InnerException;
+                    }
+
+                    break;
+                case EagerParseConsumeMode.ConsumeBatchAsync:
+                    await foreach (var _ in consumer.ConsumeBatchAsync()) { }
+                    break;
+                case EagerParseConsumeMode.ConsumeRawBatchAsync:
+                    await foreach (var _ in consumer.ConsumeRawBatchAsync()) { }
+                    break;
+            }
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
+
+        return null;
+    }
+
+    private static ConcurrentDictionary<TopicPartition, long> GetFetchPositions(
+        KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>)
+            .GetField("_fetchPositions", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_fetchPositions field not found.");
+        return (ConcurrentDictionary<TopicPartition, long>)field.GetValue(consumer)!;
+    }
+
+    /// <summary>
+    /// Serializes offsets baseOffset..baseOffset+2 and corrupts the length varint of the
+    /// second record, so the batch header and first record parse but eager parsing fails.
+    /// </summary>
+    private static RecordBatch CreateMalformedInteriorBatch(long baseOffset)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var source = new RecordBatch
+        {
+            BaseOffset = baseOffset,
+            BaseTimestamp = 1700000000000L,
+            LastOffsetDelta = 2,
+            Records =
+            [
+                CreateRecord(0, "k0", "v0"),
+                CreateRecord(1, "k1", "v1"),
+                CreateRecord(2, "k2", "v2"),
+            ],
+        })
+        {
+            source.Write(buffer);
+        }
+
+        var bytes = buffer.WrittenSpan.ToArray();
+        const int recordsStart = 61;
+        var position = recordsStart;
+        var firstRecordLength = ReadZigZagVarInt(bytes, ref position);
+        bytes.AsSpan(position + firstRecordLength, 6).Fill(0x80);
+
+        var reader = new KafkaProtocolReader(bytes);
+        return RecordBatch.Read(ref reader);
+    }
+
+    private static int ReadZigZagVarInt(byte[] bytes, ref int position)
+    {
+        var raw = 0;
+        var shift = 0;
+        byte current;
+        do
+        {
+            current = bytes[position++];
+            raw |= (current & 0x7F) << shift;
+            shift += 7;
+        }
+        while ((current & 0x80) != 0);
+
+        return (int)((uint)raw >> 1) ^ -(raw & 1);
     }
 
     #endregion
