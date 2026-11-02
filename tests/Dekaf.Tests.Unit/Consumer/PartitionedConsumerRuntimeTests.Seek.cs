@@ -555,9 +555,13 @@ public sealed partial class PartitionedConsumerRuntimeTests
             cts.Token).AsTask();
         await started.Task.WaitAsync(cts.Token).ConfigureAwait(false);
 
+        // The rejected run must not leave its monitor attached.
+        var monitor = new PartitionedProcessingMonitor();
         await Assert.ThrowsAsync<InvalidOperationException>(
-            async () => await new TestConsumer().RunPartitionedAsync((_, _, _) => ValueTask.CompletedTask, options, cts.Token)
+            async () => await new TestConsumer().RunPartitionedAsync(
+                    (_, _, _) => ValueTask.CompletedTask, new PartitionedProcessingOptions { Control = control, Monitor = monitor }, cts.Token)
                 .ConfigureAwait(false));
+        monitor.Attach();
 
         await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
 

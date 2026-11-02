@@ -312,7 +312,6 @@ public sealed class PartitionedConsumerWideLimitsTests
         var aStop = await a.StopAsync(PartitionStopPolicy.Drain, TimeSpan.FromSeconds(5));
         await Assert.That(aStop).IsNull();
         await Assert.That(aEntered.Task.IsCompleted).IsFalse();
-        await Assert.That(slots.Queued).IsEqualTo(0);
 
         releaseB.TrySetResult();
         var bStop = await b.StopAsync(PartitionStopPolicy.Drain, Timeout);

@@ -893,15 +893,21 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     {
         var monitor = _options.Monitor;
         monitor?.Attach();
-        var control = _options.Control;
-        control?.Attach(this);
         try
         {
-            await RunAttachedAsync(cancellationToken).ConfigureAwait(false);
+            var control = _options.Control;
+            control?.Attach(this);
+            try
+            {
+                await RunAttachedAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                control?.Detach(this);
+            }
         }
         finally
         {
-            control?.Detach(this);
             monitor?.Detach();
         }
     }
