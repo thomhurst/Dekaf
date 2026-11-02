@@ -379,7 +379,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
             var assignment = _assignmentSnapshot;
             RemoveRenewedRecordsOutsideAssignment(assignment);
-            _hasBufferedAcquisitionReleases |= RemoveBufferedRecordsOutsideAssignment(assignment);
+            if (!ReferenceEquals(_bufferedAssignment, assignment))
+            {
+                // A revoked partition whose records were all read leaves nothing buffered to
+                // release, but its pending acknowledgements still cannot ride the next fetch.
+                // Checked once per assignment change, not per poll.
+                _hasBufferedAcquisitionReleases |= RemoveBufferedRecordsOutsideAssignment(assignment)
+                    | _ackTracker.HasPendingOutsideAssignment(assignment);
+            }
             if (_hasBufferedAcquisitionReleases)
             {
                 // Removed partitions cannot acknowledge inline with the next fetch.
@@ -798,11 +805,18 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         TrackRenewalDisposition(record, type);
         record.AcknowledgeType = type;
         var tp = new TopicPartition(record.Topic, record.Partition);
-        _ackTracker.Acknowledge(
-            tp,
-            record.Offset,
-            type,
-            requireTracked: _options.AcknowledgementMode == ShareAcknowledgementMode.Implicit);
+        if (_ackTracker.Acknowledge(
+                tp,
+                record.Offset,
+                type,
+                requireTracked: _options.AcknowledgementMode == ShareAcknowledgementMode.Implicit)
+            && !_assignmentSnapshot.Contains(tp))
+        {
+            // A record held across its partition's revocation is acknowledged after the
+            // assignment-change scan. It cannot ride a fetch, so drain it on the next poll.
+            // Checked once per newly pending partition, not per record.
+            _hasBufferedAcquisitionReleases = true;
+        }
     }
 
     public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
