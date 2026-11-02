@@ -379,7 +379,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
             var assignment = _assignmentSnapshot;
             RemoveRenewedRecordsOutsideAssignment(assignment);
-            _hasBufferedAcquisitionReleases |= RemoveBufferedRecordsOutsideAssignment(assignment);
+            if (!ReferenceEquals(_bufferedAssignment, assignment))
+            {
+                // A revoked partition whose records were all read leaves nothing buffered to
+                // release, but its pending acknowledgements still cannot ride the next fetch.
+                // Checked once per assignment change, not per poll.
+                _hasBufferedAcquisitionReleases |= RemoveBufferedRecordsOutsideAssignment(assignment)
+                    | _ackTracker.HasPendingOutsideAssignment(assignment);
+            }
             if (_hasBufferedAcquisitionReleases)
             {
                 // Removed partitions cannot acknowledge inline with the next fetch.

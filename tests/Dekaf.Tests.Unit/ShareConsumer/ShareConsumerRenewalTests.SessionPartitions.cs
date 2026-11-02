@@ -77,6 +77,81 @@ public sealed partial class ShareConsumerRenewalTests
     }
 
     [Test]
+    [Arguments(ShareAcknowledgementMode.Implicit)]
+    [Arguments(ShareAcknowledgementMode.Explicit)]
+    public async Task Poll_FullyReadPartitionRevoked_SendsItsAcknowledgements(ShareAcknowledgementMode mode)
+    {
+        long offset = 101;
+        var requestCount = 0;
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2, includeShareAcknowledge: true)
+        {
+            ShareFetchHandler = (_, _) => new(++requestCount == 1
+                ? CreateTwoPartitionFetchResponse()
+                : CreateFetchResponse(0, offset++)),
+            ShareAcknowledgeHandler = (_, _) => new(CreateAcknowledgeResponse((0, ErrorCode.None), (1, ErrorCode.None)))
+        };
+        var outcomes = new List<ShareAcknowledgementCommitResult>();
+        await using var fixture = CreateFixture(connection, mode,
+            acknowledgementCommitCallback: results => outcomes.AddRange(results.ToArray()),
+            valueDeserializer: Serializers.String);
+        PrepareForPoll(fixture.Consumer, new TopicPartition("topic", 0), new TopicPartition("topic", 1));
+        fixture.Consumer.Subscribe("topic");
+
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using (var poll = fixture.Consumer.PollAsync(stop.Token).GetAsyncEnumerator())
+        {
+            // Read every buffered record of both partitions, so nothing of partition 1 stays buffered.
+            for (var read = 0; read < 2; read++)
+            {
+                await Assert.That(await poll.MoveNextAsync()).IsTrue();
+                if (mode == ShareAcknowledgementMode.Explicit)
+                    fixture.Consumer.Acknowledge(poll.Current, AcknowledgeType.Accept);
+            }
+
+            PrepareForPoll(fixture.Consumer, new TopicPartition("topic", 0));
+            while (connection.ShareFetchRequests.Count < 3)
+            {
+                await Assert.That(await poll.MoveNextAsync()).IsTrue();
+                if (mode == ShareAcknowledgementMode.Explicit)
+                    fixture.Consumer.Acknowledge(poll.Current, AcknowledgeType.Accept);
+            }
+        }
+
+        await Assert.That(connection.ShareAcknowledgeRequests).HasSingleItem();
+        // The outside-assignment drain commits every pending acknowledgement, partition 1 included.
+        var released = connection.ShareAcknowledgeRequests[0].Topics.Single().Partitions
+            .Single(static partition => partition.PartitionIndex == 1);
+        await Assert.That(released.AcknowledgementBatches.Single().FirstOffset).IsEqualTo(200);
+        await Assert.That(released.AcknowledgementBatches.Single().AcknowledgeTypes)
+            .IsEquivalentTo([(byte)AcknowledgeType.Accept]);
+        await Assert.That(connection.ShareFetchRequests.Any(static request =>
+            request.Topics.Any(static topic => topic.Partitions.Any(static partition =>
+                partition.PartitionIndex == 1 && partition.AcknowledgementBatches is { Count: > 0 })))).IsFalse();
+        var partition1 = outcomes.Where(static outcome => outcome.TopicPartition.Partition == 1).ToArray();
+        await Assert.That(partition1).HasSingleItem();
+        await Assert.That(partition1[0].Exception).IsNull();
+    }
+
+    private static ShareFetchResponse CreateTwoPartitionFetchResponse()
+    {
+        var partition0 = CreateFetchResponse(0, 100);
+        var partition1 = CreateFetchResponse(1, 200);
+        return new ShareFetchResponse
+        {
+            ErrorCode = ErrorCode.None,
+            Responses =
+            [
+                new ShareFetchResponseTopic
+                {
+                    TopicId = TopicId,
+                    Partitions = [.. partition0.Responses[0].Partitions, .. partition1.Responses[0].Partitions]
+                }
+            ],
+            NodeEndpoints = []
+        };
+    }
+
+    [Test]
     public async Task Poll_TopicRecreated_ForgetsOldTopicIdAndFetchesNewOne()
     {
         Fixture? fixture = null;
