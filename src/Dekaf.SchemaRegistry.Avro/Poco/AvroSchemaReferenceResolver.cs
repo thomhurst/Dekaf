@@ -7,7 +7,7 @@ namespace Dekaf.SchemaRegistry.Avro.Poco;
 
 internal static class AvroSchemaReferenceResolver
 {
-    private const int MaxReferenceDepth = 128;
+    internal const int MaxReferenceDepth = 128;
 
     internal static async Task<AvroSchema> ParseAsync(
         ISchemaRegistryClient schemaRegistry,
@@ -20,30 +20,54 @@ internal static class AvroSchemaReferenceResolver
         return AvroSchema.Parse(schema.SchemaString, names);
     }
 
-    internal static async Task<AvroSchemaNames> ResolveAsync(
+    internal static Task<AvroSchemaNames> ResolveAsync(
         ISchemaRegistryClient schemaRegistry,
         RegistrySchema schema,
+        CancellationToken cancellationToken) =>
+        ResolveAsync(
+            schemaRegistry,
+            schema,
+            new AvroSchemaNames(),
+            static (json, names) => _ = AvroSchema.Parse(json, names),
+            cancellationToken);
+
+    /// <summary>Resolves references into the System.Text.Json schema model used by generated POCO preparation.</summary>
+    internal static Task<AvroWriterSchemaNames> ResolveWriterSchemaNamesAsync(
+        ISchemaRegistryClient schemaRegistry,
+        RegistrySchema schema,
+        CancellationToken cancellationToken) =>
+        ResolveAsync(
+            schemaRegistry,
+            schema,
+            new AvroWriterSchemaNames(),
+            static (json, names) => _ = AvroWriterSchema.Parse(json, names),
+            cancellationToken);
+
+    private static async Task<TNames> ResolveAsync<TNames>(
+        ISchemaRegistryClient schemaRegistry,
+        RegistrySchema schema,
+        TNames names,
+        Action<string, TNames> parse,
         CancellationToken cancellationToken)
     {
-        var names = new AvroSchemaNames();
-        var resolved = new HashSet<ReferenceKey>();
-        var visiting = new HashSet<ReferenceKey>();
         await ResolveAsync(
                 schemaRegistry,
                 schema,
                 names,
-                resolved,
-                visiting,
+                parse,
+                new HashSet<ReferenceKey>(),
+                new HashSet<ReferenceKey>(),
                 depth: 0,
                 cancellationToken)
             .ConfigureAwait(false);
         return names;
     }
 
-    private static async Task ResolveAsync(
+    private static async Task ResolveAsync<TNames>(
         ISchemaRegistryClient schemaRegistry,
         RegistrySchema schema,
-        AvroSchemaNames names,
+        TNames names,
+        Action<string, TNames> parse,
         HashSet<ReferenceKey> resolved,
         HashSet<ReferenceKey> visiting,
         int depth,
@@ -74,12 +98,13 @@ internal static class AvroSchemaReferenceResolver
                     schemaRegistry,
                     registered.Schema,
                     names,
+                    parse,
                     resolved,
                     visiting,
                     depth + 1,
                     cancellationToken)
                 .ConfigureAwait(false);
-            _ = AvroSchema.Parse(registered.Schema.SchemaString, names);
+            parse(registered.Schema.SchemaString, names);
             visiting.Remove(key);
             resolved.Add(key);
         }

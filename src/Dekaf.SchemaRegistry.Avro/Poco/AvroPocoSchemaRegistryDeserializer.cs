@@ -4,7 +4,6 @@ using Dekaf.SchemaRegistry.Avro;
 using Dekaf.Serialization;
 using AvroRecordSchema = global::Avro.RecordSchema;
 using AvroSchema = global::Avro.Schema;
-using AvroSchemaNames = global::Avro.SchemaNames;
 
 namespace Dekaf.SchemaRegistry.Avro.Poco;
 
@@ -1090,6 +1089,16 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             return BuildPlan(schemaId, schema);
 
         ValidateAvroSchema(schemaId, schema);
+        if (!UsesRuleSchemas)
+        {
+            var writerNames = await AvroSchemaReferenceResolver.ResolveWriterSchemaNamesAsync(
+                    _schemaRegistry,
+                    schema,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            return BuildPlan(schemaId, schema, writerNames);
+        }
+
         var names = await AvroSchemaReferenceResolver.ResolveAsync(
                 _schemaRegistry,
                 schema,
@@ -1103,10 +1112,17 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         return plan;
     }
 
+    /// <summary>
+    /// Whether rule processing needs Apache.Avro schemas resolved with the plan. Without rules, plans
+    /// come from <see cref="AvroWriterSchema"/>, which avoids Apache.Avro's reflection-based paths.
+    /// </summary>
+    private bool UsesRuleSchemas =>
+        _ruleExecutor is not null || _inlineRuleValidators is not null || _migrationRunner is not null;
+
     private static AvroPocoReaderPlan BuildPlan(
         int schemaId,
         Schema schema,
-        AvroSchemaNames? names = null)
+        AvroWriterSchemaNames? names = null)
     {
         ValidateAvroSchema(schemaId, schema);
         return AvroPocoReaderPlanBuilder.Build<T, TCodec>(schema.SchemaString, names);
@@ -1256,21 +1272,29 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         }
         if (_ruleExecutor is null && _migrationRunner is null)
         {
-            var names = unscopedSchema.References is { Count: > 0 }
-                ? await AvroSchemaReferenceResolver.ResolveAsync(
-                        _schemaRegistry,
-                        unscopedSchema,
-                        cancellationToken)
-                    .ConfigureAwait(false)
-                : null;
+            var hasReferences = unscopedSchema.References is { Count: > 0 };
             var schemaId = Interlocked.Decrement(ref _nextGuidPlanId);
             AvroPocoReaderPlan plan;
             if (_inlineRuleValidators is null)
             {
-                plan = BuildPlan(schemaId, unscopedSchema, names);
+                var writerNames = hasReferences
+                    ? await AvroSchemaReferenceResolver.ResolveWriterSchemaNamesAsync(
+                            _schemaRegistry,
+                            unscopedSchema,
+                            cancellationToken)
+                        .ConfigureAwait(false)
+                    : null;
+                plan = BuildPlan(schemaId, unscopedSchema, writerNames);
             }
             else
             {
+                var names = hasReferences
+                    ? await AvroSchemaReferenceResolver.ResolveAsync(
+                            _schemaRegistry,
+                            unscopedSchema,
+                            cancellationToken)
+                        .ConfigureAwait(false)
+                    : null;
                 ValidateAvroSchema(schemaId, unscopedSchema);
                 var parsed = (names is null
                         ? AvroSchema.Parse(unscopedSchema.SchemaString)
