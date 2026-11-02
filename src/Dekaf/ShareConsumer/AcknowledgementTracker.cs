@@ -83,8 +83,10 @@ internal sealed class AcknowledgementTracker
     /// Sets an explicit acknowledgement type for a specific record.
     /// Throws if the record was not delivered by the current poll unless requireTracked is false.
     /// </summary>
-    internal void Acknowledge(TopicPartition tp, long offset, AcknowledgeType type, bool requireTracked = true)
+    /// <returns>Whether the acknowledgement started tracking a partition that had nothing pending.</returns>
+    internal bool Acknowledge(TopicPartition tp, long offset, AcknowledgeType type, bool requireTracked = true)
     {
+        var added = false;
         if (!_pendingAcks.TryGetValue(tp, out var partitionAcks))
         {
             if (requireTracked)
@@ -95,6 +97,7 @@ internal sealed class AcknowledgementTracker
 
             partitionAcks = RentPartition();
             _pendingAcks[tp] = partitionAcks;
+            added = true;
         }
         else if (requireTracked && !partitionAcks.ContainsOffset(offset))
         {
@@ -103,6 +106,7 @@ internal sealed class AcknowledgementTracker
         }
 
         partitionAcks.SetExplicit(offset, type);
+        return added;
     }
 
     /// <summary>
