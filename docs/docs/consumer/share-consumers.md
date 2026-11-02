@@ -251,7 +251,8 @@ records. In implicit mode, the next poll or commit accepts delivered records wit
 disposition. Closing releases implicit dispositions that were never submitted, preserving explicit
 Accept, Release, and Reject decisions and the outcome of a previously attempted request.
 
-Renew requires explicit acknowledgement mode and broker support for ShareFetch/ShareAcknowledge v2.
+Renew requires explicit acknowledgement mode and broker support for ShareFetch/ShareAcknowledge v2;
+an older leader drops it as described in [renewal](#acquisition-locks-and-renewal).
 A successful Renew retains the acquired payload internally and replays it through a new batch lease
 with the original `DeliveryCount`. Release requests broker redelivery, which increments that count.
 Acknowledgement failures retain pending state for retry; a newer decision overrides an older failed
@@ -381,7 +382,7 @@ await shareConsumer.CommitAsync(cancellationToken); // Sends the renewal
 // ...continue long-running processing, then Accept/Release/Reject as normal
 ```
 
-Renewal requires explicit acknowledgement mode and brokers supporting ShareFetch/ShareAcknowledge v2; older brokers throw `BrokerVersionException`.
+Renewal requires explicit acknowledgement mode and brokers supporting ShareFetch/ShareAcknowledge v2. When a partition's leader is older, Dekaf drops the Renew and reports `BrokerVersionException` for that partition: `CommitAsync` throws it, and a poll passes it to the acknowledgement commit callback. The broker's other acknowledgements are still sent, and the record is redelivered when its acquisition lock expires.
 
 ## Leadership Changes and Deleted Topics
 

@@ -484,6 +484,60 @@ public sealed partial class ShareConsumerRenewalTests
     }
 
     [Test]
+    public async Task PollBatches_RenewalOnV1Broker_DropsRenewalAndSendsOtherDisposition()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var fetches = 0;
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 1, includeShareAcknowledge: true)
+        {
+            ShareFetchHandler = (request, _) =>
+            {
+                // Stop after the first request that carries an acknowledgement.
+                if (request.Topics.Any(static topic => topic.Partitions.Any(
+                        static partition => partition.AcknowledgementBatches is { Count: > 0 })))
+                    cancellation.Cancel();
+                return ValueTask.FromResult(++fetches == 1
+                    ? CreateFetchResponse(0, 100, 2)
+                    : new ShareFetchResponse { ErrorCode = ErrorCode.None, Responses = [], NodeEndpoints = [] });
+            }
+        };
+        await using var fixture = CreateFixture(connection, valueDeserializer: Dekaf.Serialization.Serializers.String);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Subscribe("topic");
+        await using var poll = fixture.Consumer.PollBatchesAsync(cancellation.Token).GetAsyncEnumerator();
+        await Assert.That(await poll.MoveNextAsync()).IsTrue();
+        var batch = poll.Current;
+        var records = batch.GetEnumerator();
+        await Assert.That(records.MoveNext()).IsTrue();
+        batch.Acknowledge(records.Current, AcknowledgeType.Renew);
+        await Assert.That(records.MoveNext()).IsTrue();
+        batch.Acknowledge(records.Current, AcknowledgeType.Accept);
+
+        try
+        {
+            await Assert.That(await poll.MoveNextAsync()).IsFalse();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+
+        // The Renew is never sent and not queued again; the Accept follows on a later request.
+        await Assert.That(connection.ShareFetchRequests.Any(static request => request.IsRenewAck)).IsFalse();
+        var acknowledgements = connection.ShareFetchRequests
+            .SelectMany(static request => request.Topics)
+            .SelectMany(static topic => topic.Partitions)
+            .Where(static partition => partition.AcknowledgementBatches is { Count: > 0 })
+            .SelectMany(static partition => partition.AcknowledgementBatches!)
+            .ToArray();
+        await Assert.That(acknowledgements).HasSingleItem();
+        await Assert.That(acknowledgements[0].FirstOffset).IsEqualTo(101);
+        await Assert.That(acknowledgements[0].LastOffset).IsEqualTo(101);
+        await Assert.That(acknowledgements[0].AcknowledgeTypes)
+            .IsEquivalentTo(new[] { (byte)AcknowledgeType.Accept });
+        await Assert.That(fixture.Consumer.RenewedRecordReplayCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task PollBatches_DisposingIteratorInvalidatesLeaseAndCommitsOnlyEnumeratedRecords()
     {
         var connection = new CapturingConnection(ApiKey.ShareFetch, 2, includeShareAcknowledge: true)

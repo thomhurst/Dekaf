@@ -237,9 +237,12 @@ internal sealed class AcknowledgementTracker
     /// <summary>
     /// Re-queues previously flushed acknowledgement data back into the tracker.
     /// Used when CommitAsync partially fails — the failed partitions' acks are
-    /// restored so the next commit can retry them.
+    /// restored so the next commit can retry them. <paramref name="dropRenewals"/> leaves out
+    /// Renew acknowledgements, which a broker that cannot renew never accepts.
     /// </summary>
-    internal void RequeueAcks(Dictionary<TopicPartition, List<AcknowledgementBatchData>> acks)
+    internal void RequeueAcks(
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>> acks,
+        bool dropRenewals = false)
     {
         foreach (var (tp, batches) in acks)
         {
@@ -277,6 +280,17 @@ internal sealed class AcknowledgementTracker
                     }
 
                     var type = (AcknowledgeType)batch.GetAcknowledgeType(i);
+                    if (dropRenewals && type == AcknowledgeType.Renew)
+                    {
+                        if (runStart is not null)
+                        {
+                            partitionAcks.TrackRange(runStart.Value, runEnd, runType);
+                            runStart = null;
+                        }
+
+                        continue;
+                    }
+
                     if (runStart is not null && type == runType && offset == runEnd + 1)
                     {
                         runEnd = offset;
