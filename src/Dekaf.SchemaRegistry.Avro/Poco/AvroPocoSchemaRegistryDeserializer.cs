@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using Dekaf.SchemaRegistry.Avro;
 using Dekaf.Serialization;
-using AvroRecordSchema = global::Avro.RecordSchema;
 using AvroSchema = global::Avro.Schema;
 
 namespace Dekaf.SchemaRegistry.Avro.Poco;
@@ -25,7 +24,6 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private readonly AvroDeserializerConfig _config;
     private readonly bool _ownsClient;
     private readonly ConcurrentDictionary<int, AvroPocoReaderPlan> _plans = new();
-    private readonly ConcurrentDictionary<int, ResolvedAvroSchema> _resolvedSchemas = new();
     private readonly ConcurrentDictionary<GuidTopicKey, Lazy<Task<GuidResolvedSchema>>> _guidSchemaCache = new();
     private readonly ConcurrentQueue<KeyValuePair<GuidTopicKey, Lazy<Task<GuidResolvedSchema>>>>
         _guidSchemaEvictionQueue = new();
@@ -50,13 +48,22 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     internal long LastInlineValidationDecision => Volatile.Read(ref _lastInlineValidationDecision);
 
     /// <summary>Creates a generated POCO Avro deserializer.</summary>
+    /// <remarks>
+    /// Under NativeAOT, <see cref="AvroDeserializerConfig.RuleExecutor"/>,
+    /// <see cref="AvroDeserializerConfig.ValidationRulesExecution"/> and
+    /// <see cref="AvroDeserializerConfig.UseLatestVersion"/> (migrations) are not supported: rule processing
+    /// parses schemas with Apache.Avro, which requires dynamic code. Without them the deserializer reaches no
+    /// Apache.Avro code and publishes without trim or AOT warnings.
+    /// </remarks>
+    /// <exception cref="NotSupportedException">
+    /// Rules, inline validation or migrations are configured and the process runs under NativeAOT.
+    /// </exception>
     public AvroPocoSchemaRegistryDeserializer(
         ISchemaRegistryClient schemaRegistry,
         AvroDeserializerConfig? config = null,
         bool ownsClient = false)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
-        _taggedFieldTransformers = new AvroTaggedFieldTransformerProvider();
         _config = config ?? new AvroDeserializerConfig();
         if (_config.SchemaIdStrategy is not (
             SchemaIdDeserializerStrategy.Dual
@@ -69,11 +76,6 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 "Unknown schema identity strategy.");
         }
         _ownsClient = ownsClient;
-        _ruleExecutor = _config.RuleExecutor;
-        _inlineRuleValidators = AvroValidationConfiguration.Create(
-            schemaRegistry,
-            _config.ValidationRulesExecution,
-            _config.RuleExecutor);
         if (!string.IsNullOrEmpty(_config.ReaderSchema))
         {
             throw new ArgumentException(
@@ -81,12 +83,29 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 nameof(config));
         }
 
-        if (_config.UseLatestVersion)
+        if (RuntimeFeature.IsDynamicCodeSupported)
         {
-            (_migrationRunner, _ruleExecutor) = SchemaRegistryMigrationRunner.Create(
+            _taggedFieldTransformers = new AvroTaggedFieldTransformerProvider();
+            _ruleExecutor = _config.RuleExecutor;
+            _inlineRuleValidators = AvroValidationConfiguration.Create(
                 schemaRegistry,
+                _config.ValidationRulesExecution,
+                _config.RuleExecutor);
+            if (_config.UseLatestVersion)
+            {
+                (_migrationRunner, _ruleExecutor) = SchemaRegistryMigrationRunner.Create(
+                    schemaRegistry,
+                    _config.RuleExecutor,
+                    RegistryTimeout);
+            }
+        }
+        else
+        {
+            AvroPocoRuleSupport.ThrowIfConfigured(
                 _config.RuleExecutor,
-                RegistryTimeout);
+                _config.ValidationRulesExecution,
+                _config.UseLatestVersion);
+            _taggedFieldTransformers = null!;
         }
 
         if (_ruleExecutor is not null
@@ -113,7 +132,8 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         SerializationContext context,
         CancellationToken cancellationToken = default)
     {
-        if (_ruleExecutor is null)
+        // NativeAOT compiles the feature check as false, removing the Apache.Avro rule paths below.
+        if (!RuntimeFeature.IsDynamicCodeSupported || _ruleExecutor is null)
         {
             await WarmupAsync(schemaId, cancellationToken).ConfigureAwait(false);
             return;
@@ -200,7 +220,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         SerializationContext context,
         CancellationToken cancellationToken)
     {
-        if (_ruleExecutor is null)
+        if (!RuntimeFeature.IsDynamicCodeSupported || _ruleExecutor is null)
         {
             return TryGetCachedPlan(schemaId, out _)
                 ? default
@@ -304,7 +324,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             return false;
         }
 
-        if (_ruleExecutor is not null)
+        if (RuntimeFeature.IsDynamicCodeSupported && _ruleExecutor is not null)
         {
             var isKey = context.Component == SerializationComponent.Key;
             var subjectGeneration = 0;
@@ -481,7 +501,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 context.Component == SerializationComponent.Key,
                 _subjectNames?.Generation ?? 0));
         var payload = data[payloadOffset..];
-        if (_ruleExecutor is null && _inlineRuleValidators is null)
+        // The JIT folds the feature check away; NativeAOT folds it to true, removing the rule paths below.
+        if (!RuntimeFeature.IsDynamicCodeSupported ||
+            (_ruleExecutor is null && _inlineRuleValidators is null))
         {
             var directReader = new AvroValueReader(payload.Span);
             return TCodec.Read(ref directReader, GetPlanCached(schemaId));
@@ -505,7 +527,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private AvroInlineRuleValidator? GetInlineValidator(int schemaId, AvroPocoReaderPlan plan)
     {
-        if (_inlineRuleValidators is null)
+        if (!RuntimeFeature.IsDynamicCodeSupported || _inlineRuleValidators is null)
             return null;
 
         var cached = Volatile.Read(ref _lastInlineValidationDecision);
@@ -700,7 +722,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 var writerPlan = GetOrBuildPlanCached(schemaId, scopedSchema);
                 _inlineRuleValidators.Register(
                     scopedSchema,
-                    GetValidationSchema(schemaId, scopedSchema, writerPlan));
+                    GetRuleSchema(scopedSchema, writerPlan));
             }
             var migration = _config.ValidationRulesExecution == ValidationRulesExecution.BeforeDomainRules
                 ? _migrationRunner!.TransformWithBeforeDomainValidation(
@@ -738,10 +760,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 : GetOrBuildPlanCached(migration.PayloadSchemaId, migration.PayloadSchema);
             if (_inlineRuleValidators is not null)
             {
-                var validationSchema = GetValidationSchema(
-                    migration.PayloadSchemaId,
-                    migration.PayloadSchema,
-                    plan);
+                var validationSchema = GetRuleSchema(migration.PayloadSchema, plan);
                 _inlineRuleValidators.Register(migration.PayloadSchema, validationSchema);
                 if (_config.ValidationRulesExecution == ValidationRulesExecution.AfterDomainRules)
                 {
@@ -777,7 +796,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
 
         var validator = _inlineRuleValidators.Register(
             scopedSchema,
-            GetValidationSchema(schemaId, scopedSchema, plan));
+            GetRuleSchema(scopedSchema, plan));
         payload = ruleExecutor.TransformDeserializedEncodingPayload(payload, context);
         if (_config.ValidationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
             validator.Validate(payload, schemaId, _config.ValidationRulesFailFast);
@@ -787,26 +806,41 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         return payload;
     }
 
-    private AvroSchema GetValidationSchema(int schemaId, AvroPocoReaderPlan plan)
-    {
-        if (plan.ResolvedWriterSchema is { } resolved)
-            return resolved;
-        var schema = _schemaRegistry.GetSchemaSync(schemaId, RegistryTimeout);
-        return GetValidationSchema(schemaId, schema, plan);
-    }
+    private AvroSchema GetValidationSchema(int schemaId, AvroPocoReaderPlan plan) =>
+        plan.ResolvedWriterSchema ??
+        GetRuleSchema(_schemaRegistry.GetSchemaSync(schemaId, RegistryTimeout), plan);
 
-    private AvroSchema GetValidationSchema(
-        int schemaId,
-        Schema schema,
-        AvroPocoReaderPlan plan)
+    /// <summary>
+    /// Returns the Apache.Avro writer schema that rule processing needs, attached to <paramref name="plan"/>.
+    /// Plans of referenced schemas get it from <see cref="AttachRuleSchemaAsync"/> when they are built.
+    /// </summary>
+    private static AvroSchema GetRuleSchema(Schema schema, AvroPocoReaderPlan plan)
     {
+        if (!RuntimeFeature.IsDynamicCodeSupported)
+            throw AvroPocoRuleSupport.CreateNotSupportedException();
         if (plan.ResolvedWriterSchema is { } resolved)
             return resolved;
-        if (_resolvedSchemas.TryGetValue(schemaId, out var cached))
-            return cached.Schema;
         var parsed = AvroSchema.Parse(schema.SchemaString);
         plan.ResolvedWriterSchema = parsed;
         return parsed;
+    }
+
+    /// <summary>
+    /// Resolves the Apache.Avro writer schema, including its references, for rule processing and
+    /// attaches it to a plan built from <see cref="AvroWriterSchema"/>.
+    /// </summary>
+    private async Task AttachRuleSchemaAsync(
+        Schema schema,
+        AvroPocoReaderPlan plan,
+        CancellationToken cancellationToken)
+    {
+        if (!RuntimeFeature.IsDynamicCodeSupported)
+            throw AvroPocoRuleSupport.CreateNotSupportedException();
+        plan.ResolvedWriterSchema = await AvroSchemaReferenceResolver.ParseAsync(
+                _schemaRegistry,
+                schema,
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private AvroPocoReaderPlan GetPlanCached(int schemaId)
@@ -834,7 +868,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 cancellationToken)
             .ConfigureAwait(false);
         if (scopedSchema.RuleSet is not null || _migrationRunner is not null)
-            PrepareTaggedTransformer(schemaId, scopedSchema, plan);
+            PrepareTaggedTransformer(scopedSchema, plan);
 
         Dictionary<int, AvroPocoReaderPlan>? migrationPlans = null;
         if (_migrationRunner is not null)
@@ -881,27 +915,20 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         while (targets.MoveNext(out var target))
         {
             var plan = await GetPlanAsync(target.Id, cancellationToken).ConfigureAwait(false);
-            PrepareTaggedTransformer(target.Id, target.Schema, plan);
+            PrepareTaggedTransformer(target.Schema, plan);
             if (_inlineRuleValidators is not null)
             {
                 _inlineRuleValidators.Register(
                     target.Schema,
-                    GetValidationSchema(target.Id, target.Schema, plan));
+                    GetRuleSchema(target.Schema, plan));
             }
             (plans ??= []).Add(target.Id, plan);
         }
         return plans;
     }
 
-    private void PrepareTaggedTransformer(int schemaId, Schema schema, AvroPocoReaderPlan plan)
-    {
-        var parsed = plan.ResolvedWriterSchema ??
-                     (_resolvedSchemas.TryGetValue(schemaId, out var resolved) &&
-                      ReferenceEquals(resolved.Plan, plan)
-            ? resolved.Schema
-            : AvroSchema.Parse(schema.SchemaString));
-        _ = _taggedFieldTransformers.GetResolved(schema, parsed);
-    }
+    private void PrepareTaggedTransformer(Schema schema, AvroPocoReaderPlan plan) =>
+        _ = _taggedFieldTransformers.GetResolved(schema, GetRuleSchema(schema, plan));
 
     private bool TryGetPreparedRuleState(
         PreparedRuleKey key,
@@ -1019,21 +1046,16 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         if (_plans.TryGetValue(schemaId, out var cached))
             return cached;
 
-        var plan = schema.References is { Count: > 0 } && _inlineRuleValidators is not null
-            ? BuildResolvedValidationPlan(schemaId, schema)
-            : BuildPlan(schemaId, schema);
+        // Resolving references is asynchronous; asynchronous preparation builds those plans.
+        if (schema.References is { Count: > 0 })
+        {
+            throw new InvalidOperationException(
+                $"Schema {schemaId} has references and is not cached. Consume through an asynchronous consumer API or call WarmupAsync first.");
+        }
+
+        var plan = BuildPlan(schemaId, schema);
         CacheSuccessfulPlan(schemaId, plan);
         return _plans.TryGetValue(schemaId, out cached) ? cached : plan;
-    }
-
-    private AvroPocoReaderPlan BuildResolvedValidationPlan(int schemaId, Schema schema)
-    {
-        var parsed = _inlineRuleValidators!.GetResolvedSchema(schema) as AvroRecordSchema
-            ?? throw new InvalidOperationException("POCO Avro writer schema must be a record.");
-        var plan = AvroPocoReaderPlanBuilder.Build<T, TCodec>(parsed);
-        plan.ResolvedWriterSchema = parsed;
-        _resolvedSchemas[schemaId] = new ResolvedAvroSchema(plan, parsed);
-        return plan;
     }
 
     private async Task<AvroPocoReaderPlan> GetPlanAsync(int schemaId, CancellationToken cancellationToken)
@@ -1088,36 +1110,29 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         if (schema.References is not { Count: > 0 })
             return BuildPlan(schemaId, schema);
 
-        ValidateAvroSchema(schemaId, schema);
-        if (!UsesRuleSchemas)
+        var plan = await BuildReferencedPlanAsync(schemaId, schema, cancellationToken).ConfigureAwait(false);
+        // Rule processing cannot parse a referenced schema later without its references.
+        if (RuntimeFeature.IsDynamicCodeSupported &&
+            (_ruleExecutor is not null || _inlineRuleValidators is not null || _migrationRunner is not null))
         {
-            var writerNames = await AvroSchemaReferenceResolver.ResolveWriterSchemaNamesAsync(
-                    _schemaRegistry,
-                    schema,
-                    cancellationToken)
-                .ConfigureAwait(false);
-            return BuildPlan(schemaId, schema, writerNames);
+            await AttachRuleSchemaAsync(schema, plan, cancellationToken).ConfigureAwait(false);
         }
+        return plan;
+    }
 
-        var names = await AvroSchemaReferenceResolver.ResolveAsync(
+    private async Task<AvroPocoReaderPlan> BuildReferencedPlanAsync(
+        int schemaId,
+        Schema schema,
+        CancellationToken cancellationToken)
+    {
+        ValidateAvroSchema(schemaId, schema);
+        var writerNames = await AvroSchemaReferenceResolver.ResolveWriterSchemaNamesAsync(
                 _schemaRegistry,
                 schema,
                 cancellationToken)
             .ConfigureAwait(false);
-        var parsed = AvroSchema.Parse(schema.SchemaString, names) as AvroRecordSchema
-            ?? throw new InvalidOperationException("POCO Avro writer schema must be a record.");
-        var plan = AvroPocoReaderPlanBuilder.Build<T, TCodec>(parsed);
-        plan.ResolvedWriterSchema = parsed;
-        _resolvedSchemas[schemaId] = new ResolvedAvroSchema(plan, parsed);
-        return plan;
+        return BuildPlan(schemaId, schema, writerNames);
     }
-
-    /// <summary>
-    /// Whether rule processing needs Apache.Avro schemas resolved with the plan. Without rules, plans
-    /// come from <see cref="AvroWriterSchema"/>, which avoids Apache.Avro's reflection-based paths.
-    /// </summary>
-    private bool UsesRuleSchemas =>
-        _ruleExecutor is not null || _inlineRuleValidators is not null || _migrationRunner is not null;
 
     private static AvroPocoReaderPlan BuildPlan(
         int schemaId,
@@ -1164,13 +1179,6 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             {
                 if (((ICollection<KeyValuePair<int, AvroPocoReaderPlan>>)_plans).Remove(oldest))
                 {
-                    if (_resolvedSchemas.TryGetValue(oldest.Key, out var resolved) &&
-                        ReferenceEquals(resolved.Plan, oldest.Value))
-                    {
-                        _ = ((ICollection<KeyValuePair<int, ResolvedAvroSchema>>)_resolvedSchemas)
-                            .Remove(new KeyValuePair<int, ResolvedAvroSchema>(oldest.Key, resolved));
-                    }
-
                     removed = true;
                     break;
                 }
@@ -1272,37 +1280,13 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         }
         if (_ruleExecutor is null && _migrationRunner is null)
         {
-            var hasReferences = unscopedSchema.References is { Count: > 0 };
             var schemaId = Interlocked.Decrement(ref _nextGuidPlanId);
-            AvroPocoReaderPlan plan;
-            if (_inlineRuleValidators is null)
-            {
-                var writerNames = hasReferences
-                    ? await AvroSchemaReferenceResolver.ResolveWriterSchemaNamesAsync(
-                            _schemaRegistry,
-                            unscopedSchema,
-                            cancellationToken)
-                        .ConfigureAwait(false)
-                    : null;
-                plan = BuildPlan(schemaId, unscopedSchema, writerNames);
-            }
-            else
-            {
-                var names = hasReferences
-                    ? await AvroSchemaReferenceResolver.ResolveAsync(
-                            _schemaRegistry,
-                            unscopedSchema,
-                            cancellationToken)
-                        .ConfigureAwait(false)
-                    : null;
-                ValidateAvroSchema(schemaId, unscopedSchema);
-                var parsed = (names is null
-                        ? AvroSchema.Parse(unscopedSchema.SchemaString)
-                        : AvroSchema.Parse(unscopedSchema.SchemaString, names)) as AvroRecordSchema
-                    ?? throw new InvalidOperationException("POCO Avro writer schema must be a record.");
-                plan = AvroPocoReaderPlanBuilder.Build<T, TCodec>(parsed);
-                plan.ResolvedWriterSchema = parsed;
-            }
+            var plan = unscopedSchema.References is { Count: > 0 }
+                ? await BuildReferencedPlanAsync(schemaId, unscopedSchema, cancellationToken).ConfigureAwait(false)
+                : BuildPlan(schemaId, unscopedSchema);
+            // A GUID plan has a local schema ID that the registry cannot resolve later, so attach now.
+            if (RuntimeFeature.IsDynamicCodeSupported && _inlineRuleValidators is not null)
+                await AttachRuleSchemaAsync(unscopedSchema, plan, cancellationToken).ConfigureAwait(false);
             CacheSuccessfulPlan(schemaId, plan);
             return new GuidResolvedSchema(schemaId, plan);
         }
@@ -1428,8 +1412,6 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     }
 
     private readonly record struct PreparedRuleKey(int SchemaId, string Topic, bool IsKey);
-
-    private sealed record ResolvedAvroSchema(AvroPocoReaderPlan Plan, AvroSchema Schema);
 
     private sealed class PreparedRuleState(
         PreparedRuleKey key,

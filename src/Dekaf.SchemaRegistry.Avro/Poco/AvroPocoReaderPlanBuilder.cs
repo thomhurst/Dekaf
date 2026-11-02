@@ -10,12 +10,6 @@ internal static class AvroPocoReaderPlanBuilder
         where TCodec : struct, IAvroPocoCodec<T> =>
         Build<T, TCodec>(AvroWriterSchema.Parse(writerSchemaJson, names));
 
-    /// <summary>Builds a plan from an Apache.Avro schema that rule processing already resolved.</summary>
-    /// <remarks>Apache.Avro writes every named type in full, so its JSON needs no reference names.</remarks>
-    internal static AvroPocoReaderPlan Build<T, TCodec>(global::Avro.RecordSchema writerSchema)
-        where TCodec : struct, IAvroPocoCodec<T> =>
-        Build<T, TCodec>(AvroWriterSchema.ParseExpanded(writerSchema.ToString()));
-
     internal static AvroPocoReaderPlan Build<T, TCodec>(AvroWriterSchema writerSchema)
         where TCodec : struct, IAvroPocoCodec<T>
     {

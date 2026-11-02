@@ -609,25 +609,24 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
-    public async Task ReaderPlan_FromResolvedApacheSchema_AcceptsReferenceChainsDeeperThanOneDocument()
+    public async Task ReaderPlan_FromReferencedWriterNames_AcceptsReferenceChainsDeeperThanOneDocument()
     {
-        // Each referenced document is shallow, but Apache.Avro writes the resolved schema with every
-        // named type expanded, so 30 chained records nest past the 64-level single-document limit.
-        var names = new SchemaNames();
-        _ = Schema.Parse(
+        // Each referenced document is shallow; 30 chained records nest past the 64-level
+        // single-document limit only when expanded, which resolving references by name never does.
+        var names = new AvroWriterSchemaNames();
+        _ = AvroWriterSchema.Parse(
             """{"type":"record","name":"Deep0","namespace":"Dekaf.Tests","fields":[{"name":"Value","type":"int"}]}""",
             names);
         for (var index = 1; index < 30; index++)
         {
-            _ = Schema.Parse(
+            _ = AvroWriterSchema.Parse(
                 $$"""{"type":"record","name":"Deep{{index}}","namespace":"Dekaf.Tests","fields":[{"name":"Next","type":"Dekaf.Tests.Deep{{index - 1}}"}]}""",
                 names);
         }
-        var writerSchema = (RecordSchema)Schema.Parse(
+
+        var plan = AvroPocoReaderPlanBuilder.Build<object, PocoUnionResolutionCodec>(
             """{"type":"record","name":"PocoUnionResolution","namespace":"Dekaf.Tests","fields":[{"name":"Exact","type":"int"},{"name":"Removed","type":"Dekaf.Tests.Deep29"},{"name":"Promoted","type":"int"},{"name":"Logical","type":{"type":"string","logicalType":"uuid"}}]}""",
             names);
-
-        var plan = AvroPocoReaderPlanBuilder.Build<object, PocoUnionResolutionCodec>(writerSchema);
 
         await Assert.That(plan.GetOperation(1).ReaderFieldIndex).IsEqualTo(-1);
         await Assert.That(plan.GetOperation(3).ReaderFieldIndex).IsEqualTo(2);

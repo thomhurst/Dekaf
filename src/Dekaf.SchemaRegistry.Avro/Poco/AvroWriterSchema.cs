@@ -42,15 +42,6 @@ internal sealed class AvroWriterSchema
 
     private static readonly JsonDocumentOptions DocumentOptions = new() { MaxDepth = MaxDocumentDepth };
 
-    /// <summary>
-    /// Apache.Avro writes a resolved schema with every referenced named type expanded in place, so its JSON
-    /// can nest one registry document's depth per reference level.
-    /// </summary>
-    private static readonly JsonDocumentOptions ExpandedDocumentOptions = new()
-    {
-        MaxDepth = MaxDocumentDepth * (AvroSchemaReferenceResolver.MaxReferenceDepth + 1)
-    };
-
     private AvroWriterSchema(AvroWriterSchemaTag tag, (string Name, JsonElement Value)[] props)
     {
         Tag = tag;
@@ -81,14 +72,7 @@ internal sealed class AvroWriterSchema
     internal bool IsNamed => Tag is AvroWriterSchemaTag.Record or AvroWriterSchemaTag.Enumeration or AvroWriterSchemaTag.Fixed;
 
     /// <summary>Parses a schema, resolving named references through <paramref name="names"/> and adding the types it defines.</summary>
-    internal static AvroWriterSchema Parse(string json, AvroWriterSchemaNames? names = null) =>
-        Parse(json, names, DocumentOptions);
-
-    /// <summary>Parses the JSON of a schema that Apache.Avro already resolved, with every referenced type expanded.</summary>
-    internal static AvroWriterSchema ParseExpanded(string json) =>
-        Parse(json, null, ExpandedDocumentOptions);
-
-    private static AvroWriterSchema Parse(string json, AvroWriterSchemaNames? names, JsonDocumentOptions options)
+    internal static AvroWriterSchema Parse(string json, AvroWriterSchemaNames? names = null)
     {
         ArgumentNullException.ThrowIfNull(json);
         names ??= new AvroWriterSchemaNames();
@@ -101,7 +85,7 @@ internal sealed class AvroWriterSchema
         JsonDocument document;
         try
         {
-            document = JsonDocument.Parse(trimmed, options);
+            document = JsonDocument.Parse(trimmed, DocumentOptions);
         }
         catch (JsonException exception)
         {
