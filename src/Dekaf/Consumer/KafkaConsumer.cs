@@ -287,6 +287,14 @@ internal sealed class PendingFetchData : IDisposable
     /// </summary>
     private long _skipRecordsBelowOffset = -1;
 
+    /// <summary>
+    /// The first offset this fetch can deliver: its publication floor (the fetch position it was
+    /// requested or published at), else its first batch. -1 when it carries no records.
+    /// </summary>
+    internal long FirstDeliverableOffset => _skipRecordsBelowOffset >= 0
+        ? _skipRecordsBelowOffset
+        : _batches.Count > 0 ? _batches[0].BaseOffset : -1;
+
     /// <summary>Raises the publication floor and suppresses progress from fully covered responses.</summary>
     internal void RaiseStartOffset(long offset)
     {
@@ -4476,7 +4484,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     try
                     {
                         // Eagerly parse all records upfront for cache-friendly access
-                        pending.EagerParseAll(_recordHeaderRoutingPlan);
+                        EagerParsePendingOrRemove(pending);
 
                         // Yield the batch to the caller for synchronous iteration
                         var batchIterationVersion = Volatile.Read(ref _batchIterationEpoch.Version);
@@ -4674,7 +4682,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     try
                     {
                         // Eagerly parse all records upfront for cache-friendly access
-                        pending.EagerParseAll();
+                        EagerParsePendingOrRemove(pending, headerRoutingPlan: null);
 
                         // Yield the raw batch to the caller for synchronous iteration
                         var batchIterationVersion = Volatile.Read(ref _batchIterationEpoch.Version);
@@ -7270,17 +7278,30 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     private void EagerParsePendingOrRemove(PendingFetchData pending)
+        => EagerParsePendingOrRemove(pending, _recordHeaderRoutingPlan);
+
+    /// <summary>
+    /// Parses every record of the head fetch before any of them is delivered. On failure the
+    /// fetch is removed and the error propagates. A fetch that carried records already advanced
+    /// the fetch position past its end and may be followed by later fetches of the partition, so
+    /// the partition is rewound to the fetch's first deliverable offset and its buffered and
+    /// in-flight fetches are invalidated: catching the error must not skip the unread range.
+    /// </summary>
+    private void EagerParsePendingOrRemove(PendingFetchData pending, RecordHeaderRoutingPlan? headerRoutingPlan)
     {
         try
         {
-            pending.EagerParseAll(_recordHeaderRoutingPlan);
+            pending.EagerParseAll(headerRoutingPlan);
         }
         catch
         {
             if (_pendingFetches.Count > 0
                 && ReferenceEquals(_pendingFetches.Peek(), pending))
             {
-                DisposeQueuedFetch(_pendingFetches.Dequeue());
+                if (pending.FirstDeliverableOffset is var rewindOffset and >= 0)
+                    RewindAfterDeliveryFailure(pending, rewindOffset);
+                else
+                    DisposeQueuedFetch(_pendingFetches.Dequeue());
             }
 
             throw;
