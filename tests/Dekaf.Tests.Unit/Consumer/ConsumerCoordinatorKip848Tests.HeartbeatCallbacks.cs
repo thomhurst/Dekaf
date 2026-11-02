@@ -174,11 +174,17 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         using var synchronousRelease = new ManualResetEventSlim();
         var duringCallback = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var acknowledged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var requests = new ConcurrentQueue<ConsumerGroupHeartbeatRequest>();
+        // Requests sent while the first revocation callback runs. Heartbeats are sequential and
+        // the revocation starts only after its reconciliation is published, so each of these was
+        // built against the blocked revocation's previous ownership.
+        var duringRevocation = new ConcurrentQueue<ConsumerGroupHeartbeatRequest>();
+        var count = 0;
+        var revokedAtRequest = 0;
         var listener = Substitute.For<IRebalanceListener>();
         listener.OnPartitionsRevokedAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
             .Returns(_ =>
             {
+                Interlocked.CompareExchange(ref revokedAtRequest, Volatile.Read(ref count), 0);
                 revoked.TrySetResult();
                 if (synchronous)
                 {
@@ -187,29 +193,54 @@ public sealed partial class ConsumerCoordinatorKip848Tests
                 }
                 return new ValueTask(release.Task);
             });
-        var count = 0;
+        // Script each target on the state the requests show, not on request numbers: under load the
+        // initial assignment's callbacks can still be running for several heartbeats, which then
+        // report its previous (empty) ownership, and a target arriving meanwhile is deferred.
+        var stage = 0;
         _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
                 Arg.Any<ConsumerGroupHeartbeatRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(call =>
             {
                 var request = call.Arg<ConsumerGroupHeartbeatRequest>();
                 var current = Interlocked.Increment(ref count);
-                requests.Enqueue(request);
-                if (current >= 5 && !release.Task.IsCompleted)
-                    duringCallback.TrySetResult();
+                var revokedAt = Volatile.Read(ref revokedAtRequest);
+                if (revokedAt > 0 && current > revokedAt && !release.Task.IsCompleted)
+                {
+                    duringRevocation.Enqueue(request);
+                    if (duringRevocation.Count >= 3)
+                        duringCallback.TrySetResult();
+                }
                 if (release.Task.IsCompleted && request.TopicPartitions is [{ } topic] &&
                     topic.Partitions.Count == 1 && topic.Partitions[0] == (newerTarget ? 1 : 0))
                     acknowledged.TrySetResult();
+
+                ConsumerGroupHeartbeatAssignment? assignment = null;
+                if (stage == 0)
+                {
+                    stage = 1;
+                    assignment = CreateAssignment(TestTopicId, 0, 1);
+                }
+                else if (stage == 1 && request.TopicPartitions is [{ Partitions.Count: 2 }])
+                {
+                    // The initial assignment is acknowledged: revoke partition 1.
+                    stage = 2;
+                    assignment = CreateAssignment(TestTopicId, 0);
+                }
+                else if (stage == 2 && newerTarget && revokedAt > 0 && !release.Task.IsCompleted)
+                {
+                    // A newer target arrives while the revocation is still blocked.
+                    stage = 3;
+                    assignment = CreateAssignment(TestTopicId, 1);
+                }
+
                 return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                 {
                     ErrorCode = ErrorCode.None,
                     MemberId = "member-1",
-                    MemberEpoch = current == 1 ? 1 : 2,
+                    MemberEpoch = stage < 2 ? 1 : 2,
                     HeartbeatIntervalMs = 10,
                     // Only the first response carrying the change includes its assignment.
-                    Assignment = current == 1 ? CreateAssignment(TestTopicId, 0, 1)
-                        : current == 2 ? CreateAssignment(TestTopicId, 0)
-                        : current == 3 && newerTarget ? CreateAssignment(TestTopicId, 1) : null
+                    Assignment = assignment
                 });
             });
         await using var coordinator = new ConsumerCoordinator(
@@ -222,7 +253,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests
             await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, cancellationToken);
             await revoked.Task.WaitAsync(cancellationToken);
             await duringCallback.Task.WaitAsync(cancellationToken);
-            foreach (var request in requests.ToArray().Skip(2))
+            foreach (var request in duringRevocation.ToArray())
             {
                 await Assert.That(request.MemberEpoch).IsEqualTo(2);
                 // null also means unchanged: the last explicit set must still own both partitions.
@@ -233,6 +264,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
             synchronousRelease.Set();
             await acknowledged.Task.WaitAsync(cancellationToken);
             await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("test-topic", newerTarget ? 1 : 0)]);
+            // A heartbeat reports the new ownership as soon as the reconciliation completes, before
+            // the callback worker records the rebalance metric, so drain the worker first.
+            await GetPrivateField<Task>(coordinator, "_heartbeatRebalanceCallbacks").WaitAsync(cancellationToken);
             var metrics = telemetry.Collect(new ClientTelemetrySubscription(
                 Guid.NewGuid(), 1, 0, 1000, 10000, false, [rebalancePrefix])).Metrics;
             var average = metrics.Single(metric => metric.Name == rebalancePrefix + "avg").Value;
