@@ -8,8 +8,8 @@ public sealed partial class OutboxRelayService
     private readonly OutboxMetricState _metrics;
     private MetricsLease? _metricsLease;
     private readonly object _metricsLeaseLock = new();
-    // Completed when this relay is handed bucket zero, so an idle sampler starts at once
-    // instead of at its next interval. Null while no sampler is waiting.
+    // Completed when this relay is handed or renews bucket zero, so an idle sampler starts
+    // at once instead of at its next interval. Null while no sampler is waiting.
     private TaskCompletionSource? _metricsLeaseGained;
 
     private sealed class MetricsLease(long timestamp)
@@ -31,7 +31,13 @@ public sealed partial class OutboxRelayService
                     Interlocked.Exchange(ref _metricsLeaseGained, null)?.TrySetResult();
                 }
                 else
+                {
                     Volatile.Write(ref _metricsLease.Timestamp, _leaseTimestamp);
+                    // A renewal that passed its expiry check just before the lease expired can
+                    // land after a sampler read the old timestamp as expired and began to wait.
+                    // Wake that sampler too; otherwise it skips a whole interval.
+                    Interlocked.Exchange(ref _metricsLeaseGained, null)?.TrySetResult();
+                }
             }
             else
             {
@@ -91,13 +97,14 @@ public sealed partial class OutboxRelayService
         {
             while (!stoppingToken.IsCancellationRequested)
             {
-                // Registered before the lease is read: a handover in between is then seen
-                // by the read, and one after it completes the wait.
+                // Registered before the lease is read: a handover or renewal in between is
+                // then seen by the read, and one after it completes the wait.
                 TaskCompletionSource? leaseGained = null;
                 if (_options.CollectMetricsOnBucketZeroOwnerOnly)
                 {
                     leaseGained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                    Volatile.Write(ref _metricsLeaseGained, leaseGained);
+                    // A full fence: the lease read below must not move before this write.
+                    Interlocked.Exchange(ref _metricsLeaseGained, leaseGained);
                 }
 
                 var lease = Volatile.Read(ref _metricsLease);
