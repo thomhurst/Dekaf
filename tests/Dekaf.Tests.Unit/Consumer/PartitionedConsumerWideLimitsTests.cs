@@ -224,6 +224,50 @@ public sealed class PartitionedConsumerWideLimitsTests
     }
 
     [Test]
+    public async Task PartitionOrderedRecords_EmptyLaneDrainsWithoutWaitingForHandlerSlot()
+    {
+        // B's last record finishes while A waits for the only slot. The slot goes to A, whose
+        // handler keeps running. B has nothing queued, so a drain must not wait for A's handler.
+        var slots = new HandlerSlotLimiter(1);
+        var limits = new PartitionedProcessingLimits(null, slots);
+        var a = CreateLane(new TopicPartition("limits", 0), limits);
+        var b = CreateLane(new TopicPartition("limits", 1), limits);
+        var aEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseA = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseB = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var processor = PartitionedConsumerExtensions.CreateRecordProcessor<string, string>(
+            async (_, message, token) =>
+            {
+                var (entered, release) = message.Partition == 0 ? (aEntered, releaseA) : (bEntered, releaseB);
+                entered.TrySetResult();
+                await release.Task.WaitAsync(token);
+            },
+            new PartitionedProcessingOptions { MaxConcurrentHandlers = 1 },
+            null);
+
+        await Assert.That(b.TryEnqueueForTest(CreateResult(b.TopicPartition, 0))).IsTrue();
+        b.Start(processor);
+        await bEntered.Task.WaitAsync(Timeout);
+
+        await Assert.That(a.TryEnqueueForTest(CreateResult(a.TopicPartition, 0))).IsTrue();
+        a.Start(processor);
+        while (slots.Queued == 0)
+            await Task.Yield();
+
+        releaseB.TrySetResult();
+        await aEntered.Task.WaitAsync(Timeout);
+
+        var bStop = await b.StopAsync(PartitionStopPolicy.Drain, Timeout);
+        await Assert.That(bStop).IsNull();
+
+        releaseA.TrySetResult();
+        var aStop = await a.StopAsync(PartitionStopPolicy.Drain, Timeout);
+        await Assert.That(aStop).IsNull();
+        await Assert.That(slots.Available).IsEqualTo(1);
+    }
+
+    [Test]
     [Arguments(PartitionedProcessingOrder.Partition, false)]
     [Arguments(PartitionedProcessingOrder.Partition, true)]
     [Arguments(PartitionedProcessingOrder.Key, false)]

@@ -166,7 +166,7 @@ public static class PartitionedConsumerExtensions
         await runtime.RunAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static PartitionProcessor<TKey, TValue> CreateRecordProcessor<TKey, TValue>(
+    internal static PartitionProcessor<TKey, TValue> CreateRecordProcessor<TKey, TValue>(
         PartitionRecordProcessor<TKey, TValue> processor,
         PartitionedProcessingOptions options,
         IEqualityComparer<TKey>? keyComparer)
@@ -200,9 +200,15 @@ public static class PartitionedConsumerExtensions
             while (true)
             {
                 // A consumer-wide handler slot is taken before the record leaves the lane queue,
-                // so a record waiting for a handler still counts as buffered.
-                if (slot is not null)
-                    await slot.AcquireAsync(cancellationToken).ConfigureAwait(false);
+                // so a record waiting for a handler still counts as buffered. Queue for a slot only
+                // while a record is waiting: an empty lane must return to the channel wait so that a
+                // drain completing its input ends the loop instead of waiting on another lane's handler.
+                if (slot is not null && !slot.TryAcquire())
+                {
+                    if (!context.HasQueuedMessage)
+                        break;
+                    await slot.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
 
                 if (!context.TryReadMessage(out var message))
                 {
@@ -446,6 +452,9 @@ public sealed class PartitionProcessorContext<TKey, TValue>
     {
         return _lane.TryReadMessage(out message);
     }
+
+    /// <summary>Gets whether a record is queued for this processor, without reading it.</summary>
+    internal bool HasQueuedMessage => _lane.HasQueuedMessage;
 
     internal AutomaticPartitionProgress EnableAutomaticCompletion() => _lane.EnableAutomaticCompletion();
 
@@ -2431,6 +2440,8 @@ internal sealed class PartitionLane<TKey, TValue>
     {
         return _channel.Reader.WaitToReadAsync(cancellationToken);
     }
+
+    public bool HasQueuedMessage => _channel.Reader.TryPeek(out _);
 
     public bool TryReadMessage(out ConsumeResult<TKey, TValue> message)
     {

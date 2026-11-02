@@ -116,6 +116,8 @@ internal sealed class HandlerSlotLimiter
 
     internal int Available => Volatile.Read(ref _available);
 
+    internal int Queued => Volatile.Read(ref _queued);
+
     public bool TryAcquire()
     {
         // Queued waiters go first, so a new caller does not overtake them.
@@ -267,10 +269,14 @@ internal sealed class AsyncHandlerSlotWaiter : HandlerSlotWaiter, IValueTaskSour
         return WaitAsync(cancellationToken);
     }
 
+    /// <summary>Takes a slot without waiting, unless queued waiters are ahead of this caller.</summary>
+    public bool TryAcquire() => _limiter.TryAcquire();
+
     /// <summary>Returns the slot taken by the last completed <see cref="AcquireAsync"/>.</summary>
     public void Release() => _limiter.Release();
 
-    private ValueTask WaitAsync(CancellationToken cancellationToken)
+    /// <summary>Queues for a slot after <see cref="TryAcquire"/> failed.</summary>
+    public ValueTask WaitAsync(CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref State) == Cancelled || cancellationToken.IsCancellationRequested)
             return new ValueTask(Task.FromCanceled(cancellationToken.IsCancellationRequested ? cancellationToken : new CancellationToken(true)));
