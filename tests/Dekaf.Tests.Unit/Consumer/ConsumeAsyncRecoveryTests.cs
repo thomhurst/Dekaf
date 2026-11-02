@@ -884,6 +884,32 @@ public sealed class ConsumeAsyncRecoveryTests
         await Assert.That(consumer.GetPosition(tp)).IsEqualTo(1L);
     }
 
+    [Test]
+    public async Task PublishedRecordlessError_KeepsLaterFetchesAndFetchPosition()
+    {
+        var tp = new TopicPartition(Topic, Partition);
+        // Prefetch publication raises the floor of every item, including response-level errors.
+        var error = PendingFetchData.CreateError(
+            Topic,
+            Partition,
+            new ConsumeException($"Failed to parse record batch for {Topic}-{Partition}"));
+        error.RaiseStartOffset(0);
+        var later = PendingFetchData.Create(
+            Topic,
+            Partition,
+            [CreateBatch(3, CreateRecord(0, "later", "value"))],
+            skipRecordsBelowOffset: 3);
+        await using var consumer = CreateConsumerWithPendingFetches(null, error, later);
+        GetFetchPositions(consumer)[tp] = 4;
+
+        var thrown = await ConsumeExpectingFailureAsync(consumer, EagerParseConsumeMode.ConsumeAsync);
+
+        await Assert.That(thrown).IsTypeOf<ConsumeException>();
+        // A recordless error never advanced the fetch position, so nothing is rewound or dropped.
+        await Assert.That(GetPendingFetchCount(consumer)).IsEqualTo(1);
+        await Assert.That(GetFetchPositions(consumer)[tp]).IsEqualTo(4L);
+    }
+
     private static async Task<Exception?> ConsumeExpectingFailureAsync(
         KafkaConsumer<string, string> consumer,
         EagerParseConsumeMode mode)

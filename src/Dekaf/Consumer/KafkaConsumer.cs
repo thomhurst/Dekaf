@@ -289,11 +289,12 @@ internal sealed class PendingFetchData : IDisposable
 
     /// <summary>
     /// The first offset this fetch can deliver: its publication floor (the fetch position it was
-    /// requested or published at), else its first batch. -1 when it carries no records.
+    /// requested or published at), else its first batch. -1 when it carries no records, even when
+    /// publication raised its floor: a recordless error never advanced the fetch position.
     /// </summary>
-    internal long FirstDeliverableOffset => _skipRecordsBelowOffset >= 0
-        ? _skipRecordsBelowOffset
-        : _batches.Count > 0 ? _batches[0].BaseOffset : -1;
+    internal long FirstDeliverableOffset => _batches.Count == 0
+        ? -1
+        : _skipRecordsBelowOffset >= 0 ? _skipRecordsBelowOffset : _batches[0].BaseOffset;
 
     /// <summary>Raises the publication floor and suppresses progress from fully covered responses.</summary>
     internal void RaiseStartOffset(long offset)
