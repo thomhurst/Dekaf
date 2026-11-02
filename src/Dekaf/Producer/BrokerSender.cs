@@ -1595,9 +1595,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         LogStaleRetryBatchSkipped(_instanceId, _brokerId);
                 }
 
-                while (_deferredUnmutes.TryDequeue(out var deferredUnmute))
-                    UnmuteUnlessRetryQueued(deferredUnmute, carryOver);
-
                 // Crash-recovered batches predate all work already owned by this replacement
                 // sender. Persistent carry-over insertion preserves FIFO across loop cycles
                 // while keeping every recovery ahead of send-failure retries and normal work.
@@ -1615,6 +1612,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         LogStaleRetryBatchSkipped(_instanceId, _brokerId);
                     }
                 }
+
+                // After both retry intakes, so a send-failed retry or a crash-recovered retry
+                // of the same partition is already in carry-over when the mute is decided.
+                while (_deferredUnmutes.TryDequeue(out var deferredUnmute))
+                    UnmuteUnlessRetryQueued(deferredUnmute, carryOver);
 
                 // ── 3. Handle timed-out requests (Java handleTimedOutRequests pattern) ──
                 var pendingResponseCount = Volatile.Read(ref _totalPendingResponseCount);
