@@ -73,6 +73,9 @@ public partial class OutboxMetricTests
             await Assert.That(capture.Gauge("dekaf.outbox.pending.oldest_age")).IsEqualTo(120);
             await Assert.That(capture.Gauge("dekaf.outbox.pending.available")).IsEqualTo(1);
             time.Advance(TimeSpan.FromSeconds(29));
+            // The relay renews at t=29 and then waits 20 seconds again. Waiting for that wait
+            // keeps the sample at t=60 off the exact expiry of the lease taken at t=0.
+            await time.WaitForArmedTimerAsync(TimeSpan.FromSeconds(20));
             await Assert.That(store.Calls).IsEqualTo(1);
             capture.Observe();
             await Assert.That(capture.Gauge("dekaf.outbox.pending.oldest_age")).IsEqualTo(149);

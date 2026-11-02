@@ -109,6 +109,38 @@ public partial class OutboxMetricTests
     }
 
     [Test]
+    public async Task CoordinatedSampling_SamplerThatSawAnExpiredLease_WakesWhenThatLeaseIsRenewed()
+    {
+        using var capture = new MetricCapture("coordinated");
+        var time = new ManualTimeProvider();
+        var store = new SamplingStore { Query = static (_, _) => new(new OutboxPendingMetrics(7, null)) };
+        using var relay = CoordinatedRelay(store, time, true);
+        await BindCycle(relay)(default);
+        time.Advance(TimeSpan.FromSeconds(60));
+        using var cancellation = new CancellationTokenSource();
+        var sampling = StartSampling(relay, store, cancellation.Token);
+        try
+        {
+            // The sampler reads the lease at its exact expiry and waits without a query.
+            await time.WaitForArmedTimerAsync(TimeSpan.FromSeconds(30));
+            await Assert.That(store.Calls).IsEqualTo(0);
+
+            // A renewal that passed its expiry check just before then now records its
+            // timestamp, renewing the same lease rather than handing over a new one.
+            SetLeaseTimestamp(relay, time.GetTimestamp() - time.TimestampFrequency * 30);
+            InvokeUpdateMetricsLease(relay);
+
+            await store.Started.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+            await Assert.That(store.Calls).IsEqualTo(1);
+        }
+        finally
+        {
+            cancellation.Cancel();
+            await sampling.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+    }
+
+    [Test]
     public async Task CoordinatedSampling_OwnershipLossDiscardsInFlightSnapshot()
     {
         using var capture = new MetricCapture("coordinated");
@@ -145,6 +177,14 @@ public partial class OutboxMetricTests
             LeaseDuration = TimeSpan.FromSeconds(60), LeaseRenewInterval = TimeSpan.FromSeconds(20),
             MetricsCollectionTimeout = TimeSpan.FromSeconds(50), CollectMetricsOnBucketZeroOwnerOnly = coordinated
         }, NullLogger<OutboxRelayService>.Instance, time);
+
+    private static void SetLeaseTimestamp(OutboxRelayService relay, long timestamp) =>
+        typeof(OutboxRelayService).GetField("_leaseTimestamp", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .SetValue(relay, timestamp);
+
+    private static void InvokeUpdateMetricsLease(OutboxRelayService relay) =>
+        typeof(OutboxRelayService).GetMethod("UpdateMetricsLease", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .Invoke(relay, null);
 
     private static Task StartSampling(OutboxRelayService relay, IOutboxMetricsStore store, CancellationToken cancellationToken) =>
         (Task)typeof(OutboxRelayService).GetMethod("CollectPendingMetricsAsync", BindingFlags.NonPublic | BindingFlags.Instance)!
