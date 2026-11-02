@@ -264,6 +264,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
             synchronousRelease.Set();
             await acknowledged.Task.WaitAsync(cancellationToken);
             await Assert.That(coordinator.Assignment).IsEquivalentTo([new TopicPartition("test-topic", newerTarget ? 1 : 0)]);
+            // A heartbeat reports the new ownership as soon as the reconciliation completes, before
+            // the callback worker records the rebalance metric, so drain the worker first.
+            await GetPrivateField<Task>(coordinator, "_heartbeatRebalanceCallbacks").WaitAsync(cancellationToken);
             var metrics = telemetry.Collect(new ClientTelemetrySubscription(
                 Guid.NewGuid(), 1, 0, 1000, 10000, false, [rebalancePrefix])).Metrics;
             var average = metrics.Single(metric => metric.Name == rebalancePrefix + "avg").Value;
