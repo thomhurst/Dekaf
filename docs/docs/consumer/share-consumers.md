@@ -390,6 +390,8 @@ When a partition's leadership moves, the old leader answers `ShareFetch` with `N
 
 The share-partition state belongs to the partition leader. After a move, the new leader makes the records that were in flight available again, so acknowledgements for them fail as described in [Observing Acknowledgement Outcomes](#observing-acknowledgement-outcomes) and the records are redelivered.
 
+During share coordinator discovery, an empty broker list in cached metadata is a transient condition, including during a graceful broker restart. Dekaf refreshes metadata from the bootstrap servers and retries discovery with the existing backoff, within `SessionTimeoutMs` for a join and the session window for a running heartbeat. Caller cancellation and fatal authentication or authorization errors still stop the operation.
+
 ## Configuration
 
 Common builder options beyond the connection/TLS/SASL settings shared with other clients:

@@ -247,7 +247,20 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         var brokers = _metadataManager.Metadata.GetBrokers();
         if (brokers.Count == 0)
         {
-            throw new InvalidOperationException("No brokers available");
+            // A graceful broker shutdown can publish an empty broker list. Refresh from
+            // bootstrap before discovery; a still-empty snapshot is a retriable coordinator
+            // failure that the join deadline and heartbeat session window already bound.
+            await RetryHelper.RefreshMetadataForRetryAsync(_metadataManager, cancellationToken)
+                .ConfigureAwait(false);
+            brokers = _metadataManager.Metadata.GetBrokers();
+            if (brokers.Count == 0)
+            {
+                throw new GroupException(ErrorCode.CoordinatorNotAvailable,
+                    "No brokers available for share coordinator discovery")
+                {
+                    GroupId = _options.GroupId
+                };
+            }
         }
 
         var request = new FindCoordinatorRequest
