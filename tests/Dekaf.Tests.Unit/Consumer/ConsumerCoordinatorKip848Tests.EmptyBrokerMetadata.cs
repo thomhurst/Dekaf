@@ -73,7 +73,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         await Assert.That(failure!.TimeoutKind).IsEqualTo(TimeoutKind.Rebalance);
         await Assert.That(failure.InnerException).IsTypeOf<GroupException>();
         await Assert.That(((GroupException)failure.InnerException!).ErrorCode).IsEqualTo(ErrorCode.CoordinatorNotAvailable);
-        await Assert.That(refreshes).IsGreaterThan(1);
+        // The deadline, not a refresh count, is the contract here: how many refreshes fit in the
+        // budget depends on scheduling. RefreshesBootstrapAndJoins covers the retry itself.
+        await Assert.That(refreshes).IsGreaterThanOrEqualTo(1);
     }
 
     [Test]
