@@ -70,9 +70,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     private volatile Task? _pendingReleaseTask;
     private Dictionary<RenewedRecordKey, RenewedRecordState>? _renewedRecords;
     // Acknowledgements a pre-v2 broker could not take because they include Renew. Request
-    // tasks add them; the poll or commit that awaits those tasks settles them.
-    private System.Collections.Concurrent.ConcurrentQueue<
-        Dictionary<TopicPartition, List<AcknowledgementBatchData>>>? _unsupportedRenewals;
+    // tasks add them; the poll or commit that awaits those tasks settles them. Each entry keeps
+    // the generation its request started in: abandoning an in-flight fetch advances it, because
+    // the abandon already requeued that fetch's acknowledgements.
+    private System.Collections.Concurrent.ConcurrentQueue<(
+        int Generation, Dictionary<TopicPartition, List<AcknowledgementBatchData>> Acknowledgements)>? _unsupportedRenewals;
+    private int _unsupportedRenewalGeneration;
+    // Set when a settlement requeued acknowledgements, so close flushes them once more.
+    private bool _settledUnsupportedRenewals;
     private readonly List<ShareRecordBatchOwner> _polledBatchOwners = [];
     private Dictionary<TopicPartition, ShareRecordBatchOwner.Pool>? _recordBatchOwnerPools;
     private int _recordBatchScopes;
@@ -678,9 +683,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         // acknowledgements must advance even when an earlier broker fills the poll budget.
         Exception? firstFetchError = null;
         Dictionary<TopicPartition, Exception>? acknowledgementErrors = null;
+        // The requests left these out, so they are neither sent nor unsent: settle them only once.
+        var unsupportedRenewals = TakeUnsupportedRenewals();
         if (pendingAcks is not null && sentAcknowledgementPartitionCount != pendingAcks.Count)
         {
-            var unsentAcknowledgements = GetUnsentAcknowledgements(pendingAcks, fetchResults);
+            var unsentAcknowledgements = GetUnsentAcknowledgements(pendingAcks, fetchResults, unsupportedRenewals);
             RequeueAcknowledgements(unsentAcknowledgements);
             AddAcknowledgementErrors(
                 ref acknowledgementErrors,
@@ -777,7 +784,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
         // Like other inline acknowledgement failures, these reach the commit callback only, so
         // the poll keeps delivering records from the broker.
-        SettleUnsupportedRenewals(ref acknowledgementErrors);
+        SettleUnsupportedRenewals(unsupportedRenewals, ref acknowledgementErrors);
 
         if (_hasBufferedAcquisitionReleases && !_ackTracker.HasPending)
             _hasBufferedAcquisitionReleases = false;
@@ -906,7 +913,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 firstError ??= result.Error;
         }
 
-        if (SettleUnsupportedRenewals(ref acknowledgementErrors) is { } renewalError && !reportPartitionErrors)
+        if (SettleUnsupportedRenewals(TakeUnsupportedRenewals(), ref acknowledgementErrors) is { } renewalError
+            && !reportPartitionErrors)
             firstError ??= renewalError;
 
         if (_hasBufferedAcquisitionReleases && !_ackTracker.HasPending)
@@ -1015,7 +1023,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         // Step 1: Release delivered records that have not reached a poll/commit boundary.
         // Preserve explicit and previously submitted outcomes, including Renew. Closing
         // the share sessions below releases any remaining acquisition locks.
-        if (HasPendingAcknowledgements)
+        // A leader that cannot renew leaves a partition's other dispositions out of the first
+        // flush. They are requeued without the Renew, so send them before the sessions close.
+        _settledUnsupportedRenewals = false;
+        for (var flush = 0; flush < 2 && HasPendingAcknowledgements; flush++)
         {
             try
             {
@@ -1025,6 +1036,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             {
                 LogFlushAcksFailed(ex);
             }
+
+            if (!_settledUnsupportedRenewals)
+                break;
+            _settledUnsupportedRenewals = false;
         }
 
         // Step 2: Close share sessions (send ShareFetch with epoch = -1)
@@ -1252,6 +1267,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         // continues; the context records whether its write started.
         var fetchContext = requestContext ?? GetFetchWriteContext(brokerId);
         var isRenewAck = ContainsRenewAcknowledgement(brokerAcks);
+        var renewalGeneration = isRenewAck ? Volatile.Read(ref _unsupportedRenewalGeneration) : 0;
 
         for (var attempt = 0; ; attempt++)
         {
@@ -1270,7 +1286,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 if (isRenewAck && version < 2)
                 {
                     // Later attempts reuse the remaining acknowledgements.
-                    brokerAcks = ExcludeUnsupportedRenewals(brokerAcks!);
+                    brokerAcks = ExcludeUnsupportedRenewals(brokerAcks!, renewalGeneration);
                     isRenewAck = false;
                 }
                 // Capture the session's partitions before its epoch, so a reset between the two
@@ -1504,6 +1520,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         Dictionary<TopicPartition, Exception>? acknowledgementErrors = null;
         Exception? firstError = null;
         var pendingAcknowledgements = topicAcks;
+        var renewalGeneration = Volatile.Read(ref _unsupportedRenewalGeneration);
 
         for (var attempt = 0; ; attempt++)
         {
@@ -1523,7 +1540,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     ShareAcknowledgeRequest.HighestSupportedVersion);
                 if (isRenewAck && shareAckVersion < 2)
                 {
-                    if (ExcludeUnsupportedRenewals(pendingAcknowledgements) is not { } remaining)
+                    if (ExcludeUnsupportedRenewals(pendingAcknowledgements, renewalGeneration) is not { } remaining)
                     {
                         return new AcknowledgeBrokerResult(
                             successfulAcknowledgements,
@@ -2586,12 +2603,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
     private static Dictionary<TopicPartition, List<AcknowledgementBatchData>> GetUnsentAcknowledgements(
         Dictionary<TopicPartition, List<AcknowledgementBatchData>> pendingAcknowledgements,
-        ShareFetchBrokerResult[] fetchResults)
+        ShareFetchBrokerResult[] fetchResults,
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? unsupportedRenewals)
     {
         var unsentAcknowledgements = new Dictionary<TopicPartition, List<AcknowledgementBatchData>>();
         foreach (var (topicPartition, batches) in pendingAcknowledgements)
         {
-            var sent = false;
+            var sent = unsupportedRenewals?.ContainsKey(topicPartition) == true;
             foreach (var fetchResult in fetchResults)
             {
                 if (fetchResult.SentAcknowledgements?.ContainsKey(topicPartition) != true)
@@ -2639,7 +2657,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     // acknowledgements include Renew and return the rest, or null when none remain. The poll or
     // commit that awaits this request settles the excluded ones (SettleUnsupportedRenewals).
     private Dictionary<TopicPartition, List<AcknowledgementBatchData>>? ExcludeUnsupportedRenewals(
-        Dictionary<TopicPartition, List<AcknowledgementBatchData>> acknowledgements)
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>> acknowledgements,
+        int generation)
     {
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? remaining = null;
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? excluded = null;
@@ -2652,40 +2671,63 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         }
 
         if (excluded is not null)
-            LazyInitializer.EnsureInitialized(ref _unsupportedRenewals)!.Enqueue(excluded);
+            LazyInitializer.EnsureInitialized(ref _unsupportedRenewals)!.Enqueue((generation, excluded));
         return remaining;
     }
 
     // Runs on the consumer's thread after the requests that excluded these acknowledgements.
-    // Renew can never succeed on that broker, so drop it rather than queue it for every later
-    // request; the record's acquisition lock then expires as if it had not been renewed.
-    // The partitions' other acknowledgements go out with the next request.
-    private BrokerVersionException? SettleUnsupportedRenewals(
-        ref Dictionary<TopicPartition, Exception>? acknowledgementErrors)
+    // Entries from an abandoned fetch are dropped: the abandon already requeued them.
+    private Dictionary<TopicPartition, List<AcknowledgementBatchData>>? TakeUnsupportedRenewals()
     {
         if (_unsupportedRenewals is not { IsEmpty: false } unsupportedRenewals)
             return null;
 
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? taken = null;
+        while (unsupportedRenewals.TryDequeue(out var entry))
+        {
+            if (entry.Generation != _unsupportedRenewalGeneration)
+                continue;
+            if (taken is null)
+            {
+                taken = entry.Acknowledgements;
+                continue;
+            }
+
+            // Each request excludes its broker's partitions once, so the entries do not overlap.
+            foreach (var (topicPartition, batches) in entry.Acknowledgements)
+                taken[topicPartition] = batches;
+        }
+
+        return taken;
+    }
+
+    // Renew can never succeed on that broker, so drop it rather than queue it for every later
+    // request; the record's acquisition lock then expires as if it had not been renewed.
+    // The partitions' other acknowledgements go out with the next request.
+    private BrokerVersionException? SettleUnsupportedRenewals(
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? acknowledgements,
+        ref Dictionary<TopicPartition, Exception>? acknowledgementErrors)
+    {
+        if (acknowledgements is null)
+            return null;
+
+        if (_batchAcknowledgements is { } batchAcknowledgements)
+        {
+            batchAcknowledgements.RequeueAcknowledgements(acknowledgements, dropRenewals: true);
+        }
+        else
+        {
+            ReleaseRenewals(acknowledgements);
+            _ackTracker.RequeueAcks(acknowledgements, dropRenewals: true);
+        }
+
+        _settledUnsupportedRenewals = true;
         var error = new BrokerVersionException(
             ErrorCode.UnsupportedVersion,
             "Broker does not support ShareFetch/ShareAcknowledge v2 required for Renew acknowledgements.");
-        while (unsupportedRenewals.TryDequeue(out var acknowledgements))
-        {
-            if (_batchAcknowledgements is { } batchAcknowledgements)
-            {
-                batchAcknowledgements.RequeueAcknowledgements(acknowledgements, dropRenewals: true);
-            }
-            else
-            {
-                ReleaseRenewals(acknowledgements);
-                _ackTracker.RequeueAcks(acknowledgements, dropRenewals: true);
-            }
-
-            AddAcknowledgementErrors(ref acknowledgementErrors, acknowledgements, error);
-            foreach (var topicPartition in acknowledgements.Keys)
-                LogRenewalUnsupported(topicPartition.Topic, topicPartition.Partition);
-        }
-
+        AddAcknowledgementErrors(ref acknowledgementErrors, acknowledgements, error);
+        foreach (var topicPartition in acknowledgements.Keys)
+            LogRenewalUnsupported(topicPartition.Topic, topicPartition.Partition);
         return error;
     }
 
