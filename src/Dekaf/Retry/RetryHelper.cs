@@ -20,10 +20,18 @@ namespace Dekaf.Retry;
 /// Reports whether the calling component is disposed. A connection retired by pool churn
 /// (<see cref="ObjectDisposedException"/>) is retried only while it is not.
 /// </param>
+/// <param name="RetryCoordinatorErrors">
+/// True for a group-coordinator request: NOT_COORDINATOR, COORDINATOR_NOT_AVAILABLE and
+/// COORDINATOR_LOAD_IN_PROGRESS are retried, with rediscovery, until the deadline like a
+/// transport failure instead of spending the broker-answered retry count. They say the group's
+/// coordinator moved or is still loading its offsets partition, which on a freshly started
+/// broker can outlast that count; the Java client retries them until its timer ends too.
+/// </param>
 internal readonly record struct RetryDeadline(
     string Operation,
     TimeSpan Budget,
-    Func<bool>? IsOwnerDisposed = null);
+    Func<bool>? IsOwnerDisposed = null,
+    bool RetryCoordinatorErrors = false);
 
 /// <summary>
 /// Centralized retry logic for retriable Kafka errors.
@@ -227,7 +235,7 @@ internal static class RetryHelper
                 }
                 catch (Exception ex) when (IsRetriableUntilDeadline(ex, deadline))
                 {
-                    if (!HasTransportCause(ex) && ++brokerAnsweredRetries > maxRetries)
+                    if (IsBoundedByRetryCount(ex, deadline) && ++brokerAnsweredRetries > maxRetries)
                         throw;
 
                     lastFailure = ex;
@@ -251,7 +259,7 @@ internal static class RetryHelper
                         }
                         catch (Exception recoveryFailure) when (IsRetriableUntilDeadline(recoveryFailure, deadline))
                         {
-                            if (!HasTransportCause(recoveryFailure) && ++brokerAnsweredRetries > maxRetries)
+                            if (IsBoundedByRetryCount(recoveryFailure, deadline) && ++brokerAnsweredRetries > maxRetries)
                                 throw;
 
                             lastFailure = recoveryFailure;
@@ -301,6 +309,21 @@ internal static class RetryHelper
                 failure);
         }
     }
+
+    // A retriable error a live broker answered with spends the retry count. A transport failure
+    // and, for a coordinator request, a coordinator that moved or is still loading are retried
+    // until the deadline instead.
+    private static bool IsBoundedByRetryCount(Exception exception, RetryDeadline deadline) =>
+        !HasTransportCause(exception)
+        && !(deadline.RetryCoordinatorErrors && IsCoordinatorUnavailable(exception));
+
+    private static bool IsCoordinatorUnavailable(Exception exception) =>
+        exception is KafkaException
+        {
+            ErrorCode: Protocol.ErrorCode.NotCoordinator
+                or Protocol.ErrorCode.CoordinatorNotAvailable
+                or Protocol.ErrorCode.CoordinatorLoadInProgress
+        };
 
     // True for a transport-level failure and for a Kafka failure that wraps one (a coordinator
     // lookup that exhausted its own attempts against unreachable brokers). NETWORK_EXCEPTION is
