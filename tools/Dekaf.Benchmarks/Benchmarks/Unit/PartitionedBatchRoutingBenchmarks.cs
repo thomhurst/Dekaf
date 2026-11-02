@@ -10,6 +10,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// <summary>
 /// Routes warmed parsed batches, including filters that deliver no records. The lane lookup
 /// hits on every batch; a miss is the cold path that starts a lane for an assigned partition.
+/// Monitored lanes record one arrival time per batch for <c>PartitionedProcessingMonitor</c>.
 /// </summary>
 [MemoryDiagnoser]
 public class PartitionedBatchRoutingBenchmarks
@@ -27,14 +28,19 @@ public class PartitionedBatchRoutingBenchmarks
     [Params(false, true)]
     public bool FilterAll { get; set; }
 
+    [Params(false, true)]
+    public bool Monitored { get; set; }
+
     [GlobalSetup]
     public void Setup()
     {
         var runtime = new PartitionedConsumerRuntime<Ignore, ReadOnlyMemory<byte>>(null!, static (_, _) => default,
             new PartitionedProcessingOptions { CommitPolicy = PartitionCommitPolicy.UserManaged }, null);
         var partition = new TopicPartition("batch-routing", 0);
-        _lane = new PartitionLane<Ignore, ReadOnlyMemory<byte>>(partition, RecordCount + 1,
-            static (_, _) => default, static _ => { }, static (_, _) => { });
+        _lane = Monitored
+            ? CreateMonitoredLane(partition, RecordCount + 1)
+            : new PartitionLane<Ignore, ReadOnlyMemory<byte>>(partition, RecordCount + 1,
+                static (_, _) => default, static _ => { }, static (_, _) => { });
         var runtimeType = runtime.GetType();
         var lanes = (Dictionary<TopicPartition, PartitionLane<Ignore, ReadOnlyMemory<byte>>>)
             runtimeType.GetField("_lanes", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(runtime)!;
@@ -79,6 +85,25 @@ public class PartitionedBatchRoutingBenchmarks
 
     [GlobalCleanup]
     public void Cleanup() => _lane.EnableAutomaticCompletion();
+
+    // Reflection keeps this fixture compiling against revisions without the monitor; there the
+    // monitored cases fail setup and the gate measures them on the candidate alone. The null
+    // argument is the lane's optional PartitionedProcessingLimits.
+    private static PartitionLane<Ignore, ReadOnlyMemory<byte>> CreateMonitoredLane(TopicPartition partition, int capacity)
+    {
+        var laneType = typeof(PartitionLane<Ignore, ReadOnlyMemory<byte>>);
+        var monitor = Activator.CreateInstance(
+            laneType.Assembly.GetType("Dekaf.Consumer.PartitionedProcessingMonitor", throwOnError: true)!)!;
+        Func<PartitionLane<Ignore, ReadOnlyMemory<byte>>, CancellationToken, ValueTask> commit = static (_, _) => default;
+        Action<PartitionLane<Ignore, ReadOnlyMemory<byte>>> capacityAvailable = static _ => { };
+        Action<PartitionLane<Ignore, ReadOnlyMemory<byte>>, Exception> failed = static (_, _) => { };
+        return (PartitionLane<Ignore, ReadOnlyMemory<byte>>)Activator.CreateInstance(
+            laneType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            [partition, capacity, commit, capacityAvailable, failed, null, monitor],
+            culture: null)!;
+    }
 
     private sealed class RejectAllFilter : IConsumerRecordFilter
     {
