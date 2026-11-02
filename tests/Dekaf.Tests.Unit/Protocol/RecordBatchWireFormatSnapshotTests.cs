@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using Dekaf.Compression;
 using Dekaf.Compression.Brotli;
 using Dekaf.Compression.Lz4;
@@ -48,16 +49,9 @@ public sealed class RecordBatchWireFormatSnapshotTests
             snapshots.Add(EncodeRecordBatch("control-commit-marker", control, CompressionType.None, registry));
         }
 
-        var platform = OperatingSystem.IsWindows() ? "windows" : "unix";
-        await Verifier.Verify(snapshots, SnapshotSettings(platform));
-    }
-
-    private static VerifySettings SnapshotSettings(string platform)
-    {
         var settings = new VerifySettings();
         settings.UseDirectory("Snapshots");
-        settings.UseTextForParameters(platform);
-        return settings;
+        await Verifier.Verify(snapshots, settings);
     }
 
     private static RecordBatch CreateRecordBatch(RecordBatchAttributes attributes, bool includeHeaders)
@@ -134,8 +128,46 @@ public sealed class RecordBatchWireFormatSnapshotTests
     {
         var buffer = new ArrayBufferWriter<byte>();
         batch.Write(buffer, compression, registry);
-        return new RecordBatchWireSnapshot(scenario, Convert.ToHexString(buffer.WrittenSpan));
+        var bytes = buffer.WrittenSpan.ToArray();
+
+        // The writer must produce a valid CRC before any normalization.
+        var crc = BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(CrcOffset));
+        if (crc != Crc32C.Compute(bytes.AsSpan(CrcCoveredOffset)))
+        {
+            throw new InvalidOperationException($"Scenario {scenario} wrote an invalid batch CRC.");
+        }
+
+        if (compression == CompressionType.Gzip)
+        {
+            NormalizeGzipOperatingSystem(bytes);
+        }
+
+        return new RecordBatchWireSnapshot(scenario, Convert.ToHexString(bytes));
     }
+
+    // The runtime's gzip writer stamps the host OS into the header (RFC 1952 OS field):
+    // 3 on Linux, 10 on Windows, 19 on macOS. Pin it to 255 ("unknown") and recompute the
+    // batch CRC that covers it, so one snapshot holds on every platform.
+    private static void NormalizeGzipOperatingSystem(byte[] bytes)
+    {
+        var gzip = bytes.AsSpan(RecordsOffset);
+        if (gzip.Length < GzipHeaderLength || gzip[0] != 0x1F || gzip[1] != 0x8B)
+        {
+            throw new InvalidOperationException("Gzip batch records do not start with a gzip header.");
+        }
+
+        gzip[GzipOperatingSystemOffset] = GzipUnknownOperatingSystem;
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(CrcOffset), Crc32C.Compute(bytes.AsSpan(CrcCoveredOffset)));
+    }
+
+    // RecordBatch v2 layout: baseOffset(8) batchLength(4) partitionLeaderEpoch(4) magic(1) crc(4),
+    // then the CRC-covered attributes(2) ... recordCount(4), then the records.
+    private const int CrcOffset = 17;
+    private const int CrcCoveredOffset = 21;
+    private const int RecordsOffset = 61;
+    private const int GzipHeaderLength = 10;
+    private const int GzipOperatingSystemOffset = 9;
+    private const byte GzipUnknownOperatingSystem = 0xFF;
 
     private sealed record RecordBatchWireSnapshot(string Scenario, string Bytes);
 }
