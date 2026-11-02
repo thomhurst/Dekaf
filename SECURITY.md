@@ -78,6 +78,46 @@ an unrelated merge API. This is a reachability assessment, not a claim that
 alert automatically. Reassess when the dependency chain or SVG processing
 configuration changes, or when a patched release becomes available.
 
+### Documentation dependency: minimatch
+
+Assessed on 2026-11-02 for [#4040](https://github.com/thomhurst/Dekaf/issues/4040):
+[GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249)
+reports a denial of service through globparts amplification in `minimatch`
+before 11.0.1. The first patched release is 11.0.1. No 3.x backport exists.
+
+`npm ls minimatch --prefix docs --all` identifies one installed copy:
+`@docusaurus/core@3.10.2`, then `serve-handler@6.1.7`, then `minimatch@3.1.5`.
+The other 17 moderate npm audit findings are those ancestors and the
+Docusaurus plugins that depend on `@docusaurus/core`; the 3 low findings are the
+deepmerge chain above. `serve-handler` 6.1.7 is
+the latest release on the assessment date, and it pins `minimatch` to exactly
+3.1.5.
+
+An override is not safe. `serve-handler` calls the module as a function
+(`require('minimatch')(path, pattern)`). From version 9, `minimatch`'s CommonJS
+entry point exports an object with a named `minimatch` function, so an
+override to 11.x throws `minimatch is not a function` whenever the matcher runs.
+
+Reachability: `serve-handler` runs only in `docusaurus serve`, a local preview
+of a finished build. `docusaurus build`, `docusaurus start`, and the GitHub
+Pages deployment do not load it, and the published site is static files.
+The advisory concerns the glob pattern. In `serve-handler` the patterns come
+from the handler configuration (`rewrites`, `redirects`, `headers`,
+`unlisted`, and array-valued `cleanUrls`/`trailingSlash`), and request paths
+are only the strings that are matched. Docusaurus passes fixed options
+(`cleanUrls: true`, `trailingSlash`, `directoryListing: false`, `public`) with
+none of those pattern lists, so a request cannot supply a pattern, and with
+these options the matcher is not called at all.
+
+Disposition: the vulnerable code is unreachable from requests in the assessed
+toolchain. Retain the current dependencies rather than downgrade Docusaurus,
+run `npm audit fix --force`, or override `minimatch` with an incompatible API.
+This is a reachability assessment, not a claim that `minimatch` 3.1.5 is
+fixed, and it does not suppress npm audit or dismiss the GitHub alert
+automatically. Upstream gate: reassess when `serve-handler` releases a version
+that depends on `minimatch` 11.0.1 or later, or when `@docusaurus/core` drops
+or replaces `serve-handler`. Then upgrade and verify `npm run serve --prefix docs`.
+
 ## Security Exceptions
 
 Every temporary exception must record:
