@@ -480,6 +480,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     private int _recordCount;
     private int _parsedRecordCount;
     private int _nextRecordParseOffset;
+    private bool _recordTailTruncated;
     private RecordHeaderRoutingPlan? _headerRoutingPlan;
 
     int IReadOnlyCollection<Record>.Count =>
@@ -538,6 +539,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         _rawRecordData = rawData;
         _pooledRecordData = pooledArray;
         _recordCount = count;
+        _recordTailTruncated = false;
         _records = this;
     }
 
@@ -618,6 +620,13 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         }
     }
 
+    /// <summary>
+    /// Whether parsing found fewer records than the batch header declares, so the parsed
+    /// records do not cover the batch's offset range.
+    /// </summary>
+    internal bool HasTruncatedRecordTail =>
+        _recordTailTruncated || (_records is LazyRecordList lazyRecords && lazyRecords.HasTruncatedTail);
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal Record[]? GetParsedRecordsArray() =>
         ReferenceEquals(_records, this) ? _parsedRecords : null;
@@ -627,11 +636,13 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
 
     internal const int MaxReasonableLazyRecordCount = 1_000_000;
 
-    internal static bool IsTruncatedRecordTail(
-        Exception exception,
-        ReadOnlyMemory<byte> availableRecordData,
-        int parsedCount,
-        int declaredCount)
+    /// <summary>
+    /// Whether a record parse failure leaves the parsed prefix usable: the records section
+    /// ended before the declared count. The batch then records the shortfall in
+    /// <see cref="HasTruncatedRecordTail"/>, which the consumer treats as corruption because
+    /// a complete batch frame cannot legitimately hold fewer records than it declares.
+    /// </summary>
+    internal static bool IsTruncatedRecordTail(Exception exception, ReadOnlyMemory<byte> availableRecordData)
     {
         if (exception is InsufficientDataException)
         {
@@ -641,10 +652,10 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             return true;
         }
 
-        // Issue #2065 intentionally excludes corruption in the final declared record.
+        // Fewer bytes than the smallest record cannot encode another record. Any other
+        // malformed record, including the final declared one (#4027), is corruption.
         return exception is MalformedProtocolDataException &&
-               (availableRecordData.Length < Record.MinimumEncodedSize ||
-                parsedCount == declaredCount - 1);
+               availableRecordData.Length < Record.MinimumEncodedSize;
     }
 
     private void EnsureLazyRecordsParsedUpTo(int index)
@@ -685,14 +696,11 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
                 _parsedRecordCount++;
                 _nextRecordParseOffset = readerStartOffset + (int)reader.Consumed;
             }
-            catch (Exception ex) when (IsTruncatedRecordTail(
-                ex,
-                availableRecordData,
-                _parsedRecordCount,
-                _recordCount))
+            catch (Exception ex) when (IsTruncatedRecordTail(ex, availableRecordData))
             {
                 Trace.WriteLine($"Dekaf: Record parsing error ({ex.GetType().Name}) — {_parsedRecordCount} of {_recordCount} records parsed successfully.");
                 _recordCount = _parsedRecordCount;
+                _recordTailTruncated = true;
                 break;
             }
         }
@@ -729,6 +737,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         _parsedRecordsOffset = 0;
         _ownsParsedRecords = false;
         _nextRecordParseOffset = 0;
+        _recordTailTruncated = false;
         _headerRoutingPlan = null;
     }
 
@@ -1052,6 +1061,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             item._recordCount = 0;
             item._parsedRecordCount = 0;
             item._nextRecordParseOffset = 0;
+            item._recordTailTruncated = false;
             item._headerRoutingPlan = null;
             item.PreCompressedRecords = null;
             item.PreCompressedLength = 0;
@@ -1815,6 +1825,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     private Record[]? _parsedRecords; // Rented from ArrayPool<Record>.Shared
     private int _parsedCount;         // Number of records parsed into _parsedRecords
     private int _nextParseOffset;
+    private bool _truncatedTail;
     private int _disposed;
     private RecordHeaderRoutingPlan? _headerRoutingPlan;
 
@@ -1829,6 +1840,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
         instance._rawData = rawData;
         instance._pooledArray = null;
         instance._count = count;
+        instance._truncatedTail = false;
         return instance;
     }
 
@@ -1841,6 +1853,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
         instance._rawData = pooledData.Memory;
         instance._pooledArray = pooledData.PooledArray;
         instance._count = count;
+        instance._truncatedTail = false;
         return instance;
     }
 
@@ -1853,6 +1866,9 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     }
 
     public int Count => _count;
+
+    /// <summary>Whether parsing found fewer records than were declared.</summary>
+    internal bool HasTruncatedTail => _truncatedTail;
 
     /// <summary>
     /// Eagerly parses all records in the batch at once.
@@ -1973,16 +1989,13 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
                 _parsedRecords[_parsedCount++] = record;
                 _nextParseOffset = readerStartOffset + (int)reader.Consumed;
             }
-            catch (Exception ex) when (RecordBatch.IsTruncatedRecordTail(
-                ex,
-                availableRecordData,
-                _parsedCount,
-                _count))
+            catch (Exception ex) when (RecordBatch.IsTruncatedRecordTail(ex, availableRecordData))
             {
                 // The raw record data ended before the declared record count. Cap the count to
-                // the successfully parsed records. Unambiguous interior corruption propagates.
+                // the successfully parsed records. Unambiguous corruption propagates.
                 Trace.WriteLine($"Dekaf: Record parsing error ({ex.GetType().Name}) — {_parsedCount} of {_count} records parsed successfully.");
                 _count = _parsedCount;
+                _truncatedTail = true;
                 break;
             }
         }

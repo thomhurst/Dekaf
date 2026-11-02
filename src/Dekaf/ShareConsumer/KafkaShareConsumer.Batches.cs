@@ -475,7 +475,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                     state.CurrentRecordBytes = state.ByteOffset - startOffset;
             }
             catch (Exception exception) when (RecordBatch.IsTruncatedRecordTail(
-                exception, data[state.ByteOffset..], state.ParsedCount, source.UnparsedLazyRecordCount))
+                exception, data[state.ByteOffset..]))
             {
                 break;
             }
