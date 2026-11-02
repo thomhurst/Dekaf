@@ -3302,10 +3302,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// fails, or a flush that is cancelled or fails, makes the transaction abortable, so the
     /// prepare fails and the caller must abort; only a completed flush publishes the prepared
     /// state that <see cref="CompletePreparedTransactionAsync"/> and a re-initialization act on.
-    /// Prepare path only.
+    /// Both outcomes apply only while <paramref name="ownerToken"/> still owns the transaction: a
+    /// prepare whose continuation resumes after its transaction was aborted and another one was
+    /// prepared must not overwrite that transaction's state. Prepare path only.
     /// </summary>
     internal async ValueTask FlushPreparedTransactionAsync(
         PreparedTransactionState preparedState,
+        int ownerToken,
         CancellationToken cancellationToken)
     {
         try
@@ -3315,10 +3318,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         catch (Exception exception)
         {
             // Records may still be unsent, so the transaction cannot stay prepared. Only this
-            // prepare's state is replaced: a concurrent abort or a fatal error is left alone.
+            // prepare's state is replaced: a concurrent abort, a fatal error or a later
+            // transaction is left alone.
             lock (_partitionsInTransactionLock)
             {
-                if (_transactionState == TransactionState.PreparedTransaction)
+                if (_transactionState == TransactionState.PreparedTransaction && IsTransactionOwner(ownerToken))
                 {
                     _lastTransactionError = exception is OperationCanceledException
                         ? ErrorCode.RequestTimedOut
@@ -3336,7 +3340,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         lock (_partitionsInTransactionLock)
         {
             // A send loop may have failed a batch or fenced the producer, or the handle may have
-            // ended the transaction, since the check above.
+            // ended the transaction, since the check above. Owner check: once the transaction
+            // ended, a later one may be prepared, and its state is not this prepare's to publish.
+            ThrowIfNotTransactionOwner(ownerToken);
             state = _transactionState;
             if (state == TransactionState.PreparedTransaction)
             {
@@ -8388,7 +8394,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         _producer.ThrowIfTransactionFailedDuringFlush("Cannot prepare transaction");
         // Checks ownership again with the state write: the transaction may have ended during the flush.
         var preparedState = _producer.PrepareCurrentTransaction(_ownerToken);
-        await _producer.FlushPreparedTransactionAsync(preparedState, cancellationToken).ConfigureAwait(false);
+        await _producer.FlushPreparedTransactionAsync(preparedState, _ownerToken, cancellationToken).ConfigureAwait(false);
         return preparedState;
     }
 
