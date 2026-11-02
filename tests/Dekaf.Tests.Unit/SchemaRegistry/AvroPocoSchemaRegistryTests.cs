@@ -1450,15 +1450,28 @@ public sealed class AvroPocoSchemaRegistryTests
             Component = SerializationComponent.Value
         };
         var destination = new ExactSizeBufferWriter(4096);
-
-        serializer.Serialize(new PocoGrowingPayload { Value = "small" }, ref destination, context);
-        destination.Clear();
+        var small = new PocoGrowingPayload { Value = "small" };
         var value = new PocoGrowingPayload { Value = new string('x', 1024) };
+
+        // Run the small-then-large retry cycle before measuring so first-execution
+        // runtime work on the growth path (JIT, type loading) is not counted. A small
+        // payload resets the size hint, so each large payload below retries again.
+        for (var index = 0; index < 16; index++)
+        {
+            serializer.Serialize(small, ref destination, context);
+            destination.Clear();
+            serializer.Serialize(value, ref destination, context);
+            destination.Clear();
+        }
+
+        serializer.Serialize(small, ref destination, context);
+        destination.Clear();
 
         var before = GC.GetAllocatedBytesForCurrentThread();
         serializer.Serialize(value, ref destination, context);
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
+        await Assert.That(destination.GetMemoryCallCount).IsGreaterThan(1);
         await Assert.That(allocated).IsEqualTo(0);
     }
 
