@@ -469,6 +469,42 @@ was still queued. Prefer handling retries and
 dead-letter routing inside your processor so unexpected exceptions remain
 visible.
 
+## Health Monitoring
+
+A consumer-wide "last progress" time hides a stuck partition: fast or idle
+partitions keep updating it while one handler hangs. To see in-flight work, pass a
+`PartitionedProcessingMonitor` to the run and read
+`OldestOutstandingRecordAt` from your health check:
+
+```csharp
+var monitor = new PartitionedProcessingMonitor();
+
+var run = consumer.RunPartitionedAsync(
+    async (context, message, cancellationToken) => await ProcessOrderAsync(message.Value, cancellationToken),
+    new PartitionedProcessingOptions { Monitor = monitor },
+    stoppingToken);
+
+// In a health check, on any thread:
+var oldest = monitor.OldestOutstandingRecordAt;
+var stalled = oldest is { } receivedAt && DateTimeOffset.UtcNow - receivedAt > TimeSpan.FromMinutes(5);
+```
+
+The value is the time the runtime received the oldest record that is still queued
+or being processed and is not yet marked processed, across every assigned
+partition. It is `null` when nothing is outstanding or no run is attached. Record
+and batch handlers mark records processed when they return. A low-level
+`PartitionProcessor` marks them with `context.MarkProcessed`, so a record it never
+marks stays outstanding until its partition stops.
+
+A monitor observes one run at a time. Reading it does not allocate, and a monitored
+run records one timestamp per partition per fetched batch, not per record.
+
+Each partition keeps at most 1,024 batch timestamps. When more batches than that
+wait behind one unfinished record, for example behind a stuck key in key-ordered
+mode, neighbouring batches share the earlier timestamp. The reported time
+can then be earlier than the real arrival of later records, but never later, so a
+stuck record is never hidden.
+
 ## Low-Level Rebalance Callbacks
 
 `RunPartitionedAsync` builds on the lower-level rebalance lifecycle described in

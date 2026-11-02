@@ -645,6 +645,15 @@ public sealed class PartitionedProcessingOptions
     public TimeSpan CommitInterval { get; init; } = TimeSpan.FromSeconds(5);
 
     /// <summary>
+    /// Gets the monitor that reports the run's in-flight work, or <see langword="null"/> to disable monitoring.
+    /// </summary>
+    /// <remarks>
+    /// Read <see cref="PartitionedProcessingMonitor.OldestOutstandingRecordAt"/> from health checks while the run is active.
+    /// A monitor observes one run at a time.
+    /// </remarks>
+    public PartitionedProcessingMonitor? Monitor { get; init; }
+
+    /// <summary>
     /// True when the runtime itself commits completed offsets based on MarkProcessed tracking.
     /// </summary>
     internal bool IsRuntimeManagedCommitPolicy => CommitPolicy
@@ -859,6 +868,20 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     }
 
     public async ValueTask RunAsync(CancellationToken cancellationToken)
+    {
+        var monitor = _options.Monitor;
+        monitor?.Attach();
+        try
+        {
+            await RunAttachedAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            monitor?.Detach();
+        }
+    }
+
+    private async ValueTask RunAttachedAsync(CancellationToken cancellationToken)
     {
         using var rebalanceRegistration = RegisterRebalanceListener();
         using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
@@ -1240,6 +1263,8 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         if (!records.MoveNext())
             return default;
 
+        if (!records.Current.IsPartitionEof)
+            lane.RecordArrival();
         var completionBatch = lane.CreateCompletionBatch(Math.Min(batch.MaximumRecordCount, MaximumCompletionReservation));
         var published = 0;
         var publicationContinuesAsync = false;
@@ -1384,7 +1409,8 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             CommitProcessedAsync,
             OnLaneCapacityAvailable,
             OnLaneFailed,
-            _limits);
+            _limits,
+            _options.Monitor);
 
         _lanes.Add(partition, lane);
         lane.Start(_processor);
@@ -2223,7 +2249,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     }
 }
 
-internal sealed class PartitionLane<TKey, TValue>
+internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
 {
     private readonly Channel<ConsumeResult<TKey, TValue>> _channel;
     private readonly Func<PartitionLane<TKey, TValue>, CancellationToken, ValueTask> _commitProcessed;
@@ -2249,6 +2275,8 @@ internal sealed class PartitionLane<TKey, TValue>
     private long _committedOffset = -1;
     private AutomaticPartitionProgress? _automaticProgress;
     private TopicPartitionOffset? _firstUndeliveredOffset;
+    private readonly PartitionedProcessingMonitor? _monitor;
+    private readonly OutstandingRecordTimeline? _timeline;
 
     public PartitionLane(
         TopicPartition topicPartition,
@@ -2256,9 +2284,16 @@ internal sealed class PartitionLane<TKey, TValue>
         Func<PartitionLane<TKey, TValue>, CancellationToken, ValueTask> commitProcessed,
         Action<PartitionLane<TKey, TValue>> capacityAvailable,
         Action<PartitionLane<TKey, TValue>, Exception> failed,
-        PartitionedProcessingLimits? limits = null)
+        PartitionedProcessingLimits? limits = null,
+        PartitionedProcessingMonitor? monitor = null)
     {
         TopicPartition = topicPartition;
+        if (monitor is not null)
+        {
+            _monitor = monitor;
+            _timeline = new OutstandingRecordTimeline();
+            monitor.Register(this);
+        }
         _capacity = capacity;
         _limits = limits;
         _budget = limits?.Buffer;
@@ -2369,8 +2404,54 @@ internal sealed class PartitionLane<TKey, TValue>
                 _budget?.Release(abandonedCount);
                 lock (_completedRanges)
                     _completedRanges.Retire();
+                _monitor?.Unregister(this);
             }
         });
+    }
+
+    /// <summary>
+    /// Records the arrival of a routed batch. Called by the runtime loop once per batch before the
+    /// batch's first record is queued.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public void RecordArrival()
+    {
+        if (_timeline is { } timeline)
+            RecordArrival(timeline);
+    }
+
+    private void RecordArrival(OutstandingRecordTimeline timeline)
+    {
+        if (timeline.IsFull)
+            timeline.Prune(GetNextUnprocessedOffset(), _lastEnqueuedOffset);
+        timeline.Append(_lastEnqueuedOffset, DateTime.UtcNow.Ticks);
+    }
+
+    public bool TryGetOldestOutstandingUtcTicks(out long utcTicks)
+    {
+        utcTicks = 0;
+        var timeline = _timeline;
+        if (timeline is null)
+            return false;
+
+        // Read progress before the enqueue position: a record counted complete is never
+        // reported, and a record queued after the progress read is newer than its predecessors.
+        var nextUnprocessed = GetNextUnprocessedOffset();
+        var lastEnqueued = Volatile.Read(ref _lastEnqueuedOffset);
+        return lastEnqueued >= 0
+            && nextUnprocessed <= lastEnqueued
+            && timeline.TryGetArrivalUtcTicks(nextUnprocessed, out utcTicks);
+    }
+
+    /// <summary>The first offset not yet marked processed, or -1 when no record completed.</summary>
+    private long GetNextUnprocessedOffset()
+    {
+        var automaticProgress = Volatile.Read(ref _automaticProgress);
+        if (automaticProgress is not null)
+            return automaticProgress.CompletedOffset;
+
+        lock (_completedRanges)
+            return _completedOffset ?? -1;
     }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
@@ -2403,7 +2484,8 @@ internal sealed class PartitionLane<TKey, TValue>
         if (!isEof)
         {
             completionBatch?.PublishRecord();
-            _lastEnqueuedOffset = result.Offset;
+            // Monitor reads race this write; the volatile store keeps it atomic on 32-bit runtimes.
+            Volatile.Write(ref _lastEnqueuedOffset, result.Offset);
         }
         Interlocked.Increment(ref _bufferedCount);
         return true;
@@ -2595,6 +2677,11 @@ internal sealed class PartitionLane<TKey, TValue>
         catch (Exception ex)
         {
             return ex;
+        }
+        finally
+        {
+            // A stopped lane no longer owns its partition, even when its processor outlives the stop.
+            _monitor?.Unregister(this);
         }
     }
 

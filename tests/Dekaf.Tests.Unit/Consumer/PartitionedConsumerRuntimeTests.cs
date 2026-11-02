@@ -11,7 +11,7 @@ namespace Dekaf.Tests.Unit.Consumer;
 
 // Full isolation: these tests assert timing-sensitive partition runtime scheduling.
 [NotInParallel]
-public sealed class PartitionedConsumerRuntimeTests
+public sealed partial class PartitionedConsumerRuntimeTests
 {
     [Test]
     public async Task CommitTestConsumer_CancelledBeforeCompletedWait_DoesNotRecordCommit()

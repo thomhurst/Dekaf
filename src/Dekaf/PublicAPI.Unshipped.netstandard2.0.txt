@@ -938,3 +938,8 @@ Dekaf.Consumer.PartitionedProcessingOptions.MaxBufferedRecords.get -> int?
 Dekaf.Consumer.PartitionedProcessingOptions.MaxBufferedRecords.init -> void
 Dekaf.Consumer.PartitionedProcessingOptions.MaxConcurrentHandlers.get -> int?
 Dekaf.Consumer.PartitionedProcessingOptions.MaxConcurrentHandlers.init -> void
+Dekaf.Consumer.PartitionedProcessingMonitor
+Dekaf.Consumer.PartitionedProcessingMonitor.OldestOutstandingRecordAt.get -> System.DateTimeOffset?
+Dekaf.Consumer.PartitionedProcessingMonitor.PartitionedProcessingMonitor() -> void
+Dekaf.Consumer.PartitionedProcessingOptions.Monitor.get -> Dekaf.Consumer.PartitionedProcessingMonitor?
+Dekaf.Consumer.PartitionedProcessingOptions.Monitor.init -> void

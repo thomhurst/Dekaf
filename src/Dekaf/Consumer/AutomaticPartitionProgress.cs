@@ -18,6 +18,9 @@ internal sealed class AutomaticPartitionProgress(TopicPartition partition)
         }
     }
 
+    /// <summary>The published commit offset, or -1 before the first publication.</summary>
+    internal long CompletedOffset => Volatile.Read(ref _offset);
+
     internal void MarkProcessed(long offset)
     {
         if (offset > _lastProcessedOffset)
