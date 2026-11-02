@@ -769,6 +769,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // root cause of the PRODUCE framing-guard failures in issue #1570.
     private readonly ConcurrentQueue<(ReadyBatch Batch, int Generation)> _sendFailedRetries = new();
 
+    // Partitions whose batch SendCoalescedAsync failed permanently off the send loop. Only the
+    // send loop may read carry-over, so it decides whether each mute can lift: a retry of the
+    // partition still queued in carry-over keeps it (UnmuteUnlessRetryQueued). Error path only.
+    private readonly ConcurrentQueue<TopicPartition> _deferredUnmutes = new();
+
     // Batches recovered from an unexpectedly exited sender. These must run before both
     // send-failure retries and normal channel backlog on the replacement sender. Their
     // separate queue preserves LoopExitRedeliveryOrder while carry-over insertion keeps
@@ -1589,6 +1594,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     else
                         LogStaleRetryBatchSkipped(_instanceId, _brokerId);
                 }
+
+                while (_deferredUnmutes.TryDequeue(out var deferredUnmute))
+                    UnmuteUnlessRetryQueued(deferredUnmute, carryOver);
 
                 // Crash-recovered batches predate all work already owned by this replacement
                 // sender. Persistent carry-over insertion preserves FIFO across loop cycles
@@ -4143,11 +4151,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         }
                         catch
                         {
-                            UnmutePartition(splitTopicPartition);
+                            UnmuteUnlessRetryQueued(splitTopicPartition, carryOver);
                             throw;
                         }
 
-                        UnmutePartition(splitTopicPartition);
+                        UnmuteUnlessRetryQueued(splitTopicPartition, carryOver);
                     }
 
                     // An earlier batch of the partition under the same stamp was rejected without
@@ -5189,7 +5197,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 if (batch is null || !batch.IsCurrentIncarnation(generations[i]))
                     continue;
 
-                UnmutePartition(batch.TopicPartition);
+                DeferUnmuteUnlessRetryQueued(batch.TopicPartition);
                 try { FailAndCleanupBatch(batch, ex); }
                 catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
             }
@@ -5242,7 +5250,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                     if (Stopwatch.GetTimestamp() >= deliveryDeadlineTicks)
                     {
-                        UnmutePartition(batch.TopicPartition);
+                        DeferUnmuteUnlessRetryQueued(batch.TopicPartition);
                         var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
                         var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
                         FailAndCleanupBatch(batch, new KafkaTimeoutException(
@@ -6207,9 +6215,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Removes a partition from the muted set and signals the send loop.
-    /// Called when a retry completes (reroute, permanent failure, or catch block).
-    /// Idempotent: safe to call even if the partition was not muted.
+    /// Adds a partition to the muted set and mutes it in the accumulator, so newer batches of
+    /// the partition stay behind its in-flight or queued work.
+    /// Idempotent: safe to call even if the partition is already muted.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void MutePartition(TopicPartition tp)
@@ -6235,17 +6243,29 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Unmutes the partition of a retry that has just expired, unless another retry of the
+    /// Unmutes the partition of a batch that has just expired or failed, unless a retry of the
     /// partition is still queued. The mute is what keeps newer batches behind the partition's
     /// retries: lifted while one waits out its backoff or a sequence-restart hold, a fresh batch
     /// would be sent first and, when the retry is re-stamped under a new epoch, take the lower
     /// sequence, which the broker accepts as the intended order. The queued retry unmutes the
-    /// partition itself when it is sent (FinalizeCoalescedRetries) or expires. Expiry path only.
+    /// partition itself when it is sent (FinalizeCoalescedRetries) or expires. Send loop only;
+    /// code off the loop uses <see cref="DeferUnmuteUnlessRetryQueued"/>. Error paths only.
     /// </summary>
     private void UnmuteUnlessRetryQueued(TopicPartition tp, PartitionCarryOver carryOver)
     {
         if (!carryOver.HasRetry(tp) && !(_partitionsRerouting?.Contains(tp) ?? false))
             UnmutePartition(tp);
+    }
+
+    /// <summary>
+    /// <see cref="UnmuteUnlessRetryQueued"/> for code that runs off the send loop, such as the
+    /// catch blocks of <see cref="SendCoalescedAsync"/>: carry-over belongs to the send loop, so
+    /// the partition is queued for the loop to check, and the loop is woken to do it.
+    /// </summary>
+    private void DeferUnmuteUnlessRetryQueued(TopicPartition tp)
+    {
+        _deferredUnmutes.Enqueue(tp);
+        _eventChannel.Writer.TryWrite(SendLoopEvent.Unmute());
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
