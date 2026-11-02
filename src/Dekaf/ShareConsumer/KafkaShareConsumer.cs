@@ -1531,7 +1531,16 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     ApiKey.ShareAcknowledge,
                     ShareAcknowledgeRequest.LowestSupportedVersion,
                     ShareAcknowledgeRequest.HighestSupportedVersion);
-                if (isRenewAck && shareAckVersion < 2)
+                if (isRenewAck && shareAckVersion < 2 && closeSession)
+                {
+                    // Closing the session releases every acquisition, so a Renew means Release
+                    // here. Send it with the partition's other outcomes instead of leaving them
+                    // out of the request that closes the session.
+                    pendingAcknowledgements = ReplaceRenewalsWithRelease(pendingAcknowledgements);
+                    isRenewAck = false;
+                    topics = BuildShareAcknowledgeTopics(pendingAcknowledgements, out sentTopics);
+                }
+                else if (isRenewAck && shareAckVersion < 2)
                 {
                     if (ExcludeUnsupportedRenewals(pendingAcknowledgements, renewalGeneration) is not { } remaining)
                     {
@@ -2666,6 +2675,42 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         if (excluded is not null)
             LazyInitializer.EnsureInitialized(ref _unsupportedRenewals)!.Enqueue((generation, excluded));
         return remaining;
+    }
+
+    private Dictionary<TopicPartition, List<AcknowledgementBatchData>> ReplaceRenewalsWithRelease(
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>> acknowledgements)
+    {
+        var released = new Dictionary<TopicPartition, List<AcknowledgementBatchData>>(acknowledgements.Count);
+        foreach (var (topicPartition, batches) in acknowledgements)
+        {
+            if (!ContainsRenewAcknowledgement(batches))
+            {
+                released[topicPartition] = batches;
+                continue;
+            }
+
+            LogRenewalUnsupported(topicPartition.Topic, topicPartition.Partition);
+            var releasedBatches = new List<AcknowledgementBatchData>(batches.Count);
+            foreach (var batch in batches)
+            {
+                if (!batch.AcknowledgeTypes.AsSpan().Contains((byte)AcknowledgeType.Renew))
+                {
+                    releasedBatches.Add(batch);
+                    continue;
+                }
+
+                var types = (byte[])batch.AcknowledgeTypes.Clone();
+                for (var i = 0; i < types.Length; i++)
+                {
+                    if (types[i] == (byte)AcknowledgeType.Renew)
+                        types[i] = (byte)AcknowledgeType.Release;
+                }
+                releasedBatches.Add(new AcknowledgementBatchData(batch.FirstOffset, batch.LastOffset, types));
+            }
+            released[topicPartition] = releasedBatches;
+        }
+
+        return released;
     }
 
     // Runs on the consumer's thread after the requests that excluded these acknowledgements.

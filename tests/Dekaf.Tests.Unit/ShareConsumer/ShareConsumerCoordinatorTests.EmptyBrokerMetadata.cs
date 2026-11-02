@@ -51,7 +51,9 @@ public sealed partial class ShareConsumerCoordinatorTests
         await Assert.That(failure.InnerException).IsTypeOf<GroupException>();
         await Assert.That(((GroupException)failure.InnerException!).ErrorCode)
             .IsEqualTo(ErrorCode.CoordinatorNotAvailable);
-        await Assert.That(refreshes).IsGreaterThan(1);
+        // The deadline, not a refresh count, is the contract here: how many refreshes fit in the
+        // 100 ms budget depends on scheduling. The test above covers the retry after an empty refresh.
+        await Assert.That(refreshes).IsGreaterThanOrEqualTo(1);
         await Assert.That(harness.Coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
     }
 
