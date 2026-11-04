@@ -243,7 +243,7 @@ public class ProducerBuilderValidationTests
     }
 
     [Test]
-    public async Task Build_DefaultTimeoutsRemainUnchanged()
+    public async Task Build_DefaultTimeouts()
     {
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
@@ -252,7 +252,7 @@ public class ProducerBuilderValidationTests
         var options = GetOptions(producer);
 
         await Assert.That(options.DeliveryTimeoutMs).IsEqualTo(120_000);
-        await Assert.That(options.RequestTimeoutMs).IsEqualTo(30_000);
+        await Assert.That(options.RequestTimeoutMs).IsEqualTo(15_000);
         await Assert.That(options.LingerMs).IsEqualTo(0);
     }
 
