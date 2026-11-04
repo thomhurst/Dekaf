@@ -11,8 +11,8 @@
     <PackageVersion Include="Aliyun.Credentials" Version="1.5.4" />
     <PackageVersion Include="Aspire.Hosting" Version="13.6.4" />
     <PackageVersion Include="Aspire.Hosting.Testing" Version="13.6.4" />
-    <PackageVersion Include="AWSSDK.DynamoDBv2" Version="4.0.109.3" />
-    <PackageVersion Include="AWSSDK.KeyManagementService" Version="4.0.101.1" />
+    <PackageVersion Include="AWSSDK.DynamoDBv2" Version="4.0.110" />
+    <PackageVersion Include="AWSSDK.KeyManagementService" Version="4.0.101.2" />
     <PackageVersion Include="Azure.Identity" Version="1.21.0" />
     <PackageVersion Include="Azure.Security.KeyVault.Keys" Version="4.10.2" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
