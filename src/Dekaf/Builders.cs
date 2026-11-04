@@ -1148,7 +1148,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <summary>
     /// Sets the request timeout for individual broker requests.
     /// Equivalent to Kafka's <c>request.timeout.ms</c>.
-    /// Default is 30 seconds.
+    /// Default is 15 seconds.
     /// </summary>
     /// <param name="timeout">The request timeout. Must be positive.</param>
     public ProducerBuilder<TKey, TValue> WithRequestTimeout(TimeSpan timeout)
@@ -1432,7 +1432,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         ProducerOptions.ValidateArenaCapacity(_batchSize, _arenaCapacity);
 
         var deliveryTimeoutMs = _deliveryTimeoutMs ?? 120_000;
-        var requestTimeoutMs = _requestTimeoutMs ?? 30_000;
+        var requestTimeoutMs = _requestTimeoutMs ?? ProducerOptions.DefaultRequestTimeoutMs;
         var minimumDeliveryTimeoutMs = (long)requestTimeoutMs + _lingerMs;
         if (deliveryTimeoutMs < minimumDeliveryTimeoutMs)
         {

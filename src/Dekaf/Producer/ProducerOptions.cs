@@ -65,9 +65,14 @@ public sealed class ProducerOptions
     public Acks Acks { get; init; } = Acks.All;
 
     /// <summary>
-    /// Request timeout in milliseconds.
+    /// Request timeout in milliseconds: how long the producer waits for a broker response
+    /// before abandoning that connection and retrying the request on a new one.
+    /// Default is 15000 (15 seconds). Batches are retried until <see cref="DeliveryTimeoutMs"/>,
+    /// so a shorter value detects a dead connection sooner without failing deliveries.
     /// </summary>
-    public int RequestTimeoutMs { get; init; } = 30000;
+    public int RequestTimeoutMs { get; init; } = DefaultRequestTimeoutMs;
+
+    internal const int DefaultRequestTimeoutMs = 15_000;
 
     /// <summary>
     /// Initial delay in milliseconds before reconnecting to a broker after a connection failure.
