@@ -3882,7 +3882,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         {
                             ex = responseException;
                         }
-                        LogResponseFailed(ex, _brokerId);
+                        // The batches below are retried, so this is recoverable: warn, not error.
+                        LogResponseFailedRetrying(ex, _brokerId);
                         _pinnedConnections[connIdx] = null; // Invalidate only the affected connection
 
                         for (var j = 0; j < count; j++)
@@ -5231,7 +5232,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             else if (ex is not LocalTopicIdMissException)
             {
                 _pinnedConnections[connectionIndex] = null; // Invalidate only the broken connection
-                LogResponseFailed(ex, _brokerId);
+                LogResponseFailedRetrying(ex, _brokerId);
             }
 
             for (var i = 0; i < count; i++)
@@ -7657,6 +7658,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Error, Message = "BrokerSender[{BrokerId}] response failed")]
     private partial void LogResponseFailed(Exception ex, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] request failed; retrying affected batches on a new connection")]
+    private partial void LogResponseFailedRetrying(Exception ex, int brokerId);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] connection {ConnectionIndex} was not established within {WaitedMs}ms; the setup continues and the batches wait for it")]
     private partial void LogConnectionSetupOutlivesSendBudget(int brokerId, int connectionIndex, int waitedMs);
