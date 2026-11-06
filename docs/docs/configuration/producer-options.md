@@ -477,7 +477,7 @@ Enable logging:
 | `WithDeliveryLatencyTarget` | 10ms | Per-broker delivery latency target (append to ack, linger counts against it); `TimeSpan.Zero` disables |
 | `WithMaxBlock` | 60000ms | Max time produce calls wait for metadata or buffer space |
 | `WithDeliveryTimeout` | 120000ms | Max time for delivery success or failure |
-| `WithRequestTimeout` | 30000ms | Per-request timeout |
+| `WithRequestTimeout` | 15000ms | Per-request timeout; a timed-out request is retried on a new connection until the delivery timeout |
 | `WithSocketSendBufferBytes` | OS default | TCP send buffer size |
 | `WithSocketReceiveBufferBytes` | OS default | TCP receive buffer size |
 | `UseTls` | false | Enable TLS |

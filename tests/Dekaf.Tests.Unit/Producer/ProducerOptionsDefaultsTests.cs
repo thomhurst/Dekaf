@@ -27,10 +27,10 @@ public class ProducerOptionsDefaultsTests
     }
 
     [Test]
-    public async Task RequestTimeoutMs_DefaultsTo_30000()
+    public async Task RequestTimeoutMs_DefaultsTo_15000()
     {
         var options = CreateOptions();
-        await Assert.That(options.RequestTimeoutMs).IsEqualTo(30000);
+        await Assert.That(options.RequestTimeoutMs).IsEqualTo(15000);
     }
 
     [Test]
