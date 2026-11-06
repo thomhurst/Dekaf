@@ -1,6 +1,6 @@
 # Local worktree lifecycle
 
-`AgentLocks.ps1 release` removes its recorded checkout before releasing ownership. Register the path once after checkout with `renew -LockName <name> -Worktree <absolute-path>`. Use the shared checkout's current script, and release in `finally` after stopping owned processes and saving evidence under the evidence root defined in the [issue-pr-loop skill](../.agents/skills/issue-pr-loop/SKILL.md#isolation-and-ownership). `Remove-MergedWorktrees.ps1` also deletes stale evidence entries there.
+`AgentLocks.ps1 release` removes its recorded checkout before releasing ownership. Register the path once after checkout with `renew -LockName <name> -Worktree <absolute-path>`. Use the shared checkout's current script, and release in `finally` after stopping owned processes and saving evidence under the evidence root defined in the [issue-pr-loop repository guidance](../.agents/skills/issue-pr-loop/references/repository.md#worktrees-and-evidence). `Remove-MergedWorktrees.ps1` also deletes stale evidence entries there.
 
 Local branches remain available for `git worktree add <path> <branch>`. Detached commits are retained as `retained-worktrees/<SHA>`. Uncommitted source, unknown ignored files, Git-locked worktrees, the main checkout and foreign repositories are preserved. Known generated output is disposable under `WorktreeCleanup.ps1`. Release prints why a checkout was retained.
 
