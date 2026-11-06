@@ -11,8 +11,8 @@
     <PackageVersion Include="Aliyun.Credentials" Version="1.5.4" />
     <PackageVersion Include="Aspire.Hosting" Version="13.6.4" />
     <PackageVersion Include="Aspire.Hosting.Testing" Version="13.6.4" />
-    <PackageVersion Include="AWSSDK.DynamoDBv2" Version="4.0.110" />
-    <PackageVersion Include="AWSSDK.KeyManagementService" Version="4.0.101.2" />
+    <PackageVersion Include="AWSSDK.DynamoDBv2" Version="4.0.110.1" />
+    <PackageVersion Include="AWSSDK.KeyManagementService" Version="4.0.101.3" />
     <PackageVersion Include="Azure.Identity" Version="1.21.0" />
     <PackageVersion Include="Azure.Security.KeyVault.Keys" Version="4.10.2" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
@@ -71,8 +71,8 @@
     <PackageVersion Include="Testcontainers.Redpanda" Version="4.16.0" />
     <PackageVersion Include="Testcontainers.Toxiproxy" Version="4.16.0" />
     <PackageVersion Include="ToxiproxyNetCore" Version="1.0.50" />
-    <PackageVersion Include="TUnit" Version="1.80.0" />
-    <PackageVersion Include="TUnit.Logging.Microsoft" Version="1.80.0" />
+    <PackageVersion Include="TUnit" Version="1.81.0" />
+    <PackageVersion Include="TUnit.Logging.Microsoft" Version="1.81.0" />
     <PackageVersion Include="Verify.TUnit" Version="33.3.4" />
     <PackageVersion Include="ZstdSharp.Port" Version="0.8.8" />
   </ItemGroup>
