@@ -6944,6 +6944,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// Awaits an in-flight append and disposes the activity on completion.
     /// </summary>
 #if NET
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
 #endif
     private async ValueTask FinishProduceAsync(ValueTask<bool> appendResult, Activity? activity, string topic)
@@ -6974,6 +6975,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// All exceptions are delivered to the callback rather than thrown.
     /// </summary>
 #if NET
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
 #endif
     private async ValueTask FinishProduceAsyncWithCallback(
@@ -7473,6 +7475,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// is appended (parity with FireAsync's append semantics).
     /// </summary>
 #if NET
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
 #endif
     private async ValueTask FireWithAsyncSerializationAsync(

@@ -94,6 +94,7 @@ internal sealed class ResponseFrameReader : IDisposable
     /// failures (including reads faulted by <see cref="Abort"/>).
     /// </summary>
 #if NET
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
 #endif
     public async ValueTask<ResponseFrame> ReadFrameAsync()
@@ -171,6 +172,7 @@ internal sealed class ResponseFrameReader : IDisposable
     /// so producer and coordinator-only connections retain their unchanged framing fast path.
     /// </summary>
 #if NET
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
 #endif
     public async ValueTask<BoundedResponseFrame> ReadBoundedFrameAsync(
@@ -288,6 +290,7 @@ internal sealed class ResponseFrameReader : IDisposable
     }
 
 #if NET
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
 #endif
     private async ValueTask<bool> DiscardFrameAsync(int frameSize)
@@ -316,6 +319,7 @@ internal sealed class ResponseFrameReader : IDisposable
     }
 
 #if NET
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
 #endif
     private async ValueTask<int> ReadSourceAsync(Memory<byte> destination)

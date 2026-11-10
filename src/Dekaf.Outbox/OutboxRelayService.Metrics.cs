@@ -175,6 +175,7 @@ public sealed partial class OutboxRelayService
         stoppingToken.ThrowIfCancellationRequested();
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     private async ValueTask<OutboxPublishResult> ObservePublishCompletionAsync(ValueTask<OutboxPublishResult> publish,
         bool measurePublish, bool measureDuration, long started, CancellationToken cancellationToken)

@@ -410,6 +410,7 @@ public sealed partial class OutboxRelayService : BackgroundService
         }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     private async ValueTask<CycleResult> RunCycleAsync(CancellationToken cancellationToken)
     {
