@@ -8,7 +8,7 @@ description: "Which .NET targets each Dekaf package supports, the netstandard2.0
 See the [Kafka feature support matrix](kafka-feature-support.md) for KIP scope,
 broker capabilities, runtime limits, and validation evidence.
 
-Dekaf's core and Abstractions packages target `net11.0`, `net10.0`, and `netstandard2.0`. The extension, serialization, compression, Schema Registry, and testing packages target `net10.0` and `net11.0`; benchmarks and stress tests target `net11.0`, other tools `net10.0`.
+Dekaf's core and Abstractions packages target `net11.0`, `net10.0`, and `netstandard2.0`. The extension, serialization, compression, Schema Registry, and testing packages target `net10.0` and `net11.0`; benchmarks, stress tests and profiling tools target `net11.0`, other tools `net10.0`.
 
 The project is open to broader target-framework support when it does not regress the `net10.0` performance path. `netstandard2.0` support is tracked by #1224 and split into staged child issues so compatibility work can land without weakening the current package.
 
@@ -22,7 +22,7 @@ The project is open to broader target-framework support when it does not regress
 | Schema Registry packages | `net10.0`, `net11.0` |
 | Dependency Injection, Hosting, Health Checks | `net10.0`, `net11.0` |
 | Testing package | `net10.0`, `net11.0` |
-| Benchmarks, stress tests | `net11.0` |
+| Benchmarks, stress tests, profiling and trace analysis | `net11.0` |
 | Other tools | `net10.0` |
 
 The modern targets stay the primary optimization target; benchmarks and stress tests measure `net11.0`. Protocol serialization, production, and consumption hot paths should continue using modern BCL APIs where they are needed for low allocation and throughput.
@@ -165,7 +165,7 @@ Not every package has to multi-target at the same time. The current sequence is:
 4. extensions packages where their `Microsoft.Extensions.*` dependencies support the chosen older target
 5. `Dekaf.Testing`
 
-Benchmarks and stress tests target `net11.0`; other tools and CI utilities remain `net10.0`.
+Benchmarks, stress tests and profiling tools target `net11.0`; other tools and CI utilities remain `net10.0`.
 
 ## Validation Requirements
 
