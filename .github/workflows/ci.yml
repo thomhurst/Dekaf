@@ -229,9 +229,10 @@ jobs:
       - name: Verify native MTP test discovery
         run: >-
           dotnet test --project tests/Dekaf.Tests.Unit
-          --configuration Release --framework net10.0 --no-build --list-tests
+          --configuration Release --framework net10.0 --no-build
           --treenode-filter "/*/*/AdminClientFeatureTests/DescribeFeaturesAsync_MapsConnectionCapabilitySnapshot"
           --minimum-expected-tests 1
+          --list-tests
 
       - name: Test Public API Gate
         shell: pwsh
