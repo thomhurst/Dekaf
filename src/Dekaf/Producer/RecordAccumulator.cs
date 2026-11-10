@@ -7561,6 +7561,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// false = linger mode: seals expired batches from the active linger notification queue.
     /// </param>
     /// <param name="cancellationToken">Cancellation token.</param>
+    [RuntimeAsyncMethodGeneration(false)]
     private async ValueTask SealBatchesAsync(bool sealAll, CancellationToken cancellationToken)
     {
         if (sealAll)
@@ -9247,6 +9248,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             : FlushAtCheckpointAsync(cancellationToken);
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     private async ValueTask FlushAtCheckpointAsync(CancellationToken cancellationToken)
     {
         await WaitForPipelineBeforeSealAsync(cancellationToken).ConfigureAwait(false);
@@ -9380,6 +9382,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Waits until every batch that entered the pipeline at or before
     /// <paramref name="checkpoint"/> has left it, ignoring batches that enter later.
     /// </summary>
+    [RuntimeAsyncMethodGeneration(false)]
     private async ValueTask WaitForFlushCheckpointAsync(long checkpoint, CancellationToken cancellationToken)
     {
         while (!IsFlushCheckpointReached(checkpoint))

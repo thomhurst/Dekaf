@@ -6972,6 +6972,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
 #if NET
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
 #endif
     private async ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneWithTimeoutAsync(
@@ -7158,6 +7159,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
 #if NET
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
 #endif
     private async ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneCoreAsync(
@@ -7809,6 +7811,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             : ConsumeOneFromPendingFetchesCoreAsync<RecordFilterMode>(preparedKey, cancellationToken);
 
 #if NET
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
 #endif
     private async ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneFromPendingFetchesCoreAsync<TRecordFilterMode>(
@@ -8526,6 +8529,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
 #if NET
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
 #endif
     private async ValueTask<ConsumeResult<TKey, TValue>> CreateResultWithAsyncDeserializationAsync(
