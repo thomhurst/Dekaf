@@ -8,7 +8,7 @@ description: "Which .NET targets each Dekaf package supports, the netstandard2.0
 See the [Kafka feature support matrix](kafka-feature-support.md) for KIP scope,
 broker capabilities, runtime limits, and validation evidence.
 
-Dekaf's core and Abstractions packages target `net10.0`, `net8.0`, and `netstandard2.0`. The extension, serialization, compression, Schema Registry, and testing packages target `net8.0` and `net10.0`; tools target `net10.0`.
+Dekaf's core and Abstractions packages target `net11.0`, `net10.0`, and `netstandard2.0`. The extension, serialization, compression, Schema Registry, and testing packages target `net10.0` and `net11.0`; benchmarks, stress tests and profiling tools target `net11.0`, other tools `net10.0`.
 
 The project is open to broader target-framework support when it does not regress the `net10.0` performance path. `netstandard2.0` support is tracked by #1224 and split into staged child issues so compatibility work can land without weakening the current package.
 
@@ -16,35 +16,48 @@ The project is open to broader target-framework support when it does not regress
 
 | Area | Status |
 | --- | --- |
-| Core and Abstractions packages | `net10.0`, `net8.0`, `netstandard2.0` |
-| Compression packages | `net8.0`, `net10.0` |
-| Serialization packages | `net8.0`, `net10.0` |
-| Schema Registry packages | `net8.0`, `net10.0` |
-| Dependency Injection, Hosting, Health Checks | `net8.0`, `net10.0` |
-| Testing package | `net8.0`, `net10.0` |
-| Tools, benchmarks, stress tests | `net10.0` |
+| Core and Abstractions packages | `net11.0`, `net10.0`, `netstandard2.0` |
+| Compression packages | `net10.0`, `net11.0` |
+| Serialization packages | `net10.0`, `net11.0` |
+| Schema Registry packages | `net10.0`, `net11.0` |
+| Dependency Injection, Hosting, Health Checks | `net10.0`, `net11.0` |
+| Testing package | `net10.0`, `net11.0` |
+| Benchmarks, stress tests, profiling and trace analysis | `net11.0` |
+| Other tools | `net10.0` |
 
-The `net10.0` target stays the primary optimization target. Protocol serialization, production, and consumption hot paths should continue using modern BCL APIs where they are needed for low allocation and throughput.
+The modern targets stay the primary optimization target; benchmarks and stress tests measure `net11.0`. Protocol serialization, production, and consumption hot paths should continue using modern BCL APIs where they are needed for low allocation and throughput.
 
-## .NET 8 package asset
+## .NET 11 package asset
 
-.NET 8 applications select the dedicated `net8.0` core and Abstractions assets.
-They retain the `IReadOnlyCollection` and serializer contracts previously selected
-through `netstandard2.0`, while enabling the existing managed GSSAPI implementation.
-The optimized `net10.0` asset retains its `IReadOnlySet`, ref-struct, and static
+The `net11.0` assets share the `net10.0` source and public API.
+
+## .NET 8 and older runtimes
+
+The dedicated `net8.0` assets were removed. .NET 8 applications now resolve the
+`netstandard2.0` core and Abstractions assets, with the `IReadOnlyCollection` and
+serializer contracts and the limits described below, including no GSSAPI. The
+extension packages require .NET 10 or later.
+
+On a .NET 8 host the `netstandard2.0` asset is slower and allocates more than the
+removed `net8.0` asset did. It uses the compatibility paths listed under
+[Build Probe](#build-probe): software CRC32C, array-based compression stream calls,
+polyfilled BCL helpers and reflection-based protocol metadata. That cost is not
+measured in CI, which benchmarks the `net11.0` asset only. Use .NET 10 or later for
+the optimized paths.
+The optimized `net10.0` and `net11.0` assets retain their `IReadOnlySet`, ref-struct, and static
 protocol dispatch paths. No additional authentication package is required.
 
 GSSAPI uses Windows SSPI, Linux Kerberos libraries and credentials, or macOS
 Heimdal. CI exercises a local MIT KDC and authenticated admin/produce/consume
-round trips for clean .NET 8 and .NET 10 NuGet consumers on Linux, including
+round trips for clean .NET 10 and .NET 11 NuGet consumers on Linux, including
 rejection of an invalid service identity. Windows and macOS coverage is based on
 the implementation; these Kerberos round trips do not certify those platforms.
 Windows explicit `KeytabPath` remains unsupported; use the Windows credential store
 or run under the desired service identity. See [SASL authentication](security/sasl.md).
 
 The `netstandard2.0` asset still throws `PlatformNotSupportedException` for GSSAPI.
-The .NET 8 asset retains reflection-based protocol metadata and does not declare
-trim/Native AOT compatibility. Use the .NET 10 asset for supported AOT scenarios.
+It retains reflection-based protocol metadata and does not declare
+trim/Native AOT compatibility. Use the .NET 10 or .NET 11 asset for supported AOT scenarios.
 
 ## netstandard2.0 Goal
 
@@ -103,7 +116,7 @@ This pass includes:
 - TLS authentication uses the older `SslStream.AuthenticateAsClientAsync` overload on `netstandard2.0`.
 - GSSAPI remains part of the API surface, but using it on `netstandard2.0` throws `PlatformNotSupportedException` because `NegotiateAuthentication` is unavailable there.
 
-The #1301 package pass declares `netstandard2.0` support for the core `Dekaf` package only. CI packs the package with both `lib/net10.0/Dekaf.dll` and `lib/netstandard2.0/Dekaf.dll`, then restores a sample `netstandard2.0` library from the local `.nupkg` and runs it through a `net10.0` console host.
+The #1301 package pass declares `netstandard2.0` support for the core `Dekaf` package only. CI packs the package with `lib/net11.0/Dekaf.dll`, `lib/net10.0/Dekaf.dll` and `lib/netstandard2.0/Dekaf.dll`, then restores a sample `netstandard2.0` library from the local `.nupkg` and runs it through a `net10.0` console host.
 
 ## Blocker Categories
 
@@ -146,13 +159,13 @@ Each replacement needs performance review. The `net10.0` hot path should keep mo
 
 Not every package has to multi-target at the same time. The current sequence is:
 
-1. `Dekaf` and `Dekaf.Abstractions` - shipped as `net10.0`, `net8.0`, and `netstandard2.0`
+1. `Dekaf` and `Dekaf.Abstractions` - shipped as `net11.0`, `net10.0`, and `netstandard2.0`
 2. serialization and compression packages that can compile without framework-specific hosting dependencies
 3. Schema Registry packages
 4. extensions packages where their `Microsoft.Extensions.*` dependencies support the chosen older target
 5. `Dekaf.Testing`
 
-Tools, benchmarks, stress tests, and CI utilities should remain `net10.0`.
+Benchmarks, stress tests and profiling tools target `net11.0`; other tools and CI utilities remain `net10.0`.
 
 ## Validation Requirements
 

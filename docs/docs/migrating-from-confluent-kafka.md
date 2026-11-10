@@ -22,9 +22,9 @@ Before you touch any packages, make sure these three things hold:
   assignors. Kafka can move a group between Classic and Consumer during a rolling deployment,
   but read the [consumer-group migration details](./consumer/consumer-groups.md#classic-protocol-support-decision)
   before you put both kinds of client in one group.
-- **Your target framework is supported.** The core `Dekaf` package targets `net10.0` and
+- **Your target framework is supported.** The core `Dekaf` package targets `net11.0`, `net10.0` and
   `netstandard2.0`. The compression, serialization, Schema Registry, Dependency Injection, and
-  Hosting packages target `net8.0` and `net10.0`. See the
+  Hosting packages target `net10.0` and `net11.0`. See the
   [package compatibility matrix](./compatibility.md#current-support).
 - **You know which features you use, not just which config keys.** Rebalance handlers, offset
   timing, serializers, transactions, statistics and error callbacks, and admin operations all

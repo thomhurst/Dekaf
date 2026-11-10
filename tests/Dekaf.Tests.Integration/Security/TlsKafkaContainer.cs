@@ -86,6 +86,7 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
         File.WriteAllText(serverKeyPemPath, _certGenerator.ServerPrivateKeyPem);
 
         _container = new KafkaBuilder("apache/kafka:4.0.2")
+            .WithVendor(KafkaVendor.ApacheSoftwareFoundation) // see KafkaTestContainer
             .WithEnvironment("KAFKA_HEAP_OPTS", "-Xmx512m -Xms512m")
             // SSL listener configuration
             // The Testcontainers KafkaBuilder manages KAFKA_LISTENERS and KAFKA_LISTENER_SECURITY_PROTOCOL_MAP

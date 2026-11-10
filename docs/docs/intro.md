@@ -68,7 +68,7 @@ Dekaf makes sense if you:
 - Want a pure .NET solution (no native DLLs to wrangle)
 - Care about predictable performance and low GC pressure
 - Like modern C# APIs (async streams, nullable references, etc.)
-- Target .NET 8 or .NET 10 (the core packages also ship `netstandard2.0` assets; see [API and Runtime Compatibility](api-compatibility.md))
+- Target .NET 10 or .NET 11 (the core packages also ship `netstandard2.0` assets; see [API and Runtime Compatibility](api-compatibility.md))
 
 ## Getting Help
 

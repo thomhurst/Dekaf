@@ -1,4 +1,4 @@
-#if NET10_0
+#if NET11_0
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.StressTests.Diagnostics;

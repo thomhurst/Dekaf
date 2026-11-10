@@ -711,9 +711,7 @@ public sealed class RoutingSerdeTests
     {
         public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
         {
             destination.GetSpan(1)[0] = marker;
             destination.Advance(1);
@@ -726,9 +724,7 @@ public sealed class RoutingSerdeTests
 
         public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
         {
             context.Headers!.Add("identity", [1]);
             destination.GetSpan(1)[0] = 1;
@@ -754,9 +750,7 @@ public sealed class RoutingSerdeTests
 
         public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
         {
             if (!_prepared)
                 throw new InvalidOperationException("Serializer was not prepared.");
@@ -785,9 +779,7 @@ public sealed class RoutingSerdeTests
 
         public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
             => throw new InvalidOperationException("Serializer was not prepared.");
     }
 
@@ -818,9 +810,7 @@ public sealed class RoutingSerdeTests
 
         public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
         {
             destination.GetSpan(1)[0] = 1;
             destination.Advance(1);
@@ -855,9 +845,7 @@ public sealed class RoutingSerdeTests
 
         public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
         {
             SerializeCount++;
             throw new InvalidOperationException("Admission was not forwarded.");
@@ -869,9 +857,7 @@ public sealed class RoutingSerdeTests
             SerializationContext context,
             in SerializerPreparationAdmission admission)
             where TWriter : IBufferWriter<byte>
-#if NET9_0_OR_GREATER
             , allows ref struct
-#endif
         {
             SerializePreparedCount++;
             destination.GetSpan(1)[0] = (byte)admission.SchemaId;

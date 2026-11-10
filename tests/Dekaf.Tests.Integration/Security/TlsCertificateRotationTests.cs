@@ -219,11 +219,7 @@ public sealed class TlsCertificateRotationTests(TlsCertificateRotationKafkaConta
 
         private static X509Certificate2 LoadCertificate(byte[] rawData)
         {
-#if NET10_0_OR_GREATER
             return X509CertificateLoader.LoadCertificate(rawData);
-#else
-            return new X509Certificate2(rawData);
-#endif
         }
     }
 }

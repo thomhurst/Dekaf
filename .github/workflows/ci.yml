@@ -151,6 +151,7 @@ jobs:
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
+          dotnet-version: '10.0.x'  # runtime for net10.0 binaries
 
       - name: Cache NuGet packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -185,11 +186,7 @@ jobs:
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
-
-      - name: Setup .NET 8 runtime
-        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
-        with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '10.0.x'  # runtime for net10.0 binaries
 
       - name: Cache NuGet packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -232,9 +229,10 @@ jobs:
       - name: Verify native MTP test discovery
         run: >-
           dotnet test --project tests/Dekaf.Tests.Unit
-          --configuration Release --framework net10.0 --no-build --list-tests
+          --configuration Release --framework net10.0 --no-build
           --treenode-filter "/*/*/AdminClientFeatureTests/DescribeFeaturesAsync_MapsConnectionCapabilitySnapshot"
           --minimum-expected-tests 1
+          --list-tests
 
       - name: Test Public API Gate
         shell: pwsh
@@ -254,17 +252,17 @@ jobs:
       # the apphost executable bit, and one file per artifact keeps uploads fast.
       - name: Package test binaries
         run: |
-          tar -czf unit-net8.0.tar.gz tests/Dekaf.Tests.Unit/bin/Release/net8.0
-          tar -czf unit-net10.0.tar.gz tests/Dekaf.Tests.Unit/bin/Release/net10.0 tools/Dekaf.StressTests.Tests/bin/Release/net10.0
-          tar -czf integration-net8.0.tar.gz tests/Dekaf.Tests.Integration/bin/Release/net8.0
+          tar -czf unit-net11.0.tar.gz tests/Dekaf.Tests.Unit/bin/Release/net11.0 tools/Dekaf.StressTests.Tests/bin/Release/net11.0
+          tar -czf unit-net10.0.tar.gz tests/Dekaf.Tests.Unit/bin/Release/net10.0
+          tar -czf integration-net11.0.tar.gz tests/Dekaf.Tests.Integration/bin/Release/net11.0
           tar -czf integration-net10.0.tar.gz tests/Dekaf.Tests.Integration/bin/Release/net10.0
-          tar -czf gssapi-package-smoke.tar.gz artifacts/gssapi-package-smoke/net8.0 artifacts/gssapi-package-smoke/net10.0
+          tar -czf gssapi-package-smoke.tar.gz artifacts/gssapi-package-smoke/net10.0 artifacts/gssapi-package-smoke/net11.0
 
-      - name: Upload unit test binaries (net8.0)
+      - name: Upload unit test binaries (net11.0)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: test-binaries-unit-net8.0
-          path: unit-net8.0.tar.gz
+          name: test-binaries-unit-net11.0
+          path: unit-net11.0.tar.gz
           if-no-files-found: error
           retention-days: 3
 
@@ -276,11 +274,11 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-      - name: Upload integration test binaries (net8.0)
+      - name: Upload integration test binaries (net11.0)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: test-binaries-integration-net8.0
-          path: integration-net8.0.tar.gz
+          name: test-binaries-integration-net11.0
+          path: integration-net11.0.tar.gz
           if-no-files-found: error
           retention-days: 3
 
@@ -311,7 +309,7 @@ jobs:
           retention-days: 30
 
   gssapi-packages:
-    name: GSSAPI NuGet consumers (.NET 8 and .NET 10)
+    name: GSSAPI NuGet consumers (.NET 10 and .NET 11)
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -320,16 +318,14 @@ jobs:
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
-      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
-        with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '10.0.x'  # runtime for net10.0 binaries
       - name: Install Kerberos tools
         run: |
           sudo apt-get update
           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y krb5-kdc krb5-admin-server krb5-user
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: test-binaries-integration-net8.0
+          name: test-binaries-integration-net11.0
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: test-binaries-integration-net10.0
@@ -338,10 +334,10 @@ jobs:
           name: gssapi-package-smoke
       - name: Run authenticated package round trips
         run: |
-          tar -xzf integration-net8.0.tar.gz
+          tar -xzf integration-net11.0.tar.gz
           tar -xzf integration-net10.0.tar.gz
           tar -xzf gssapi-package-smoke.tar.gz
-          for framework in net8.0 net10.0; do
+          for framework in net10.0 net11.0; do
             export DEKAF_KERBEROS_PACKAGE_CLIENT="$PWD/artifacts/gssapi-package-smoke/$framework/Dekaf.PackageSmoke.Gssapi.dll"
             dotnet "tests/Dekaf.Tests.Integration/bin/Release/$framework/Dekaf.Tests.Integration.dll" \
               --treenode-filter '/*/*/GssapiAuthenticationIntegrationTests/*' \
@@ -354,8 +350,7 @@ jobs:
           path: TestResults/gssapi-packages
           retention-days: 7
 
-  # The net10.0 unit suite (and the stress harness's own unit tests) against the
-  # prebuilt binaries. Its own job so it runs alongside the integration matrix
+  # The net10.0 unit suite against the prebuilt binaries. Its own job so it runs alongside the integration matrix
   # instead of holding every downstream job behind the build.
   unit-net10:
     name: Unit Tests (net10.0)
@@ -372,6 +367,7 @@ jobs:
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
+          dotnet-version: '10.0.x'  # runtime for net10.0 binaries
 
       - name: Download test binaries
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -396,14 +392,6 @@ jobs:
           chmod +x "$exe"
           "$exe" --hangdump --hangdump-timeout 5m --log-level Debug --fail-on-unobserved-task-exceptions
 
-      - name: Run stress harness unit tests
-        env:
-          NET_VERSION: net10.0
-        run: |
-          exe=tools/Dekaf.StressTests.Tests/bin/Release/net10.0/Dekaf.StressTests.Tests
-          chmod +x "$exe"
-          "$exe" --hangdump --hangdump-timeout 5m --log-level Debug
-
       - name: Upload Test Results
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
@@ -424,8 +412,9 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  unit-net8:
-    name: Unit Tests (net8.0)
+  # The same suite on net11.0, plus the stress harness's own unit tests (net11.0 only).
+  unit-net11:
+    name: Unit Tests (net11.0)
     needs: [changes, build]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
@@ -435,18 +424,18 @@ jobs:
       - name: Checkout  # Verify snapshot files are read from the repo at runtime
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup .NET 8
+      - name: Setup .NET
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
-          dotnet-version: '8.0.x'
+          global-json-file: global.json
 
       - name: Download test binaries
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: test-binaries-unit-net8.0
+          name: test-binaries-unit-net11.0
 
       - name: Extract test binaries
-        run: tar -xzf unit-net8.0.tar.gz
+        run: tar -xzf unit-net11.0.tar.gz
 
       - name: Expose GitHub Actions Runtime
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
@@ -457,17 +446,25 @@ jobs:
 
       - name: Run unit tests
         env:
-          NET_VERSION: net8.0
+          NET_VERSION: net11.0
         run: |
-          exe=tests/Dekaf.Tests.Unit/bin/Release/net8.0/Dekaf.Tests.Unit
+          exe=tests/Dekaf.Tests.Unit/bin/Release/net11.0/Dekaf.Tests.Unit
           chmod +x "$exe"
           "$exe" --hangdump --hangdump-timeout 5m --log-level Debug --fail-on-unobserved-task-exceptions
+
+      - name: Run stress harness unit tests
+        env:
+          NET_VERSION: net11.0
+        run: |
+          exe=tools/Dekaf.StressTests.Tests/bin/Release/net11.0/Dekaf.StressTests.Tests
+          chmod +x "$exe"
+          "$exe" --hangdump --hangdump-timeout 5m --log-level Debug
 
       - name: Upload Test Results
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
-          name: test-results-unit-net8.0
+          name: test-results-unit-net11.0
           path: |
             **/TestResults/**
             **/test-results/**
@@ -477,7 +474,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
-          name: hangdump-artifacts-unit-net8.0
+          name: hangdump-artifacts-unit-net11.0
           path: |
             **/*.dmp
           if-no-files-found: ignore
@@ -502,6 +499,7 @@ jobs:
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
+          dotnet-version: '10.0.x'  # runtime for net10.0 binaries
 
       - name: Cache NuGet packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -545,6 +543,7 @@ jobs:
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
+          dotnet-version: '10.0.x'  # runtime for net10.0 binaries
 
       - name: Cache NuGet packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -585,7 +584,7 @@ jobs:
 
   # Integration categories run via the shared group definitions in
   # integration-groups.yml against the prebuilt binaries (no rebuild).
-  # PRs run net10.0 only; manual non-publish runs add net8.0. NuGet publish
+  # PRs and manual non-publish runs cover both frameworks. NuGet publish
   # dispatches skip this job — the release-matrix jobs below cover a superset.
   integration:
     name: Integration (${{ matrix.framework }})
@@ -594,7 +593,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        framework: ${{ github.event_name == 'pull_request' && fromJSON('["net10.0"]') || fromJSON('["net8.0", "net10.0"]') }}
+        framework: [net10.0, net11.0]
     uses: ./.github/workflows/integration-groups.yml
     with:
       framework: ${{ matrix.framework }}
@@ -620,6 +619,7 @@ jobs:
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
+          dotnet-version: '10.0.x'  # runtime for net10.0 binaries
 
       - name: Download test binaries
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -685,6 +685,7 @@ jobs:
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
+          dotnet-version: '10.0.x'  # runtime for net10.0 binaries
 
       - name: Download test binaries
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -740,7 +741,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        framework: [net8.0, net10.0]
+        framework: [net10.0, net11.0]
         kafka: ['4.0.2', '4.1.2', '4.2.1', '4.3.1', '4.4.0']
     uses: ./.github/workflows/integration-groups.yml
     with:
@@ -779,6 +780,7 @@ jobs:
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
+          dotnet-version: '10.0.x'  # runtime for net10.0 binaries
 
       - name: Cache NuGet packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -796,7 +798,7 @@ jobs:
         run: |
           dotnet publish tests/Dekaf.Tests.Aot/Dekaf.Tests.Aot.csproj \
             --configuration Release \
-            --framework net10.0 \
+            --framework net11.0 \
             --runtime linux-x64 \
             --self-contained true \
             --output artifacts/aot/core \
@@ -811,7 +813,7 @@ jobs:
         run: |
           dotnet publish tests/Dekaf.Tests.Aot.AvroPoco/Dekaf.Tests.Aot.AvroPoco.csproj \
             --configuration Release \
-            --framework net10.0 \
+            --framework net11.0 \
             --runtime linux-x64 \
             --self-contained true \
             --output artifacts/aot/avro-poco \
@@ -822,7 +824,7 @@ jobs:
 
       - name: Publish and run dependency-injection smoke test
         run: |
-          for framework in net8.0 net10.0; do
+          for framework in net10.0 net11.0; do
             dotnet publish tests/Dekaf.Tests.Aot.DependencyInjection/Dekaf.Tests.Aot.DependencyInjection.csproj \
               --configuration Release \
               --framework "$framework" \
@@ -851,6 +853,7 @@ jobs:
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
+          dotnet-version: '10.0.x'  # runtime for net10.0 binaries
 
       - name: Cache NuGet packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -868,7 +871,7 @@ jobs:
         run: |
           dotnet publish tests/Dekaf.Tests.Integration/Dekaf.Tests.Integration.csproj \
             --configuration Release \
-            --framework net10.0 \
+            --framework net11.0 \
             --runtime linux-x64 \
             --self-contained true \
             --output artifacts/aot/integration \
@@ -996,6 +999,7 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           global-json-file: global.json
+          dotnet-version: '10.0.x'  # runtime for net10.0 binaries
       - name: Test benchmark and stress result validation
         run: |
           for test in test_performance_gate.py test_check_repository_artifacts.py test_stress_warmup.py test_stress_aba.py test_stress_aba_startup.py; do
@@ -1061,6 +1065,7 @@ jobs:
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
+          dotnet-version: '10.0.x'  # runtime for net10.0 binaries
 
       - name: Check Formatting
         run: dotnet format --verify-no-changes --verbosity diagnostic
@@ -1088,7 +1093,7 @@ jobs:
   # build job computed.
   publish:
     name: Publish NuGet
-    needs: [build, gssapi-packages, unit-net8, unit-net10, aspire-hosting, leak-gates-debug, eventhubs-integration, redpanda-integration, aot-smoke, aot-integration-publish, release-matrix, release-matrix-aot, code-quality]
+    needs: [build, gssapi-packages, unit-net11, unit-net10, aspire-hosting, leak-gates-debug, eventhubs-integration, redpanda-integration, aot-smoke, aot-integration-publish, release-matrix, release-matrix-aot, code-quality]
     if: github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -1109,11 +1114,7 @@ jobs:
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
-
-      - name: Setup .NET 8 runtime
-        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
-        with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '10.0.x'  # runtime for net10.0 binaries
 
       - name: Cache NuGet packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -1173,7 +1174,7 @@ jobs:
     # required check (a skipped check counts as passing). Auto-merge armed right after a PR
     # leaves draft therefore waits for the ready run.
     name: ${{ needs.changes.result == 'success' && 'CI Passed' || 'CI Passed (incomplete)' }}
-    needs: [disarm-auto-merge, changes, doc-snippets, build, gssapi-packages, unit-net8, unit-net10, aspire-hosting, leak-gates-debug, integration, eventhubs-integration, redpanda-integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality, performance-tooling, review-helper]
+    needs: [disarm-auto-merge, changes, doc-snippets, build, gssapi-packages, unit-net11, unit-net10, aspire-hosting, leak-gates-debug, integration, eventhubs-integration, redpanda-integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality, performance-tooling, review-helper]
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 5

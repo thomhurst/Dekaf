@@ -2272,23 +2272,10 @@ public sealed partial class PartitionedConsumerRuntimeTests
 
         public bool HasConsumerGroup { get; init; } = true;
 
-#if !NET10_0_OR_GREATER
-        IReadOnlyCollection<string> IKafkaConsumer<string, string>.Subscription => Subscription;
 
-        IReadOnlyCollection<TopicPartition> IKafkaConsumer<string, string>.Assignment => Assignment;
-
-        IReadOnlyCollection<TopicPartition> IKafkaConsumer<string, string>.Paused => Paused;
-#endif
-
-#if NET10_0_OR_GREATER
         IReadOnlySet<TopicPartition> IConsumerPartitions.Assignment => Assignment;
 
         IReadOnlySet<TopicPartition> IConsumerPartitions.Paused => Paused;
-#else
-        IReadOnlyCollection<TopicPartition> IConsumerPartitions.Assignment => Assignment;
-
-        IReadOnlyCollection<TopicPartition> IConsumerPartitions.Paused => Paused;
-#endif
 
         IDisposable IConsumerRebalanceEventSource.RegisterRuntimeRebalanceListener(IRebalanceListener listener)
         {

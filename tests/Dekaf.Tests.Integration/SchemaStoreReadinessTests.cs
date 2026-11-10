@@ -64,6 +64,7 @@ public sealed class SchemaStoreReadinessTests
         var tag = currentBroker ? KafkaContainerDefault.DefaultTag : "4.0.2";
         await using var kafka = KafkaContainerDefault.ConfigureBuilderForVersion(
                 new KafkaBuilder($"apache/kafka:{tag}")
+                    .WithVendor(KafkaVendor.ApacheSoftwareFoundation) // see KafkaTestContainer
                     .WithEnvironment("KAFKA_HEAP_OPTS", "-Xmx512m -Xms512m"), tag)
             .WithCommand(KafkaTestContainer.StartupCommandOverride)
             .Build();

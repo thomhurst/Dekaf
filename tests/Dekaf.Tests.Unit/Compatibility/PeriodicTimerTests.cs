@@ -1,4 +1,3 @@
-#if NET8_0
 using System.Runtime.Loader;
 
 namespace Dekaf.Tests.Unit.Compatibility;
@@ -37,4 +36,3 @@ public sealed class NetStandardPeriodicTimerTests
         }
     }
 }
-#endif

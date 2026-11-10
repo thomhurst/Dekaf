@@ -179,7 +179,7 @@ function ReadTheLog() {
     <div className={`${styles.container} ${styles.log}`}>
       <Entry offset={0} title="Add the package." id="install-heading">
         <div className={styles.entrySplit}>
-          <p>One NuGet package with assets for .NET 10, .NET 8, and .NET Standard 2.0. Nothing
+          <p>One NuGet package with assets for .NET 11, .NET 10, and .NET Standard 2.0. Nothing
             native ships with it.</p>
           <CodeBlock language="bash">dotnet add package Dekaf</CodeBlock>
         </div>

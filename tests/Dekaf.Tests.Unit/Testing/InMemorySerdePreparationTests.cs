@@ -385,9 +385,7 @@ public sealed class InMemorySerdePreparationTests
 
         public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET9_0_OR_GREATER
             , allows ref struct
-#endif
         {
             if (!_prepared)
                 throw new InvalidOperationException("Serialize ran before preparation.");
@@ -413,9 +411,7 @@ public sealed class InMemorySerdePreparationTests
 
         public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET9_0_OR_GREATER
             , allows ref struct
-#endif
         {
             if (!emptyAdmission)
                 throw new InvalidOperationException("Exact admission required.");
@@ -425,9 +421,7 @@ public sealed class InMemorySerdePreparationTests
         public void SerializePrepared<TWriter>(string value, ref TWriter destination,
             SerializationContext context, in SerializerPreparationAdmission admission)
             where TWriter : IBufferWriter<byte>
-#if NET9_0_OR_GREATER
             , allows ref struct
-#endif
         {
             if (admission.Subject != value || !Equals(admission.Schema, value))
                 throw new InvalidOperationException("Wrong admission.");

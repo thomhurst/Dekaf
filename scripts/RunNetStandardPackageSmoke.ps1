@@ -86,7 +86,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [System.IO.Compression.ZipFile]::OpenRead($corePackage.FullName)
 try {
     $entries = [string[]]$zip.Entries.FullName
-    Assert-PackageEntry -Entries $entries -Entry 'lib/net8.0/Dekaf.dll' -PackagePath $corePackage.FullName
+    Assert-PackageEntry -Entries $entries -Entry 'lib/net11.0/Dekaf.dll' -PackagePath $corePackage.FullName
     Assert-PackageEntry -Entries $entries -Entry 'lib/net10.0/Dekaf.dll' -PackagePath $corePackage.FullName
     Assert-PackageEntry -Entries $entries -Entry 'lib/netstandard2.0/Dekaf.dll' -PackagePath $corePackage.FullName
 
@@ -128,7 +128,7 @@ if (-not $abstractionsPackage) {
 $abstractionsZip = [System.IO.Compression.ZipFile]::OpenRead($abstractionsPackage.FullName)
 try {
     $abstractionsEntries = [string[]]$abstractionsZip.Entries.FullName
-    Assert-PackageEntry -Entries $abstractionsEntries -Entry 'lib/net8.0/Dekaf.Abstractions.dll' -PackagePath $abstractionsPackage.FullName
+    Assert-PackageEntry -Entries $abstractionsEntries -Entry 'lib/net11.0/Dekaf.Abstractions.dll' -PackagePath $abstractionsPackage.FullName
     Assert-PackageEntry -Entries $abstractionsEntries -Entry 'lib/net10.0/Dekaf.Abstractions.dll' -PackagePath $abstractionsPackage.FullName
     Assert-PackageEntry -Entries $abstractionsEntries -Entry 'lib/netstandard2.0/Dekaf.Abstractions.dll' -PackagePath $abstractionsPackage.FullName
 }

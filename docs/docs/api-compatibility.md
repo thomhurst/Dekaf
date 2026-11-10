@@ -10,13 +10,14 @@ broker capabilities, runtime limits, and validation evidence.
 
 ## Package assets and tested runtimes
 
-The `Dekaf` and `Dekaf.Abstractions` packages ship `net10.0`, `net8.0`, and
-`netstandard2.0` assets. .NET 10 applications select the optimized `net10.0`
-asset; .NET 8 applications use the dedicated `net8.0` asset. Compatibility
+The `Dekaf` and `Dekaf.Abstractions` packages ship `net11.0`, `net10.0`, and
+`netstandard2.0` assets. .NET 11 and .NET 10 applications select their own
+optimized asset; older runtimes, including .NET 8, resolve `netstandard2.0`.
+Compatibility
 with .NET Standard alone is not a promise of testing on every implementing
 runtime, identical API shapes or equivalent performance on all runtimes.
 
-The other shipping packages target `net8.0` and `net10.0`: compression,
+The other shipping packages target `net10.0` and `net11.0`: compression,
 serialization, Schema Registry and its extensions (including KMS), dependency
 injection, hosting, health checks, OpenTelemetry, outbox/EF Core and testing.
 Those package requirements apply even when the core package could run on an
@@ -24,25 +25,24 @@ older runtime. The Avro POCO source generator targets `netstandard2.0` as a
 compiler analyzer bundled in `Dekaf.SchemaRegistry.Avro`; it is not a separate
 runtime package and does not lower the Avro package's runtime requirements.
 
-Build the repository with the .NET 10 SDK; install the .NET 8 runtime (or SDK)
-to execute the `net8.0` test binaries. The configured CI/release coverage is:
+Build the repository with the .NET 11 SDK; install the .NET 10 runtime (or SDK)
+to execute the `net10.0` test binaries and tools. The configured CI/release coverage is:
 
 | Validation | Runtime / target | Broker versions |
 | --- | --- | --- |
-| Unit tests for code changes | .NET 8 and .NET 10 | No broker required |
-| PR integration tests | .NET 10 | Kafka 4.4.0 |
-| GSSAPI NuGet consumer round trips (Linux) | .NET 8 and .NET 10 | Kafka 4.4.0 |
-| NuGet release integration gate | .NET 8 and .NET 10 | Kafka 4.0.2, 4.1.2, 4.2.1, 4.3.1, 4.4.0 |
-| Native AOT core and DI smoke apps | .NET 10, `linux-x64` | No broker required |
-| PR Native AOT integration smoke subset | .NET 10, `linux-x64` | Kafka 4.4.0 |
-| NuGet release Native AOT integration sweep | .NET 10, `linux-x64` | Kafka 4.0.2 and 4.4.0 |
+| Unit tests for code changes | .NET 10 and .NET 11 | No broker required |
+| PR integration tests | .NET 10 and .NET 11 | Kafka 4.4.0 |
+| GSSAPI NuGet consumer round trips (Linux) | .NET 10 and .NET 11 | Kafka 4.4.0 |
+| NuGet release integration gate | .NET 10 and .NET 11 | Kafka 4.0.2, 4.1.2, 4.2.1, 4.3.1, 4.4.0 |
+| Native AOT core and DI smoke apps | .NET 11 (DI also .NET 10), `linux-x64` | No broker required |
+| PR Native AOT integration smoke subset | .NET 11, `linux-x64` | Kafka 4.4.0 |
+| NuGet release Native AOT integration sweep | .NET 11, `linux-x64` | Kafka 4.0.2 and 4.4.0 |
 
-Manual non-publishing CI runs also execute ordinary integration tests on both
-.NET 8 and .NET 10. Native AOT coverage validates the scenarios exercised by
+Native AOT coverage validates the scenarios exercised by
 the smoke apps and integration suites; it does not establish support for
 every package API, third-party serializer or target platform. Modern .NET
-library assets enable AOT/trim analyzers, except the core `net8.0` asset, which
-retains reflection-based protocol metadata. The `netstandard2.0` assets do not,
+library assets enable AOT/trim analyzers. The `netstandard2.0` assets, which
+retain reflection-based protocol metadata, do not,
 and third-party dependency warnings still need attention in an application's
 own publish output.
 
@@ -56,10 +56,10 @@ Every shipping project under `src/` uses
 `PublicAPI.Unshipped*.txt` files make additions, removals, nullable annotations,
 generic constraints, parameter names, and other signature changes visible in
 code review. The `Dekaf` and `Dekaf.Abstractions` packages have separate `net10.0` and
-`netstandard2.0` files; the `net8.0` assets share the latter declarations. These
+`netstandard2.0` files; the `net11.0` assets share the `net10.0` declarations. These
 assets intentionally expose a few
 TFM-specific collection and ref-struct shapes. Other runtime packages share one
-API baseline across `net8.0` and `net10.0`.
+API baseline across `net10.0` and `net11.0`.
 
 ## Validate locally
 

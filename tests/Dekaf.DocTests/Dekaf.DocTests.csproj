@@ -12,7 +12,8 @@
     <PackageReference Include="OpenTelemetry" />
     <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" VersionOverride="1.20.1" />
     <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
-    <PackageReference Include="System.Text.Json" GeneratePathProperty="true" />
+    <!-- Referenced only to locate the JSON source generator; the library itself is inbox (NU1510). -->
+    <PackageReference Include="System.Text.Json" GeneratePathProperty="true" NoWarn="NU1510" />
   </ItemGroup>
 
   <Target Name="CopyJsonSourceGenerator" AfterTargets="Build">

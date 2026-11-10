@@ -1,10 +1,5 @@
-#if NET10_0_OR_GREATER
 using StringSet = System.Collections.Generic.IReadOnlySet<string>;
 using PartitionSet = System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>;
-#else
-using StringSet = System.Collections.Generic.IReadOnlyCollection<string>;
-using PartitionSet = System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>;
-#endif
 using Dekaf.Consumer;
 using Dekaf.Consumer.DeadLetter;
 using Dekaf.Producer;

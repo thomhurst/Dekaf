@@ -38,7 +38,7 @@ namespace Dekaf.Profiling;
 ///
 /// Profiling:
 ///   dotnet-trace collect --profile dotnet-sampled-thread-time -- \
-///     ./bin/Release/net10.0/Dekaf.Profiling producer-fire-forget 30
+///     ./bin/Release/net11.0/Dekaf.Profiling producer-fire-forget 30
 ///
 ///   dotnet-counters monitor -p [PID] --counters System.Runtime
 /// </summary>

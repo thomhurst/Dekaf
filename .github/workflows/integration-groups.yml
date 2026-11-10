@@ -11,7 +11,7 @@ on:
   workflow_call:
     inputs:
       framework:
-        description: 'Test binaries to run: net8.0, net10.0, or aot'
+        description: 'Test binaries to run: net10.0, net11.0, or aot'
         required: true
         type: string
       kafka-tag:
@@ -80,11 +80,11 @@ jobs:
         with:
           global-json-file: global.json
 
-      - name: Setup .NET 8 runtime
-        if: inputs.framework == 'net8.0'
+      - name: Setup .NET 10 runtime
+        if: inputs.framework == 'net10.0'
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '10.0.x'
 
       - name: Install local Kerberos test tools
         if: matrix.group == 'connections'

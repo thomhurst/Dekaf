@@ -520,52 +520,26 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
         var keyStorageFlags = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
             ? X509KeyStorageFlags.Exportable
             : X509KeyStorageFlags.DefaultKeySet;
-#if NET10_0_OR_GREATER
         return X509CertificateLoader.LoadPkcs12Collection(
             bytes,
             password,
             keyStorageFlags,
             Pkcs12LoaderLimits.Defaults);
-#else
-        var collection = new X509Certificate2Collection();
-#pragma warning disable SYSLIB0057
-        collection.Import(bytes, password, keyStorageFlags);
-#pragma warning restore SYSLIB0057
-        return collection;
-#endif
     }
 
     private static X509Certificate2 LoadCertificateFromFile(string path)
     {
-#if NET10_0_OR_GREATER
         return X509CertificateLoader.LoadCertificateFromFile(path);
-#else
-#pragma warning disable SYSLIB0057
-        return new X509Certificate2(path);
-#pragma warning restore SYSLIB0057
-#endif
     }
 
     private static X509Certificate2 LoadCertificate(byte[] bytes)
     {
-#if NET10_0_OR_GREATER
         return X509CertificateLoader.LoadCertificate(bytes);
-#else
-#pragma warning disable SYSLIB0057
-        return new X509Certificate2(bytes);
-#pragma warning restore SYSLIB0057
-#endif
     }
 
     private static X509Certificate2 LoadPkcs12(byte[] bytes, string? password)
     {
-#if NET10_0_OR_GREATER
         return X509CertificateLoader.LoadPkcs12(bytes, password);
-#else
-#pragma warning disable SYSLIB0057
-        return new X509Certificate2(bytes, password, X509KeyStorageFlags.DefaultKeySet);
-#pragma warning restore SYSLIB0057
-#endif
     }
 
     private static bool IsSupportedCaExtension(string extension)

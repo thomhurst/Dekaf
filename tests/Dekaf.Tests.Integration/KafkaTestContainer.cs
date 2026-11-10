@@ -37,7 +37,10 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
     {
         // Keep broker defaults, but allow individual KIP-848 groups to opt into
         // shorter test-only liveness intervals through group configuration.
+        // The vendor is explicit because Testcontainers' image-based detection throws in optimized code on
+        // .NET 11.0.0: it calls Enum.Equals with a null vendor (dotnet/runtime#133817). Remove with #4107.
         var builder = ConfigureBuilder(new KafkaBuilder(ContainerName)
+            .WithVendor(KafkaVendor.ApacheSoftwareFoundation)
             .WithEnvironment("KAFKA_HEAP_OPTS", "-Xmx512m -Xms512m")     // Limit JVM heap for CI runners
             .WithEnvironment("KAFKA_LOG_RETENTION_MS", "30000")           // Delete segments after 30s
             .WithEnvironment("KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS", "10000") // Check every 10s

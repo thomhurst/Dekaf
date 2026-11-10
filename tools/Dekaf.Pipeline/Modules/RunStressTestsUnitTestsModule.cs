@@ -6,9 +6,8 @@ public class RunStressTestsUnitTestsModule : TestBaseModule
     {
         get
         {
-            // The stress harness targets net10 only, but the unit-test pipeline also has a net8 lane.
-            if (string.Equals(GetTargetFramework(), "net10.0", StringComparison.OrdinalIgnoreCase))
-                yield return "net10.0";
+            // The stress harness targets net11.0 only, whichever framework the unit-test lane runs.
+            yield return "net11.0";
         }
     }
 

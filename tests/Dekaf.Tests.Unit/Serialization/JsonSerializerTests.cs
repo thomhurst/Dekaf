@@ -224,11 +224,9 @@ public class JsonSerializerTests
             new JsonSerializerOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping },
             new JsonSerializerOptions { WriteIndented = true }
         };
-#if NET10_0_OR_GREATER
         options[1].IndentCharacter = '\t';
         options[1].IndentSize = 1;
         options[1].NewLine = "\n";
-#endif
         var serializers = new JsonSerializer<SourceGeneratedPerson>[options.Length];
         var expected = new string[options.Length];
         for (var i = 0; i < options.Length; i++)

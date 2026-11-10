@@ -627,11 +627,7 @@ public sealed class SchemaRegistryTlsIntegrationTests
             const X509KeyStorageFlags flags = X509KeyStorageFlags.Exportable |
                                               X509KeyStorageFlags.PersistKeySet |
                                               X509KeyStorageFlags.UserKeySet;
-#if NET10_0_OR_GREATER
             return X509CertificateLoader.LoadPkcs12(pfx, password: null, flags);
-#else
-            return new X509Certificate2(pfx, (string?)null, flags);
-#endif
         }
         finally
         {
@@ -641,13 +637,7 @@ public sealed class SchemaRegistryTlsIntegrationTests
 
     private static X509Certificate2 LoadCertificate(byte[] rawData)
     {
-#if NET10_0_OR_GREATER
         return X509CertificateLoader.LoadCertificate(rawData);
-#else
-#pragma warning disable SYSLIB0057
-        return new X509Certificate2(rawData);
-#pragma warning restore SYSLIB0057
-#endif
     }
 
     private static string CreateTemporaryDirectory()

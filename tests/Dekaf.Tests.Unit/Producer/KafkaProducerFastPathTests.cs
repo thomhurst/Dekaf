@@ -1744,9 +1744,7 @@ public class KafkaProducerFastPathTests
 
         public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
         {
             context.Headers!.Add("identity", Encoding.UTF8.GetBytes(value));
             Serializers.String.Serialize(value, ref destination, context);
@@ -1759,9 +1757,7 @@ public class KafkaProducerFastPathTests
 
         public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
         {
             var headerName = context.Component switch
             {
@@ -1780,9 +1776,7 @@ public class KafkaProducerFastPathTests
 
         public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
         {
             context.Headers!.Add("identity", "staged");
             context.Headers.Remove("identity");
@@ -1815,9 +1809,7 @@ public class KafkaProducerFastPathTests
 
         public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
             => throw new InvalidOperationException("Prepared serialization admission was not used.");
 
         public void SerializePrepared<TWriter>(
@@ -1826,9 +1818,7 @@ public class KafkaProducerFastPathTests
             SerializationContext context,
             in SerializerPreparationAdmission admission)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
         {
             SerializePreparedCount++;
             context.Headers!.Add("identity", Encoding.UTF8.GetBytes(value));
@@ -1866,9 +1856,7 @@ public class KafkaProducerFastPathTests
 
         public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
             => throw new InvalidOperationException("Prepared serialization admission was not used.");
 
         public void SerializePrepared<TWriter>(
@@ -1877,9 +1865,7 @@ public class KafkaProducerFastPathTests
             SerializationContext context,
             in SerializerPreparationAdmission admission)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
         {
             context.Headers!.Add("identity", Encoding.UTF8.GetBytes(value));
             Serializers.String.Serialize(value, ref destination, context);
@@ -1911,9 +1897,7 @@ public class KafkaProducerFastPathTests
             ref TWriter destination,
             SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
             => throw new InvalidOperationException("Serialization failed.");
     }
 

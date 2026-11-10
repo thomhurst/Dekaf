@@ -21,7 +21,7 @@ public class ProducerDisposalTests
             "DisposeWithBudgetAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
         // An exhausted step budget expires synchronously. No sleeps or timer races are needed
-        // to prove that CloseTimeoutMs = 0 bypasses it, including on the .NET 8 runtime.
+        // to prove that CloseTimeoutMs = 0 bypasses it.
         var cleanup = ((ValueTask)method.Invoke(producer,
             [new ValueTask(cleanupGate.Task), 0, "test cleanup"])!).AsTask();
         try

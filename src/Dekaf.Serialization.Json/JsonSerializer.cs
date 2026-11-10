@@ -52,9 +52,7 @@ public sealed class JsonSerializer<T> : ISerde<T>
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = JsonSerializerAotMessages.ReflectionBranchJustification)]
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
         , allows ref struct
-#endif
     {
         // Utf8JsonWriter cannot accept the generic TWriter directly because the
         // 'allows ref struct' constraint prevents boxing to IBufferWriter<byte>.

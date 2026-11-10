@@ -3,7 +3,7 @@
 
   <PropertyGroup Condition="'$(MSBuildProjectName)' != 'Dekaf'">
     <TargetFramework Condition="'$(TargetFramework)' == 'net10.0' and '$(TargetFrameworks)' == ''"></TargetFramework>
-    <TargetFrameworks Condition="'$(TargetFrameworks)' == ''">net8.0;net10.0</TargetFrameworks>
+    <TargetFrameworks Condition="'$(TargetFrameworks)' == ''">net10.0;net11.0</TargetFrameworks>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -23,6 +23,8 @@
     <ApiCompatEnableRuleCannotChangeParameterName>true</ApiCompatEnableRuleCannotChangeParameterName>
     <!-- Existing overload shapes predate this gate; API declaration and removal diagnostics remain errors. -->
     <NoWarn>$(NoWarn);RS0022;RS0026;RS0027</NoWarn>
+    <!-- PKV006: the net8.0 assets were removed on purpose. Drop this once the validation baseline no longer ships net8.0. -->
+    <NoWarn>$(NoWarn);PKV006</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

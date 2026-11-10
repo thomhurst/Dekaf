@@ -19,7 +19,7 @@ Unlike libraries that wrap librdkafka, Dekaf is a native .NET implementation wit
 - **Pure C#** - No native dependencies, no interop overhead
 - **Zero-allocation hot paths** - Uses `Span<T>`, `ref struct`, and object pooling for minimal GC pressure
 - **Modern .NET** - Optimized for .NET 10 with nullable reference types and `IAsyncEnumerable`; see package compatibility below
-- **Native AOT coverage** - .NET 10 `linux-x64` smoke and Kafka integration tests in code-change CI; see coverage below
+- **Native AOT coverage** - .NET 11 `linux-x64` smoke and Kafka integration tests in code-change CI; see coverage below
 - **Simple API** - Intuitive fluent builders that do what you'd expect
 - **Batteries included for services** - Hosted consumer base class with graceful shutdown, retries, retry topics, and dead letter queues built in
 
@@ -36,22 +36,22 @@ assets and tested runtimes are separate:
 
 | Packages | Target frameworks shipped in NuGet |
 | --- | --- |
-| `Dekaf`, `Dekaf.Abstractions` | `net10.0`, `net8.0`, `netstandard2.0` |
-| `Dekaf.Compression.*`, `Dekaf.Serialization.*`, `Dekaf.SchemaRegistry` and its extensions, `Dekaf.Extensions.*`, `Dekaf.OpenTelemetry`, `Dekaf.Outbox` and its EF Core and DynamoDB extensions, `Dekaf.Testing`, `Dekaf.Aspire`, `Dekaf.Aspire.SchemaRegistry`, `Dekaf.Aspire.Hosting` | `net8.0`, `net10.0` |
+| `Dekaf`, `Dekaf.Abstractions` | `net11.0`, `net10.0`, `netstandard2.0` |
+| `Dekaf.Compression.*`, `Dekaf.Serialization.*`, `Dekaf.SchemaRegistry` and its extensions, `Dekaf.Extensions.*`, `Dekaf.OpenTelemetry`, `Dekaf.Outbox` and its EF Core and DynamoDB extensions, `Dekaf.Testing`, `Dekaf.Aspire`, `Dekaf.Aspire.SchemaRegistry`, `Dekaf.Aspire.Hosting` | `net10.0`, `net11.0` |
 
-- **Tested runtimes:** CI runs unit tests on .NET 8 and .NET 10. PR Kafka integration
-  tests run on .NET 10, with GSSAPI package round trips on both runtimes; the NuGet release gate tests both runtimes against Kafka
+- **Tested runtimes:** CI runs unit tests on .NET 10 and .NET 11. PR Kafka integration
+  tests and GSSAPI package round trips run on both runtimes; the NuGet release gate tests both runtimes against Kafka
   4.0.2, 4.1.2, 4.2.1, 4.3.1 and 4.4.0.
-- **Development:** use the .NET 10 SDK to build this repository. Running its
-  `net8.0` tests also requires the .NET 8 runtime (or SDK).
+- **Development:** use the .NET 11 SDK to build this repository. Running its
+  `net10.0` tests and tools also requires the .NET 10 runtime (or SDK).
 - **Native AOT:** code-change CI publishes and runs core and dependency-injection
-  smoke apps plus a Kafka integration smoke subset on .NET 10 `linux-x64`.
+  smoke apps plus a Kafka integration smoke subset on .NET 11 `linux-x64`.
   Release validation expands AOT integration coverage against Kafka 4.0.2 and
   4.4.0. This is coverage of those scenarios, not every package/API/platform.
 
 A `netstandard2.0` asset does not mean every compatible runtime is tested or has
-identical APIs and performance. .NET 8 uses the dedicated `net8.0` asset;
-optional packages require their own compatible assets. See
+identical APIs and performance. Runtimes older than .NET 10 resolve the
+`netstandard2.0` core asset; the optional packages require .NET 10 or later. See
 [API and runtime compatibility](https://dekaf.tomlonghurst.dev/docs/api-compatibility)
 for asset differences, package validation and AOT limits.
 

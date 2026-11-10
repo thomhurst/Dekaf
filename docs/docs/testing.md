@@ -224,7 +224,7 @@ sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
 
 dotnet publish tests/Dekaf.Tests.Aot/Dekaf.Tests.Aot.csproj \
   --configuration Release \
-  --framework net10.0 \
+  --framework net11.0 \
   --runtime linux-x64 \
   --self-contained true \
   --output artifacts/aot/core \
@@ -235,7 +235,7 @@ dotnet publish tests/Dekaf.Tests.Aot/Dekaf.Tests.Aot.csproj \
 
 dotnet publish tests/Dekaf.Tests.Aot.DependencyInjection/Dekaf.Tests.Aot.DependencyInjection.csproj \
   --configuration Release \
-  --framework net10.0 \
+  --framework net11.0 \
   --runtime linux-x64 \
   --self-contained true \
   --output artifacts/aot/dependency-injection \

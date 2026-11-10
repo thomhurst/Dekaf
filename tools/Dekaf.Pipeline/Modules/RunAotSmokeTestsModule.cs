@@ -59,7 +59,7 @@ public class RunAotSmokeTestsModule(ICommand command) : Module<IReadOnlyList<Com
                 {
                     ProjectSolution = project.Path,
                     Configuration = "Release",
-                    Framework = "net10.0",
+                    Framework = "net11.0",
                     Runtime = "linux-x64",
                     NoRestore = true,
                     Output = outputDirectory,

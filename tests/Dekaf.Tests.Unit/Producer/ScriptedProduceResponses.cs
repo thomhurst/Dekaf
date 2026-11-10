@@ -27,7 +27,6 @@ internal sealed class ScriptedProduceResponses : IDisposable
     private readonly Queue<TaskCompletionSource<ProduceResponse>> _responses;
     private readonly Action? _onSend;
     private readonly TaskCompletionSource<ProduceResponse> _unscriptedSendResponse = new();
-    // object, not System.Threading.Lock: this project also targets net8.0.
     private readonly object _lock = new();
     private CancellationTokenSource? _guardCts;
     private int _dequeuedCount;

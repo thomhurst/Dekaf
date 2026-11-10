@@ -51,9 +51,7 @@ public sealed class TopicRoutingSerializer<TBase> :
     /// <inheritdoc />
     public void Serialize<TWriter>(TBase value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
         , allows ref struct
-#endif
     {
         if (value is null)
             throw MissingRoute("runtime type", "null", context);
@@ -159,9 +157,7 @@ public sealed class TypeRoutingSerializer<TBase> :
     /// <inheritdoc />
     public void Serialize<TWriter>(TBase value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
         , allows ref struct
-#endif
     {
         if (value is null)
         {
@@ -244,9 +240,7 @@ internal abstract class SerializerRoute<TBase> : IRecordHeaderSerializer, ISeria
         SerializationContext context,
         in SerializerPreparationAdmission admission)
         where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
         , allows ref struct
-#endif
         ;
 
     internal abstract void Serialize<TWriter>(
@@ -254,9 +248,7 @@ internal abstract class SerializerRoute<TBase> : IRecordHeaderSerializer, ISeria
         ref TWriter destination,
         SerializationContext context)
         where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
         , allows ref struct
-#endif
         ;
 }
 

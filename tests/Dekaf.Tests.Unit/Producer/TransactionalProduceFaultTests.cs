@@ -956,9 +956,7 @@ public sealed class TransactionalProduceFaultTests
 
         public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
             where TWriter : System.Buffers.IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
         {
             if (value == failingValue && Interlocked.Increment(ref _calls) == 1)
                 throw new KafkaException(ErrorCode.NotEnoughReplicas, "Transient failure for the test.");
@@ -996,9 +994,7 @@ public sealed class TransactionalProduceFaultTests
 
         public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
             where TWriter : System.Buffers.IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
         {
             if (BlocksInSerialize)
                 BlockIfHeld(value);
