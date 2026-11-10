@@ -314,7 +314,12 @@ public sealed class ProducerOptions
     public int ConnectionsPerBroker { get; init; } = 1;
 
     /// <summary>
-    /// Number of retries. With idempotence disabled and
+    /// Maximum number of times a batch is resent after a retriable failure of a request that
+    /// reached the broker; the batch then fails with a
+    /// <see cref="Dekaf.Errors.ProduceException"/> carrying the last error. <see cref="DeliveryTimeoutMs"/> still bounds the total time, and is the
+    /// only bound at the default of <see cref="int.MaxValue"/>. A send that fails before the
+    /// request is written does not count. Must be at least 1 when
+    /// <see cref="EnableIdempotence"/> is set. With idempotence disabled and
     /// <see cref="MaxInFlightRequestsPerConnection"/> greater than 1, retries can reorder
     /// records within a partition. Enable idempotence or use one in-flight request when
     /// retry-safe ordering is required.
@@ -616,6 +621,12 @@ public sealed class ProducerOptions
     {
         var minimum = GetMinimumArenaCapacity(batchSize);
         return arenaCapacity > 0 ? arenaCapacity : minimum;
+    }
+
+    internal static void ValidateRetries(bool enableIdempotence, int retries)
+    {
+        if (enableIdempotence && retries < 1)
+            throw new InvalidOperationException("Retries must be at least 1 when idempotence is enabled. Idempotence relies on retries to deliver each batch exactly once; disable idempotence to send without retries.");
     }
 
     internal static void ValidateArenaCapacity(int batchSize, int arenaCapacity)

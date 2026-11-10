@@ -4547,6 +4547,26 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return;
         }
 
+        // ProducerOptions.Retries bounds the resends of a request that reached the broker. A
+        // request that was never written (networkRetryPrepared) and a sequence gap left by an
+        // earlier batch are not failures of this batch's own attempt, so they are not charged.
+        // Error path only: one int compare per failed batch.
+        if (!networkRetryPrepared && !behindRejectedPredecessor
+            && batch.CountedRetries++ >= _options.Retries)
+        {
+            LogRetriesExhausted(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition,
+                _options.Retries, errorCode);
+            UnmuteUnlessRetryQueued(batch.TopicPartition, carryOver);
+            FailAndCleanupBatch(batch, new ProduceException(errorCode,
+                $"Produce to {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition} failed after " +
+                $"{_options.Retries} retries (last error: {errorCode})")
+            {
+                Topic = batch.TopicPartition.Topic,
+                Partition = batch.TopicPartition.Partition
+            });
+            return;
+        }
+
         // Mute partition so no newer batches overtake the retry (ordering guarantee).
         // Also mute in accumulator so Ready/Drain skips this partition — prevents the
         // sender loop from draining newer batches that would jump the retry queue.
@@ -7711,6 +7731,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] delivery timeout exceeded for {Topic}-{Partition}")]
     private partial void LogDeliveryTimeoutExceeded(int brokerId, string topic, int partition);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] retries exhausted for {Topic}-{Partition} after {Retries} retries (last error: {ErrorCode})")]
+    private partial void LogRetriesExhausted(int brokerId, string topic, int partition, int retries, ErrorCode errorCode);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] splitting oversized batch for {Topic}-{Partition} ({RecordCount} records)")]
     private partial void LogBatchSplit(int brokerId, string topic, int partition, int recordCount);

@@ -576,6 +576,47 @@ public class ProducerBuilderValidationTests
     }
 
     [Test]
+    public async Task Build_WithIdempotenceAndZeroRetries_ThrowsInvalidOperationException()
+    {
+        var builder = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithRetries(0);
+
+        var act = () => builder.Build();
+
+        await Assert.That(act).Throws<InvalidOperationException>()
+            .And.HasMessageContaining("Retries must be at least 1 when idempotence is enabled");
+    }
+
+    [Test]
+    public async Task Constructor_WithIdempotenceAndZeroRetries_ThrowsInvalidOperationException()
+    {
+        var options = new Dekaf.Producer.ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            Retries = 0
+        };
+
+        var act = () => new Dekaf.Producer.KafkaProducer<string, string>(
+            options, Dekaf.Serialization.Serializers.String, Dekaf.Serialization.Serializers.String);
+
+        await Assert.That(act).Throws<InvalidOperationException>()
+            .And.HasMessageContaining("Retries must be at least 1 when idempotence is enabled");
+    }
+
+    [Test]
+    public async Task Build_WithIdempotenceDisabledAndZeroRetries_Succeeds()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithIdempotence(false)
+            .WithRetries(0)
+            .Build();
+
+        await Assert.That(producer).IsNotNull();
+    }
+
+    [Test]
     public async Task Build_WithIdempotenceDisabledAndAcksNone_Succeeds()
     {
         await using var producer = Kafka.CreateProducer<string, string>()

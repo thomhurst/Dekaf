@@ -537,6 +537,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         ILoggerFactory? loggerFactory,
         MetadataOptions? metadataOptions)
     {
+        // Reject invalid options before the pool exists: a constructor that throws afterwards
+        // hands the caller nothing to dispose, so the pool's timers would keep running.
+        ExponentialRetryBackoff.Validate(options.RetryBackoffMs, options.RetryBackoffMaxMs);
+        ProducerOptions.ValidateRetries(options.EnableIdempotence, options.Retries);
+
         if (options.TransactionalId is not null)
             ArgumentException.ThrowIfNullOrWhiteSpace(options.TransactionalId);
 
@@ -628,6 +633,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         Func<long>? transactionTimestampProvider = null)
     {
         ExponentialRetryBackoff.Validate(options.RetryBackoffMs, options.RetryBackoffMaxMs);
+        ProducerOptions.ValidateRetries(options.EnableIdempotence, options.Retries);
         _options = options;
         _compressionCodecs = compressionCodecs;
         _addPartitionsToTransaction = addPartitionsToTransaction ?? AddPartitionsToTransactionAsync;

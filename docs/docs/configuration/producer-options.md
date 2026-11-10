@@ -89,6 +89,7 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithDeliveryTimeout(...)` | `DeliveryTimeoutMs` | Milliseconds |
 | `WithRequestTimeout(...)` | `RequestTimeoutMs` | Milliseconds |
 | `WithIdempotence(...)` | `EnableIdempotence` | Boolean |
+| Configuration only | `Retries` | Maximum resends of a batch after a retriable failure; default unlimited, bounded by `DeliveryTimeoutMs`. Must be at least 1 with idempotence |
 | `WithConnectionsMaxIdle(...)` | `ConnectionsMaxIdleMs` | Milliseconds; `-1` disables |
 | `WithConnectionTimeout(...)` | `ConnectionTimeout` | TimeSpan |
 | `WithConnectionTimeoutMax(...)` | `ConnectionTimeoutMax` | TimeSpan; Kafka `socket.connection.setup.timeout.max.ms` |

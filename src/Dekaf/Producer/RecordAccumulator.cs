@@ -12375,6 +12375,12 @@ internal sealed class ReadyBatch
     internal int RetryFailureCount { get; set; }
 
     /// <summary>
+    /// Number of retries charged against <see cref="ProducerOptions.Retries"/>: failures of a
+    /// request that was written to the broker. Written and read by the send loop only.
+    /// </summary>
+    internal int CountedRetries { get; set; }
+
+    /// <summary>
     /// Stopwatch timestamp when the accumulator batch was created. Used for absolute delivery
     /// deadline computation in ProcessCompletedResponses (prevents infinite retries with relative
     /// deadlines and includes configured linger time).
@@ -12419,6 +12425,8 @@ internal sealed class ReadyBatch
         GovernedOriginTicks = source.GovernedOriginTicks;
         // A split child takes its parent's place in the partition's retry order.
         SenderArrivalOrder = source.SenderArrivalOrder;
+        // The records keep the retries they already used, like their delivery deadline.
+        CountedRetries = source.CountedRetries;
         _createdTimestamp = Stopwatch.GetTimestamp();
     }
 
@@ -12738,6 +12746,7 @@ internal sealed class ReadyBatch
         SenderArrivalOrder = 0;
         RetryNotBefore = 0;
         RetryFailureCount = 0;
+        CountedRetries = 0;
         IsSplitBatch = false;
         MaxRecordSize = 0;
         ObservedCompressionRatio = 1.0;

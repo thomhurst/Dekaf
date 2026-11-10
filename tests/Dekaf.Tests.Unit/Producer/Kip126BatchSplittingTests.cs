@@ -367,6 +367,7 @@ public sealed class Kip126BatchSplittingTests
         sourceBatch.MarkPreSerialized();
         sourceBatch.TrySetMemoryReleased();
         var originalCreatedTicks = sourceBatch.StopwatchCreatedTicks;
+        sourceBatch.CountedRetries = 1;
 
         var accumulator = new RecordAccumulator(options, new CompressionCodecRegistry());
         var metadataManager = AccumulatorTestHelpers.CreateMetadataManager(topic, partitionCount: 1);
@@ -389,6 +390,8 @@ public sealed class Kip126BatchSplittingTests
             await Assert.That(drained.Select(static batch => batch.RecordBatch.BaseSequence))
                 .IsEquivalentTo([50, 52]);
             await Assert.That(drained.All(batch => batch.StopwatchCreatedTicks == originalCreatedTicks)).IsTrue();
+            // A split does not hand the records a fresh ProducerOptions.Retries allowance.
+            await Assert.That(drained.All(static batch => batch.CountedRetries == 1)).IsTrue();
 
             var baseOffset = 100L;
             foreach (var batch in drained)
