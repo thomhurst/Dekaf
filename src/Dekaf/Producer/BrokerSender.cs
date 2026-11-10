@@ -192,6 +192,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly TimeSpan _disposalDrainTimeout;
 
     private readonly Channel<SendLoopEvent> _eventChannel;
+
+    // Send-loop-owned except for the timer callback, which only clears the flag (#4112).
+    private Timer? _requestTimeoutWakeTimer;
+    private int _requestTimeoutWakeArmed;
     private readonly Task _sendLoopTask;
     private readonly CancellationTokenSource _cts;
 
@@ -219,6 +223,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         public long DataBytes { get; }
         public long RequestStartTime { get; }
         public BrokerUnackedByteBudget.DeliverySnapshot DeliverySnapshotAtSend { get; }
+
+        /// <summary>
+        /// The connection the request was written to. The slot's pinned connection can be
+        /// replaced while this response is still pending, so a request timeout retires this
+        /// one and not whatever is pinned by then.
+        /// </summary>
+        public IKafkaConnection? Connection { get; }
 
         /// <summary>
         /// Task-backed fallbacks keep a reference-typed claim because PendingResponse is
@@ -265,8 +276,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             long dataBytes,
             long requestStartTime,
             BrokerUnackedByteBudget.DeliverySnapshot deliverySnapshotAtSend,
-            ArrayReturnGuard? returnGuard)
+            ArrayReturnGuard? returnGuard,
+            IKafkaConnection? connection = null)
         {
+            Connection = connection;
             ResponseTask = responseTask;
             Batches = batches;
             BatchGenerations = batchGenerations;
@@ -291,7 +304,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             long encodedBytes,
             long dataBytes,
             long requestStartTime,
-            BrokerUnackedByteBudget.DeliverySnapshot deliverySnapshotAtSend)
+            BrokerUnackedByteBudget.DeliverySnapshot deliverySnapshotAtSend,
+            IKafkaConnection? connection = null)
         {
             var ownershipClaim = responseTask.TryRetainExternalOwner();
             if (ownershipClaim == ExternalOwnershipClaimResult.Rejected)
@@ -310,7 +324,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 deliverySnapshotAtSend,
                 ownershipClaim == ExternalOwnershipClaimResult.Retained
                     ? null
-                    : new ArrayReturnGuard());
+                    : new ArrayReturnGuard(),
+                connection);
         }
 
         [DoesNotReturn]
@@ -2395,6 +2410,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                     if (canPipeline)
                     {
+                        // The channel wait has no deadline of its own, and a shared client's
+                        // connection may time out later than this producer's requests do.
+                        ArmRequestTimeoutWake(carryOver);
+
                         // Note: if this wakes on a ResponseReady event, the freed in-flight slot
                         // is only visible after ProcessCompletedResponses runs at the top of the
                         // next iteration — not in this one.
@@ -4307,7 +4326,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// ProcessCompletedResponses cannot also process the same batches (eliminating the
     /// race condition), and the list is cleared once after the scan.
     /// <para/>
-    /// The affected connection is also invalidated so the next send
+    /// The affected connection is also retired from the pool so the next send
     /// establishes a fresh connection. Response tasks from the old connection are orphaned —
     /// they may eventually complete, but nobody polls them since the entries were removed.
     /// </summary>
@@ -4345,6 +4364,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _pinnedConnections[connIdx] = null; // Invalidate only the affected connection
             LogRequestTimeoutDisconnection(_brokerId, pendingList.Count);
 
+            // Clearing the pin is not enough: the pool would hand the same connection back
+            // while its socket still reports connected, and each retry would push that
+            // connection's own receive timeout further out.
+            var retirementPool = _connectionPool as IConnectionRetirementPool;
+
             var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
 
             // Claim entries in a single forward scan (preserving per-partition FIFO
@@ -4358,6 +4382,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     continue;
                 try
                 {
+                    // Only the connection a timed-out request was written to: the slot may
+                    // have moved to a healthy replacement since. Retiring twice is a no-op.
+                    if (retirementPool is not null
+                        && pending.Connection is { } timedOutConnection
+                        && now >= pending.RequestStartTime + requestTimeoutTicks)
+                    {
+                        retirementPool.RetireConnection(_brokerId, timedOutConnection);
+                    }
+
                     for (var j = 0; j < pending.Count; j++)
                     {
                         if (!pending.IsSameIncarnation(j)) continue;
@@ -4478,6 +4511,46 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return 0;
 
         return Math.Max(1, (int)(delayTicks * 1000.0 / Stopwatch.Frequency));
+    }
+
+    /// <summary>
+    /// Makes sure a timer wakes the event-channel wait no later than the earliest pending
+    /// request deadline, so the request-timeout sweep runs even when no batch or response
+    /// arrives. The timer is armed only while dormant: with responses flowing this is one
+    /// volatile read per wait, and the timer fires about once per request timeout, at or
+    /// before every deadline that was pending when it was armed or added since.
+    /// </summary>
+    private void ArmRequestTimeoutWake(PartitionCarryOver carryOver)
+    {
+        if (Volatile.Read(ref _requestTimeoutWakeArmed) != 0)
+            return;
+
+        var wakeupMs = ComputeNextWakeupMs(carryOver);
+        if (wakeupMs == int.MaxValue)
+            return;
+
+        _requestTimeoutWakeTimer ??= new Timer(
+            static state => ((BrokerSender)state!).OnRequestTimeoutWake(),
+            this,
+            Timeout.Infinite,
+            Timeout.Infinite);
+        Volatile.Write(ref _requestTimeoutWakeArmed, 1);
+        try
+        {
+            _requestTimeoutWakeTimer.Change(Math.Max(1, wakeupMs), Timeout.Infinite);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Disposal is ending the loop; its cancellation wakes the wait.
+        }
+    }
+
+    private void OnRequestTimeoutWake()
+    {
+        // Cleared before the wake is published: a wait that saw the timer still armed is
+        // woken by this event, and the wait after it arms the timer again.
+        Volatile.Write(ref _requestTimeoutWakeArmed, 0);
+        _eventChannel.Writer.TryWrite(SendLoopEvent.ResponseReady());
     }
 
     private bool IsRequestTimeoutDue()
@@ -5098,7 +5171,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     encodedBytes,
                     dataBytes,
                     requestStartTime,
-                    deliverySnapshotAtSend);
+                    deliverySnapshotAtSend,
+                    connection);
                 try
                 {
                     _pendingResponsesByConnection[connectionIndex].Add(pendingResponse);
@@ -6990,6 +7064,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         _cts.Dispose();
         _anyResponseCompleted.Dispose();
+        Volatile.Read(ref _requestTimeoutWakeTimer)?.Dispose();
     }
 
     private async ValueTask WaitForDisposalDrainAsync(Task drainTask)

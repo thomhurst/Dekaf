@@ -82,6 +82,19 @@ internal interface IConnectionGroupIdentitySource
     bool IsConnectionAtIndex(int brokerId, int index, IKafkaConnection connection);
 }
 
+/// <summary>
+/// Takes one connection out of pool routing without closing it under its other users.
+/// </summary>
+internal interface IConnectionRetirementPool
+{
+    /// <summary>
+    /// Removes <paramref name="connection"/> from routing for the broker, so the next
+    /// acquisition opens a new connection, then disposes it once its in-flight requests
+    /// have completed or failed. Does nothing when the pool no longer routes to it.
+    /// </summary>
+    void RetireConnection(int brokerId, IKafkaConnection connection);
+}
+
 internal interface IConnectionPoolStatusSource
 {
     IReadOnlyList<Diagnostics.BrokerConnectionStatus> GetBrokerConnectionStatus();

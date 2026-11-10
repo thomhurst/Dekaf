@@ -47,6 +47,61 @@ public sealed class ProducerNetworkFaultTests(TransactionFaultKafkaContainer kaf
     }
 
     [Test]
+    public async Task ProduceAsync_SharedClientResponsesBlackHoled_ShorterProducerRequestTimeoutOpensNewConnection()
+    {
+        using var testTimeout = new CancellationTokenSource(TestTimeout);
+        var cancellationToken = testTimeout.Token;
+        var topic = await kafka.CreateTestTopicAsync();
+        using var handshakes = new ConnectionHandshakeObserver();
+        using var loggerFactory = handshakes.CreateLoggerFactory();
+        var clientRequestTimeout = TimeSpan.FromSeconds(60);
+
+        await using var client = Kafka.Connect(kafka.ProducerBootstrapServers, builder => builder
+            .WithRequestTimeout(clientRequestTimeout)
+            .WithLoggerFactory(loggerFactory));
+        await using var producer = await client.CreateProducer<string, string>()
+            .WithAcks(Acks.All)
+            .WithIdempotence(true)
+            .WithRequestTimeout(TimeSpan.FromSeconds(3))
+            .WithDeliveryTimeout(TimeSpan.FromSeconds(90))
+            .BuildAsync(cancellationToken);
+
+        var next = 0;
+        await ProduceWaveAsync(producer, topic, ref next, cancellationToken);
+
+        Task faultedWave;
+        try
+        {
+            var handshakesBeforeFault = handshakes.Handshakes;
+
+            // Downstream: the connection stays open and the broker appends the records, but no
+            // response comes back. Only the producer's own request timeout can notice, and
+            // with one partition nothing else wakes its send loop.
+            await kafka.AddTimeoutAsync(ToxiproxyLane.Producer, cancellationToken);
+            faultedWave = ProduceWaveAsync(producer, topic, ref next, cancellationToken);
+
+            // The shared connection's own timeout is the client's 60 seconds, and every retry
+            // on that connection would push it further out. A handshake well inside it means
+            // the producer's timeout took the connection out of the pool.
+            await handshakes.WaitForHandshakeAfterAsync(handshakesBeforeFault, cancellationToken)
+                .WaitAsync(clientRequestTimeout / 2, cancellationToken);
+        }
+        finally
+        {
+            await kafka.HealNetworkFaultsAsync(CancellationToken.None);
+        }
+
+        await faultedWave;
+        await ProduceWaveAsync(producer, topic, ref next, cancellationToken);
+
+        var expected = Enumerable.Range(0, next).Select(static i => $"value-{i}").ToArray();
+        var consumed = await ReadCommittedAsync(topic, expected.Length, cancellationToken);
+
+        // The appended-but-unacknowledged wave is retried on the new connection and deduplicated.
+        await Assert.That(string.Join(',', consumed)).IsEqualTo(string.Join(',', expected));
+    }
+
+    [Test]
     public async Task InitTransactionsAsync_BlackHoledCoordinator_TimesOutWithinMaxBlockAndRecovers()
     {
         using var testTimeout = new CancellationTokenSource(TestTimeout);
