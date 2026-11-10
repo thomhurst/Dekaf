@@ -623,6 +623,12 @@ public sealed class ProducerOptions
         return arenaCapacity > 0 ? arenaCapacity : minimum;
     }
 
+    internal static void ValidateRetries(bool enableIdempotence, int retries)
+    {
+        if (enableIdempotence && retries < 1)
+            throw new InvalidOperationException("Retries must be at least 1 when idempotence is enabled. Idempotence relies on retries to deliver each batch exactly once; disable idempotence to send without retries.");
+    }
+
     internal static void ValidateArenaCapacity(int batchSize, int arenaCapacity)
     {
         if (arenaCapacity == 0)

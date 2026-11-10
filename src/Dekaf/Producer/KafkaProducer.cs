@@ -628,6 +628,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         Func<long>? transactionTimestampProvider = null)
     {
         ExponentialRetryBackoff.Validate(options.RetryBackoffMs, options.RetryBackoffMaxMs);
+        ProducerOptions.ValidateRetries(options.EnableIdempotence, options.Retries);
         _options = options;
         _compressionCodecs = compressionCodecs;
         _addPartitionsToTransaction = addPartitionsToTransaction ?? AddPartitionsToTransactionAsync;
