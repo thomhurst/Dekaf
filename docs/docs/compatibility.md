@@ -27,9 +27,13 @@ The project is open to broader target-framework support when it does not regress
 
 The modern targets stay the primary optimization target; benchmarks and stress tests measure `net11.0`. Protocol serialization, production, and consumption hot paths should continue using modern BCL APIs where they are needed for low allocation and throughput.
 
-## .NET 11 package asset
+## .NET 11 package asset and Runtime Async
 
-The `net11.0` assets share the `net10.0` source and public API.
+The `net11.0` assets share the `net10.0` source and public API. They are compiled
+with Runtime Async (`<Features>runtime-async=on</Features>`, set for every
+`net11.0` build in `Directory.Build.targets`), so the .NET 11 runtime suspends and
+resumes async methods instead of compiler-generated state machines. Runtime Async
+is a preview feature of .NET 11.
 
 ## .NET 8 and older runtimes
 

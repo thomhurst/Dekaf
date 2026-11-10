@@ -2,4 +2,9 @@
   <ItemGroup Condition="'$(IsPackable)' != 'false' and '$(PackageReadmeFile)' != ''">
     <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="/" Visible="false" />
   </ItemGroup>
+
+  <!-- Runtime Async (preview in .NET 11): the runtime, not a compiler-generated state machine, suspends and resumes async methods. -->
+  <PropertyGroup Condition="'$([MSBuild]::GetTargetFrameworkIdentifier($(TargetFramework)))' == '.NETCoreApp' and $([MSBuild]::VersionGreaterThanOrEquals($([MSBuild]::GetTargetFrameworkVersion($(TargetFramework))), '11.0'))">
+    <Features>$(Features);runtime-async=on</Features>
+  </PropertyGroup>
 </Project>

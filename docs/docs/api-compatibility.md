@@ -13,7 +13,8 @@ broker capabilities, runtime limits, and validation evidence.
 The `Dekaf` and `Dekaf.Abstractions` packages ship `net11.0`, `net10.0`, and
 `netstandard2.0` assets. .NET 11 and .NET 10 applications select their own
 optimized asset; older runtimes, including .NET 8, resolve `netstandard2.0`.
-Compatibility
+The `net11.0` assets are compiled with Runtime Async (`runtime-async=on`), a
+preview feature of .NET 11. Compatibility
 with .NET Standard alone is not a promise of testing on every implementing
 runtime, identical API shapes or equivalent performance on all runtimes.
 
