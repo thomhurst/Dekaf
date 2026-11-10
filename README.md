@@ -19,7 +19,7 @@ Unlike libraries that wrap librdkafka, Dekaf is a native .NET implementation wit
 - **Pure C#** - No native dependencies, no interop overhead
 - **Zero-allocation hot paths** - Uses `Span<T>`, `ref struct`, and object pooling for minimal GC pressure
 - **Modern .NET** - Optimized for .NET 10 with nullable reference types and `IAsyncEnumerable`; see package compatibility below
-- **Native AOT coverage** - .NET 10 `linux-x64` smoke and Kafka integration tests in code-change CI; see coverage below
+- **Native AOT coverage** - .NET 11 `linux-x64` smoke and Kafka integration tests in code-change CI; see coverage below
 - **Simple API** - Intuitive fluent builders that do what you'd expect
 - **Batteries included for services** - Hosted consumer base class with graceful shutdown, retries, retry topics, and dead letter queues built in
 
@@ -45,7 +45,7 @@ assets and tested runtimes are separate:
 - **Development:** use the .NET 11 SDK to build this repository. Running its
   `net10.0` tests and tools also requires the .NET 10 runtime (or SDK).
 - **Native AOT:** code-change CI publishes and runs core and dependency-injection
-  smoke apps plus a Kafka integration smoke subset on .NET 10 `linux-x64`.
+  smoke apps plus a Kafka integration smoke subset on .NET 11 `linux-x64`.
   Release validation expands AOT integration coverage against Kafka 4.0.2 and
   4.4.0. This is coverage of those scenarios, not every package/API/platform.
 

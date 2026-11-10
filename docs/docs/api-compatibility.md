@@ -34,9 +34,9 @@ to execute the `net10.0` test binaries and tools. The configured CI/release cove
 | PR integration tests | .NET 10 and .NET 11 | Kafka 4.4.0 |
 | GSSAPI NuGet consumer round trips (Linux) | .NET 10 and .NET 11 | Kafka 4.4.0 |
 | NuGet release integration gate | .NET 10 and .NET 11 | Kafka 4.0.2, 4.1.2, 4.2.1, 4.3.1, 4.4.0 |
-| Native AOT core and DI smoke apps | .NET 10 (DI also .NET 11), `linux-x64` | No broker required |
-| PR Native AOT integration smoke subset | .NET 10, `linux-x64` | Kafka 4.4.0 |
-| NuGet release Native AOT integration sweep | .NET 10, `linux-x64` | Kafka 4.0.2 and 4.4.0 |
+| Native AOT core and DI smoke apps | .NET 11 (DI also .NET 10), `linux-x64` | No broker required |
+| PR Native AOT integration smoke subset | .NET 11, `linux-x64` | Kafka 4.4.0 |
+| NuGet release Native AOT integration sweep | .NET 11, `linux-x64` | Kafka 4.0.2 and 4.4.0 |
 
 Native AOT coverage validates the scenarios exercised by
 the smoke apps and integration suites; it does not establish support for

@@ -22,7 +22,7 @@ IFS=',' read -ra categories <<< "$2"
 
 if [ "$tfm" = "aot" ]; then
   exe="artifacts/aot/integration/Dekaf.Tests.Integration"
-  export NET_VERSION="net10.0"
+  export NET_VERSION="net11.0"
 else
   exe="tests/Dekaf.Tests.Integration/bin/Release/$tfm/Dekaf.Tests.Integration"
   export NET_VERSION="$tfm"

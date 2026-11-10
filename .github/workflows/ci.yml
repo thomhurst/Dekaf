@@ -798,7 +798,7 @@ jobs:
         run: |
           dotnet publish tests/Dekaf.Tests.Aot/Dekaf.Tests.Aot.csproj \
             --configuration Release \
-            --framework net10.0 \
+            --framework net11.0 \
             --runtime linux-x64 \
             --self-contained true \
             --output artifacts/aot/core \
@@ -813,7 +813,7 @@ jobs:
         run: |
           dotnet publish tests/Dekaf.Tests.Aot.AvroPoco/Dekaf.Tests.Aot.AvroPoco.csproj \
             --configuration Release \
-            --framework net10.0 \
+            --framework net11.0 \
             --runtime linux-x64 \
             --self-contained true \
             --output artifacts/aot/avro-poco \
@@ -871,7 +871,7 @@ jobs:
         run: |
           dotnet publish tests/Dekaf.Tests.Integration/Dekaf.Tests.Integration.csproj \
             --configuration Release \
-            --framework net10.0 \
+            --framework net11.0 \
             --runtime linux-x64 \
             --self-contained true \
             --output artifacts/aot/integration \
