@@ -37,6 +37,13 @@ The dedicated `net8.0` assets were removed. .NET 8 applications now resolve the
 `netstandard2.0` core and Abstractions assets, with the `IReadOnlyCollection` and
 serializer contracts and the limits described below, including no GSSAPI. The
 extension packages require .NET 10 or later.
+
+On a .NET 8 host the `netstandard2.0` asset is slower and allocates more than the
+removed `net8.0` asset did. It uses the compatibility paths listed under
+[Build Probe](#build-probe): software CRC32C, array-based compression stream calls,
+polyfilled BCL helpers and reflection-based protocol metadata. That cost is not
+measured in CI, which benchmarks the `net11.0` asset only. Use .NET 10 or later for
+the optimized paths.
 The optimized `net10.0` and `net11.0` assets retain their `IReadOnlySet`, ref-struct, and static
 protocol dispatch paths. No additional authentication package is required.
 
