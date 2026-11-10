@@ -18,6 +18,7 @@ public sealed partial class ConnectionPool :
     IConnectionPool,
     IConnectionPoolDiagnostics,
     IConnectionGroupIdentitySource,
+    IConnectionRetirementPool,
     IConnectionPoolStatusSource,
     IBrokerThrottleProvider,
     IConnectionCapabilityObserverPool,
@@ -502,6 +503,32 @@ public sealed partial class ConnectionPool :
         _connectionGroupsById.TryGetValue(brokerId, out var group)
         && (uint)index < (uint)group.Length
         && ReferenceEquals(Volatile.Read(ref group[index]), connection);
+
+    void IConnectionRetirementPool.RetireConnection(int brokerId, IKafkaConnection connection)
+    {
+        // Exact removal throughout: a sibling that already replaced the connection keeps its own.
+        var removed = TryRemoveExact(_connectionsById, brokerId, connection);
+        removed |= TryRemoveExact(
+            _connectionsByEndpoint,
+            new EndpointKey(connection.Host, connection.Port),
+            connection);
+
+        if (_connectionGroupsById.TryGetValue(brokerId, out var group))
+        {
+            for (var i = 0; i < group.Length; i++)
+            {
+                // An emptied slot is rebuilt by the next acquisition for that index.
+                removed |= Interlocked.CompareExchange(ref group[i], null!, connection) == connection;
+            }
+        }
+
+        if (!removed)
+            return;
+
+        PreserveSuccessfulRequest(connection, brokerId);
+        RecordBrokerConnectionStateChange(brokerId);
+        RetireConnection(connection);
+    }
 
     public async ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken cancellationToken = default)
     {

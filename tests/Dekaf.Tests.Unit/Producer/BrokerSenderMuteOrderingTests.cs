@@ -37,6 +37,105 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         "PartitionCarryOver",
         BindingFlags.NonPublic)!;
 
+    [Test]
+    [NotInParallel]
+    [Timeout(30_000)]
+    public async Task RequestTimeout_RetiresConnectionFromPool(CancellationToken ct)
+    {
+        var timedOutResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        // The wake batch enqueued below may dispatch a send after the timeout sweep.
+        var wakeResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>([timedOutResponse, wakeResponse]);
+        var (innerPool, connection) = CreateMockConnection(responseQueue);
+        var pool = new RetirementRecordingPool(innerPool);
+        ct = GuardUnscriptedSends(ct);
+        var options = CreateOptions(maxInFlight: 2, enableIdempotence: false,
+            deliveryTimeoutMs: 1, requestTimeoutMs: 10_000);
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        using var sendLogger = new PipelinedSendLogger(expectedSends: 1);
+        var testTimestamp = Stopwatch.GetTimestamp();
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { },
+            logger: sendLogger,
+            getTimestamp: () => Volatile.Read(ref testTimestamp));
+        var batch = CreateTestBatch(vtPool, "test-topic", partition: 0);
+
+        try
+        {
+            sender.Enqueue(batch);
+            sendLogger.WaitForSend(0, ct);
+            await WaitForDiagAsync(batch, 'W', TimeSpan.FromSeconds(5), ct);
+            await Assert.That(pool.Retired).IsEmpty();
+
+            Volatile.Write(
+                ref testTimestamp,
+                Stopwatch.GetTimestamp() + (20 * Stopwatch.Frequency));
+
+            // Wake the send loop so its own iteration runs the request-timeout sweep (see
+            // MetadataRerank_RequestTimeoutClearsMigrationFence).
+            sender.Enqueue(CreateTestBatch(vtPool, "wake-topic", partition: 0));
+
+            await TestWait.UntilAsync(
+                () => !pool.Retired.IsEmpty,
+                DiagnosticWaitTimeout,
+                () => "The request-timeout sweep did not retire the connection",
+                ct,
+                pollInterval: TimeSpan.FromMilliseconds(1));
+
+            var retired = pool.Retired.ToArray();
+            await Assert.That(retired.Length).IsEqualTo(1);
+            await Assert.That(retired[0].BrokerId).IsEqualTo(1);
+            await Assert.That(retired[0].Connection).IsSameReferenceAs(connection);
+        }
+        finally
+        {
+            timedOutResponse.TrySetResult(CreateSuccessResponse("test-topic", 0, 100));
+            wakeResponse.TrySetResult(CreateSuccessResponse("wake-topic", partition: 0, baseOffset: 100));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    private sealed class RetirementRecordingPool(IConnectionPool inner) : IConnectionPool, IConnectionRetirementPool
+    {
+        public ConcurrentQueue<(int BrokerId, IKafkaConnection Connection)> Retired { get; } = new();
+
+        public void RetireConnection(int brokerId, IKafkaConnection connection) =>
+            Retired.Enqueue((brokerId, connection));
+
+        public ValueTask<IKafkaConnection> GetConnectionAsync(
+            int brokerId, CancellationToken cancellationToken = default) =>
+            inner.GetConnectionAsync(brokerId, cancellationToken);
+
+        public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(
+            int brokerId, int index, CancellationToken cancellationToken = default) =>
+            inner.GetConnectionByIndexAsync(brokerId, index, cancellationToken);
+
+        public ValueTask<IKafkaConnection> GetConnectionAsync(
+            string host, int port, CancellationToken cancellationToken = default) =>
+            inner.GetConnectionAsync(host, port, cancellationToken);
+
+        public void RegisterBroker(int brokerId, string host, int port) =>
+            inner.RegisterBroker(brokerId, host, port);
+
+        public ValueTask<int> ScaleConnectionGroupAsync(
+            int brokerId, int newCount, CancellationToken cancellationToken = default) =>
+            inner.ScaleConnectionGroupAsync(brokerId, newCount, cancellationToken);
+
+        public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(
+            int brokerId, int newCount, CancellationToken cancellationToken = default) =>
+            inner.ShrinkConnectionGroupAsync(brokerId, newCount, cancellationToken);
+
+        public ValueTask RemoveConnectionAsync(int brokerId) => inner.RemoveConnectionAsync(brokerId);
+
+        public ValueTask CloseAllAsync() => inner.CloseAllAsync();
+
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
+    }
+
     private static readonly Type BatchReferenceType = typeof(BrokerSender).GetNestedType(
         "BatchReference",
         BindingFlags.NonPublic)!;

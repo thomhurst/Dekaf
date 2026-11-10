@@ -4307,7 +4307,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// ProcessCompletedResponses cannot also process the same batches (eliminating the
     /// race condition), and the list is cleared once after the scan.
     /// <para/>
-    /// The affected connection is also invalidated so the next send
+    /// The affected connection is also retired from the pool so the next send
     /// establishes a fresh connection. Response tasks from the old connection are orphaned —
     /// they may eventually complete, but nobody polls them since the entries were removed.
     /// </summary>
@@ -4342,7 +4342,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // for this connection. Must process ALL entries (not just the timed-out one) because
             // they share the same connection, which is now unreliable. This matches Java's behavior:
             // when any request times out, ALL in-flight requests for that node are failed.
+            // Clearing the pin is not enough: the pool would hand the same connection back
+            // while its socket still reports connected, and each retry would push that
+            // connection's own receive timeout further out.
+            var timedOutConnection = _pinnedConnections[connIdx];
             _pinnedConnections[connIdx] = null; // Invalidate only the affected connection
+            if (timedOutConnection is not null && _connectionPool is IConnectionRetirementPool retirementPool)
+                retirementPool.RetireConnection(_brokerId, timedOutConnection);
             LogRequestTimeoutDisconnection(_brokerId, pendingList.Count);
 
             var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;

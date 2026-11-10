@@ -3389,6 +3389,45 @@ public sealed class ConnectionPoolTests
         ((TestIdleConnection)rejected).PendingRequestCount = 0;
     }
 
+    [Test]
+    [Arguments(1)]
+    [Arguments(2)]
+    public async Task RetireConnection_ConnectedConnection_NextAcquisitionOpensFreshConnection(
+        int connectionsPerBroker)
+    {
+        var created = new List<TestIdleConnection>();
+        await using var pool = new ConnectionPool(
+            clientId: "request-timeout-retire-test",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: connectionsPerBroker,
+            connectionFactory: (brokerId, host, port, _, _) =>
+            {
+                var connection = new TestIdleConnection(brokerId, host, port);
+                created.Add(connection);
+                return ValueTask.FromResult<IKafkaConnection>(connection);
+            });
+        pool.RegisterBroker(7, "broker-a", 9092);
+
+        var timedOut = await pool.GetConnectionByIndexAsync(7, 0);
+        var createdBeforeRetirement = created.Count;
+        ((TestIdleConnection)timedOut).PendingRequestCount = 1;
+
+        ((IConnectionRetirementPool)pool).RetireConnection(7, timedOut);
+
+        // A silently dead socket still reports connected, and another client's in-flight
+        // request keeps the retiring connection open; routing must stop returning it anyway.
+        await Assert.That(timedOut.IsConnected).IsTrue();
+        var replacement = await pool.GetConnectionByIndexAsync(7, 0);
+        await Assert.That(replacement).IsNotSameReferenceAs(timedOut);
+        await Assert.That(created.Count).IsEqualTo(createdBeforeRetirement + 1);
+
+        // Retiring a connection the pool no longer routes to leaves the replacement alone.
+        ((IConnectionRetirementPool)pool).RetireConnection(7, timedOut);
+        await Assert.That(await pool.GetConnectionByIndexAsync(7, 0)).IsSameReferenceAs(replacement);
+
+        ((TestIdleConnection)timedOut).PendingRequestCount = 0;
+    }
+
     private static OAuthBearerConfig CreateOAuthBearerConfig() => new()
     {
         TokenEndpointUrl = "https://auth.example.invalid/token",
