@@ -44,6 +44,8 @@ assets and tested runtimes are separate:
   4.0.2, 4.1.2, 4.2.1, 4.3.1 and 4.4.0.
 - **Development:** use the .NET 11 SDK to build this repository. Running its
   `net10.0` tests and tools also requires the .NET 10 runtime (or SDK).
+- **Runtime Async:** the `net11.0` assets are compiled with .NET 11's Runtime Async
+  (`runtime-async=on`), which is still a preview feature of .NET 11.
 - **Native AOT:** code-change CI publishes and runs core and dependency-injection
   smoke apps plus a Kafka integration smoke subset on .NET 11 `linux-x64`.
   Release validation expands AOT integration coverage against Kafka 4.0.2 and

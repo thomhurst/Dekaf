@@ -338,6 +338,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         => ParseRecordBatchAsync(partition, source, acquiredRecords, maxRecords, 0, cancellationToken);
 
 #if NET
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
 #endif
     private async ValueTask<ShareConsumeBatch<TKey, TValue>> ParseRecordBatchAsync(

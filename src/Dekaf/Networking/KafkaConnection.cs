@@ -847,6 +847,7 @@ public sealed partial class KafkaConnection :
         public CancellationToken WhileWriting(CancellationToken cancellationToken) => AfterWriteStarts(cancellationToken);
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     private async ValueTask<TResponse> SendAsyncCore<
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse,
@@ -1280,6 +1281,7 @@ public sealed partial class KafkaConnection :
             callerOwnsTimeout: true,
             cancellationToken);
 
+    [RuntimeAsyncMethodGeneration(false)]
     private async Task<TResponse> SendPipelinedCoreAsync<
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
@@ -1877,6 +1879,7 @@ public sealed partial class KafkaConnection :
     /// Awaits the response for a pending request, applies timeout, and parses the response.
     /// Shared between SendAsync and SendPipelinedAsync.
     /// </summary>
+    [RuntimeAsyncMethodGeneration(false)]
     private async Task<TResponse> AwaitAndParseResponseAsync<
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TRequest,
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicMethods)] TResponse>(
@@ -2672,6 +2675,7 @@ public sealed partial class KafkaConnection :
         }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     private async Task ReceiveLoopAsync(CancellationToken cancellationToken)
     {
         // Capture the reader so a concurrent reconnect can never swap it mid-loop.
@@ -2764,6 +2768,7 @@ public sealed partial class KafkaConnection :
 
     // Intentionally separate from ReceiveLoopAsync: the producer receive loop must not pay
     // a per-frame admission branch, larger frame carrier, or reservation handoff.
+    [RuntimeAsyncMethodGeneration(false)]
     private async Task ReceiveBoundedLoopAsync(
         ResponseFrameReader frameReader,
         CancellationToken cancellationToken)
