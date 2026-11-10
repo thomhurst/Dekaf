@@ -188,7 +188,7 @@ public class ConsumeOneBufferedFastPathBenchmarks
 
 /// <summary>Measures the allocation-free non-blocking miss path.</summary>
 [MemoryDiagnoser]
-[ShortRunJob(RuntimeMoniker.Net10_0)]
+[ShortRunJob]
 public class ConsumeOneZeroTimeoutBenchmarks
 {
     private const string Topic = "consume-one-zero-timeout";

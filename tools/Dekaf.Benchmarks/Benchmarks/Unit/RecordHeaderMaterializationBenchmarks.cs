@@ -7,7 +7,7 @@ using Dekaf.Serialization;
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
 [MemoryDiagnoser]
-[ShortRunJob(RuntimeMoniker.Net10_0)]
+[ShortRunJob]
 public class RecordHeaderMaterializationBenchmarks
 {
     private static readonly ReadOnlyMemory<byte> Data = "value"u8.ToArray();

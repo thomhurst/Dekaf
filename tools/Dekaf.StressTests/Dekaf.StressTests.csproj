@@ -3,6 +3,8 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <IsPackable>false</IsPackable>
+    <!-- Performance is measured on .NET 11, where the product compiles with Runtime Async. -->
+    <TargetFramework>net11.0</TargetFramework>
     <!-- Server GC is critical for high-throughput workloads on multi-core machines.
          Workstation GC has a tiny Gen0 budget (~2-4MB) causing frequent collections
          that pause all threads, leading to throughput degradation under sustained load.

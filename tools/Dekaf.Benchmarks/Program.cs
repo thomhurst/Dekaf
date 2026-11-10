@@ -24,7 +24,7 @@ if (BenchmarkJobSelection.GetExplicitJob(benchmarkArguments) is { } selectedJob)
     };
 
     var (parsed, commandLineConfig, _) = ConfigParser.Parse(benchmarkArguments, NullLogger.Instance);
-    var configuredJobs = parsed ? commandLineConfig.GetJobs().ToArray() : [];
+    var configuredJobs = parsed && commandLineConfig is not null ? commandLineConfig.GetJobs().ToArray() : [];
 
     // BenchmarkDotNet applies customized CLI jobs as mutators to class jobs, so injecting the
     // unmodified preset in that case would duplicate cases and discard the requested settings.

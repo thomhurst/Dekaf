@@ -35,7 +35,7 @@ PRs that change hot-path directories (`src/Dekaf/{Producer,Consumer,ShareConsume
 
 ## Build and test
 
-`global.json` is the source of truth for SDK selection and Microsoft.Testing.Platform (MTP). Install the .NET 10 runtime as well: the SDK is .NET 11, and the net10.0 tests, tools and benchmarks run on .NET 10. net11.0 builds compile with Runtime Async (`runtime-async=on`, set in `Directory.Build.targets`).
+`global.json` is the source of truth for SDK selection and Microsoft.Testing.Platform (MTP). Install the .NET 10 runtime as well: the SDK is .NET 11, and the net10.0 tests and tools run on .NET 10. Benchmarks and stress tests target net11.0. net11.0 builds compile with Runtime Async (`runtime-async=on`, set in `Directory.Build.targets`).
 
 ```powershell
 dotnet build

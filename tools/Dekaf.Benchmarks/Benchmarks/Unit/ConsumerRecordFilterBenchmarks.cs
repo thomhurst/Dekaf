@@ -15,7 +15,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// including filter-mode selection, rejected-record position tracking, and result construction.
 /// </summary>
 [MemoryDiagnoser]
-[ShortRunJob(RuntimeMoniker.Net10_0)]
+[ShortRunJob]
 [Config(typeof(FilterConfig))]
 public class ConsumerRecordFilterBenchmarks
 {

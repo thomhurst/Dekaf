@@ -34,7 +34,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-STRESS_EXE="$REPO_ROOT/tools/Dekaf.StressTests/bin/Release/net10.0/Dekaf.StressTests"
+STRESS_EXE="$REPO_ROOT/tools/Dekaf.StressTests/bin/Release/net11.0/Dekaf.StressTests"
 ANALYZER_EXE="$REPO_ROOT/tools/Dekaf.TraceAnalyzer/bin/Release/net10.0/Dekaf.TraceAnalyzer"
 if [[ "${OS:-}" == "Windows_NT" ]]; then
     STRESS_EXE="${STRESS_EXE}.exe"

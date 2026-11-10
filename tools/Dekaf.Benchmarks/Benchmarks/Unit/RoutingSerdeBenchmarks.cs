@@ -15,7 +15,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
 /// <summary>Measures frozen routing overhead and verifies zero steady-state allocation.</summary>
 [MemoryDiagnoser]
-[ShortRunJob(RuntimeMoniker.Net10_0)]
+[ShortRunJob]
 [Config(typeof(RoutingConfig))]
 public class RoutingSerdeBenchmarks
 {
@@ -341,7 +341,7 @@ public class RoutingSerdeBenchmarks
 
 /// <summary>Verifies parsed header routing remains O(1) and allocation-free as headers grow.</summary>
 [MemoryDiagnoser]
-[ShortRunJob(RuntimeMoniker.Net10_0)]
+[ShortRunJob]
 public class HeaderRoutingLookupBenchmarks
 {
     private static readonly ReadOnlyMemory<byte> Data = new byte[] { 1, 2, 3 };
@@ -477,7 +477,7 @@ public class HeaderRoutingLookupBenchmarks
 
 /// <summary>Measures full record parsing with nested header-routing index construction.</summary>
 [MemoryDiagnoser]
-[ShortRunJob(RuntimeMoniker.Net10_0)]
+[ShortRunJob]
 public class HeaderRoutingParseBenchmarks
 {
     private readonly RoutingSerdeBenchmarks.EventDeserializer _deserializer = new();

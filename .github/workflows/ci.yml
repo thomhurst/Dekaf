@@ -252,7 +252,7 @@ jobs:
       - name: Package test binaries
         run: |
           tar -czf unit-net11.0.tar.gz tests/Dekaf.Tests.Unit/bin/Release/net11.0
-          tar -czf unit-net10.0.tar.gz tests/Dekaf.Tests.Unit/bin/Release/net10.0 tools/Dekaf.StressTests.Tests/bin/Release/net10.0
+          tar -czf unit-net10.0.tar.gz tests/Dekaf.Tests.Unit/bin/Release/net10.0 tools/Dekaf.StressTests.Tests/bin/Release/net11.0
           tar -czf integration-net11.0.tar.gz tests/Dekaf.Tests.Integration/bin/Release/net11.0
           tar -czf integration-net10.0.tar.gz tests/Dekaf.Tests.Integration/bin/Release/net10.0
           tar -czf gssapi-package-smoke.tar.gz artifacts/gssapi-package-smoke/net10.0 artifacts/gssapi-package-smoke/net11.0
@@ -394,9 +394,9 @@ jobs:
 
       - name: Run stress harness unit tests
         env:
-          NET_VERSION: net10.0
+          NET_VERSION: net11.0
         run: |
-          exe=tools/Dekaf.StressTests.Tests/bin/Release/net10.0/Dekaf.StressTests.Tests
+          exe=tools/Dekaf.StressTests.Tests/bin/Release/net11.0/Dekaf.StressTests.Tests
           chmod +x "$exe"
           "$exe" --hangdump --hangdump-timeout 5m --log-level Debug
 
