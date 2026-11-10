@@ -12425,6 +12425,8 @@ internal sealed class ReadyBatch
         GovernedOriginTicks = source.GovernedOriginTicks;
         // A split child takes its parent's place in the partition's retry order.
         SenderArrivalOrder = source.SenderArrivalOrder;
+        // The records keep the retries they already used, like their delivery deadline.
+        CountedRetries = source.CountedRetries;
         _createdTimestamp = Stopwatch.GetTimestamp();
     }
 
