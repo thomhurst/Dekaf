@@ -130,8 +130,13 @@ public class ScramValidationTests
             lastPayload--;
         signature[lastPayload] = alphabet[alphabet.IndexOf(signature[lastPayload]) + 1];
         var nonCanonical = new string(signature);
+#if NET11_0_OR_GREATER
+        // .NET 11 rejects nonzero unused bits in Convert itself; SCRAM must still report an authentication failure.
+        await Assert.That(() => Convert.FromBase64String(nonCanonical)).Throws<FormatException>();
+#else
         // Convert accepts these nonzero unused bits, but SCRAM requires canonical base64.
         await Assert.That(Convert.FromBase64String(nonCanonical)).IsEquivalentTo(Convert.FromBase64String(exchange.Signature));
+#endif
         await Assert.That(() => exchange.Authenticator.EvaluateChallenge(Encoding.UTF8.GetBytes($"v={nonCanonical}")))
             .Throws<AuthenticationException>();
 

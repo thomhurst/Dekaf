@@ -227,11 +227,6 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     public int? AcquisitionLockTimeoutMs => null;
     ShareAcknowledgementMode IShareConsumerConfiguration.AcknowledgementMode => _options.AcknowledgementMode;
 
-#if !NET10_0_OR_GREATER
-    IReadOnlyCollection<string> IKafkaShareConsumer<TKey, TValue>.Subscription => Subscription;
-
-    IReadOnlyCollection<TopicPartition> IKafkaShareConsumer<TKey, TValue>.Assignment => Assignment;
-#endif
 
     public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {

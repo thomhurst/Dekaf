@@ -43,7 +43,6 @@ internal sealed class SequenceContractBroker
         public long NextOffset;
     }
 
-    // object, not System.Threading.Lock: this project also targets net8.0.
     private readonly object _lock = new();
     private readonly Dictionary<TopicPartition, PartitionLog> _partitions = [];
     private int _deduplicatedBatches;

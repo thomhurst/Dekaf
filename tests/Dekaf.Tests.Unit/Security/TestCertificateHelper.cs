@@ -57,20 +57,12 @@ internal static class TestCertificateHelper
 
     internal static X509Certificate2 LoadCertificate(byte[] rawData)
     {
-#if NET10_0_OR_GREATER
         return X509CertificateLoader.LoadCertificate(rawData);
-#else
-        return new X509Certificate2(rawData);
-#endif
     }
 
     internal static X509Certificate2 LoadPkcs12FromFile(string path, string? password)
     {
-#if NET10_0_OR_GREATER
         return X509CertificateLoader.LoadPkcs12FromFile(path, password);
-#else
-        return new X509Certificate2(path, password);
-#endif
     }
 
     /// <summary>

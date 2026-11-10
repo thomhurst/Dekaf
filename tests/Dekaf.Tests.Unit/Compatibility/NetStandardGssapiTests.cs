@@ -1,4 +1,3 @@
-#if NET8_0
 using System.Reflection;
 using System.Runtime.Loader;
 
@@ -29,4 +28,3 @@ public sealed class NetStandardGssapiTests
         }
     }
 }
-#endif

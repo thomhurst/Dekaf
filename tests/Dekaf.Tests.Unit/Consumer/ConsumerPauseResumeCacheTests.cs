@@ -579,11 +579,7 @@ public sealed class ConsumerPauseResumeCacheTests
 
             if (!callerCancellation && !internalCancellation)
             {
-#if NET10_0_OR_GREATER
-                // net8 tests exercise the netstandard asset, whose compatibility
-                // await still catches cancellation internally.
                 await Assert.That(exceptionCount.Value).IsEqualTo(0);
-#endif
             }
         }
         finally

@@ -24,6 +24,7 @@ WORKDIR /src
 RUN curl --fail --location --silent --show-error https://dot.net/v1/dotnet-install.sh \
       --output /tmp/dotnet-install.sh \
     && bash /tmp/dotnet-install.sh --jsonfile /src/global.json --install-dir "$DOTNET_ROOT" \
+    && bash /tmp/dotnet-install.sh --channel 10.0 --runtime dotnet --install-dir "$DOTNET_ROOT" \
     && rm /tmp/dotnet-install.sh \
     && dotnet --info
 

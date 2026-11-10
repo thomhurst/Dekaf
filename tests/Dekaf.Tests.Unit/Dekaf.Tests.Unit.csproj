@@ -51,7 +51,7 @@
     <ProjectReference Include="..\..\tools\Dekaf.Fuzzing\Dekaf.Fuzzing.csproj" />
   </ItemGroup>
 
-  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0'">
+  <ItemGroup Condition="'$(TargetFramework)' != 'net10.0'">
     <Compile Remove="Stress\**\*.cs" />
     <Compile Remove="StressTests\**\*.cs" />
   </ItemGroup>
@@ -77,13 +77,13 @@
     <Protobuf Include="Protos\*.proto" ProtoRoot="Protos" GrpcServices="None" />
     <!-- net10.0 uses the identical decoder from the referenced stress runner. -->
     <Protobuf Include="../../tools/Shared/TelemetryReceiver/telemetry_metrics.proto"
-              Condition="'$(TargetFramework)' == 'net8.0'" GrpcServices="None" />
+              Condition="'$(TargetFramework)' != 'net10.0'" GrpcServices="None" />
     <Protobuf Include="Protos\confluent\*.proto" ProtoRoot="Protos" GrpcServices="None" />
     <EmbeddedResource Include="SchemaRegistry\IdentityFixtures\*.json" />
   </ItemGroup>
 
-  <!-- Preserve direct coverage of the netstandard shim after net8.0 selects a modern asset. -->
-  <Target Name="CopyNetStandardCompatibilityFixture" AfterTargets="Build" Condition="'$(TargetFramework)' == 'net8.0'">
+  <!-- Preserve direct coverage of the netstandard shim: both test targets select a modern asset. -->
+  <Target Name="CopyNetStandardCompatibilityFixture" AfterTargets="Build" Condition="'$(TargetFramework)' != ''">
     <MSBuild Projects="../../src/Dekaf/Dekaf.csproj" Targets="Build"
              Properties="Configuration=$(Configuration);TargetFramework=netstandard2.0" />
     <Copy SourceFiles="../../src/Dekaf/bin/$(Configuration)/netstandard2.0/Dekaf.dll"

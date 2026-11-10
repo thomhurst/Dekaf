@@ -89,11 +89,9 @@ internal sealed class JsonWriterCache
             Encoder = options.Encoder,
             Indented = options.WriteIndented,
             MaxDepth = options.MaxDepth == 0 ? 64 : options.MaxDepth,
-#if NET10_0_OR_GREATER
             IndentCharacter = options.IndentCharacter,
             IndentSize = options.IndentSize,
             NewLine = options.NewLine,
-#endif
         };
         return new Utf8JsonWriter(DetachedBuffer, writerOptions);
     }

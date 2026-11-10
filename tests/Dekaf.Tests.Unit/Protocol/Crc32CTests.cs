@@ -66,7 +66,6 @@ public class Crc32CTests
         }
     }
 
-#if NET10_0_OR_GREATER
     [Test]
     public async Task ComputeHardwareX86_WhenSupported_MatchesBitwiseReference()
     {
@@ -156,7 +155,6 @@ public class Crc32CTests
             await Assert.That(Crc32C.ComputeHardwareArmOptimized(data)).IsEqualTo(expected);
         }
     }
-#endif
 
     private static byte[] CreateDeterministicBytes(int length)
     {

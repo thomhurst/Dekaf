@@ -487,11 +487,7 @@ internal sealed class SubjectSchemaIdCache
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static void ReadBarrier()
         {
-#if NET10_0_OR_GREATER
             Volatile.ReadBarrier();
-#else
-            Interlocked.MemoryBarrier();
-#endif
         }
 
         internal bool TryPublish(SubjectSchemaIdCacheEntry value, int hashCode)

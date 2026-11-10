@@ -84,9 +84,7 @@ public class AsyncSerdeTests(KafkaTestContainer kafka) : KafkaIntegrationTest(ka
 
         public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
         {
             if (Volatile.Read(ref _prepared) == 0)
                 throw new InvalidOperationException("Serialize ran before asynchronous preparation.");

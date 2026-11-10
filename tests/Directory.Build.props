@@ -3,9 +3,12 @@
 
   <PropertyGroup>
     <TargetFramework Condition="'$(TargetFramework)' == 'net10.0' and '$(TargetFrameworks)' == ''"></TargetFramework>
-    <TargetFrameworks Condition="'$(TargetFrameworks)' == ''">net8.0;net10.0</TargetFrameworks>
+    <TargetFrameworks Condition="'$(TargetFrameworks)' == ''">net10.0;net11.0</TargetFrameworks>
     <!-- Allow underscores in test method names -->
     <NoWarn>$(NoWarn);CA1707</NoWarn>
+    <!-- .NET 11 SDK analyzers: tests bound waits with Task.WhenAny + Task.Delay on purpose (CA2027), and
+         JsonSerializerOptions.GetTypeInfo<T>() (CA2263) does not exist on net10.0. -->
+    <NoWarn>$(NoWarn);CA2027;CA2263</NoWarn>
     <!-- Enable new Microsoft Testing Platform experience -->
     <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
     <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>

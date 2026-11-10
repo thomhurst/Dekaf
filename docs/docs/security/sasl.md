@@ -72,7 +72,7 @@ Malformed challenges, duplicate attributes, unsupported mandatory extensions, in
 
 ## SASL/GSSAPI (Kerberos)
 
-GSSAPI is implemented in the `net8.0` and `net10.0` core package assets using
+GSSAPI is implemented in the `net10.0` and `net11.0` core package assets using
 `System.Net.Security.NegotiateAuthentication`. No optional authentication package
 is needed. The `netstandard2.0` asset exposes configuration but throws
 `PlatformNotSupportedException` when authentication starts.
@@ -83,7 +83,7 @@ is needed. The `netstandard2.0` asset exposes configuration but throws
 | Linux | MIT/Heimdal Kerberos libraries (`libgssapi_krb5`) and credentials available through a ticket cache or configured client keytab. |
 | macOS | Platform Heimdal Kerberos and available credentials. |
 
-CI runs local MIT KDC round trips on Linux for clean .NET 8 and .NET 10 package
+CI runs local MIT KDC round trips on Linux for clean .NET 10 and .NET 11 package
 consumers. Windows/macOS backend support is established by the implementation;
 those round trips do not validate a Windows domain or macOS deployment.
 Initialize credentials before starting the process (for example, `kinit -kt ...`

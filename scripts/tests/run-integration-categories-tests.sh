@@ -49,7 +49,7 @@ print(f"ShareConsumer discovery verified: {len(original)} tests = {len(core)} co
 PY
   exit 0
 elif [ $# -ne 0 ]; then
-  echo "Usage: $0 [--discovery <net8.0|net10.0|aot>]" >&2
+  echo "Usage: $0 [--discovery <net10.0|net11.0|aot>]" >&2
   exit 2
 fi
 

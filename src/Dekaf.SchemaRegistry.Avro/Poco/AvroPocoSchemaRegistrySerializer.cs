@@ -313,9 +313,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     /// <inheritdoc />
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
         , allows ref struct
-#endif
     {
         if (default(T) is null && value is null)
             throw new ArgumentNullException(nameof(value));
@@ -376,9 +374,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         SerializationContext context,
         SubjectSchemaIdCache.SubjectSchemaIdCacheEntry entry)
         where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
         , allows ref struct
-#endif
     {
         AvroInlineRuleValidator? inlineValidator = null;
         // The JIT folds the feature check away; NativeAOT folds it to true, removing the rule paths below.
@@ -444,9 +440,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
 
     private static void SerializeDirect<TWriter>(T value, ref TWriter destination, int schemaId)
         where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
         , allows ref struct
-#endif
     {
         var payloadSize = GetPredictedDirectPayloadSize();
         while (true)
@@ -475,9 +469,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         SerializationContext context,
         SubjectSchemaIdCache.SubjectSchemaIdCacheEntry entry)
         where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
         , allows ref struct
-#endif
     {
         var payloadSize = GetPredictedDirectPayloadSize();
         while (true)
@@ -545,9 +537,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         ISchemaRegistryRuleExecutor? ruleExecutor,
         AvroInlineRuleValidator? inlineValidator)
         where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
         , allows ref struct
-#endif
     {
         var bufferState = GetRuleBufferState();
         var buffer = GetRuleBuffer(bufferState, out var bufferIsPooled, out var ownsBufferLease);
@@ -653,9 +643,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         ISchemaRegistryRuleExecutor ruleExecutor,
         AvroTaggedFieldTransformerProvider taggedFieldTransformers)
         where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
         , allows ref struct
-#endif
     {
         var bufferState = GetRuleBufferState();
         var buffer = GetRuleBuffer(bufferState, out var bufferIsPooled, out var ownsBufferLease);

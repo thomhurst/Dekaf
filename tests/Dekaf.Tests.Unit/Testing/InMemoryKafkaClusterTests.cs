@@ -2217,9 +2217,7 @@ public sealed class InMemoryKafkaClusterTests
             ref TWriter destination,
             SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
         {
             context.Headers!.Add("identity", value);
             Serializers.String.Serialize(value, ref destination, context);
@@ -2238,9 +2236,7 @@ public sealed class InMemoryKafkaClusterTests
             ref TWriter destination,
             SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
             => inner.Serialize(value, ref destination, context);
     }
 

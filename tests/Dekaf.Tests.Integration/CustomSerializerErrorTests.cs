@@ -27,9 +27,7 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
 
         public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
         {
             if (value == TriggerValue)
             {

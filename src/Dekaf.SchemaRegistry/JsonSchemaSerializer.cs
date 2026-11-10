@@ -745,9 +745,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
 
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
         , allows ref struct
-#endif
     {
         var schemaEntry = GetSchemaForContext(context.Topic, context.Component == SerializationComponent.Key);
         var schemaId = schemaEntry.SchemaId;
@@ -883,9 +881,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         SerializationContext context,
         SubjectSchemaIdCache.SubjectSchemaIdCacheEntry schemaEntry)
         where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
         , allows ref struct
-#endif
     {
         var schemaId = schemaEntry.SchemaId;
 

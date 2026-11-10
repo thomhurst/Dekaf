@@ -29,7 +29,7 @@ if ($LASTEXITCODE -ne 0) { throw 'GSSAPI package smoke restore failed.' }
 
 $assetsPath = Join-Path (Split-Path $project -Parent) 'obj/project.assets.json'
 $assets = Get-Content -LiteralPath $assetsPath -Raw | ConvertFrom-Json -AsHashtable
-foreach ($framework in @('net8.0', 'net10.0')) {
+foreach ($framework in @('net10.0', 'net11.0')) {
     foreach ($package in @('Dekaf', 'Dekaf.Abstractions')) {
         $library = $assets.targets[$framework]["$package/$PackageVersion"]
         foreach ($assetKind in @('compile', 'runtime')) {

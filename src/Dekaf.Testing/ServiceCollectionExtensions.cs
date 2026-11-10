@@ -120,10 +120,6 @@ public static class ServiceCollectionExtensions
         return ActivatorUtilities.CreateInstance(provider, implementationType, inMemoryOptions);
     }
 
-#if NET8_0
-    [UnconditionalSuppressMessage("AOT", "IL3050",
-        Justification = "MakeGenericType is guarded by RuntimeFeature.IsDynamicCodeSupported; the .NET 8 analyzer does not recognize this guard.")]
-#endif
     [return: DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
     private static Type? GetInMemoryImplementationType(Type serviceType)
     {

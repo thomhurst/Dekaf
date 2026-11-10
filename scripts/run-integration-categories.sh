@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs Dekaf integration test categories against prebuilt test binaries.
 #
-# Usage: run-integration-categories.sh <net8.0|net10.0|aot> <comma-separated-categories> [--list-tests]
+# Usage: run-integration-categories.sh <net10.0|net11.0|aot> <comma-separated-categories> [--list-tests]
 #
 # Expects binaries at tests/Dekaf.Tests.Integration/bin/Release/<tfm>/ (managed)
 # or artifacts/aot/integration/ (NativeAOT), as produced by the CI build job.
@@ -13,7 +13,7 @@
 set -euo pipefail
 
 if { [ $# -ne 2 ] && [ $# -ne 3 ]; } || { [ $# -eq 3 ] && [ "$3" != "--list-tests" ]; }; then
-  echo "Usage: $0 <net8.0|net10.0|aot> <comma-separated-categories> [--list-tests]" >&2
+  echo "Usage: $0 <net10.0|net11.0|aot> <comma-separated-categories> [--list-tests]" >&2
   exit 2
 fi
 

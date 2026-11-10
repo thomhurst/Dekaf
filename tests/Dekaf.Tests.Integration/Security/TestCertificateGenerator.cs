@@ -343,20 +343,12 @@ internal sealed class TestCertificateGenerator : IDisposable
 
     internal static X509Certificate2 LoadCertificate(byte[] rawData)
     {
-#if NET10_0_OR_GREATER
         return X509CertificateLoader.LoadCertificate(rawData);
-#else
-        return new X509Certificate2(rawData);
-#endif
     }
 
     private static X509Certificate2 LoadPkcs12(byte[] rawData, string? password, X509KeyStorageFlags keyStorageFlags)
     {
-#if NET10_0_OR_GREATER
         return X509CertificateLoader.LoadPkcs12(rawData, password, keyStorageFlags);
-#else
-        return new X509Certificate2(rawData, password, keyStorageFlags);
-#endif
     }
 
     public void Dispose()

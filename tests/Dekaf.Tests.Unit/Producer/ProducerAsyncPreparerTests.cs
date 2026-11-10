@@ -558,9 +558,7 @@ public class ProducerAsyncPreparerTests
 
         public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
             => Serializers.String.Serialize(value, ref destination, context);
     }
 
@@ -576,9 +574,7 @@ public class ProducerAsyncPreparerTests
 
         public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
         {
             GetResultCountAtSerialize = source.GetResultCount;
             throw new ObservedSerializationException();
@@ -639,9 +635,7 @@ public class ProducerAsyncPreparerTests
 
         public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
             => Serializers.String.Serialize(value, ref destination, context);
 
         public void SerializePrepared<TWriter>(
@@ -650,9 +644,7 @@ public class ProducerAsyncPreparerTests
             SerializationContext context,
             in SerializerPreparationAdmission admission)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
             => Serializers.String.Serialize(value, ref destination, context);
     }
 
@@ -688,9 +680,7 @@ public class ProducerAsyncPreparerTests
             ref TWriter destination,
             SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
         {
             SerializeCount++;
             throw new InvalidOperationException("Invalidated cache path was used.");
@@ -702,9 +692,7 @@ public class ProducerAsyncPreparerTests
             SerializationContext context,
             in SerializerPreparationAdmission admission)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
         {
             SerializePreparedCount++;
             ObservedSchemaId = admission.SchemaId;

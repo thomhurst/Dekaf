@@ -1353,9 +1353,7 @@ public sealed class InMemoryProducerFaultTests
             ref TWriter destination,
             SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
         {
             destination.GetSpan(1)[0] = 1;
             destination.Advance(1);
@@ -1371,9 +1369,7 @@ public sealed class InMemoryProducerFaultTests
             ref TWriter destination,
             SerializationContext context)
             where TWriter : IBufferWriter<byte>
-#if NET10_0_OR_GREATER
             , allows ref struct
-#endif
             => throw new InvalidOperationException("Injected serialization failure.");
     }
 }

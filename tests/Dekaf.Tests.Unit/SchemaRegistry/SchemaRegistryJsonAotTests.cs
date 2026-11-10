@@ -225,11 +225,9 @@ public sealed class SchemaRegistryJsonAotTests
             WriteIndented = true,
             Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
         };
-#if NET10_0_OR_GREATER
         indentedOptions.IndentCharacter = '\t';
         indentedOptions.IndentSize = 1;
         indentedOptions.NewLine = "\n";
-#endif
         var compactTypeInfo = new SchemaRegistryAotJsonContext(compactOptions).SchemaRegistryAotPayload;
         var indentedTypeInfo = new SchemaRegistryAotJsonContext(indentedOptions).SchemaRegistryAotPayload;
         await using var compact = useTypeInfo

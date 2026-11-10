@@ -453,6 +453,7 @@ jobs:
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
+          dotnet-version: '10.0.x'  # runtime for net10.0 binaries
 
       - name: Pin products and use identical comparison fixtures
         if: matrix.baseline_sha != ''
@@ -903,6 +904,7 @@ jobs:
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
+          dotnet-version: '10.0.x'  # runtime for net10.0 binaries
 
       - name: Download All Results
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
