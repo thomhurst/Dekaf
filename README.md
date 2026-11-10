@@ -40,7 +40,7 @@ assets and tested runtimes are separate:
 | `Dekaf.Compression.*`, `Dekaf.Serialization.*`, `Dekaf.SchemaRegistry` and its extensions, `Dekaf.Extensions.*`, `Dekaf.OpenTelemetry`, `Dekaf.Outbox` and its EF Core and DynamoDB extensions, `Dekaf.Testing`, `Dekaf.Aspire`, `Dekaf.Aspire.SchemaRegistry`, `Dekaf.Aspire.Hosting` | `net10.0`, `net11.0` |
 
 - **Tested runtimes:** CI runs unit tests on .NET 10 and .NET 11. PR Kafka integration
-  tests run on .NET 10, with GSSAPI package round trips on both runtimes; the NuGet release gate tests both runtimes against Kafka
+  tests and GSSAPI package round trips run on both runtimes; the NuGet release gate tests both runtimes against Kafka
   4.0.2, 4.1.2, 4.2.1, 4.3.1 and 4.4.0.
 - **Development:** use the .NET 11 SDK to build this repository. Running its
   `net10.0` tests and tools also requires the .NET 10 runtime (or SDK).

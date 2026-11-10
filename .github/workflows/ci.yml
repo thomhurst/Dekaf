@@ -251,8 +251,8 @@ jobs:
       # the apphost executable bit, and one file per artifact keeps uploads fast.
       - name: Package test binaries
         run: |
-          tar -czf unit-net11.0.tar.gz tests/Dekaf.Tests.Unit/bin/Release/net11.0
-          tar -czf unit-net10.0.tar.gz tests/Dekaf.Tests.Unit/bin/Release/net10.0 tools/Dekaf.StressTests.Tests/bin/Release/net11.0
+          tar -czf unit-net11.0.tar.gz tests/Dekaf.Tests.Unit/bin/Release/net11.0 tools/Dekaf.StressTests.Tests/bin/Release/net11.0
+          tar -czf unit-net10.0.tar.gz tests/Dekaf.Tests.Unit/bin/Release/net10.0
           tar -czf integration-net11.0.tar.gz tests/Dekaf.Tests.Integration/bin/Release/net11.0
           tar -czf integration-net10.0.tar.gz tests/Dekaf.Tests.Integration/bin/Release/net10.0
           tar -czf gssapi-package-smoke.tar.gz artifacts/gssapi-package-smoke/net10.0 artifacts/gssapi-package-smoke/net11.0
@@ -349,8 +349,7 @@ jobs:
           path: TestResults/gssapi-packages
           retention-days: 7
 
-  # The net10.0 unit suite (and the stress harness's own unit tests) against the
-  # prebuilt binaries. Its own job so it runs alongside the integration matrix
+  # The net10.0 unit suite against the prebuilt binaries. Its own job so it runs alongside the integration matrix
   # instead of holding every downstream job behind the build.
   unit-net10:
     name: Unit Tests (net10.0)
@@ -392,14 +391,6 @@ jobs:
           chmod +x "$exe"
           "$exe" --hangdump --hangdump-timeout 5m --log-level Debug --fail-on-unobserved-task-exceptions
 
-      - name: Run stress harness unit tests
-        env:
-          NET_VERSION: net11.0
-        run: |
-          exe=tools/Dekaf.StressTests.Tests/bin/Release/net11.0/Dekaf.StressTests.Tests
-          chmod +x "$exe"
-          "$exe" --hangdump --hangdump-timeout 5m --log-level Debug
-
       - name: Upload Test Results
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
@@ -420,7 +411,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # The same suite on net11.0, where the libraries and tests compile with Runtime Async.
+  # The same suite on net11.0, plus the stress harness's own unit tests (net11.0 only).
   unit-net11:
     name: Unit Tests (net11.0)
     needs: [changes, build]
@@ -459,6 +450,14 @@ jobs:
           exe=tests/Dekaf.Tests.Unit/bin/Release/net11.0/Dekaf.Tests.Unit
           chmod +x "$exe"
           "$exe" --hangdump --hangdump-timeout 5m --log-level Debug --fail-on-unobserved-task-exceptions
+
+      - name: Run stress harness unit tests
+        env:
+          NET_VERSION: net11.0
+        run: |
+          exe=tools/Dekaf.StressTests.Tests/bin/Release/net11.0/Dekaf.StressTests.Tests
+          chmod +x "$exe"
+          "$exe" --hangdump --hangdump-timeout 5m --log-level Debug
 
       - name: Upload Test Results
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -584,7 +583,7 @@ jobs:
 
   # Integration categories run via the shared group definitions in
   # integration-groups.yml against the prebuilt binaries (no rebuild).
-  # PRs run net10.0 only; manual non-publish runs add net11.0. NuGet publish
+  # PRs and manual non-publish runs cover both frameworks. NuGet publish
   # dispatches skip this job — the release-matrix jobs below cover a superset.
   integration:
     name: Integration (${{ matrix.framework }})
@@ -593,7 +592,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        framework: ${{ github.event_name == 'pull_request' && fromJSON('["net10.0"]') || fromJSON('["net10.0", "net11.0"]') }}
+        framework: [net10.0, net11.0]
     uses: ./.github/workflows/integration-groups.yml
     with:
       framework: ${{ matrix.framework }}
