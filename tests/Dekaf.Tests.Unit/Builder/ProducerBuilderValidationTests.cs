@@ -257,6 +257,32 @@ public class ProducerBuilderValidationTests
     }
 
     [Test]
+    public async Task Build_SharedClient_RequestTimeoutDefaultsToClientRequestTimeout()
+    {
+        await using var defaultClient = Kafka.Connect("localhost:9092");
+        await using var configuredClient = Kafka.Connect(
+            "localhost:9092", builder => builder.WithRequestTimeout(TimeSpan.FromSeconds(20)));
+
+        await using var defaultProducer = defaultClient.CreateProducer<string, string>().Build();
+        await using var configuredProducer = configuredClient.CreateProducer<string, string>().Build();
+
+        await Assert.That(GetOptions(defaultProducer).RequestTimeoutMs).IsEqualTo(30_000);
+        await Assert.That(GetOptions(configuredProducer).RequestTimeoutMs).IsEqualTo(20_000);
+    }
+
+    [Test]
+    public async Task Build_SharedClient_ExplicitRequestTimeoutWins()
+    {
+        await using var client = Kafka.Connect("localhost:9092");
+
+        await using var producer = client.CreateProducer<string, string>()
+            .WithRequestTimeout(TimeSpan.FromSeconds(10))
+            .Build();
+
+        await Assert.That(GetOptions(producer).RequestTimeoutMs).IsEqualTo(10_000);
+    }
+
+    [Test]
     public async Task Build_LargeTimeoutsAtValidBoundary_Succeeds()
     {
         await using var producer = Kafka.CreateProducer<string, string>()

@@ -67,7 +67,8 @@ public sealed class ProducerOptions
     /// <summary>
     /// Request timeout in milliseconds: how long the producer waits for a broker response
     /// before abandoning that connection and retrying the request on a new one.
-    /// Default is 15000 (15 seconds). Batches are retried until <see cref="DeliveryTimeoutMs"/>,
+    /// Default is 15000 (15 seconds); a producer created from a shared client defaults to
+    /// that client's request timeout instead. Batches are retried until <see cref="DeliveryTimeoutMs"/>,
     /// so a shorter value detects a dead connection sooner without failing deliveries.
     /// </summary>
     public int RequestTimeoutMs { get; init; } = DefaultRequestTimeoutMs;
