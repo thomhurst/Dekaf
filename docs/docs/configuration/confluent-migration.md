@@ -187,6 +187,11 @@ TLS properties require `SecurityProtocol=Ssl` or `SaslSsl`. SASL properties requ
 | Rejected property | Any producer property absent from the translated rows, including `EnableBackgroundPoll`, `QueueBufferingMaxMessages`, `DeliveryReportFields`, `EnableDeliveryReports`, `StatisticsIntervalMs`, and `Debug` |
 | Rejected value | `MessageTimeoutMs=0` (infinite), a fractional `LingerMs`, or a `CompressionType`/`Partitioner` enum without an exact Dekaf mapping |
 
+`MessageSendMaxRetries` limits how many times a batch is resent after a retriable failure of a
+request that reached the broker; `MessageTimeoutMs` still bounds the total time. A send that fails
+before the request is written, such as while a broker is unreachable, does not use up a retry.
+With `EnableIdempotence=true` it must be at least 1.
+
 Supported compression values are `None`, `Gzip`, `Snappy`, `Lz4`, and `Zstd`. Supported
 partitioner values are `Random`, `Consistent`, `ConsistentRandom`, `Murmur2`, `Murmur2Random`,
 `Fnv1a`, and `Fnv1aRandom`.

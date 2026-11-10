@@ -1075,9 +1075,11 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         string? transactionalId = null, int lingerMs = 0,
         bool enableDeliveryDiagnostics = false,
         SaslMechanism saslMechanism = SaslMechanism.None,
-        bool useTls = false, int? connectionsMaxIdleMs = null) => new()
+        bool useTls = false, int? connectionsMaxIdleMs = null,
+        int retries = int.MaxValue) => new()
         {
             BootstrapServers = ["localhost:9092"],
+            Retries = retries,
             MaxInFlightRequestsPerConnection = maxInFlight,
             ConnectionsPerBroker = connectionsPerBroker,
             EnableAdaptiveConnections = enableAdaptiveConnections,
@@ -5598,6 +5600,150 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
 
             var targetCount = await scaleRequested.Task.WaitAsync(cancellationToken);
             await Assert.That(targetCount).IsGreaterThan(1);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Arguments(0)]
+    [Arguments(2)]
+    [Timeout(120_000)]
+    public async Task SendLoop_RetriableErrors_FailBatchAfterConfiguredRetries(
+        int retries, CancellationToken cancellationToken)
+    {
+        // Every attempt is answered with a retriable error: the batch is sent once plus
+        // `retries` resends, then fails with the broker's last error instead of retrying
+        // until the delivery timeout (#4103).
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>();
+        for (var i = 0; i <= retries; i++)
+        {
+            var response = new TaskCompletionSource<ProduceResponse>();
+            response.SetResult(CreateErrorResponse("test-topic", partition: 0, ErrorCode.RequestTimedOut));
+            responses.Enqueue(response);
+        }
+
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responses, () => Interlocked.Increment(ref sendCount));
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            enableIdempotence: false,
+            retries: retries);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var failed = new TaskCompletionSource<Exception>();
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, exception) =>
+        {
+            if (exception is not null)
+                failed.TrySetResult(exception);
+        });
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0));
+
+            var exception = await failed.Task.WaitAsync(cancellationToken);
+
+            await Assert.That(exception).IsTypeOf<ProduceException>();
+            var produceException = (ProduceException)exception;
+            await Assert.That(produceException.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
+            await Assert.That(produceException.Topic).IsEqualTo("test-topic");
+            await Assert.That(produceException.Partition).IsEqualTo(0);
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(retries + 1);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_RetriableErrorWithinConfiguredRetries_Delivers(
+        CancellationToken cancellationToken)
+    {
+        var errorResponse = new TaskCompletionSource<ProduceResponse>();
+        errorResponse.SetResult(CreateErrorResponse("test-topic", partition: 0, ErrorCode.RequestTimedOut));
+        var successResponse = new TaskCompletionSource<ProduceResponse>();
+        successResponse.SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 7));
+        var (pool, _) = CreateMockConnection(
+            new Queue<TaskCompletionSource<ProduceResponse>>([errorResponse, successResponse]));
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            enableIdempotence: false,
+            retries: 1);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var completed = new TaskCompletionSource<(long Offset, Exception? Exception)>();
+        var sender = CreateSender(pool, options, accumulator, (_, offset, _, _, exception) =>
+            completed.TrySetResult((offset, exception)));
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0));
+
+            var result = await completed.Task.WaitAsync(cancellationToken);
+
+            await Assert.That(result.Exception).IsNull();
+            await Assert.That(result.Offset).IsEqualTo(7);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_SendThatNeverReachedTheBroker_DoesNotConsumeRetries(
+        CancellationToken cancellationToken)
+    {
+        // A request that fails before it is written is not a retry of a broker attempt, so
+        // Retries = 0 still lets it be sent once the connection works.
+        var sendCount = 0;
+        var connection = new TestKafkaConnection
+        {
+            SendProducePipelinedAfterWrite = () => Interlocked.Increment(ref sendCount) == 1
+                ? throw new IOException("Connection refused")
+                : new ValueTask<Task<ProduceResponse>>(
+                    Task.FromResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 11)))
+        };
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>()).Returns(connection);
+        pool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection);
+        var options = CreateOptions(
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            enableIdempotence: false,
+            retries: 0);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var completed = new TaskCompletionSource<(long Offset, Exception? Exception)>();
+        var sender = CreateSender(pool, options, accumulator, (_, offset, _, _, exception) =>
+            completed.TrySetResult((offset, exception)));
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0));
+
+            var result = await completed.Task.WaitAsync(cancellationToken);
+
+            await Assert.That(result.Exception).IsNull();
+            await Assert.That(result.Offset).IsEqualTo(11);
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(2);
         }
         finally
         {

@@ -1416,6 +1416,9 @@ public sealed class ProducerBuilder<TKey, TValue>
         if (_enableIdempotence && _acks == Acks.None)
             throw new InvalidOperationException("Acks.None is incompatible with idempotence because the broker cannot acknowledge sequence numbers without sending a response.");
 
+        if (_enableIdempotence && _retries < 1)
+            throw new InvalidOperationException("Retries must be at least 1 when idempotence is enabled. Idempotence relies on retries to deliver each batch exactly once; disable idempotence to send without retries.");
+
         if (_enableAdaptiveConnections && _maxConnectionsPerBroker < _connectionsPerBroker)
             throw new InvalidOperationException(
                 $"MaxConnectionsPerBroker ({_maxConnectionsPerBroker}) must be >= ConnectionsPerBroker ({_connectionsPerBroker}). " +
