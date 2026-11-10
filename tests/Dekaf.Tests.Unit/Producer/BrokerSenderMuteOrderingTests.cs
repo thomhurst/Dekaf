@@ -99,6 +99,132 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         }
     }
 
+    [Test]
+    [NotInParallel]
+    [Timeout(30_000)]
+    public async Task RequestTimeout_SlotMovedToAnotherConnection_RetiresOnlyTheTimedOutConnection(
+        CancellationToken ct)
+    {
+        var timedOutResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var laterResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var wakeResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>(
+            [timedOutResponse, laterResponse, wakeResponse]);
+        var (innerPool, timedOutConnection) = CreateMockConnection(responseQueue);
+        var replacement = new TestKafkaConnection
+        {
+            SendProducePipelinedAfterWrite = timedOutConnection.SendProducePipelinedAfterWrite
+        };
+        var pool = new RetirementRecordingPool(innerPool);
+        ct = GuardUnscriptedSends(ct);
+        var options = CreateOptions(maxInFlight: 2, enableIdempotence: false,
+            deliveryTimeoutMs: 1, requestTimeoutMs: 10_000);
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        using var sendLogger = new PipelinedSendLogger(expectedSends: 2);
+        var testTimestamp = Stopwatch.GetTimestamp();
+        var failedBatches = 0;
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, exception) =>
+            {
+                if (exception is not null)
+                    Interlocked.Increment(ref failedBatches);
+            },
+            logger: sendLogger,
+            getTimestamp: () => Volatile.Read(ref testTimestamp));
+        var timedOutBatch = CreateTestBatch(vtPool, "test-topic", partition: 0);
+        var laterBatch = CreateTestBatch(vtPool, "test-topic", partition: 1);
+
+        try
+        {
+            sender.Enqueue(timedOutBatch);
+            sendLogger.WaitForSend(0, ct);
+            await WaitForDiagAsync(timedOutBatch, 'W', TimeSpan.FromSeconds(5), ct);
+
+            // Requests are stamped with the real clock. The first was stamped before this
+            // reading and the second is stamped after it, so a sweep at this reading plus the
+            // request timeout sees only the first as timed out.
+            var betweenSends = Stopwatch.GetTimestamp();
+            while (Stopwatch.GetTimestamp() == betweenSends)
+                Thread.SpinWait(1);
+
+            // Another client of the shared pool retires the connection: this sender's next
+            // send is refused a lease on it and pins the pool's replacement, while the first
+            // response is still pending in the same slot.
+            ((IRetirableKafkaConnection)timedOutConnection).BeginRetirement();
+            innerPool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>()).Returns(replacement);
+            sender.Enqueue(laterBatch);
+            sendLogger.WaitForSend(1, ct);
+            await WaitForDiagAsync(laterBatch, 'W', TimeSpan.FromSeconds(5), ct);
+
+            Volatile.Write(ref testTimestamp, betweenSends + (10 * Stopwatch.Frequency));
+            sender.Enqueue(CreateTestBatch(vtPool, "wake-topic", partition: 0));
+
+            // The sweep fails every request pending in the slot, so both failures mean it
+            // has walked past the later request too.
+            await TestWait.UntilAsync(
+                () => Volatile.Read(ref failedBatches) >= 2,
+                DiagnosticWaitTimeout,
+                () => "The request-timeout sweep did not fail both pending requests",
+                ct,
+                pollInterval: TimeSpan.FromMilliseconds(1));
+
+            var retired = pool.Retired.ToArray();
+            await Assert.That(retired.Length).IsEqualTo(1);
+            await Assert.That(retired[0].Connection).IsSameReferenceAs(timedOutConnection);
+        }
+        finally
+        {
+            timedOutResponse.TrySetResult(CreateSuccessResponse("test-topic", 0, 100));
+            laterResponse.TrySetResult(CreateSuccessResponse("test-topic", 1, 100));
+            wakeResponse.TrySetResult(CreateSuccessResponse("wake-topic", partition: 0, baseOffset: 100));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [NotInParallel]
+    [Timeout(30_000)]
+    public async Task RequestTimeout_IdleLoopWithSpareInFlightCapacity_StillTimesOutTheRequest(
+        CancellationToken ct)
+    {
+        // The response never arrives, the connection never fails it (a shared client's
+        // connection can have a longer timeout), and nothing else wakes the send loop.
+        var unanswered = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var (pool, _) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>([unanswered]));
+        ct = GuardUnscriptedSends(ct);
+        var options = CreateOptions(maxInFlight: 2, enableIdempotence: false,
+            deliveryTimeoutMs: 1, requestTimeoutMs: 200);
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        var failure = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, exception) =>
+        {
+            if (exception is not null)
+                failure.TrySetResult(exception);
+        });
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(vtPool, "test-topic", partition: 0));
+
+            var exception = await failure.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await Assert.That(exception).IsTypeOf<Dekaf.Errors.KafkaTimeoutException>();
+        }
+        finally
+        {
+            unanswered.TrySetResult(CreateSuccessResponse("test-topic", 0, 100));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
     private sealed class RetirementRecordingPool(IConnectionPool inner) : IConnectionPool, IConnectionRetirementPool
     {
         public ConcurrentQueue<(int BrokerId, IKafkaConnection Connection)> Retired { get; } = new();

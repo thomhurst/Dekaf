@@ -513,13 +513,16 @@ public sealed partial class ConnectionPool :
             new EndpointKey(connection.Host, connection.Port),
             connection);
 
-        if (_connectionGroupsById.TryGetValue(brokerId, out var group))
+        // An emptied slot is rebuilt by the next acquisition for that index.
+        if (_connectionGroupsById.TryGetValue(brokerId, out var group)
+            && TryClearGroupSlots(group, connection))
         {
-            for (var i = 0; i < group.Length; i++)
-            {
-                // An emptied slot is rebuilt by the next acquisition for that index.
-                removed |= Interlocked.CompareExchange(ref group[i], null!, connection) == connection;
-            }
+            removed = true;
+
+            // A scale-up or shrink that copied the group before the slot was cleared publishes
+            // the connection again. Both copy and publish under _scaleLock, so clearing once
+            // more under it removes the connection from whichever group ends up published.
+            TrackConnectionDisposal(ClearPublishedGroupSlotsAsync(brokerId, connection));
         }
 
         if (!removed)
@@ -528,6 +531,38 @@ public sealed partial class ConnectionPool :
         PreserveSuccessfulRequest(connection, brokerId);
         RecordBrokerConnectionStateChange(brokerId);
         RetireConnection(connection);
+    }
+
+    private static bool TryClearGroupSlots(IKafkaConnection[] group, IKafkaConnection connection)
+    {
+        var cleared = false;
+        for (var i = 0; i < group.Length; i++)
+            cleared |= Interlocked.CompareExchange(ref group[i], null!, connection) == connection;
+
+        return cleared;
+    }
+
+    private async Task ClearPublishedGroupSlotsAsync(int brokerId, IKafkaConnection connection)
+    {
+        try
+        {
+            await _scaleLock.WaitAsync(_disposeCts.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
+        {
+            // The pool is closing and disposes every routed connection itself.
+            return;
+        }
+
+        try
+        {
+            if (_connectionGroupsById.TryGetValue(brokerId, out var group))
+                TryClearGroupSlots(group, connection);
+        }
+        finally
+        {
+            _scaleLock.Release();
+        }
     }
 
     public async ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken cancellationToken = default)
