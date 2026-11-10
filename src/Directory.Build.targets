@@ -1,0 +1,8 @@
+<Project>
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.targets', '$(MSBuildThisFileDirectory)../'))" />
+
+  <!-- Measurement only: mirrors #4106's runtime-async flag for src/ projects so the stress A-B-A fixture guard on root build inputs still holds. Not for merge. -->
+  <PropertyGroup Condition="'$([MSBuild]::GetTargetFrameworkIdentifier($(TargetFramework)))' == '.NETCoreApp' and $([MSBuild]::VersionGreaterThanOrEquals($([MSBuild]::GetTargetFrameworkVersion($(TargetFramework))), '11.0'))">
+    <Features>$(Features);runtime-async=on</Features>
+  </PropertyGroup>
+</Project>
