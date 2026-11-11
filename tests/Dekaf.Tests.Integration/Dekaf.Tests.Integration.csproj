@@ -67,7 +67,7 @@
   <!-- Transitive pin: Microsoft.Data.SqlClient 6.x pulls System.Security.Cryptography.Pkcs 9.0.11,
        which carries GHSA-2fmv-rv2c-59x7 and GHSA-846f-f764-76mx (patched in 9.0.21). -->
   <ItemGroup Condition="'$(PublishAot)' != 'true'">
-    <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="10.0.14" />
+    <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="11.0.0" />
     <PackageReference Include="System.Security.Cryptography.Pkcs" />
   </ItemGroup>
 
