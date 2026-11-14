@@ -385,12 +385,22 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
         return -1;
     }
 
-    /// <summary>Assigns active tasks round-robin across the group's members. Called under the group lock.</summary>
+    /// <summary>
+    /// Assigns active tasks round-robin across the group's live members. A closed static member keeps the tasks
+    /// it holds and gains none. Called under the group lock.
+    /// </summary>
     private static void Rebalance(InMemoryStreamsGroup group, InMemoryKafkaCluster cluster)
     {
         var members = group.Members;
         if (members.Count == 0)
             return;
+
+        var liveMembers = new List<int>(members.Count);
+        for (var index = 0; index < members.Count; index++)
+        {
+            if (!members[index]._snapshot.IsClosed)
+                liveMembers.Add(index);
+        }
 
         var assigned = new List<StreamsGroupTaskSet>?[members.Count];
         var subtopologies = group.Topology?.Subtopologies ?? [];
@@ -403,7 +413,18 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
 
             var partitions = new List<int>?[members.Count];
             for (var partition = 0; partition < taskCount; partition++)
-                (partitions[next++ % members.Count] ??= []).Add(partition);
+            {
+                var owner = FindClosedOwner(members, subtopology.SubtopologyId, partition);
+                if (owner < 0)
+                {
+                    if (liveMembers.Count == 0)
+                        continue;
+
+                    owner = liveMembers[next++ % liveMembers.Count];
+                }
+
+                (partitions[owner] ??= []).Add(partition);
+            }
 
             for (var index = 0; index < members.Count; index++)
             {
@@ -420,6 +441,27 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
 
         for (var index = 0; index < members.Count; index++)
             members[index].ApplyAssignment(assigned[index]?.ToArray() ?? []);
+    }
+
+    private static int FindClosedOwner(List<InMemoryStreamsGroupMember> members, string subtopologyId, int partition)
+    {
+        for (var index = 0; index < members.Count; index++)
+        {
+            var snapshot = members[index]._snapshot;
+            if (!snapshot.IsClosed)
+                continue;
+
+            foreach (var taskSet in snapshot.Assignment.ActiveTasks)
+            {
+                if (string.Equals(taskSet.SubtopologyId, subtopologyId, StringComparison.Ordinal)
+                    && taskSet.Partitions.Contains(partition))
+                {
+                    return index;
+                }
+            }
+        }
+
+        return -1;
     }
 
     private static int GetTaskCount(StreamsGroupSubtopology subtopology, InMemoryKafkaCluster cluster)

@@ -80,6 +80,55 @@ public sealed class InMemoryStreamsGroupAssignorTests
     }
 
     [Test]
+    public async Task StaticMember_ClosedMemberGainsNoTasksWhenAnotherMemberLeaves()
+    {
+        var cluster = CreateCluster();
+        await using var first = await JoinAsync(cluster, "streams-group");
+        var staticMember = await JoinAsync(cluster, "streams-group", instanceId: "static-a");
+        var third = await JoinAsync(cluster, "streams-group");
+        await Assert.That(Tasks(staticMember)).IsEquivalentTo(["sub-0:1"]);
+
+        await staticMember.CloseAsync();
+        await third.CloseAsync();
+
+        await Assert.That(Tasks(staticMember)).IsEquivalentTo(["sub-0:1"]);
+        await Assert.That(Tasks(first)).IsEquivalentTo(["sub-0:0", "sub-0:2", "sub-0:3"]);
+    }
+
+    [Test]
+    public async Task Join_RoundRobinContinuesAcrossSubtopologiesAndUsesLargestSourcePartitionCount()
+    {
+        var cluster = CreateCluster();
+        cluster.CreateTopic("wide", partitionCount: 3);
+        var topology = new StreamsGroupTopology
+        {
+            Epoch = 1,
+            Subtopologies =
+            [
+                Subtopology("sub-0", sourceTopics: ["input", "wide"]),
+                Subtopology("sub-1", sourceTopics: [], repartitionSourceTopics:
+                [
+                    new StreamsGroupTopicInfo { Name = "absent-repartition", Partitions = 3, TopicConfigs = [] }
+                ])
+            ]
+        };
+
+        await using var first = new InMemoryStreamsGroupMember(cluster, Options("streams-group"));
+        await first.InitializeAsync();
+        await first.JoinAsync(new StreamsGroupMemberUpdate { Topology = topology });
+        await using var second = new InMemoryStreamsGroupMember(cluster, Options("streams-group"));
+        await second.InitializeAsync();
+        await second.JoinAsync(new StreamsGroupMemberUpdate { Topology = topology });
+
+        await Assert.That(Tasks(first)).IsEquivalentTo(["sub-0:0", "sub-0:2", "sub-1:0", "sub-1:2"]);
+        await Assert.That(Tasks(second)).IsEquivalentTo(["sub-0:1", "sub-0:3", "sub-1:1"]);
+        await Assert.That(first.Snapshot.Assignment.StandbyTasks).IsEmpty();
+        await Assert.That(first.Snapshot.Assignment.WarmupTasks).IsEmpty();
+        await Assert.That(second.Snapshot.Assignment.StandbyTasks).IsEmpty();
+        await Assert.That(second.Snapshot.Assignment.WarmupTasks).IsEmpty();
+    }
+
+    [Test]
     public async Task Heartbeat_ReassignsAfterSourcePartitionsGrow()
     {
         var cluster = CreateCluster();
@@ -147,18 +196,20 @@ public sealed class InMemoryStreamsGroupAssignorTests
     private static StreamsGroupTopology CreateTopology() => new()
     {
         Epoch = 1,
-        Subtopologies =
-        [
-            new StreamsGroupSubtopology
-            {
-                SubtopologyId = "sub-0",
-                SourceTopics = ["input"],
-                SourceTopicRegex = [],
-                StateChangelogTopics = [],
-                RepartitionSinkTopics = [],
-                RepartitionSourceTopics = [],
-                CopartitionGroups = []
-            }
-        ]
+        Subtopologies = [Subtopology("sub-0", sourceTopics: ["input"])]
+    };
+
+    private static StreamsGroupSubtopology Subtopology(
+        string id,
+        string[] sourceTopics,
+        StreamsGroupTopicInfo[]? repartitionSourceTopics = null) => new()
+    {
+        SubtopologyId = id,
+        SourceTopics = sourceTopics,
+        SourceTopicRegex = [],
+        StateChangelogTopics = [],
+        RepartitionSinkTopics = [],
+        RepartitionSourceTopics = repartitionSourceTopics ?? [],
+        CopartitionGroups = []
     };
 }
