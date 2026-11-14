@@ -49,6 +49,60 @@ public class ConsumerCommitObserverTests(KafkaTestContainer kafka) : KafkaIntegr
         await Assert.That(observer.Completed.Any(o => o.Reason == OffsetCommitReason.Periodic)).IsFalse();
     }
 
+    [Test]
+    public async Task CommitObserver_WithoutAutoOffsetStore_StopCommitReportsStoredRecords()
+    {
+        var topic = await ProduceAsync(3).ConfigureAwait(false);
+        var observer = new RecordingObserver();
+
+        await using var consumer = await CreateConsumer(observer, TimeSpan.FromMinutes(5))
+            .WithAutoOffsetStore(false)
+            .BuildAsync().ConfigureAwait(false);
+        consumer.Subscribe(topic);
+
+        await ConsumeAndStoreAsync(consumer, 3).ConfigureAwait(false);
+
+        await consumer.CloseAsync().ConfigureAwait(false);
+
+        var observed = await observer.WaitForAsync(o => o.Reason == OffsetCommitReason.Stop).ConfigureAwait(false);
+        await Assert.That(observed.Exception).IsNull();
+        await Assert.That(observed.Offsets).Contains(offset => offset.Topic == topic && offset.Offset == 3);
+        await Assert.That(observed.CompletedRecordCount).IsEqualTo(3L);
+    }
+
+    [Test]
+    public async Task CommitObserver_WithoutAutoOffsetStore_UnsubscribeRevokeCommitReportsStoredRecords()
+    {
+        var topic = await ProduceAsync(3).ConfigureAwait(false);
+        var observer = new RecordingObserver();
+
+        await using var consumer = await CreateConsumer(observer, TimeSpan.FromMinutes(5))
+            .WithAutoOffsetStore(false)
+            .BuildAsync().ConfigureAwait(false);
+        consumer.Subscribe(topic);
+        await ConsumeAndStoreAsync(consumer, 3).ConfigureAwait(false);
+
+        // The leave commits the offsets the departing partitions held when they were cleared.
+        consumer.Unsubscribe();
+
+        var observed = await observer.WaitForAsync(o => o.Reason == OffsetCommitReason.Revoke).ConfigureAwait(false);
+        await Assert.That(observed.Exception).IsNull();
+        await Assert.That(observed.Offsets).Contains(offset => offset.Topic == topic && offset.Offset == 3);
+        await Assert.That(observed.CompletedRecordCount).IsEqualTo(3L);
+    }
+
+    private static async Task ConsumeAndStoreAsync(IKafkaConsumer<string, string> consumer, int count)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var consumed = 0;
+        await foreach (var result in consumer.ConsumeAsync(cts.Token).ConfigureAwait(false))
+        {
+            consumer.StoreOffset(result);
+            if (++consumed >= count)
+                break;
+        }
+    }
+
     private async Task<string> ProduceAsync(int count)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
@@ -94,7 +148,8 @@ public class ConsumerCommitObserverTests(KafkaTestContainer kafka) : KafkaIntegr
     private sealed record ObservedCommit(
         OffsetCommitReason Reason,
         IReadOnlyList<TopicPartitionOffset> Offsets,
-        Exception? Exception);
+        Exception? Exception,
+        long CompletedRecordCount);
 
     private sealed class RecordingObserver : IOffsetCommitObserver
     {
@@ -110,7 +165,8 @@ public class ConsumerCommitObserverTests(KafkaTestContainer kafka) : KafkaIntegr
             if (!Equals(state, observation.Reason))
                 throw new InvalidOperationException("State from OnCommitStarting did not reach OnCommitCompleted.");
 
-            _completed.Enqueue(new ObservedCommit(observation.Reason, observation.Offsets, exception));
+            _completed.Enqueue(new ObservedCommit(
+                observation.Reason, observation.Offsets, exception, observation.CompletedRecordCount));
             _signal.Release();
         }
 

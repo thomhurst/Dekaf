@@ -61,10 +61,19 @@ public readonly struct OffsetCommitObservation(
     /// below the committed offsets that completed since the previous commit of each partition.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The count comes from completion tracking, not from subtracting offsets, so compacted offsets,
     /// transaction markers and other log gaps add nothing. Progress past gaps alone reports zero.
     /// A seek commit of a position other than the completed frontier also reports zero.
-    /// Commits the consumer sends itself (<c>ConsumerBuilder.WithCommitObserver</c>) always report zero.
+    /// </para>
+    /// <para>
+    /// For commits the consumer sends itself (<c>ConsumerBuilder.WithCommitObserver</c>) with
+    /// <c>WithAutoOffsetStore(false)</c>, the count is the offsets the application stored
+    /// (<c>StoreOffset</c> and <c>StoreOffsets</c>, one per stored offset) for the committed
+    /// partitions since the previous successful commit of each. A failed commit's count is reported
+    /// again by the next commit of those partitions. With automatic offset storage the consumer
+    /// stores offsets itself without counting records, and these commits report zero.
+    /// </para>
     /// </remarks>
     public long CompletedRecordCount { get; } = completedRecordCount;
 }

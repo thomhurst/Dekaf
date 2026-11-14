@@ -126,6 +126,116 @@ public sealed partial class ConsumerDirtyCommitTests
     }
 
     [Test]
+    public async Task CommitObserver_WithoutAutoOffsetStore_ReportsStoresSinceThePreviousCommit()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        var observer = new RecordingCommitObserver(requests);
+        await using var consumer = CreateConsumer(
+            requests, ErrorCode.None, OffsetCommitMode.Auto, enableAutoOffsetStore: false, commitObserver: observer);
+        SetCoordinatorState(consumer, CoordinatorState.Stable);
+
+        // Offsets with gaps: the count is of stores, not an offset difference.
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 10));
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 50));
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 51));
+        consumer.StoreOffsets([new TopicPartitionOffset("topic-a", 1, 7), new TopicPartitionOffset("topic-a", 1, 9)]);
+        await RunAutoCommitCycleAsync(consumer);
+
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 1, 12));
+        await RunAutoCommitCycleAsync(consumer);
+
+        await Assert.That(observer.Calls.Count).IsEqualTo(2);
+        await Assert.That(observer.Calls[0].RecordCount).IsEqualTo(5L);
+        await Assert.That(observer.Calls[0].CompletedRecordCount).IsEqualTo(5L);
+        await Assert.That(observer.Calls[1].Offsets).IsEquivalentTo([new TopicPartitionOffset("topic-a", 1, 12)]);
+        await Assert.That(observer.Calls[1].RecordCount).IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task CommitObserver_WithoutAutoOffsetStore_FailedCommitKeepsItsCountForTheNextCommit()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        var observer = new RecordingCommitObserver(requests);
+        await using var consumer = CreateConsumer(
+            requests,
+            new Queue<ErrorCode>([ErrorCode.InvalidCommitOffsetSize, ErrorCode.None]),
+            OffsetCommitMode.Auto,
+            enableAutoOffsetStore: false,
+            commitObserver: observer);
+        SetCoordinatorState(consumer, CoordinatorState.Stable);
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 10));
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 11));
+
+        await RunAutoCommitCycleAsync(consumer);
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 12));
+        await RunAutoCommitCycleAsync(consumer);
+
+        await Assert.That(observer.Calls.Count).IsEqualTo(3);
+        await Assert.That(observer.Calls[0].Exception).IsTypeOf<GroupException>();
+        await Assert.That(observer.Calls[0].RecordCount).IsEqualTo(2L);
+        await Assert.That(observer.Calls[1].Exception).IsNull();
+        await Assert.That(observer.Calls[1].RecordCount).IsEqualTo(2L);
+        await Assert.That(observer.Calls[2].RecordCount).IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task CommitObserver_WithoutAutoOffsetStore_RevokeAndCloseCommitsReportStores()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        var observer = new RecordingCommitObserver(requests);
+        await using var consumer = CreateConsumer(
+            requests, ErrorCode.None, OffsetCommitMode.Auto, enableAutoOffsetStore: false, commitObserver: observer);
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 10));
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 11));
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 1, 5));
+
+        await CommitRevokedOffsetsAsync(consumer, [new TopicPartition("topic-a", 0)]);
+        await (ValueTask)typeof(KafkaConsumer<string, string>)
+            .GetMethod("CommitPendingOffsetsOnCloseAsync", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .Invoke(consumer, [CancellationToken.None])!;
+
+        await Assert.That(observer.Calls.Count).IsEqualTo(2);
+        await Assert.That(observer.Calls[0].Reason).IsEqualTo(OffsetCommitReason.Revoke);
+        await Assert.That(observer.Calls[0].RecordCount).IsEqualTo(2L);
+        await Assert.That(observer.Calls[1].Reason).IsEqualTo(OffsetCommitReason.Stop);
+        await Assert.That(observer.Calls[1].RecordCount).IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task CommitObserver_WithoutAutoOffsetStore_ExplicitCommitEndsTheCountOfWhatItCommitted()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        var observer = new RecordingCommitObserver(requests);
+        await using var consumer = CreateConsumer(
+            requests, ErrorCode.None, OffsetCommitMode.Auto, enableAutoOffsetStore: false, commitObserver: observer);
+        SetCoordinatorState(consumer, CoordinatorState.Stable);
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 10));
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 11));
+
+        await consumer.CommitAsync(CancellationToken.None);
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 12));
+        await RunAutoCommitCycleAsync(consumer);
+
+        await Assert.That(observer.Calls.Single().RecordCount).IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task CommitObserver_WithAutoOffsetStore_ReportsZeroRecords()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        var observer = new RecordingCommitObserver(requests);
+        await using var consumer = CreateConsumer(
+            requests, ErrorCode.None, OffsetCommitMode.Auto, commitObserver: observer);
+        SetCoordinatorState(consumer, CoordinatorState.Stable);
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 10));
+
+        await RunAutoCommitCycleAsync(consumer);
+
+        await Assert.That(observer.Calls.Single().RecordCount).IsEqualTo(0L);
+        await Assert.That(observer.Calls.Single().CompletedRecordCount).IsEqualTo(0L);
+    }
+
+    [Test]
     public async Task WithCommitObserver_SetsConsumerOption()
     {
         var observer = new ThrowingCommitObserver();
@@ -146,7 +256,8 @@ public sealed partial class ConsumerDirtyCommitTests
 
         public object? OnCommitStarting(OffsetCommitObservation observation)
         {
-            var call = new ObservedCommit(observation.Reason, observation.Offsets.ToArray(), requests.Count);
+            var call = new ObservedCommit(
+                observation.Reason, observation.Offsets.ToArray(), requests.Count, observation.CompletedRecordCount);
             Calls.Add(call);
             return call;
         }
@@ -157,11 +268,18 @@ public sealed partial class ConsumerDirtyCommitTests
             call.StateMatched = ReferenceEquals(state, call);
             call.Completed = true;
             call.Exception = exception;
+            call.CompletedRecordCount = observation.CompletedRecordCount;
         }
     }
 
-    private sealed class ObservedCommit(OffsetCommitReason reason, TopicPartitionOffset[] offsets, int requestsAtStart)
+    private sealed class ObservedCommit(
+        OffsetCommitReason reason,
+        TopicPartitionOffset[] offsets,
+        int requestsAtStart,
+        long recordCount)
     {
+        public long RecordCount { get; } = recordCount;
+        public long? CompletedRecordCount { get; set; }
         public OffsetCommitReason Reason { get; } = reason;
         public TopicPartitionOffset[] Offsets { get; } = offsets;
         public int RequestsAtStart { get; } = requestsAtStart;
