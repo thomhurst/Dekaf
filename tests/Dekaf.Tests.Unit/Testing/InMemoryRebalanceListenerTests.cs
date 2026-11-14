@@ -1,0 +1,253 @@
+using Dekaf.Admin;
+using Dekaf.Consumer;
+using Dekaf.Producer;
+using Dekaf.Testing;
+using TUnit.Assertions.Enums;
+
+namespace Dekaf.Tests.Unit.Testing;
+
+public sealed class InMemoryRebalanceListenerTests
+{
+    private static readonly TopicPartition Partition0 = new("topic", 0);
+    private static readonly TopicPartition Partition1 = new("topic", 1);
+
+    [Test]
+    public async Task Subscribe_ReportsAssignedPartitionsOnNextConsume()
+    {
+        var cluster = CreateCluster(partitions: 2);
+        var listener = new RecordingListener();
+        await using var consumer = CreateConsumer(cluster, "a", listener);
+
+        consumer.Subscribe("topic");
+        await Assert.That(listener.Events).IsEmpty();
+
+        await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0,topic-1"], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task MemberJoiningAndLeaving_RevokesAndReassignsPartitions()
+    {
+        var cluster = CreateCluster(partitions: 2);
+        var firstListener = new RecordingListener();
+        var secondListener = new RecordingListener();
+        await using var first = CreateConsumer(cluster, "a", firstListener);
+        await using var second = CreateConsumer(cluster, "b", secondListener);
+        first.Subscribe("topic");
+        await first.ConsumeOneAsync(TimeSpan.Zero);
+
+        second.Subscribe("topic");
+        await first.ConsumeOneAsync(TimeSpan.Zero);
+        await second.ConsumeOneAsync(TimeSpan.Zero);
+
+        var moved = second.Assignment.Single();
+        await Assert.That(first.Assignment).DoesNotContain(moved);
+        await Assert.That(firstListener.Events).IsEquivalentTo(["assigned topic-0,topic-1", $"revoked {Format(moved)}"], CollectionOrdering.Matching);
+        await Assert.That(secondListener.Events).IsEquivalentTo([$"assigned {Format(moved)}"], CollectionOrdering.Matching);
+
+        second.Unsubscribe();
+        await first.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(secondListener.Events).IsEquivalentTo([$"assigned {Format(moved)}", $"revoked {Format(moved)}"], CollectionOrdering.Matching);
+        await Assert.That(firstListener.Events).IsEquivalentTo(["assigned topic-0,topic-1", $"revoked {Format(moved)}", $"assigned {Format(moved)}"], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task BlockedConsume_ReportsRevocationWhenAnotherMemberJoins()
+    {
+        var cluster = CreateCluster(partitions: 2);
+        var firstListener = new RecordingListener();
+        await using var first = CreateConsumer(cluster, "a", firstListener);
+        await using var second = CreateConsumer(cluster, "b", new RecordingListener());
+        first.Subscribe("topic");
+        await first.ConsumeOneAsync(TimeSpan.Zero);
+
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var blocked = first.ConsumeOneAsync(Timeout.InfiniteTimeSpan, cancellation.Token).AsTask();
+        second.Subscribe("topic");
+
+        await firstListener.Revoked.Task.WaitAsync(cancellation.Token);
+        await cancellation.CancelAsync();
+        await Assert.That(async () => await blocked).Throws<OperationCanceledException>();
+        await Assert.That(firstListener.Events).Count().IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task Unsubscribe_RevokesBeforeLeavingSoTheListenerCanCommit()
+    {
+        var cluster = CreateCluster(partitions: 1);
+        await ProduceAsync(cluster, 2);
+        var listener = new RecordingListener();
+        await using var consumer = CreateConsumer(cluster, "a", listener, OffsetCommitMode.Manual);
+        listener.OnRevoked = () => consumer.CommitAsync();
+        consumer.Subscribe("topic");
+        await Assert.That((await consumer.ConsumeOneAsync(TimeSpan.Zero))!.Value.Offset).IsEqualTo(0);
+
+        consumer.Unsubscribe();
+
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0", "revoked topic-0"], CollectionOrdering.Matching);
+        await Assert.That(cluster.GetCommittedOffset("group", Partition0)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Close_RevokesBeforeLeavingSoTheListenerCanCommit()
+    {
+        var cluster = CreateCluster(partitions: 1);
+        await ProduceAsync(cluster, 2);
+        var listener = new RecordingListener();
+        var consumer = CreateConsumer(cluster, "a", listener, OffsetCommitMode.Manual);
+        listener.OnRevoked = () => consumer.CommitAsync();
+        consumer.Subscribe("topic");
+        await Assert.That((await consumer.ConsumeOneAsync(TimeSpan.Zero))!.Value.Offset).IsEqualTo(0);
+
+        await consumer.CloseAsync();
+        await consumer.DisposeAsync();
+
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0", "revoked topic-0"], CollectionOrdering.Matching);
+        await Assert.That(cluster.GetCommittedOffset("group", Partition0)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task AdministrativeRemoval_ReportsPartitionsLost()
+    {
+        var cluster = CreateCluster(partitions: 2);
+        var listener = new RecordingListener();
+        await using var consumer = CreateConsumer(cluster, "a", listener);
+        consumer.Subscribe("topic");
+        await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        cluster.RemoveConsumerGroupMembers("group", [new ConsumerGroupMemberIdentity { MemberId = "a" }]);
+        await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        await consumer.CloseAsync();
+
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0,topic-1", "lost topic-0,topic-1"], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task ManualAssignment_DoesNotInvokeTheListener()
+    {
+        var cluster = CreateCluster(partitions: 2);
+        var listener = new RecordingListener();
+        await using var consumer = CreateConsumer(cluster, "a", listener);
+
+        consumer.Assign(Partition0, Partition1);
+        await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        consumer.Unassign();
+        await consumer.CloseAsync();
+
+        await Assert.That(listener.Events).IsEmpty();
+    }
+
+    [Test]
+    public async Task SwitchingToManualAssignment_RevokesSubscribedPartitions()
+    {
+        var cluster = CreateCluster(partitions: 2);
+        var listener = new RecordingListener();
+        await using var consumer = CreateConsumer(cluster, "a", listener);
+        consumer.Subscribe("topic");
+        await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        consumer.Assign(Partition0);
+        await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        await consumer.CloseAsync();
+
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0,topic-1", "revoked topic-0,topic-1"], CollectionOrdering.Matching);
+    }
+
+    private static InMemoryKafkaCluster CreateCluster(int partitions)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("topic", partitions);
+        return cluster;
+    }
+
+    private static InMemoryConsumer<string, string> CreateConsumer(
+        InMemoryKafkaCluster cluster,
+        string memberId,
+        IRebalanceListener listener,
+        OffsetCommitMode mode = OffsetCommitMode.Auto) =>
+        new(cluster, new InMemoryConsumerOptions
+        {
+            GroupId = "group",
+            MemberId = memberId,
+            AutoOffsetReset = AutoOffsetReset.Earliest,
+            OffsetCommitMode = mode,
+            RebalanceListener = listener
+        });
+
+    private static async Task ProduceAsync(InMemoryKafkaCluster cluster, int count)
+    {
+        await using var producer = new InMemoryProducer<string, string>(cluster);
+        for (var i = 0; i < count; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = "topic",
+                Partition = 0,
+                Key = "key",
+                Value = $"value-{i}"
+            });
+        }
+    }
+
+    private static string Format(IEnumerable<TopicPartition> partitions) =>
+        string.Join(',', partitions
+            .OrderBy(static partition => partition.Topic, StringComparer.Ordinal)
+            .ThenBy(static partition => partition.Partition)
+            .Select(Format));
+
+    private static string Format(TopicPartition partition) => $"{partition.Topic}-{partition.Partition}";
+
+    private sealed class RecordingListener : IRebalanceListener
+    {
+        private readonly Lock _gate = new();
+        private readonly List<string> _events = [];
+
+        public Func<ValueTask>? OnRevoked { get; set; }
+
+        public TaskCompletionSource Revoked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IReadOnlyList<string> Events
+        {
+            get
+            {
+                lock (_gate)
+                    return _events.ToArray();
+            }
+        }
+
+        public ValueTask OnPartitionsAssignedAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken)
+        {
+            Record("assigned", partitions);
+            return ValueTask.CompletedTask;
+        }
+
+        public async ValueTask OnPartitionsRevokedAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken)
+        {
+            if (OnRevoked is { } onRevoked)
+                await onRevoked();
+            Record("revoked", partitions);
+            Revoked.TrySetResult();
+        }
+
+        public ValueTask OnPartitionsLostAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken)
+        {
+            Record("lost", partitions);
+            return ValueTask.CompletedTask;
+        }
+
+        private void Record(string kind, IEnumerable<TopicPartition> partitions)
+        {
+            lock (_gate)
+                _events.Add($"{kind} {Format(partitions)}");
+        }
+    }
+}

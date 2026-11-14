@@ -55,4 +55,16 @@ public sealed class InMemoryConsumerOptions
 
     /// <summary>Optional static membership identity used by administrative member removal.</summary>
     public string? GroupInstanceId { get; init; }
+
+    /// <summary>
+    /// Optional listener notified when the consumer's subscribed group assignment changes.
+    /// </summary>
+    /// <remarks>
+    /// The consumer reports changes it observes on its next consume call: partitions gained after
+    /// subscribing or after another member leaves, and partitions revoked when another member joins.
+    /// <c>Unsubscribe</c> and <c>CloseAsync</c> revoke the owned partitions before the member leaves.
+    /// Partitions are reported as lost when an administrative member removal evicts the consumer.
+    /// Manual assignment does not invoke the listener.
+    /// </remarks>
+    public IRebalanceListener? RebalanceListener { get; init; }
 }

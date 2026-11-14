@@ -1822,6 +1822,10 @@ public sealed partial class InMemoryKafkaCluster
             foreach (var partition in assigned)
                 member.Ownership.TryAdd(partition, generation);
         }
+
+        // Wake consumers blocked waiting for records so they observe the new assignment.
+        // Continuations run asynchronously, so completing under the lock is safe.
+        _recordsChanged.TrySetResult();
     }
 
     private Dictionary<string, HashSet<TopicPartition>> BuildConsumerGroupAssignments(string groupId)

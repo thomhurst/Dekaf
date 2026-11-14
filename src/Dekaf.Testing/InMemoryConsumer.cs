@@ -120,6 +120,13 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     private readonly bool _keyUsesRecordHeaders;
     private readonly bool _valueUsesRecordHeaders;
     private readonly Headers? _asyncDeserializationHeaders;
+    // Rebalance listener state: the partitions last reported as assigned, the consumer state
+    // version they were computed at, and an Unsubscribe revocation that completed asynchronously.
+    private readonly IRebalanceListener? _rebalanceListener;
+    private readonly HashSet<TopicPartition> _listenerAssignment = [];
+    private int _listenerConsumerStateVersion = -1;
+    private bool _leavingGroup;
+    private Task? _pendingRebalanceCallback;
 
     [ThreadStatic]
     private static Action? _afterLagWatermarkReadForTest;
@@ -294,6 +301,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             ? new Headers(2)
             : null;
         _options = options ?? throw new ArgumentNullException(nameof(options));
+        _rebalanceListener = options.RebalanceListener;
         // Match KafkaConsumer, which treats an empty GroupId as "no consumer group"
         // (no coordinator, no commits). Normalizing here keeps every group-dependent
         // code path in this class consistent with production behavior.
@@ -478,6 +486,28 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     {
         ThrowIfDisposed();
 
+        // The listener sees the revocation while the member still owns its partitions, so it can
+        // commit them. A revocation that completes asynchronously is awaited by the next consume
+        // or close call.
+        var revocation = StartListenerRevocation(closing: false, CancellationToken.None);
+        try
+        {
+            UnsubscribeCore();
+        }
+        finally
+        {
+            lock (_gate)
+                _leavingGroup = _disposed;
+        }
+
+        if (revocation.IsCompleted)
+            revocation.GetAwaiter().GetResult();
+        else
+            _pendingRebalanceCallback = revocation.AsTask();
+    }
+
+    private void UnsubscribeCore()
+    {
         lock (_gate)
         {
             ThrowIfAutoCommitAdvancementPendingUnderLock();
@@ -802,6 +832,8 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (_rebalanceListener is { } listener)
+                await DeliverRebalanceEventsAsync(listener, cancellationToken).ConfigureAwait(false);
 
             if (!_requiresAsyncDeserialization && !HasPotentialConsumerFault())
             {
@@ -1172,6 +1204,17 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     {
         CapturedCommitOffsets? capturedCommit = null;
         Exception? failure = null;
+        Exception? listenerFailure = null;
+        try
+        {
+            // Revoke before the final commit so the listener can commit what it still owns.
+            await StartListenerRevocation(closing: true, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            listenerFailure = ex;
+        }
+
         // Match the production close's bounded, best-effort commit. The fake retries
         // immediately because it has no broker recovery or retry backoff to wait for.
         const int maxAttempts = 3;
@@ -1220,6 +1263,13 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             failure = failure is null
                 ? ex
                 : new AggregateException(failure, ex);
+        }
+
+        if (listenerFailure is not null)
+        {
+            failure = failure is null
+                ? listenerFailure
+                : new AggregateException(listenerFailure, failure);
         }
 
         if (failure is null)
@@ -3506,6 +3556,104 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         _assignmentOwnership = ownership;
         _consumerGroupGeneration = consumerGroupGeneration;
         return current;
+    }
+
+    /// <summary>
+    /// Reports assignment changes observed since the last call: revoked (or lost, after an
+    /// administrative removal) partitions first, then newly assigned ones.
+    /// </summary>
+    private async ValueTask DeliverRebalanceEventsAsync(
+        IRebalanceListener listener,
+        CancellationToken cancellationToken)
+    {
+        await TakePendingRebalanceCallback().ConfigureAwait(false);
+
+        List<TopicPartition>? revoked = null;
+        List<TopicPartition>? assigned = null;
+        bool lost;
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (_leavingGroup)
+                return;
+
+            var subscribed = _subscriptionTopologyVersion >= 0;
+            var current = subscribed ? GetCurrentAssignmentUnderLock() : null;
+            if (_listenerConsumerStateVersion == _consumerStateVersion)
+                return;
+
+            _listenerConsumerStateVersion = _consumerStateVersion;
+            lost = subscribed && _consumerGroupRegistrationId != 0 && _consumerGroupGeneration < 0;
+            foreach (var partition in _listenerAssignment)
+            {
+                if (current is null || !current.Contains(partition))
+                    (revoked ??= []).Add(partition);
+            }
+
+            if (current is not null)
+            {
+                foreach (var partition in current)
+                {
+                    if (!_listenerAssignment.Contains(partition))
+                        (assigned ??= []).Add(partition);
+                }
+            }
+
+            if (revoked is not null)
+                _listenerAssignment.ExceptWith(revoked);
+            if (assigned is not null)
+                _listenerAssignment.UnionWith(assigned);
+        }
+
+        if (revoked is not null)
+        {
+            await (lost
+                ? listener.OnPartitionsLostAsync(revoked, cancellationToken)
+                : listener.OnPartitionsRevokedAsync(revoked, cancellationToken)).ConfigureAwait(false);
+        }
+
+        if (assigned is not null)
+            await listener.OnPartitionsAssignedAsync(assigned, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Revokes every partition reported to the listener because the member is leaving its group.
+    /// Suppresses further notifications until the caller finishes leaving.
+    /// </summary>
+    private ValueTask StartListenerRevocation(bool closing, CancellationToken cancellationToken)
+    {
+        if (_rebalanceListener is not { } listener)
+            return ValueTask.CompletedTask;
+
+        TopicPartition[] revoked;
+        lock (_gate)
+        {
+            if (closing ? _disposed : _leavingGroup)
+                return ValueTask.CompletedTask;
+
+            _leavingGroup = true;
+            revoked = _listenerAssignment.ToArray();
+            _listenerAssignment.Clear();
+            _listenerConsumerStateVersion = -1;
+        }
+
+        return RevokeAsync(listener, revoked, cancellationToken);
+
+        async ValueTask RevokeAsync(
+            IRebalanceListener listener,
+            TopicPartition[] revoked,
+            CancellationToken cancellationToken)
+        {
+            await TakePendingRebalanceCallback().ConfigureAwait(false);
+            if (revoked.Length != 0)
+                await listener.OnPartitionsRevokedAsync(revoked, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private Task TakePendingRebalanceCallback()
+    {
+        var pending = Interlocked.Exchange(ref _pendingRebalanceCallback, null);
+        return pending ?? Task.CompletedTask;
     }
 
     private void RevokePartitionUnderLock(TopicPartition partition)
