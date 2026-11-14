@@ -955,3 +955,4 @@ Dekaf.Serialization.Headers.RemoveAll<TState>(System.Func<Dekaf.Serialization.He
 Dekaf.Consumer.ConsumerOptions.CommitObserver.get -> Dekaf.Consumer.IOffsetCommitObserver?
 Dekaf.Consumer.ConsumerOptions.CommitObserver.init -> void
 Dekaf.ConsumerBuilder<TKey, TValue>.WithCommitObserver(Dekaf.Consumer.IOffsetCommitObserver! observer) -> Dekaf.ConsumerBuilder<TKey, TValue>!
+static Dekaf.Producer.ProducerExtensions.FireAsync<TKey, TValue>(this Dekaf.Producer.IKafkaProducer<TKey, TValue>! producer, string! topic, TKey? key, TValue value, Dekaf.Serialization.Headers? headers, int? partition, System.DateTimeOffset? timestamp, System.Action<Dekaf.Producer.RecordMetadata, System.Exception?>? deliveryHandler) -> System.Threading.Tasks.ValueTask

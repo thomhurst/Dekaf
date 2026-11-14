@@ -1941,6 +1941,32 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
     /// <inheritdoc />
     public ValueTask FireAsync(string topic, TKey? key, TValue value)
+        => FireFieldsAsync(topic, key, value, headers: null, partition: null, timestamp: null);
+
+    ValueTask IProducerFastPath<TKey, TValue>.FireAsync(
+        string topic,
+        TKey? key,
+        TValue value,
+        Headers? headers,
+        int? partition,
+        DateTimeOffset? timestamp,
+        Action<RecordMetadata, Exception?>? deliveryHandler)
+        => deliveryHandler is null
+            ? FireFieldsAsync(topic, key, value, headers, partition, timestamp)
+            : FireFieldsAsync(topic, key, value, headers, partition, timestamp, deliveryHandler);
+
+    /// <summary>
+    /// Fire-and-forget without a delivery handler for a record given as fields: allocates a
+    /// <see cref="ProducerMessage{TKey, TValue}"/> only for interceptors, async serialization
+    /// or a metadata miss.
+    /// </summary>
+    private ValueTask FireFieldsAsync(
+        string topic,
+        TKey? key,
+        TValue value,
+        Headers? headers,
+        int? partition,
+        DateTimeOffset? timestamp)
     {
         if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -1956,7 +1982,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // so interceptors can inspect/modify the message before serialization.
         if (_interceptors is not null)
             return FireMessageAsync(
-                new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value },
+                new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value, Headers = headers, Partition = partition, Timestamp = timestamp },
                 transactionalGeneration);
 
         var preparationLease = default(SerializerPreparationLease);
@@ -1969,7 +1995,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     topic,
                     key,
                     value,
-                    headers: null,
+                    headers,
                     CancellationToken.None);
             }
             catch (KafkaTimeoutException)
@@ -1984,8 +2010,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
             if (_hasAsyncSerializers || !preparation.IsCompletedSuccessfully)
                 return FireWithAsyncSerializationAsync(
-                    new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value },
-                    headers: null,
+                    new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value, Headers = headers, Partition = partition, Timestamp = timestamp },
+                    headers,
                     activity: null,
                     deliveryHandler: null,
                     preparation,
@@ -1996,8 +2022,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         else if (_hasAsyncSerializers)
         {
             return FireWithAsyncSerializationAsync(
-                new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value },
-                headers: null,
+                new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value, Headers = headers, Partition = partition, Timestamp = timestamp },
+                headers,
                 activity: null,
                 deliveryHandler: null,
                 default,
@@ -2019,9 +2045,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         topic,
                         key,
                         value,
-                        headers: null,
-                        partition: null,
-                        timestamp: null,
+                        headers,
+                        partition,
+                        timestamp,
                         topicInfo!,
                         callback: null,
                         transactionalGeneration)
@@ -2029,9 +2055,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         topic,
                         key,
                         value,
-                        headers: null,
-                        partition: null,
-                        timestamp: null,
+                        headers,
+                        partition,
+                        timestamp,
                         topicInfo!,
                         callback: null,
                         transactionalGeneration,
@@ -2056,8 +2082,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         // Metadata miss — allocate ProducerMessage only on cold path
         return FireAsyncSlow(
-            new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value },
-            headers: null,
+            new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value, Headers = headers, Partition = partition, Timestamp = timestamp },
+            headers,
             activity: null,
             preparationLease,
             transactionalGeneration);
@@ -2481,6 +2507,63 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// <inheritdoc />
     public ValueTask FireAsync(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler)
     {
+        if (!TryAdmitCallbackFire(deliveryHandler, out var transactionalGeneration))
+            return default;
+
+        // Apply OnSend interceptors before serialization
+        message = ApplyOnSendInterceptors(message);
+        return FireWithCallbackAsync(
+            message.Topic,
+            message.Key,
+            message.Value,
+            message.Headers,
+            message.Partition,
+            message.Timestamp,
+            message,
+            deliveryHandler,
+            transactionalGeneration);
+    }
+
+    private ValueTask FireFieldsAsync(
+        string topic,
+        TKey? key,
+        TValue value,
+        Headers? headers,
+        int? partition,
+        DateTimeOffset? timestamp,
+        Action<RecordMetadata, Exception?> deliveryHandler)
+    {
+        if (!TryAdmitCallbackFire(deliveryHandler, out var transactionalGeneration))
+            return default;
+
+        if (_interceptors is not null)
+        {
+            var message = ApplyOnSendInterceptors(new ProducerMessage<TKey, TValue>
+            {
+                Topic = topic, Key = key, Value = value, Headers = headers, Partition = partition, Timestamp = timestamp
+            });
+            return FireWithCallbackAsync(
+                message.Topic,
+                message.Key,
+                message.Value,
+                message.Headers,
+                message.Partition,
+                message.Timestamp,
+                message,
+                deliveryHandler,
+                transactionalGeneration);
+        }
+
+        return FireWithCallbackAsync(
+            topic, key, value, headers, partition, timestamp, message: null, deliveryHandler, transactionalGeneration);
+    }
+
+    /// <summary>
+    /// Admission for the delivery-handler fire overloads. Returns false when a transactional
+    /// producer cannot produce; the refusal has been reported through the handler.
+    /// </summary>
+    private bool TryAdmitCallbackFire(Action<RecordMetadata, Exception?> deliveryHandler, out int transactionalGeneration)
+    {
         if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
@@ -2488,7 +2571,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // Read before the state check and serialization: the append commit point rejects the
         // record if a transaction abort or commit starts while serializers or interceptors run
         // (non-transactional: a constant).
-        var transactionalGeneration = CaptureTransactionalAppendGeneration();
+        transactionalGeneration = CaptureTransactionalAppendGeneration();
 
         ArgumentNullException.ThrowIfNull(deliveryHandler);
 
@@ -2500,13 +2583,29 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             {
                 var refused = CreateTransactionCannotProduceException(txnState);
                 try { deliveryHandler(default, refused); } catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
-                return default;
+                return false;
             }
         }
 
-        // Apply OnSend interceptors before serialization
-        message = ApplyOnSendInterceptors(message);
+        return true;
+    }
 
+    /// <summary>
+    /// Delivery-handler fire after admission and interceptors. <paramref name="message"/> is the
+    /// record as a message when the caller has one; otherwise one is allocated only for async
+    /// serialization or a metadata miss.
+    /// </summary>
+    private ValueTask FireWithCallbackAsync(
+        string topic,
+        TKey? key,
+        TValue value,
+        Headers? headers,
+        int? partition,
+        DateTimeOffset? timestamp,
+        ProducerMessage<TKey, TValue>? message,
+        Action<RecordMetadata, Exception?> deliveryHandler,
+        int transactionalGeneration)
+    {
         var preparationLease = default(SerializerPreparationLease);
         if (_keyPreparer is not null || _valuePreparer is not null)
         {
@@ -2514,10 +2613,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             try
             {
                 preparation = PrepareSerializersAsync(
-                    message.Topic,
-                    message.Key,
-                    message.Value,
-                    message.Headers,
+                    topic,
+                    key,
+                    value,
+                    headers,
                     CancellationToken.None);
             }
             catch (Exception ex)
@@ -2528,8 +2627,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
             if (_hasAsyncSerializers || !preparation.IsCompletedSuccessfully)
                 return FireWithAsyncSerializationAsync(
-                    message,
-                    message.Headers,
+                    message ?? new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value, Headers = headers, Partition = partition, Timestamp = timestamp },
+                    headers,
                     activity: null,
                     deliveryHandler,
                     preparation,
@@ -2540,8 +2639,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         else if (_hasAsyncSerializers)
         {
             return FireWithAsyncSerializationAsync(
-                message,
-                message.Headers,
+                message ?? new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value, Headers = headers, Partition = partition, Timestamp = timestamp },
+                headers,
                 activity: null,
                 deliveryHandler,
                 default,
@@ -2549,33 +2648,33 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
 
         // Fast path: try thread-local cached topic metadata first
-        var inThreadLocalCache = TryGetCachedTopicInfo(message.Topic, out var topicInfo);
+        var inThreadLocalCache = TryGetCachedTopicInfo(topic, out var topicInfo);
         if (inThreadLocalCache ||
-            (_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo) && topicInfo is not null && topicInfo.PartitionCount > 0))
+            (_metadataManager.TryGetCachedTopicMetadata(topic, out topicInfo) && topicInfo is not null && topicInfo.PartitionCount > 0))
         {
             if (!inThreadLocalCache)
-                UpdateCachedTopicInfo(message.Topic, topicInfo!);
+                UpdateCachedTopicInfo(topic, topicInfo!);
 
             try
             {
                 var appendResult = _keyPreparer is null && _valuePreparer is null
                     ? SerializeAndAppendFromSpansAsync(
-                        message.Topic,
-                        message.Key,
-                        message.Value,
-                        message.Headers,
-                        message.Partition,
-                        message.Timestamp,
+                        topic,
+                        key,
+                        value,
+                        headers,
+                        partition,
+                        timestamp,
                         topicInfo!,
                         deliveryHandler,
                         transactionalGeneration)
                     : SerializePreparedAndAppendFromSpansAsync(
-                        message.Topic,
-                        message.Key,
-                        message.Value,
-                        message.Headers,
-                        message.Partition,
-                        message.Timestamp,
+                        topic,
+                        key,
+                        value,
+                        headers,
+                        partition,
+                        timestamp,
                         topicInfo!,
                         deliveryHandler,
                         transactionalGeneration,
@@ -2602,7 +2701,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
 
         // Metadata miss — full async path
-        return ProduceAsyncWithCallbackSlow(message, deliveryHandler, preparationLease, transactionalGeneration);
+        return ProduceAsyncWithCallbackSlow(
+            message ?? new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value, Headers = headers, Partition = partition, Timestamp = timestamp },
+            deliveryHandler, preparationLease, transactionalGeneration);
     }
 
     private async ValueTask ProduceInternalAsync(

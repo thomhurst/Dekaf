@@ -136,18 +136,16 @@ internal sealed class ProducerCollector : IRecordCollector, IDisposable
 
         try
         {
-            var message = new ProducerMessage<ReadOnlyMemory<byte>?, ReadOnlyMemory<byte>?>
-            {
-                Topic = topic,
-                // The casts matter: a bare null would convert to an empty ReadOnlyMemory through its
-                // implicit conversion from an array, and a tombstone would be sent as an empty value.
-                Key = keyIsNull ? (ReadOnlyMemory<byte>?)null : _arena.Copy(key),
-                Value = valueIsNull ? (ReadOnlyMemory<byte>?)null : _arena.Copy(value),
-                Partition = partition < 0 ? null : partition,
-                Timestamp = DateTimeOffset.FromUnixTimeMilliseconds(timestamp),
-                Headers = headers
-            };
-            var send = _producer.FireAsync(message, _onDelivery);
+            // The casts matter: a bare null would convert to an empty ReadOnlyMemory through its
+            // implicit conversion from an array, and a tombstone would be sent as an empty value.
+            var send = _producer.FireAsync(
+                topic,
+                keyIsNull ? (ReadOnlyMemory<byte>?)null : _arena.Copy(key),
+                valueIsNull ? (ReadOnlyMemory<byte>?)null : _arena.Copy(value),
+                headers,
+                partition < 0 ? null : partition,
+                DateTimeOffset.FromUnixTimeMilliseconds(timestamp),
+                _onDelivery);
             if (!send.IsCompletedSuccessfully)
             {
                 _pending.Add(send.AsTask());

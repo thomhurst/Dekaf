@@ -1215,6 +1215,59 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
     }
 
     [Test]
+    public async Task Producer_FireAsyncWithFields_DeliversToPartitionWithTimestampAndHeaders()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
+        var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(
+            DateTimeOffset.UtcNow.AddHours(-1).ToUnixTimeMilliseconds());
+        var delivered = new TaskCompletionSource<(RecordMetadata Metadata, Exception? Error)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer-fire-fields")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await producer.FireAsync(
+            topic,
+            "fields-key",
+            "fields-value",
+            Headers.Create("h", "v"),
+            partition: 2,
+            timestamp,
+            (metadata, error) => delivered.TrySetResult((metadata, error)));
+        await producer.FireAsync(
+            topic, "no-handler-key", "no-handler-value", headers: null, partition: 2, timestamp, deliveryHandler: null);
+        await producer.FlushWithTimeoutAsync();
+
+        var (resultMetadata, resultError) = await delivered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await Assert.That(resultError).IsNull();
+        await Assert.That(resultMetadata.Partition).IsEqualTo(2);
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-consumer-fire-fields")
+            .WithGroupId($"test-group-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        consumer.Subscribe(topic);
+
+        var consumed = new List<(string? Key, int Partition, DateTimeOffset Timestamp, int HeaderCount)>();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        {
+            consumed.Add((msg.Key, msg.Partition, msg.Timestamp, msg.Headers?.Count ?? 0));
+            if (consumed.Count == 2)
+                break;
+        }
+
+        await Assert.That(consumed[0]).IsEqualTo(("fields-key", 2, timestamp, 1));
+        await Assert.That(consumed[1]).IsEqualTo(("no-handler-key", 2, timestamp, 0));
+    }
+
+    [Test]
     public async Task Producer_SynchronousProduceMultiple_FlushDeliverAll()
     {
         // Test multiple fire-and-forget produces followed by flush

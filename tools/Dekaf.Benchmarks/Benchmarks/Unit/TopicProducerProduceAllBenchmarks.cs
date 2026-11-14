@@ -80,6 +80,15 @@ public class TopicProducerProduceAllBenchmarks
             DateTimeOffset? timestamp,
             CancellationToken cancellationToken) => throw new NotSupportedException();
 
+        ValueTask IProducerFastPath<string, string>.FireAsync(
+            string topic,
+            string? key,
+            string value,
+            Headers? headers,
+            int? partition,
+            DateTimeOffset? timestamp,
+            Action<RecordMetadata, Exception?>? deliveryHandler) => throw new NotSupportedException();
+
         public ValueTask FireAsync(ProducerMessage<string, string> message) => throw new NotSupportedException();
 
         public ValueTask FireAsync(string topic, string? key, string value) => throw new NotSupportedException();

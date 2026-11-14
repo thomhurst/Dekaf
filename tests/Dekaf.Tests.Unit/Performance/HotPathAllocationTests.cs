@@ -89,6 +89,30 @@ public class HotPathAllocationTests
     }
 
     [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task KafkaProducer_FireAsyncWithFieldsHotPath_AllocatesZeroBytes(bool withDeliveryHandler)
+    {
+        await using var producer = new KafkaProducer<string, string>(
+            CreateProducerOptions(),
+            Serializers.String,
+            Serializers.String);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        Action<RecordMetadata, Exception?>? handler = withDeliveryHandler ? static (_, _) => { } : null;
+        var headers = Headers.Create("h", "v");
+
+        var measurement = WarmAndMeasure(
+            () => FireWithFields(producer, headers, handler),
+            WarmupIterations,
+            MeasuredIterations);
+
+        await Assert.That(measurement.Checksum).IsEqualTo(WarmupIterations + MeasuredIterations);
+        await Assert.That(measurement.AllocatedBytes).IsEqualTo(ZeroAllocationBudget);
+    }
+
+    [Test]
     public async Task Fire_SwallowedSerializationFailure_ReturnsZero()
     {
         await using var producer = new KafkaProducer<string, string>(
@@ -178,6 +202,24 @@ public class HotPathAllocationTests
         var accumulator = producer.RecordAccumulator;
         var bufferedBefore = accumulator.BufferedBytes;
         producer.FireAsync(Topic, "allocation-key", "allocation-value").GetAwaiter().GetResult();
+        return accumulator.BufferedBytes > bufferedBefore ? 1 : 0;
+    }
+
+    private static int FireWithFields(
+        KafkaProducer<string, string> producer,
+        Headers headers,
+        Action<RecordMetadata, Exception?>? handler)
+    {
+        var accumulator = producer.RecordAccumulator;
+        var bufferedBefore = accumulator.BufferedBytes;
+        producer.FireAsync(
+            Topic,
+            "allocation-key",
+            "allocation-value",
+            headers,
+            partition: 0,
+            DateTimeOffset.UnixEpoch,
+            handler).GetAwaiter().GetResult();
         return accumulator.BufferedBytes > bufferedBefore ? 1 : 0;
     }
 
