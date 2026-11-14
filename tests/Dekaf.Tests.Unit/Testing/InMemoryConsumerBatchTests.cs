@@ -31,6 +31,33 @@ public sealed class InMemoryConsumerBatchTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task SkippedBatch_DoesNotBlockOtherPartitions(bool raw)
+    {
+        var cluster = await CreateClusterAsync(partition0: 2, partition1: 2);
+        await using var consumer = CreateConsumer(cluster, OffsetCommitMode.Manual);
+        consumer.Assign(Partition0, Partition1);
+
+        var partitions = new List<TopicPartition>();
+        if (raw)
+        {
+            await using var batches = consumer.ConsumeRawBatchAsync().GetAsyncEnumerator();
+            for (var i = 0; i < 3 && await batches.MoveNextAsync(); i++)
+                partitions.Add(batches.Current.TopicPartition);
+        }
+        else
+        {
+            await using var batches = consumer.ConsumeBatchAsync().GetAsyncEnumerator();
+            for (var i = 0; i < 3 && await batches.MoveNextAsync(); i++)
+                partitions.Add(batches.Current.TopicPartition);
+        }
+
+        // Skipped batches are redelivered, but only after the other partition's batch.
+        await Assert.That(partitions).IsEquivalentTo([Partition0, Partition1, Partition0]);
+    }
+
+    [Test]
     public async Task ConsumeBatchAsync_UnenumeratedBatch_IsRedelivered()
     {
         var cluster = await CreateClusterAsync(partition0: 2, partition1: 0);
@@ -162,6 +189,35 @@ public sealed class InMemoryConsumerBatchTests
         await consumer.CommitAsync();
         await Assert.That(cluster.GetCommittedOffset("group", Partition0)).IsEqualTo(2);
         await Assert.That(consumer.GetPosition(Partition0)).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ConsumeBatchAsync_OnDeliveryCommitThenBreak_KeepsLaterStoredOffset()
+    {
+        var cluster = await CreateClusterAsync(partition0: 3, partition1: 0);
+        await using (var consumer = new InMemoryConsumer<string, string>(cluster, new InMemoryConsumerOptions
+        {
+            GroupId = "group",
+            AutoOffsetReset = AutoOffsetReset.Earliest,
+            OffsetCommitMode = OffsetCommitMode.Auto,
+            OffsetStoreTiming = OffsetStoreTiming.OnDelivery
+        }))
+        {
+            consumer.Assign(Partition0);
+            await foreach (var batch in consumer.ConsumeBatchAsync())
+            {
+                using var records = batch.GetEnumerator();
+                _ = records.MoveNext();
+                await consumer.CommitAsync();
+                _ = records.MoveNext();
+                break;
+            }
+
+            await Assert.That(cluster.GetCommittedOffset("group", Partition0)).IsEqualTo(1);
+            await consumer.CloseAsync();
+        }
+
+        await Assert.That(cluster.GetCommittedOffset("group", Partition0)).IsEqualTo(2);
     }
 
     [Test]

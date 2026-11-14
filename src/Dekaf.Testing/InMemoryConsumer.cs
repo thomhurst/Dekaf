@@ -1926,7 +1926,8 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         out TopicPartition selectedPartition,
         out InMemoryRecord selectedRecord,
         out long selectedPosition,
-        out ConsumerSelectionVersion selectionVersion)
+        out ConsumerSelectionVersion selectionVersion,
+        TopicPartition? startAfter = null)
     {
         lock (_gate)
         {
@@ -1951,9 +1952,12 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             selectionVersion = new ConsumerSelectionVersion(
                 _consumerStateVersion,
                 consumerGroupGeneration);
+            // Batch selection starts after the last batch's partition, so a skipped batch does
+            // not block other partitions.
+            var startIndex = startAfter is { } previous ? Array.IndexOf(assignment, previous) + 1 : 0;
             for (var partitionIndex = 0; partitionIndex < assignment.Length; partitionIndex++)
             {
-                var partition = assignment[partitionIndex];
+                var partition = assignment[(startIndex + partitionIndex) % assignment.Length];
                 if (_paused.Contains(partition))
                     continue;
 

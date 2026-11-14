@@ -29,6 +29,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
     // auto-commit and close never do. CommittedOffset is the progress an explicit commit already
     // vouched for while the batch was enumerated; the position reaches it when the stream ends.
     private UnprovenBatch? _unprovenBatch;
+    private TopicPartition? _lastBatchPartition;
     private long _repositionSequence;
     private long _repositionResetVersion;
 
@@ -150,8 +151,12 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
     {
         // Read before selecting, so a reposition that races the selection invalidates the batch.
         long repositionSequence;
+        TopicPartition? lastBatchPartition;
         lock (_gate)
+        {
             repositionSequence = _repositionSequence;
+            lastBatchPartition = _lastBatchPartition;
+        }
 
         var previousRecordProven = false;
         if (!TrySelectRecordWithVersion(
@@ -160,11 +165,15 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
                 out var partition,
                 out var first,
                 out var position,
-                out _))
+                out _,
+                lastBatchPartition))
         {
             selection = default;
             return false;
         }
+
+        lock (_gate)
+            _lastBatchPartition = partition;
 
         var records = new List<InMemoryRecord> { first };
         _cluster.ReadRecordsFrom(partition, first.Offset + 1, _options.IsolationLevel, _borrowStoredRecords, records);
@@ -257,7 +266,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
         }
     }
 
-    private bool AdvanceBatchUnderLock(BatchSelection selection, long nextOffset)
+    private bool AdvanceBatchUnderLock(BatchSelection selection, long nextOffset, bool storeOffset = true)
     {
         if (!IsBatchSelectionCurrentUnderLock(selection) ||
             _pendingAutoCommitAdvancements is not null &&
@@ -267,7 +276,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
         }
 
         _positions[selection.Partition] = nextOffset;
-        if (_options.EnableAutoOffsetStore)
+        if (storeOffset && _options.EnableAutoOffsetStore)
             StoreOffsetUnderLock(selection.Partition, nextOffset);
         return true;
     }
@@ -308,7 +317,8 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
             var selection = unproven.Selection;
             if (unproven.CommittedOffset >= 0)
             {
-                if (!AdvanceBatchUnderLock(selection, unproven.CommittedOffset))
+                // The commit already stored this offset, and OnDelivery may have stored a later one.
+                if (!AdvanceBatchUnderLock(selection, unproven.CommittedOffset, storeOffset: false))
                     return;
 
                 selection = selection with { Position = unproven.CommittedOffset };
