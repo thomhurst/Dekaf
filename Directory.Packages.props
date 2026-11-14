@@ -1,7 +1,7 @@
 <Project>
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
-    <DekafPackageVersion Condition="'$(DekafPackageVersion)' == ''">1.26.0</DekafPackageVersion>
+    <DekafPackageVersion Condition="'$(DekafPackageVersion)' == ''">1.27.0</DekafPackageVersion>
     <PackageValidationBaselineVersion Condition="'$(PackageValidationBaselineVersion)' == ''">$(DekafPackageVersion)</PackageValidationBaselineVersion>
   </PropertyGroup>
 
@@ -9,10 +9,10 @@
     <PackageVersion Include="Apache.Avro" Version="1.12.2" />
     <PackageVersion Include="AlibabaCloud.SDK.Kms20160120" Version="2.2.2" />
     <PackageVersion Include="Aliyun.Credentials" Version="1.5.4" />
-    <PackageVersion Include="Aspire.Hosting" Version="13.6.4" />
-    <PackageVersion Include="Aspire.Hosting.Testing" Version="13.6.4" />
-    <PackageVersion Include="AWSSDK.DynamoDBv2" Version="4.0.110.2" />
-    <PackageVersion Include="AWSSDK.KeyManagementService" Version="4.0.101.4" />
+    <PackageVersion Include="Aspire.Hosting" Version="13.6.5" />
+    <PackageVersion Include="Aspire.Hosting.Testing" Version="13.6.5" />
+    <PackageVersion Include="AWSSDK.DynamoDBv2" Version="4.1.0" />
+    <PackageVersion Include="AWSSDK.KeyManagementService" Version="4.1.0" />
     <PackageVersion Include="Azure.Identity" Version="1.21.0" />
     <PackageVersion Include="Azure.Security.KeyVault.Keys" Version="4.10.2" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.16.0-preview.2" />
@@ -34,15 +34,15 @@
     <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="5.6.0" />
     <PackageVersion Include="Microsoft.CodeAnalysis.PublicApiAnalyzers" Version="5.6.0" />
     <PackageVersion Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="4.0.0" />
-    <PackageVersion Include="Microsoft.Testing.Extensions.HangDump" Version="2.5.2" />
+    <PackageVersion Include="Microsoft.Testing.Extensions.HangDump" Version="2.5.3" />
     <PackageVersion Include="ModularPipelines" Version="3.2.8" />
     <PackageVersion Include="ModularPipelines.DotNet" Version="3.2.8" />
     <PackageVersion Include="ModularPipelines.Git" Version="3.2.8" />
     <PackageVersion Include="ModularPipelines.GitHub" Version="3.2.8" />
     <PackageVersion Include="NSubstitute" Version="6.2.0" />
-    <PackageVersion Include="OpenTelemetry" Version="1.20.1" />
-    <PackageVersion Include="OpenTelemetry.Api" Version="1.20.1" />
-    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.20.1" />
+    <PackageVersion Include="OpenTelemetry" Version="1.21.0" />
+    <PackageVersion Include="OpenTelemetry.Api" Version="1.21.0" />
+    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.21.0" />
     <PackageVersion Include="Polyfill" Version="11.4.5" />
     <PackageVersion Include="protobuf-net.Reflection" Version="3.4.40" />
     <PackageVersion Include="Reservoir" Version="1.10.0" />
@@ -56,9 +56,9 @@
     <PackageVersion Include="Testcontainers.Redpanda" Version="4.16.0" />
     <PackageVersion Include="Testcontainers.Toxiproxy" Version="4.16.0" />
     <PackageVersion Include="ToxiproxyNetCore" Version="1.0.50" />
-    <PackageVersion Include="TUnit" Version="1.81.16" />
-    <PackageVersion Include="TUnit.Logging.Microsoft" Version="1.81.16" />
-    <PackageVersion Include="Verify.TUnit" Version="33.3.4" />
+    <PackageVersion Include="TUnit" Version="1.84.0" />
+    <PackageVersion Include="TUnit.Logging.Microsoft" Version="1.84.0" />
+    <PackageVersion Include="Verify.TUnit" Version="33.4.0" />
     <PackageVersion Include="ZstdSharp.Port" Version="0.8.8" />
   </ItemGroup>
 
@@ -88,19 +88,19 @@
   </ItemGroup>
   <ItemGroup Condition="'$(TargetFramework)' != 'net11.0'">
     <PackageVersion Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.14" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.14" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.14" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.14" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration" Version="10.0.14" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.14" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.14" />
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.14" />
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.14" />
-    <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="10.0.14" />
-    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.14" />
-    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.14" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.14" />
-    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.14" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.15" />
     <PackageVersion Include="System.IO.Hashing" Version="10.0.14" />
     <PackageVersion Include="System.IO.Pipelines" Version="10.0.14" />
     <PackageVersion Include="System.Text.Json" Version="10.0.14" />
