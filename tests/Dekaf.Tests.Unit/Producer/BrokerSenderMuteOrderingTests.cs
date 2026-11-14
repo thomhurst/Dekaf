@@ -2125,6 +2125,69 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
     }
 
     /// <summary>
+    /// A response that times out is retried, so the sender reports it at Warning rather than
+    /// Error: the caller's delivery still succeeds and no error-level entry is written.
+    /// </summary>
+    [Test]
+    [Timeout(30_000)]
+    public async Task TimedOutResponse_IsRetried_LogsWarningNotError(CancellationToken ct)
+    {
+        var tcs1 = new TaskCompletionSource<ProduceResponse>();
+        var tcs2 = new TaskCompletionSource<ProduceResponse>();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
+        responseQueue.Enqueue(tcs1);
+        responseQueue.Enqueue(tcs2);
+
+        var sendCount = 0;
+        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
+
+        var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
+        {
+            var idx = Interlocked.Increment(ref sendCount) - 1;
+            if (idx < sendSignals.Length)
+                sendSignals[idx].TrySetResult();
+        });
+        ct = GuardUnscriptedSends(ct);
+        var options = CreateOptions();
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        var logger = new CapturingLogger();
+
+        var acknowledgement = new TaskCompletionSource<(long Offset, Exception? Error)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var sender = CreateSender(pool, options, accumulator,
+            (_, offset, _, _, ex) => acknowledgement.TrySetResult((offset, ex)),
+            logger: logger);
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(vtPool, "test-topic", 0));
+            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+
+            tcs1.SetException(new TimeoutException(
+                "Request Produce (correlation 1) timed out after 30s waiting for response from broker:9092"));
+
+            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+            tcs2.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 42));
+
+            var (offset, error) = await acknowledgement.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+
+            await Assert.That(error).IsNull();
+            await Assert.That(offset).IsEqualTo(42);
+            await Assert.That(logger.Messages.Any(m =>
+                m.Level == LogLevel.Warning && m.Message.Contains("retrying affected batches"))).IsTrue();
+            await Assert.That(logger.Messages.Any(m => m.Level >= LogLevel.Error)).IsFalse();
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
     /// Multiple consecutive retriable errors: the partition stays muted through
     /// successive retries, and the normal batch only proceeds after final success.
     /// </summary>

@@ -18,6 +18,7 @@
     <Compile Include="..\Dekaf.Tests.Unit\Producer\AccumulatorTestHooks.cs" Link="Producer\AccumulatorTestHooks.cs" />
     <Compile Include="..\Dekaf.Tests.Unit\GcSafeSpin.cs" Link="GcSafeSpin.cs" />
     <Compile Include="..\Dekaf.Tests.Unit\TestWait.cs" Link="TestWait.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\CapturingLogger.cs" Link="CapturingLogger.cs" />
     <!-- Shared helpers the linked suites below depend on; without them this project does not build. -->
     <Compile Include="..\Dekaf.Tests.Unit\Producer\AccumulatorTestHelpers.cs" Link="Producer\AccumulatorTestHelpers.cs" />
     <Compile Include="..\Dekaf.Tests.Unit\Producer\AdaptiveScalingTests.cs" Link="Producer\AdaptiveScalingTests.cs" />
