@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.Streams</PackageId>
+    <Description>Stream processing for Dekaf: typed topology DSL, processor API, state stores, windows and joins</Description>
+    <PackageTags>kafka;streams;stream-processing</PackageTags>
+    <!-- New package: no previously published baseline exists yet. -->
+    <PackageValidationBaselineVersion></PackageValidationBaselineVersion>
+    <!-- CA1711: IStream and its relatives are streams of records, not System.IO streams. -->
+    <NoWarn>$(NoWarn);CA1711</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dekaf\Dekaf.csproj" />
+    <InternalsVisibleTo Include="Dekaf.Streams.Testing" />
+    <InternalsVisibleTo Include="Dekaf.Tests.Unit" />
+    <InternalsVisibleTo Include="Dekaf.Benchmarks" />
+  </ItemGroup>
+
+</Project>

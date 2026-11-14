@@ -38,6 +38,8 @@
     <ProjectReference Include="..\..\src\Dekaf.Serialization.Json\Dekaf.Serialization.Json.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Serialization.Routing\Dekaf.Serialization.Routing.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Testing\Dekaf.Testing.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Streams\Dekaf.Streams.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Streams.Testing\Dekaf.Streams.Testing.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Extensions.DependencyInjection\Dekaf.Extensions.DependencyInjection.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Extensions.Hosting\Dekaf.Extensions.Hosting.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.OpenTelemetry\Dekaf.OpenTelemetry.csproj" />

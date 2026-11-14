@@ -1,0 +1,135 @@
+#nullable enable
+Dekaf.Streams.ErrorResponse
+Dekaf.Streams.ErrorResponse.ErrorResponse() -> void
+Dekaf.Streams.IForwarder<TKey, TValue>
+Dekaf.Streams.IForwarder<TKey, TValue>.Forward(in Dekaf.Streams.Record<TKey, TValue> record) -> void
+Dekaf.Streams.IGroupedStream<TKey, TValue>
+Dekaf.Streams.IGroupedStream<TKey, TValue>.Aggregate<TAggregate>(string! name, System.Func<TAggregate>! initializer, System.Func<TKey, TValue, TAggregate, TAggregate>! aggregator, Dekaf.Serialization.ISerde<TAggregate>! aggregateSerde) -> Dekaf.Streams.ITable<TKey, TAggregate>!
+Dekaf.Streams.IGroupedStream<TKey, TValue>.Count(string! name) -> Dekaf.Streams.ITable<TKey, long>!
+Dekaf.Streams.IGroupedStream<TKey, TValue>.Reduce(string! name, System.Func<TValue, TValue, TValue>! reducer, Dekaf.Serialization.ISerde<TValue>! valueSerde) -> Dekaf.Streams.ITable<TKey, TValue>!
+Dekaf.Streams.IGroupedStream<TKey, TValue>.WindowedBy(Dekaf.Streams.TimeWindows! windows) -> Dekaf.Streams.IWindowedStream<TKey, TValue>!
+Dekaf.Streams.IKeyValueStore<TKey, TValue>
+Dekaf.Streams.IKeyValueStore<TKey, TValue>.Delete(TKey key) -> bool
+Dekaf.Streams.IKeyValueStore<TKey, TValue>.Put(TKey key, TValue value) -> void
+Dekaf.Streams.IProcessor<TKeyIn, TValueIn, TKeyOut, TValueOut>
+Dekaf.Streams.IProcessor<TKeyIn, TValueIn, TKeyOut, TValueOut>.Init(Dekaf.Streams.IProcessorContext<TKeyOut, TValueOut>! context) -> void
+Dekaf.Streams.IProcessor<TKeyIn, TValueIn, TKeyOut, TValueOut>.Process(in Dekaf.Streams.Record<TKeyIn, TValueIn> record) -> void
+Dekaf.Streams.IProcessorContext<TKeyOut, TValueOut>
+Dekaf.Streams.IProcessorContext<TKeyOut, TValueOut>.GetKeyValueStore<TKey, TValue>(string! name) -> Dekaf.Streams.IKeyValueStore<TKey, TValue>!
+Dekaf.Streams.IProcessorContext<TKeyOut, TValueOut>.Partition.get -> int
+Dekaf.Streams.IProcessorContext<TKeyOut, TValueOut>.SubtopologyId.get -> string!
+Dekaf.Streams.IReadOnlyKeyValueStore<TKey, TValue>
+Dekaf.Streams.IReadOnlyKeyValueStore<TKey, TValue>.Count.get -> long
+Dekaf.Streams.IReadOnlyKeyValueStore<TKey, TValue>.Name.get -> string!
+Dekaf.Streams.IReadOnlyKeyValueStore<TKey, TValue>.TryGet(TKey key, out TValue value) -> bool
+Dekaf.Streams.IStream<TKey, TValue>
+Dekaf.Streams.IStream<TKey, TValue>.GroupBy<TNewKey>(System.Func<TKey, TValue, TNewKey>! keySelector, Dekaf.Serialization.ISerde<TNewKey>! keySerde, Dekaf.Serialization.ISerde<TValue>! valueSerde) -> Dekaf.Streams.IGroupedStream<TNewKey, TValue>!
+Dekaf.Streams.IStream<TKey, TValue>.GroupByKey() -> Dekaf.Streams.IGroupedStream<TKey, TValue>!
+Dekaf.Streams.IStream<TKey, TValue>.Join<TTableValue, TResult>(Dekaf.Streams.ITable<TKey, TTableValue>! table, System.Func<TValue, TTableValue, TResult>! joiner) -> Dekaf.Streams.IStream<TKey, TResult>!
+Dekaf.Streams.IStream<TKey, TValue>.LeftJoin<TTableValue, TResult>(Dekaf.Streams.ITable<TKey, TTableValue>! table, System.Func<TValue, TTableValue?, bool, TResult>! joiner) -> Dekaf.Streams.IStream<TKey, TResult>!
+Dekaf.Streams.IStream<TKey, TValue>.Merge(Dekaf.Streams.IStream<TKey, TValue>! other) -> Dekaf.Streams.IStream<TKey, TValue>!
+Dekaf.Streams.IStream<TKey, TValue>.Peek(System.Action<TKey, TValue>! action) -> Dekaf.Streams.IStream<TKey, TValue>!
+Dekaf.Streams.IStream<TKey, TValue>.Process<TKeyOut, TValueOut>(string! name, System.Func<Dekaf.Streams.IProcessor<TKey, TValue, TKeyOut, TValueOut>!>! factory, params Dekaf.Streams.StoreDefinition![]! stores) -> Dekaf.Streams.IStream<TKeyOut, TValueOut>!
+Dekaf.Streams.IStream<TKey, TValue>.Process<TState, TKeyOut, TValueOut>(string! name, Dekaf.Serialization.ISerde<TState>! stateSerde, Dekaf.Streams.StatefulHandler<TKey, TValue, TState, TKeyOut, TValueOut>! handler) -> Dekaf.Streams.IStream<TKeyOut, TValueOut>!
+Dekaf.Streams.IStream<TKey, TValue>.Repartition(string! name, Dekaf.Serialization.ISerde<TKey>! keySerde, Dekaf.Serialization.ISerde<TValue>! valueSerde) -> Dekaf.Streams.IStream<TKey, TValue>!
+Dekaf.Streams.IStream<TKey, TValue>.Select<TResult>(System.Func<TKey, TValue, TResult>! selector) -> Dekaf.Streams.IStream<TKey, TResult>!
+Dekaf.Streams.IStream<TKey, TValue>.SelectKey<TNewKey>(System.Func<TKey, TValue, TNewKey>! selector) -> Dekaf.Streams.IStream<TNewKey, TValue>!
+Dekaf.Streams.IStream<TKey, TValue>.SelectMany<TResult>(System.Action<TKey, TValue, Dekaf.Streams.IValueSink<TResult>!>! selector) -> Dekaf.Streams.IStream<TKey, TResult>!
+Dekaf.Streams.IStream<TKey, TValue>.ToTopic(string! topic, Dekaf.Serialization.ISerializer<TKey>! keySerializer, Dekaf.Serialization.ISerializer<TValue>! valueSerializer) -> void
+Dekaf.Streams.IStream<TKey, TValue>.Where(System.Func<TKey, TValue, bool>! predicate) -> Dekaf.Streams.IStream<TKey, TValue>!
+Dekaf.Streams.ITable<TKey, TValue>
+Dekaf.Streams.ITable<TKey, TValue>.StoreName.get -> string!
+Dekaf.Streams.ITable<TKey, TValue>.ToStream() -> Dekaf.Streams.IStream<TKey, TValue>!
+Dekaf.Streams.IValueSink<TValue>
+Dekaf.Streams.IValueSink<TValue>.Add(TValue value) -> void
+Dekaf.Streams.IValueState<TState>
+Dekaf.Streams.IValueState<TState>.Clear() -> void
+Dekaf.Streams.IValueState<TState>.Set(TState value) -> void
+Dekaf.Streams.IValueState<TState>.TryGet(out TState value) -> bool
+Dekaf.Streams.IWindowedStream<TKey, TValue>
+Dekaf.Streams.IWindowedStream<TKey, TValue>.Aggregate<TAggregate>(string! name, System.Func<TAggregate>! initializer, System.Func<TKey, TValue, TAggregate, TAggregate>! aggregator, Dekaf.Serialization.ISerde<TAggregate>! aggregateSerde) -> Dekaf.Streams.ITable<Dekaf.Streams.Windowed<TKey>, TAggregate>!
+Dekaf.Streams.IWindowedStream<TKey, TValue>.Count(string! name) -> Dekaf.Streams.ITable<Dekaf.Streams.Windowed<TKey>, long>!
+Dekaf.Streams.ProcessingError
+Dekaf.Streams.ProcessingError.Exception.get -> System.Exception!
+Dekaf.Streams.ProcessingError.Offset.get -> long
+Dekaf.Streams.ProcessingError.Partition.get -> int
+Dekaf.Streams.ProcessingError.ProcessingError() -> void
+Dekaf.Streams.ProcessingError.Topic.get -> string!
+Dekaf.Streams.Record<TKey, TValue>
+Dekaf.Streams.Record<TKey, TValue>.Headers.get -> Dekaf.Serialization.Headers?
+Dekaf.Streams.Record<TKey, TValue>.Key.get -> TKey
+Dekaf.Streams.Record<TKey, TValue>.Record() -> void
+Dekaf.Streams.Record<TKey, TValue>.Record(TKey key, TValue value, long timestamp, Dekaf.Serialization.Headers? headers = null) -> void
+Dekaf.Streams.Record<TKey, TValue>.Timestamp.get -> long
+Dekaf.Streams.Record<TKey, TValue>.Value.get -> TValue
+Dekaf.Streams.Record<TKey, TValue>.WithKey<TNewKey>(TNewKey key) -> Dekaf.Streams.Record<TNewKey, TValue>
+Dekaf.Streams.Record<TKey, TValue>.WithValue<TNewValue>(TNewValue value) -> Dekaf.Streams.Record<TKey, TNewValue>
+Dekaf.Streams.StatefulHandler<TKey, TValue, TState, TKeyOut, TValueOut>
+Dekaf.Streams.StoreDefinition
+Dekaf.Streams.StoreDefinition.Name.get -> string!
+Dekaf.Streams.Stores
+Dekaf.Streams.StreamsBuilder
+Dekaf.Streams.StreamsBuilder.ApplicationId.get -> string!
+Dekaf.Streams.StreamsBuilder.Build() -> Dekaf.Streams.Topology!
+Dekaf.Streams.StreamsBuilder.OnError(System.Func<Dekaf.Streams.ProcessingError, Dekaf.Streams.ErrorResponse>! handler) -> Dekaf.Streams.StreamsBuilder!
+Dekaf.Streams.StreamsBuilder.Stream<TKey, TValue>(string! topic, Dekaf.Serialization.ISerde<TKey>! keySerde, Dekaf.Serialization.ISerde<TValue>! valueSerde) -> Dekaf.Streams.IStream<TKey, TValue>!
+Dekaf.Streams.StreamsBuilder.StreamsBuilder(string! applicationId) -> void
+Dekaf.Streams.StreamsBuilder.Table<TKey, TValue>(string! topic, string! storeName, Dekaf.Serialization.ISerde<TKey>! keySerde, Dekaf.Serialization.ISerde<TValue>! valueSerde) -> Dekaf.Streams.ITable<TKey, TValue>!
+Dekaf.Streams.StreamsException
+Dekaf.Streams.StreamsException.StreamsException(string! message) -> void
+Dekaf.Streams.StreamsException.StreamsException(string! message, System.Exception! innerException) -> void
+Dekaf.Streams.SubtopologyDescription
+Dekaf.Streams.SubtopologyDescription.ChangelogTopics.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Dekaf.Streams.SubtopologyDescription.ChangelogTopics.init -> void
+Dekaf.Streams.SubtopologyDescription.Id.get -> string!
+Dekaf.Streams.SubtopologyDescription.Id.init -> void
+Dekaf.Streams.SubtopologyDescription.RepartitionSinkTopics.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Dekaf.Streams.SubtopologyDescription.RepartitionSinkTopics.init -> void
+Dekaf.Streams.SubtopologyDescription.RepartitionSourceTopics.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Dekaf.Streams.SubtopologyDescription.RepartitionSourceTopics.init -> void
+Dekaf.Streams.SubtopologyDescription.SinkTopics.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Dekaf.Streams.SubtopologyDescription.SinkTopics.init -> void
+Dekaf.Streams.SubtopologyDescription.SourceTopics.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Dekaf.Streams.SubtopologyDescription.SourceTopics.init -> void
+Dekaf.Streams.SubtopologyDescription.StateStores.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Dekaf.Streams.SubtopologyDescription.StateStores.init -> void
+Dekaf.Streams.SubtopologyDescription.SubtopologyDescription() -> void
+Dekaf.Streams.TimeWindows
+Dekaf.Streams.TimeWindows.Advance.get -> System.TimeSpan
+Dekaf.Streams.TimeWindows.EmitOnClose() -> Dekaf.Streams.TimeWindows!
+Dekaf.Streams.TimeWindows.Grace.get -> System.TimeSpan
+Dekaf.Streams.TimeWindows.IsEmitOnClose.get -> bool
+Dekaf.Streams.TimeWindows.Size.get -> System.TimeSpan
+Dekaf.Streams.TimeWindows.WithGrace(System.TimeSpan grace) -> Dekaf.Streams.TimeWindows!
+Dekaf.Streams.Topology
+Dekaf.Streams.Topology.ApplicationId.get -> string!
+Dekaf.Streams.Topology.Describe() -> string!
+Dekaf.Streams.Topology.Subtopologies.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.SubtopologyDescription!>!
+Dekaf.Streams.Topology.ToStreamsGroupTopology() -> Dekaf.Streams.StreamsGroupTopology!
+Dekaf.Streams.TopologyException
+Dekaf.Streams.TopologyException.TopologyException(string! message) -> void
+Dekaf.Streams.Windowed<TKey>
+Dekaf.Streams.Windowed<TKey>.Deconstruct(out TKey Key, out long Start, out long End) -> void
+Dekaf.Streams.Windowed<TKey>.End.get -> long
+Dekaf.Streams.Windowed<TKey>.End.init -> void
+Dekaf.Streams.Windowed<TKey>.Equals(Dekaf.Streams.Windowed<TKey> other) -> bool
+Dekaf.Streams.Windowed<TKey>.Key.get -> TKey
+Dekaf.Streams.Windowed<TKey>.Key.init -> void
+Dekaf.Streams.Windowed<TKey>.Start.get -> long
+Dekaf.Streams.Windowed<TKey>.Start.init -> void
+Dekaf.Streams.Windowed<TKey>.Windowed() -> void
+Dekaf.Streams.Windowed<TKey>.Windowed(TKey Key, long Start, long End) -> void
+Dekaf.Streams.WindowedSerde
+override Dekaf.Streams.Windowed<TKey>.GetHashCode() -> int
+static Dekaf.Streams.ErrorResponse.Continue.get -> Dekaf.Streams.ErrorResponse
+static Dekaf.Streams.ErrorResponse.DeadLetter(string! topic) -> Dekaf.Streams.ErrorResponse
+static Dekaf.Streams.ErrorResponse.Fail.get -> Dekaf.Streams.ErrorResponse
+static Dekaf.Streams.Stores.KeyValue<TKey, TValue>(string! name, Dekaf.Serialization.ISerde<TKey>! keySerde, Dekaf.Serialization.ISerde<TValue>! valueSerde) -> Dekaf.Streams.StoreDefinition!
+static Dekaf.Streams.TimeWindows.Hopping(System.TimeSpan size, System.TimeSpan advance) -> Dekaf.Streams.TimeWindows!
+static Dekaf.Streams.TimeWindows.Tumbling(System.TimeSpan size) -> Dekaf.Streams.TimeWindows!
+static Dekaf.Streams.Windowed<TKey>.operator !=(Dekaf.Streams.Windowed<TKey> left, Dekaf.Streams.Windowed<TKey> right) -> bool
+static Dekaf.Streams.Windowed<TKey>.operator ==(Dekaf.Streams.Windowed<TKey> left, Dekaf.Streams.Windowed<TKey> right) -> bool
+static Dekaf.Streams.WindowedSerde.Create<TKey>(Dekaf.Serialization.ISerde<TKey>! keySerde, System.TimeSpan windowSize) -> Dekaf.Serialization.ISerde<Dekaf.Streams.Windowed<TKey>>!
+virtual Dekaf.Streams.StatefulHandler<TKey, TValue, TState, TKeyOut, TValueOut>.Invoke(in Dekaf.Streams.Record<TKey, TValue> record, Dekaf.Streams.IValueState<TState>! state, Dekaf.Streams.IForwarder<TKeyOut, TValueOut>! output) -> void
+~override Dekaf.Streams.Windowed<TKey>.Equals(object obj) -> bool
+~override Dekaf.Streams.Windowed<TKey>.ToString() -> string
