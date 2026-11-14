@@ -7,6 +7,10 @@ description: "Dekaf.Streams runs stateful stream-processing topologies on Kafka 
 
 `Dekaf.Streams` is a stream-processing library on top of the Dekaf client. You declare a topology of typed operators; the library runs it as a member of a Kafka streams group, keeps its state in changelog topics, and by default commits output, state and consumed offsets in one transaction.
 
+:::caution Beta
+The `Dekaf.Streams` packages are published as prereleases, for example `1.28.0-beta`. They are tested against real brokers, but the API may change in breaking ways between releases while feedback comes in. Install them with `dotnet add package Dekaf.Streams --prerelease`, and please report what works and what does not on [GitHub](https://github.com/thomhurst/Dekaf/issues).
+:::
+
 ## Requirements
 
 - **Kafka 4.4 or later** with the streams group protocol enabled, which is the default on clusters created with Kafka 4.2 or later. There is no fallback to consumer groups.

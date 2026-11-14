@@ -4,6 +4,8 @@
     <PackageId>Dekaf.Streams.Testing</PackageId>
     <Description>Deterministic in-memory test driver for Dekaf.Streams topologies</Description>
     <PackageTags>kafka;streams;testing</PackageTags>
+    <!-- Beta: the API may still change in breaking ways between releases. Remove to ship as stable. -->
+    <PrereleaseLabel>beta</PrereleaseLabel>
     <!-- New package: no previously published baseline exists yet. -->
     <PackageValidationBaselineVersion></PackageValidationBaselineVersion>
   </PropertyGroup>

@@ -132,6 +132,8 @@ Per record, on the library's own path: one deserialize at the source, one virtua
 
 ## Status
 
+The four `Dekaf.Streams*` packages ship as beta prereleases (`PrereleaseLabel` in each project) so the API can still change on user feedback.
+
 Built in #4145:
 
 - **Foundation:** DSL, topology compiler, task engine, in-memory stores, tumbling and hopping windows, stream-table join, processor API, error handler, test driver, benchmark.

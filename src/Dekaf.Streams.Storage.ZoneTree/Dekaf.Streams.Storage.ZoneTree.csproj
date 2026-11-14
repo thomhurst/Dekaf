@@ -4,6 +4,8 @@
     <PackageId>Dekaf.Streams.Storage.ZoneTree</PackageId>
     <Description>Persistent state stores for Dekaf.Streams, backed by the managed ZoneTree LSM engine</Description>
     <PackageTags>kafka;streams;state-store;zonetree</PackageTags>
+    <!-- Beta: the API may still change in breaking ways between releases. Remove to ship as stable. -->
+    <PrereleaseLabel>beta</PrereleaseLabel>
     <!-- New package: no previously published baseline exists yet. -->
     <PackageValidationBaselineVersion></PackageValidationBaselineVersion>
   </PropertyGroup>

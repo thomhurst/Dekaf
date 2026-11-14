@@ -412,8 +412,10 @@ Global interceptors execute before per-instance interceptors, in registration or
 
 `Dekaf.Streams` runs stateful topologies on Kafka 4.4+ as a streams group member: a typed DSL, changelog-backed state, windows, stream-table joins and exactly-once processing by default.
 
+The streams packages are in beta: they ship as prereleases and their API may still change.
+
 ```bash
-dotnet add package Dekaf.Streams
+dotnet add package Dekaf.Streams --prerelease
 ```
 
 ```csharp
