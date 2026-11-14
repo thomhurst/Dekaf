@@ -3633,15 +3633,28 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
 
         if (revoked is not null)
         {
-            if (lost)
+            try
             {
-                await InvokeListenerAsync(
-                    static (listener, partitions, token) => listener.OnPartitionsLostAsync(partitions, token),
-                    listener, revoked, cancellationToken).ConfigureAwait(false);
+                if (lost)
+                {
+                    await InvokeListenerAsync(
+                        static (listener, partitions, token) => listener.OnPartitionsLostAsync(partitions, token),
+                        listener, revoked, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await RevokeListenerPartitionsAsync(listener, revoked, cancellationToken).ConfigureAwait(false);
+                }
             }
-            else
+            catch (OperationCanceledException) when (assigned is not null)
             {
-                await RevokeListenerPartitionsAsync(listener, revoked, cancellationToken).ConfigureAwait(false);
+                // The assignment was never reported; the next consume call reports it.
+                lock (_gate)
+                {
+                    _listenerAssignment.ExceptWith(assigned);
+                    _listenerConsumerStateVersion = -1;
+                }
+                throw;
             }
         }
 
@@ -3720,29 +3733,55 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             return ValueTask.CompletedTask;
 
         TopicPartition[] revoked;
+        bool lost;
         lock (_gate)
         {
             if (closing ? _disposed : _leavingGroup)
                 return ValueTask.CompletedTask;
 
+            // Refresh membership first: after an administrative removal the partitions are lost
+            // and must not stay committable from the callback.
+            var subscribed = _subscriptionTopologyVersion >= 0;
+            if (subscribed)
+                _ = GetCurrentAssignmentUnderLock();
+            lost = subscribed && _consumerGroupRegistrationId != 0 && _consumerGroupGeneration < 0;
             _leavingGroup = true;
-            foreach (var partition in _listenerAssignment)
-                PreserveDepartingOffsetUnderLock(partition);
+            if (lost)
+            {
+                RemoveDepartingOffsetsUnderLock(_listenerAssignment);
+            }
+            else
+            {
+                foreach (var partition in _listenerAssignment)
+                    PreserveDepartingOffsetUnderLock(partition);
+            }
             revoked = _listenerAssignment.ToArray();
             _listenerAssignment.Clear();
             _listenerConsumerStateVersion = -1;
         }
 
-        return RevokeAsync(listener, revoked, cancellationToken);
+        return RevokeAsync(listener, revoked, lost, cancellationToken);
 
         async ValueTask RevokeAsync(
             IRebalanceListener listener,
             TopicPartition[] revoked,
+            bool lost,
             CancellationToken cancellationToken)
         {
             await AwaitPendingRebalanceCallbackAsync(cancellationToken).ConfigureAwait(false);
-            if (revoked.Length != 0)
+            if (revoked.Length == 0)
+                return;
+
+            if (lost)
+            {
+                await InvokeListenerAsync(
+                    static (listener, partitions, token) => listener.OnPartitionsLostAsync(partitions, token),
+                    listener, revoked, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
                 await RevokeListenerPartitionsAsync(listener, revoked, cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 

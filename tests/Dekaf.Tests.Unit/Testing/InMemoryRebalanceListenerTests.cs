@@ -291,6 +291,60 @@ public sealed class InMemoryRebalanceListenerTests
     }
 
     [Test]
+    public async Task AdministrativeRemovalBeforeClose_ReportsPartitionsLostWithoutCommitting()
+    {
+        var cluster = CreateCluster(partitions: 1);
+        await ProduceAsync(cluster, 2);
+        var listener = new RecordingListener();
+        var consumer = CreateConsumer(cluster, "a", listener, OffsetCommitMode.Manual);
+        listener.OnRevoked = () => consumer.CommitAsync();
+        consumer.Subscribe("topic");
+        await Assert.That((await consumer.ConsumeOneAsync(TimeSpan.Zero))!.Value.Offset).IsEqualTo(0);
+
+        cluster.RemoveConsumerGroupMembers("group", [new ConsumerGroupMemberIdentity { MemberId = "a" }]);
+        await consumer.CloseAsync();
+        await consumer.DisposeAsync();
+
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0", "lost topic-0"], CollectionOrdering.Matching);
+        await Assert.That(cluster.GetCommittedOffset("group", Partition0)).IsNull();
+    }
+
+    [Test]
+    public async Task CancelledRevocation_StillReportsTheNewAssignment()
+    {
+        var cluster = CreateCluster(partitions: 1);
+        cluster.CreateTopic("other", 1);
+        var listener = new RecordingListener();
+        var revocationEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRevocation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var consumer = CreateConsumer(cluster, "a", listener);
+        var revocations = 0;
+        listener.OnRevoked = async () =>
+        {
+            if (Interlocked.Increment(ref revocations) != 1)
+                return;
+
+            revocationEntered.SetResult();
+            await releaseRevocation.Task;
+            throw new OperationCanceledException();
+        };
+        consumer.Subscribe("topic");
+        await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        consumer.Subscribe("other");
+        using var cancellation = new CancellationTokenSource();
+        var consume = consumer.ConsumeOneAsync(TimeSpan.Zero, cancellation.Token).AsTask();
+        await revocationEntered.Task;
+        await cancellation.CancelAsync();
+        releaseRevocation.SetResult();
+        await Assert.That(async () => await consume).Throws<OperationCanceledException>();
+
+        await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0", "assigned other-0"], CollectionOrdering.Matching);
+    }
+
+    [Test]
     public async Task ManualAssignment_DoesNotInvokeTheListener()
     {
         var cluster = CreateCluster(partitions: 2);
