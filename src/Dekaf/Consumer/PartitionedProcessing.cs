@@ -2368,7 +2368,8 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             return;
         }
 
-        var observation = new OffsetCommitObservation(reason, offsets);
+        // Read-only view: the observer must not be able to change what gets committed.
+        var observation = new OffsetCommitObservation(reason, new System.Collections.ObjectModel.ReadOnlyCollection<TopicPartitionOffset>(offsets));
         object? state = null;
         try
         {

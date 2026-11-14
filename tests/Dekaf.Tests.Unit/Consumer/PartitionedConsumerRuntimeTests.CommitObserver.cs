@@ -235,6 +235,33 @@ public sealed partial class PartitionedConsumerRuntimeTests
         await Assert.That(observer.Started).IsEmpty();
     }
 
+    [Test]
+    public async Task CommitObserver_CannotChangeCommittedOffsets()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.SetAssignment(partition);
+        var observer = new MutatingCommitObserver();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            static (_, _, _) => ValueTask.CompletedTask,
+            new PartitionedProcessingOptions
+            {
+                CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
+                CommitInterval = TimeSpan.FromMilliseconds(20),
+                CommitObserver = observer
+            },
+            cts.Token).AsTask();
+
+        consumer.Enqueue(CreateResult(partition, 0));
+        await observer.Completed.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+
+        await Assert.That(observer.WriteFailure).IsTypeOf<NotSupportedException>();
+        await Assert.That(consumer.CommitCalls.First()).IsEquivalentTo(new[] { new TopicPartitionOffset("topic-a", 0, 1) });
+    }
+
     private sealed record ObservedCommitStart(
         OffsetCommitReason Reason,
         TopicPartitionOffset[] Offsets,
@@ -271,6 +298,31 @@ public sealed partial class PartitionedConsumerRuntimeTests
                 observation.Offsets.ToArray(),
                 state,
                 exception));
+    }
+
+    private sealed class MutatingCommitObserver : IOffsetCommitObserver
+    {
+        public Exception? WriteFailure;
+
+        public TaskCompletionSource Completed { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public object? OnCommitStarting(OffsetCommitObservation observation)
+        {
+            try
+            {
+                ((IList<TopicPartitionOffset>)observation.Offsets)[0] = new TopicPartitionOffset("topic-a", 0, 999);
+            }
+            catch (Exception exception)
+            {
+                WriteFailure = exception;
+            }
+
+            return null;
+        }
+
+        public void OnCommitCompleted(OffsetCommitObservation observation, object? state, Exception? exception)
+            => Completed.TrySetResult();
     }
 
     private sealed class ThrowingCommitObserver : IOffsetCommitObserver
