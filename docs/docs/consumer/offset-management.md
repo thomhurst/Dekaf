@@ -227,8 +227,10 @@ var consumer = await Kafka.CreateConsumer<string, string>()
 `OnCommitStarting` runs before each commit request and `OnCommitCompleted` runs once
 after it, with the exception when it failed. The reason is `Periodic` for the
 automatic commit, `Revoke` for the commit of revoked partitions during a rebalance,
-and `Stop` for the commit on close. A failed request that is retried is observed once
-per request. Commits you request with `CommitAsync` are not observed. The observer
+and `Stop` for the commit on close. Each commit is observed once, including the
+coordinator's own retries of retriable errors, so the measured duration covers them;
+when an automatic commit fails and the consumer tries it again after a backoff, the
+second attempt is observed as another commit. Commits you request with `CommitAsync` are not observed. The observer
 cannot change what is committed: an exception it throws is logged and the commit
 continues.
 
