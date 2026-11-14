@@ -278,3 +278,18 @@ Dekaf.Consumer.PartitionedProcessingControl.SeekAsync(Dekaf.TopicPartitionOffset
 Dekaf.Consumer.PartitionedProcessingControl.SeekAsync(Dekaf.TopicPartitionTimestamp timestamp, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
 Dekaf.Consumer.PartitionedProcessingOptions.Control.get -> Dekaf.Consumer.PartitionedProcessingControl?
 Dekaf.Consumer.PartitionedProcessingOptions.Control.init -> void
+Dekaf.Consumer.IOffsetCommitObserver
+Dekaf.Consumer.IOffsetCommitObserver.OnCommitCompleted(Dekaf.Consumer.OffsetCommitObservation observation, object? state, System.Exception? exception) -> void
+Dekaf.Consumer.IOffsetCommitObserver.OnCommitStarting(Dekaf.Consumer.OffsetCommitObservation observation) -> object?
+Dekaf.Consumer.OffsetCommitObservation
+Dekaf.Consumer.OffsetCommitObservation.OffsetCommitObservation() -> void
+Dekaf.Consumer.OffsetCommitObservation.OffsetCommitObservation(Dekaf.Consumer.OffsetCommitReason reason, System.Collections.Generic.IReadOnlyList<Dekaf.TopicPartitionOffset>! offsets) -> void
+Dekaf.Consumer.OffsetCommitObservation.Offsets.get -> System.Collections.Generic.IReadOnlyList<Dekaf.TopicPartitionOffset>!
+Dekaf.Consumer.OffsetCommitObservation.Reason.get -> Dekaf.Consumer.OffsetCommitReason
+Dekaf.Consumer.OffsetCommitReason
+Dekaf.Consumer.OffsetCommitReason.Periodic = 0 -> Dekaf.Consumer.OffsetCommitReason
+Dekaf.Consumer.OffsetCommitReason.Revoke = 1 -> Dekaf.Consumer.OffsetCommitReason
+Dekaf.Consumer.OffsetCommitReason.Seek = 3 -> Dekaf.Consumer.OffsetCommitReason
+Dekaf.Consumer.OffsetCommitReason.Stop = 2 -> Dekaf.Consumer.OffsetCommitReason
+Dekaf.Consumer.PartitionedProcessingOptions.CommitObserver.get -> Dekaf.Consumer.IOffsetCommitObserver?
+Dekaf.Consumer.PartitionedProcessingOptions.CommitObserver.init -> void

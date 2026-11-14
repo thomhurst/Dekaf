@@ -686,6 +686,16 @@ public sealed class PartitionedProcessingOptions
     /// </remarks>
     public PartitionedProcessingControl? Control { get; init; }
 
+    /// <summary>
+    /// Gets an optional observer called before and after each commit the runtime sends under a
+    /// runtime-managed <see cref="CommitPolicy"/>: periodic, revoke, partition stop and seek commits.
+    /// </summary>
+    /// <remarks>
+    /// Commits a handler requests through <see cref="PartitionProcessorContext{TKey, TValue}.CommitProcessedAsync"/>
+    /// are not observed; the handler can instrument that call itself.
+    /// </remarks>
+    public IOffsetCommitObserver? CommitObserver { get; init; }
+
     // Runs on the runtime loop after a seek marks a lane to discard its queued records and before
     // the lane stops, so tests can release an in-flight handler at a deterministic point.
     internal Action<TopicPartition>? SeekDiscardingLaneForTest { get; init; }
@@ -1342,7 +1352,8 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
                     return;
             }
 
-            await _consumer.CommitAsync([offset], commitCancellation.Token).ConfigureAwait(false);
+            await CommitRuntimeOffsetsAsync([offset], OffsetCommitReason.Seek, commitCancellation.Token)
+                .ConfigureAwait(false);
         }
         catch (GroupException exception) when (IsMembershipLoss(exception))
         {
@@ -1998,7 +2009,10 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         try
         {
             if (commitProcessed)
-                await CommitStoppedLaneAsync(lane, cancellationToken).ConfigureAwait(false);
+                await CommitStoppedLaneAsync(
+                    lane,
+                    reason == PartitionStopReason.Revoke ? OffsetCommitReason.Revoke : OffsetCommitReason.Stop,
+                    cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -2256,7 +2270,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         }
 
         if (pending is not null)
-            await CommitPendingOffsetsAsync(pending, cancellationToken).ConfigureAwait(false);
+            await CommitPendingOffsetsAsync(pending, OffsetCommitReason.Periodic, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -2280,7 +2294,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
         if (_options.StopTimeout == Timeout.InfiniteTimeSpan)
         {
-            await CommitPendingOffsetsAsync(pending, cancellationToken).ConfigureAwait(false);
+            await CommitPendingOffsetsAsync(pending, OffsetCommitReason.Revoke, cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -2288,7 +2302,8 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         commitCancellation.CancelAfter(_options.StopTimeout);
         try
         {
-            await CommitPendingOffsetsAsync(pending, commitCancellation.Token).ConfigureAwait(false);
+            await CommitPendingOffsetsAsync(pending, OffsetCommitReason.Revoke, commitCancellation.Token)
+                .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -2300,6 +2315,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
     private async ValueTask CommitPendingOffsetsAsync(
         List<(PartitionLane<TKey, TValue> Lane, TopicPartitionOffset Offset)> pending,
+        OffsetCommitReason reason,
         CancellationToken cancellationToken)
     {
         var offsets = new TopicPartitionOffset[pending.Count];
@@ -2308,7 +2324,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
         try
         {
-            await _consumer.CommitAsync(offsets, cancellationToken).ConfigureAwait(false);
+            await CommitRuntimeOffsetsAsync(offsets, reason, cancellationToken).ConfigureAwait(false);
         }
         catch (GroupException exception) when (IsMembershipLoss(exception))
         {
@@ -2327,22 +2343,84 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     private async ValueTask CommitLaneAsync(
         PartitionLane<TKey, TValue> lane,
         CancellationToken cancellationToken,
-        bool skipUnchanged = false)
+        bool skipUnchanged = false,
+        OffsetCommitReason reason = OffsetCommitReason.Stop)
     {
         if ((skipUnchanged ? lane.GetUncommittedOffset() : lane.GetCommitOffset()) is not { } offset)
             return;
 
-        await _consumer.CommitAsync([offset], cancellationToken).ConfigureAwait(false);
+        if (skipUnchanged)
+            await CommitRuntimeOffsetsAsync([offset], reason, cancellationToken).ConfigureAwait(false);
+        else
+            await _consumer.CommitAsync([offset], cancellationToken).ConfigureAwait(false);
         lane.MarkCommitted(offset.Offset);
+    }
+
+    /// <summary>
+    /// Sends a commit the runtime decided on, wrapped in the configured observer's callbacks.
+    /// Observer failures are logged and never change the commit or its outcome.
+    /// </summary>
+    private async ValueTask CommitRuntimeOffsetsAsync(
+        TopicPartitionOffset[] offsets,
+        OffsetCommitReason reason,
+        CancellationToken cancellationToken)
+    {
+        var observer = _options.CommitObserver;
+        if (observer is null)
+        {
+            await _consumer.CommitAsync(offsets, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        // Read-only view: the observer must not be able to change what gets committed.
+        var observation = new OffsetCommitObservation(reason, new System.Collections.ObjectModel.ReadOnlyCollection<TopicPartitionOffset>(offsets));
+        object? state = null;
+        try
+        {
+            state = observer.OnCommitStarting(observation);
+        }
+        catch (Exception exception)
+        {
+            LogCommitObserverFailed(exception);
+        }
+
+        try
+        {
+            await _consumer.CommitAsync(offsets, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            NotifyCommitCompleted(observer, observation, state, exception);
+            throw;
+        }
+
+        NotifyCommitCompleted(observer, observation, state, null);
+    }
+
+    private void NotifyCommitCompleted(
+        IOffsetCommitObserver observer,
+        OffsetCommitObservation observation,
+        object? state,
+        Exception? exception)
+    {
+        try
+        {
+            observer.OnCommitCompleted(observation, state, exception);
+        }
+        catch (Exception observerException)
+        {
+            LogCommitObserverFailed(observerException);
+        }
     }
 
     private async ValueTask CommitStoppedLaneAsync(
         PartitionLane<TKey, TValue> lane,
+        OffsetCommitReason reason,
         CancellationToken cancellationToken)
     {
         try
         {
-            await CommitLaneAsync(lane, cancellationToken, skipUnchanged: true).ConfigureAwait(false);
+            await CommitLaneAsync(lane, cancellationToken, skipUnchanged: true, reason).ConfigureAwait(false);
         }
         catch (GroupException exception) when (IsMembershipLoss(exception))
         {
@@ -2449,6 +2527,13 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             offset.Offset,
             offset.Topic,
             offset.Partition);
+    }
+
+    private void LogCommitObserverFailed(Exception exception)
+    {
+        _logger.LogWarning(
+            exception,
+            "Partitioned consumer commit observer threw; the commit proceeds unchanged.");
     }
 
     private void LogRuntimeCommitRejected(GroupException exception)
