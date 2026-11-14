@@ -9,6 +9,22 @@
       "groupName": "Confluent .NET packages"
     },
     {
+      "description": "Microsoft.Extensions.*, EF Core and System.* versions follow each target framework's major (Directory.Packages.props has one entry per TFM); adding a new major means adding a new target framework, so do that by hand",
+      "matchManagers": ["nuget"],
+      "matchPackageNames": [
+        "/^Microsoft\\.Extensions\\./",
+        "/^Microsoft\\.EntityFrameworkCore\\./",
+        "Microsoft.Bcl.AsyncInterfaces",
+        "System.IO.Hashing",
+        "System.IO.Pipelines",
+        "System.Security.Cryptography.Pkcs",
+        "System.Text.Json",
+        "System.Threading.Channels"
+      ],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
       "description": "Keep the .NET 10 runtime required by net10.0 binaries; global.json controls SDK upgrades",
       "matchManagers": ["github-actions"],
       "matchPackageNames": ["dotnet-sdk"],
