@@ -5,6 +5,18 @@ namespace Dekaf.Testing;
 /// <summary>
 /// Deterministic in-memory implementation of <see cref="IStreamsGroupMember"/> for application tests.
 /// </summary>
+/// <remarks>
+/// A member created without a cluster has no assignor: it adopts the tasks the caller reports. A member
+/// created with an <see cref="InMemoryKafkaCluster"/> joins that cluster's group, which assigns active tasks
+/// round-robin across the group's members. Tasks are ordered by subtopology, in topology order, then by
+/// partition, and members by join order. A task exists for each partition of a subtopology's source and
+/// repartition source topics (the largest partition count among them; source topic regexes are not matched).
+/// Tasks move when a member joins or leaves, and on any heartbeat after the topology or a source topic's
+/// partition count changes. A static member that closes while remaining in the group stays a member, as on a
+/// broker within its session timeout: it keeps its place in the round-robin, and its tasks do not run until a
+/// member with the same instance ID joins and takes over its member ID and tasks without moving any task. A
+/// dynamic member always leaves the group on close, so its tasks move. Standby and warmup tasks are never assigned.
+/// </remarks>
 public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGroupOffsetCommitter
 {
     private static readonly StreamsGroupAssignment EmptyAssignment = new()
@@ -14,7 +26,9 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
         WarmupTasks = []
     };
 
-    private readonly object _gate = new();
+    private readonly object _gate;
+    private readonly InMemoryKafkaCluster? _cluster;
+    private readonly InMemoryStreamsGroup? _group;
     private readonly StreamsGroupMemberOptions _options;
     private StreamsGroupMemberSnapshot _snapshot = new()
     {
@@ -27,8 +41,24 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
     private StreamsGroupCloseOptions? _lastCloseOptions;
     private readonly Dictionary<TopicPartition, long> _committedOffsets = [];
     private bool _initialized;
+    private bool _assignmentPending;
 
+    /// <summary>Creates a member that adopts the tasks the caller reports, without a group assignor.</summary>
     public InMemoryStreamsGroupMember(StreamsGroupMemberOptions options)
+        : this(options, cluster: null)
+    {
+    }
+
+    /// <summary>
+    /// Creates a member of a Streams group on <paramref name="cluster"/>, whose assignor splits active tasks
+    /// across every member of the group.
+    /// </summary>
+    public InMemoryStreamsGroupMember(InMemoryKafkaCluster cluster, StreamsGroupMemberOptions options)
+        : this(options, cluster ?? throw new ArgumentNullException(nameof(cluster)))
+    {
+    }
+
+    private InMemoryStreamsGroupMember(StreamsGroupMemberOptions options, InMemoryKafkaCluster? cluster)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.GroupId);
@@ -41,6 +71,9 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
         }
 
         _options = options;
+        _cluster = cluster;
+        _group = cluster?.GetOrCreateStreamsGroup(options.GroupId);
+        _gate = (object?)_group ?? new object();
     }
 
     /// <inheritdoc />
@@ -182,6 +215,12 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
         {
             EnsureJoined();
             _lastTaskOffsetReport = report;
+            if (_group is not null)
+            {
+                Rebalance(_group, _cluster!);
+                return ValueTask.FromResult(CreateGroupResult(_snapshot.EndpointInformationEpoch));
+            }
+
             return ValueTask.FromResult(CreateResult(
                 activeTasks: null,
                 standbyTasks: null,
@@ -210,9 +249,12 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
                 return ValueTask.CompletedTask;
 
             _lastCloseOptions = options;
-            var remainInGroup = options.GroupMembershipOperation == StreamsGroupMembershipOperation.RemainInGroup
-                || (options.GroupMembershipOperation == StreamsGroupMembershipOperation.Default
-                    && _options.InstanceId is not null);
+            // The in-memory cluster has no session timer, so a cluster-backed dynamic member always leaves on
+            // close; with RemainInGroup it would otherwise hold its tasks forever.
+            var remainInGroup = (options.GroupMembershipOperation == StreamsGroupMembershipOperation.RemainInGroup
+                    || (options.GroupMembershipOperation == StreamsGroupMembershipOperation.Default
+                        && _options.InstanceId is not null))
+                && (_group is null || _options.InstanceId is not null);
             Volatile.Write(ref _snapshot, new StreamsGroupMemberSnapshot
             {
                 IsJoined = remainInGroup && _snapshot.IsJoined,
@@ -227,6 +269,11 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
                 AcceptableRecoveryLagOffsets = _snapshot.AcceptableRecoveryLagOffsets,
                 TaskOffsetInterval = _snapshot.TaskOffsetInterval
             });
+
+            if (_group is not null && !remainInGroup && _group.Members.Remove(this))
+            {
+                Rebalance(_group, _cluster!);
+            }
         }
 
         return ValueTask.CompletedTask;
@@ -237,6 +284,9 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
 
     private StreamsGroupHeartbeatResult ApplyUpdate(StreamsGroupMemberUpdate update, bool isJoin)
     {
+        if (_group is not null)
+            return ApplyGroupUpdate(_group, _cluster!, update, isJoin);
+
         var isTopologyJoin = update.Topology is not null;
         var activeTasks = isTopologyJoin ? null : CopyTaskSets(update.ActiveTasks);
         var standbyTasks = isTopologyJoin ? null : CopyTaskSets(update.StandbyTasks);
@@ -269,6 +319,197 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
             standbyTasks,
             warmupTasks,
             update.EndpointInformationEpoch);
+    }
+
+    private StreamsGroupHeartbeatResult ApplyGroupUpdate(
+        InMemoryStreamsGroup group,
+        InMemoryKafkaCluster cluster,
+        StreamsGroupMemberUpdate update,
+        bool isJoin)
+    {
+        var previous = _snapshot;
+        var memberId = previous.MemberId;
+        var memberEpoch = previous.MemberEpoch;
+        var assignment = previous.Assignment;
+        if (isJoin)
+        {
+            var predecessor = FindClosedStaticMember(group);
+            if (predecessor >= 0)
+            {
+                var predecessorSnapshot = group.Members[predecessor]._snapshot;
+                memberId = predecessorSnapshot.MemberId;
+                memberEpoch = predecessorSnapshot.MemberEpoch;
+                assignment = predecessorSnapshot.Assignment;
+                group.Members[predecessor] = this;
+            }
+            else
+            {
+                memberId = $"in-memory-streams-member-{++group.NextMemberNumber}";
+                memberEpoch = 1;
+                assignment = EmptyAssignment;
+                group.Members.Add(this);
+            }
+
+            // The join response always carries the full assignment, even an empty one.
+            _assignmentPending = true;
+        }
+
+        if (update.Topology is not null)
+            group.Topology = update.Topology;
+
+        Volatile.Write(ref _snapshot, new StreamsGroupMemberSnapshot
+        {
+            IsJoined = true,
+            MemberId = memberId,
+            MemberEpoch = memberEpoch,
+            Assignment = assignment,
+            EndpointInformationEpoch = update.EndpointInformationEpoch,
+            PartitionsByUserEndpoint = previous.PartitionsByUserEndpoint,
+            Status = previous.Status,
+            HeartbeatInterval = TimeSpan.FromSeconds(1),
+            TaskOffsetInterval = TimeSpan.FromSeconds(10)
+        });
+
+        Rebalance(group, cluster);
+        return CreateGroupResult(update.EndpointInformationEpoch);
+    }
+
+    private int FindClosedStaticMember(InMemoryStreamsGroup group)
+    {
+        if (_options.InstanceId is null)
+            return -1;
+
+        for (var index = 0; index < group.Members.Count; index++)
+        {
+            var member = group.Members[index];
+            if (member._snapshot.IsClosed
+                && string.Equals(member._options.InstanceId, _options.InstanceId, StringComparison.Ordinal))
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// Assigns active tasks round-robin across the group's members. A closed static member still in the group
+    /// keeps its place, as on a broker within its session timeout, so its replacement takes over the same tasks.
+    /// Called under the group lock.
+    /// </summary>
+    private static void Rebalance(InMemoryStreamsGroup group, InMemoryKafkaCluster cluster)
+    {
+        var members = group.Members;
+        if (members.Count == 0)
+            return;
+
+        var assigned = new List<StreamsGroupTaskSet>?[members.Count];
+        var subtopologies = group.Topology?.Subtopologies ?? [];
+        var next = 0;
+        foreach (var subtopology in subtopologies)
+        {
+            var taskCount = GetTaskCount(subtopology, cluster);
+            if (taskCount == 0)
+                continue;
+
+            var partitions = new List<int>?[members.Count];
+            for (var partition = 0; partition < taskCount; partition++)
+                (partitions[next++ % members.Count] ??= []).Add(partition);
+
+            for (var index = 0; index < members.Count; index++)
+            {
+                if (partitions[index] is { } memberPartitions)
+                {
+                    (assigned[index] ??= []).Add(new StreamsGroupTaskSet
+                    {
+                        SubtopologyId = subtopology.SubtopologyId,
+                        Partitions = memberPartitions.ToArray()
+                    });
+                }
+            }
+        }
+
+        for (var index = 0; index < members.Count; index++)
+            members[index].ApplyAssignment(assigned[index]?.ToArray() ?? []);
+    }
+
+    private static int GetTaskCount(StreamsGroupSubtopology subtopology, InMemoryKafkaCluster cluster)
+    {
+        var taskCount = 0;
+        foreach (var topic in subtopology.SourceTopics)
+        {
+            if (cluster.TryGetTopicPartitionCount(topic, out var partitionCount))
+                taskCount = Math.Max(taskCount, partitionCount);
+        }
+
+        foreach (var topic in subtopology.RepartitionSourceTopics)
+        {
+            var partitionCount = cluster.TryGetTopicPartitionCount(topic.Name, out var existing)
+                ? existing
+                : topic.Partitions;
+            taskCount = Math.Max(taskCount, partitionCount);
+        }
+
+        return taskCount;
+    }
+
+    private void ApplyAssignment(IReadOnlyList<StreamsGroupTaskSet> activeTasks)
+    {
+        var current = _snapshot;
+        if (SameTasks(current.Assignment.ActiveTasks, activeTasks))
+            return;
+
+        _assignmentPending = true;
+        Volatile.Write(ref _snapshot, new StreamsGroupMemberSnapshot
+        {
+            IsJoined = current.IsJoined,
+            IsClosed = current.IsClosed,
+            MemberId = current.MemberId,
+            MemberEpoch = current.MemberEpoch + 1,
+            MembershipGeneration = current.MembershipGeneration,
+            Assignment = new StreamsGroupAssignment
+            {
+                ActiveTasks = activeTasks,
+                StandbyTasks = [],
+                WarmupTasks = []
+            },
+            EndpointInformationEpoch = current.EndpointInformationEpoch,
+            PartitionsByUserEndpoint = current.PartitionsByUserEndpoint,
+            Status = current.Status,
+            HeartbeatInterval = current.HeartbeatInterval,
+            AcceptableRecoveryLagOffsets = current.AcceptableRecoveryLagOffsets,
+            TaskOffsetInterval = current.TaskOffsetInterval
+        });
+    }
+
+    private static bool SameTasks(IReadOnlyList<StreamsGroupTaskSet> left, IReadOnlyList<StreamsGroupTaskSet> right)
+    {
+        if (left.Count != right.Count)
+            return false;
+
+        for (var index = 0; index < left.Count; index++)
+        {
+            if (!string.Equals(left[index].SubtopologyId, right[index].SubtopologyId, StringComparison.Ordinal)
+                || !left[index].Partitions.SequenceEqual(right[index].Partitions))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>Returns a heartbeat result that carries the assignment once after each change.</summary>
+    private StreamsGroupHeartbeatResult CreateGroupResult(int endpointInformationEpoch)
+    {
+        var deliver = _assignmentPending;
+        _assignmentPending = false;
+        var assignment = _snapshot.Assignment;
+        return CreateResult(
+            deliver ? assignment.ActiveTasks : null,
+            deliver ? assignment.StandbyTasks : null,
+            deliver ? assignment.WarmupTasks : null,
+            endpointInformationEpoch);
     }
 
     private StreamsGroupHeartbeatResult CreateResult(
