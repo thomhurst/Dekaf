@@ -1,16 +1,20 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Generated Avro POCO serializers only: publishing with TrimmerSingleWarn=false must report no trim/AOT warnings. -->
+  <!-- Generated Avro POCO serializers only: publishing (NativeAOT, or trimmed JIT with -p:PublishAot=false) with TrimmerSingleWarn=false must report no trim/AOT warnings. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <IsPackable>false</IsPackable>
     <IsAotCompatible>true</IsAotCompatible>
     <PublishAot>true</PublishAot>
+    <PublishTrimmed>true</PublishTrimmed>
     <SelfContained>true</SelfContained>
     <TrimmerSingleWarn>false</TrimmerSingleWarn>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <IlcTreatWarningsAsErrors>true</IlcTreatWarningsAsErrors>
   </PropertyGroup>
+
+  <!-- A package reference imports these targets automatically; a project reference must import them. -->
+  <Import Project="..\..\src\Dekaf.SchemaRegistry.Avro\buildTransitive\Dekaf.SchemaRegistry.Avro.targets" />
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Avro\Dekaf.SchemaRegistry.Avro.csproj" />

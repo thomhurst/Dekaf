@@ -49,14 +49,14 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
 
     /// <summary>Creates a generated POCO Avro deserializer.</summary>
     /// <remarks>
-    /// Under NativeAOT, <see cref="AvroDeserializerConfig.RuleExecutor"/>,
+    /// In trimmed and NativeAOT apps, <see cref="AvroDeserializerConfig.RuleExecutor"/>,
     /// <see cref="AvroDeserializerConfig.ValidationRulesExecution"/> and
     /// <see cref="AvroDeserializerConfig.UseLatestVersion"/> (migrations) are not supported: rule processing
-    /// parses schemas with Apache.Avro, which requires dynamic code. Without them the deserializer reaches no
+    /// parses schemas with Apache.Avro, which uses Newtonsoft.Json reflection. Without them the deserializer reaches no
     /// Apache.Avro code and publishes without trim or AOT warnings.
     /// </remarks>
     /// <exception cref="NotSupportedException">
-    /// Rules, inline validation or migrations are configured and the process runs under NativeAOT.
+    /// Rules, inline validation or migrations are configured in a trimmed or NativeAOT app (see <c>DekafAvroPocoRulesSupport</c>).
     /// </exception>
     public AvroPocoSchemaRegistryDeserializer(
         ISchemaRegistryClient schemaRegistry,
@@ -83,7 +83,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 nameof(config));
         }
 
-        if (RuntimeFeature.IsDynamicCodeSupported)
+        if (AvroPocoRuleSupport.IsSupported)
         {
             _taggedFieldTransformers = new AvroTaggedFieldTransformerProvider();
             _ruleExecutor = _config.RuleExecutor;
@@ -132,8 +132,8 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         SerializationContext context,
         CancellationToken cancellationToken = default)
     {
-        // NativeAOT compiles the feature check as false, removing the Apache.Avro rule paths below.
-        if (!RuntimeFeature.IsDynamicCodeSupported || _ruleExecutor is null)
+        // Trimmed and NativeAOT publishes compile the feature check as false, removing the Apache.Avro rule paths below.
+        if (!AvroPocoRuleSupport.IsSupported || _ruleExecutor is null)
         {
             await WarmupAsync(schemaId, cancellationToken).ConfigureAwait(false);
             return;
@@ -220,7 +220,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         SerializationContext context,
         CancellationToken cancellationToken)
     {
-        if (!RuntimeFeature.IsDynamicCodeSupported || _ruleExecutor is null)
+        if (!AvroPocoRuleSupport.IsSupported || _ruleExecutor is null)
         {
             return TryGetCachedPlan(schemaId, out _)
                 ? default
@@ -324,7 +324,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             return false;
         }
 
-        if (RuntimeFeature.IsDynamicCodeSupported && _ruleExecutor is not null)
+        if (AvroPocoRuleSupport.IsSupported && _ruleExecutor is not null)
         {
             var isKey = context.Component == SerializationComponent.Key;
             var subjectGeneration = 0;
@@ -501,8 +501,8 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 context.Component == SerializationComponent.Key,
                 _subjectNames?.Generation ?? 0));
         var payload = data[payloadOffset..];
-        // The JIT folds the feature check away; NativeAOT folds it to true, removing the rule paths below.
-        if (!RuntimeFeature.IsDynamicCodeSupported ||
+        // The JIT folds the feature check away; trimmed and NativeAOT publishes fold it, removing the rule paths below.
+        if (!AvroPocoRuleSupport.IsSupported ||
             (_ruleExecutor is null && _inlineRuleValidators is null))
         {
             var directReader = new AvroValueReader(payload.Span);
@@ -527,7 +527,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private AvroInlineRuleValidator? GetInlineValidator(int schemaId, AvroPocoReaderPlan plan)
     {
-        if (!RuntimeFeature.IsDynamicCodeSupported || _inlineRuleValidators is null)
+        if (!AvroPocoRuleSupport.IsSupported || _inlineRuleValidators is null)
             return null;
 
         var cached = Volatile.Read(ref _lastInlineValidationDecision);
@@ -816,7 +816,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     /// </summary>
     private static AvroSchema GetRuleSchema(Schema schema, AvroPocoReaderPlan plan)
     {
-        if (!RuntimeFeature.IsDynamicCodeSupported)
+        if (!AvroPocoRuleSupport.IsSupported)
             throw AvroPocoRuleSupport.CreateNotSupportedException();
         if (plan.ResolvedWriterSchema is { } resolved)
             return resolved;
@@ -834,7 +834,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         AvroPocoReaderPlan plan,
         CancellationToken cancellationToken)
     {
-        if (!RuntimeFeature.IsDynamicCodeSupported)
+        if (!AvroPocoRuleSupport.IsSupported)
             throw AvroPocoRuleSupport.CreateNotSupportedException();
         plan.ResolvedWriterSchema = await AvroSchemaReferenceResolver.ParseAsync(
                 _schemaRegistry,
@@ -1112,7 +1112,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
 
         var plan = await BuildReferencedPlanAsync(schemaId, schema, cancellationToken).ConfigureAwait(false);
         // Rule processing cannot parse a referenced schema later without its references.
-        if (RuntimeFeature.IsDynamicCodeSupported &&
+        if (AvroPocoRuleSupport.IsSupported &&
             (_ruleExecutor is not null || _inlineRuleValidators is not null || _migrationRunner is not null))
         {
             await AttachRuleSchemaAsync(schema, plan, cancellationToken).ConfigureAwait(false);
@@ -1285,7 +1285,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 ? await BuildReferencedPlanAsync(schemaId, unscopedSchema, cancellationToken).ConfigureAwait(false)
                 : BuildPlan(schemaId, unscopedSchema);
             // A GUID plan has a local schema ID that the registry cannot resolve later, so attach now.
-            if (RuntimeFeature.IsDynamicCodeSupported && _inlineRuleValidators is not null)
+            if (AvroPocoRuleSupport.IsSupported && _inlineRuleValidators is not null)
                 await AttachRuleSchemaAsync(unscopedSchema, plan, cancellationToken).ConfigureAwait(false);
             CacheSuccessfulPlan(schemaId, plan);
             return new GuidResolvedSchema(schemaId, plan);

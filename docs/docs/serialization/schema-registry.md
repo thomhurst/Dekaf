@@ -244,20 +244,34 @@ cold plan and fail fast, so call `WarmupAsync(schemaId)` before using `ConsumeBa
 generated consumer convenience extension cannot pre-warm unknown writer schema IDs before the
 first record arrives.
 
-#### NativeAOT
+#### Trimming and NativeAOT
 
 Generated POCO serializers and deserializers are trim- and NativeAOT-safe without rules: they
 parse schemas with an internal `System.Text.Json` model and publish with no trim or AOT warnings.
 Rule features still parse schemas with Apache.Avro, which uses Newtonsoft.Json reflection, so they
-are not supported under NativeAOT. Constructing a generated POCO serializer or deserializer under
-NativeAOT throws `NotSupportedException` when any of these settings is configured:
+are turned off when the app publishes with `PublishTrimmed` or `PublishAot`. Constructing a generated
+POCO serializer or deserializer in such an app throws `NotSupportedException` when any of these
+settings is configured:
 
 - `RuleExecutor` (serializer or deserializer)
 - `ValidationRulesExecution` other than `Disabled` (serializer or deserializer)
 - `UseLatestVersion` on the deserializer, which runs migrations to the latest reader schema
 
-The same settings behave as documented when the application runs with the JIT. The NativeAOT
-compiler removes the rule code, so these features add no Apache.Avro code to a POCO-only app.
+Setting `PublishTrimmed` or `PublishAot` in the project file also turns them off for `dotnet run`
+and `dotnet test` of that project, not only for `dotnet publish`.
+
+The same settings behave as documented in an untrimmed JIT app. The trimmer and the NativeAOT
+compiler remove the rule code, so these features add no Apache.Avro code to a POCO-only app.
+
+A trimmed JIT app that needs rules can keep them, accepting the Apache.Avro trim warnings:
+
+```xml
+<PropertyGroup>
+  <DekafAvroPocoRulesSupport>true</DekafAvroPocoRulesSupport>
+</PropertyGroup>
+```
+
+NativeAOT never supports rules, whatever the property says.
 
 ## Protobuf Serialization
 

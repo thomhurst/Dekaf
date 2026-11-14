@@ -822,6 +822,21 @@ jobs:
             -p:TreatWarningsAsErrors=true
           ./artifacts/aot/avro-poco/Dekaf.Tests.Aot.AvroPoco
 
+      # Trimmed JIT publish of the same app: the package targets turn rule support off under
+      # PublishTrimmed, so the trimmer must also remove every Apache.Avro path.
+      - name: Publish and run Avro POCO trimmed JIT warning check
+        run: |
+          dotnet publish tests/Dekaf.Tests.Aot.AvroPoco/Dekaf.Tests.Aot.AvroPoco.csproj \
+            --configuration Release \
+            --framework net11.0 \
+            --runtime linux-x64 \
+            --self-contained true \
+            --output artifacts/trimmed/avro-poco \
+            -p:PublishAot=false \
+            -p:ContinuousIntegrationBuild=true \
+            -p:TreatWarningsAsErrors=true
+          ./artifacts/trimmed/avro-poco/Dekaf.Tests.Aot.AvroPoco
+
       - name: Publish and run dependency-injection smoke test
         run: |
           for framework in net10.0 net11.0; do
