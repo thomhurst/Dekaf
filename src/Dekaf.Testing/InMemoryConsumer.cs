@@ -47,7 +47,8 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
 
     private readonly record struct ConsumeAttemptResult(
         ConsumeResult<TKey, TValue>? Result,
-        bool StopPolling);
+        bool StopPolling,
+        bool Retry = false);
 
     private readonly record struct ConsumerSelectionVersion(
         int ConsumerState,
@@ -848,9 +849,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
 
             if (!_requiresAsyncDeserialization && !HasPotentialConsumerFault())
             {
-                if (TryConsumeOne(out var result, out var retryWithFaults))
+                if (TryConsumeOne(out var result, out var retry))
                     return result;
-                if (retryWithFaults)
+                if (retry)
                     continue;
             }
             else
@@ -858,6 +859,8 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 var attempt = await TryConsumeOneAsync(cancellationToken).ConfigureAwait(false);
                 if (attempt.Result is { } asyncResult)
                     return asyncResult;
+                if (attempt.Retry)
+                    continue;
                 if (attempt.StopPolling)
                     return null;
             }
@@ -1683,9 +1686,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
 
     private bool TryConsumeOne(
         out ConsumeResult<TKey, TValue> result,
-        out bool retryWithFaults)
+        out bool retry)
     {
-        retryWithFaults = false;
+        retry = false;
         var previousRecordProven = false;
         while (true)
         {
@@ -1695,8 +1698,10 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                     out var partition,
                     out var record,
                     out var position,
-                    out var selectionVersion))
+                    out var selectionVersion,
+                    out var rebalancePending))
             {
+                retry = rebalancePending;
                 result = default;
                 return false;
             }
@@ -1708,7 +1713,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             if (Volatile.Read(ref _potentialFaultPlanVersion) != GetFaultPlanVersion() &&
                 HasPotentialConsumerFault())
             {
-                retryWithFaults = true;
+                retry = true;
                 result = default;
                 return false;
             }
@@ -1910,8 +1915,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                         out var partition,
                         out var record,
                         out var position,
-                        out var selectionVersion))
-                    return new ConsumeAttemptResult(Result: null, StopPolling: false);
+                        out var selectionVersion,
+                        out var rebalancePending))
+                    return new ConsumeAttemptResult(Result: null, StopPolling: false, Retry: rebalancePending);
 
                 var fetchScope = new KafkaFaultScope(
                     KafkaFaultOperation.Fetch,
@@ -1994,8 +2000,10 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         out InMemoryRecord selectedRecord,
         out long selectedPosition,
         out ConsumerSelectionVersion selectionVersion,
+        out bool rebalancePending,
         TopicPartition? startAfter = null)
     {
+        rebalancePending = false;
         lock (_gate)
         {
             if (!previousRecordProven)
@@ -2016,6 +2024,19 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             }
 
             var assignment = GetOrderedCurrentAssignmentUnderLock(out var consumerGroupGeneration);
+            // Group membership can change while rebalance callbacks run. Report the change to the
+            // listener before delivering a record from a regained partition.
+            if (_rebalanceListener is not null && _subscriptionTopologyVersion >= 0 && !_leavingGroup &&
+                _listenerConsumerStateVersion != _consumerStateVersion)
+            {
+                rebalancePending = true;
+                selectedPartition = default;
+                selectedRecord = null!;
+                selectedPosition = -1;
+                selectionVersion = default;
+                return false;
+            }
+
             selectionVersion = new ConsumerSelectionVersion(
                 _consumerStateVersion,
                 consumerGroupGeneration);

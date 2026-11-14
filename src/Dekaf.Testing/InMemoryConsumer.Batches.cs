@@ -111,7 +111,10 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
         {
             cancellationToken.ThrowIfCancellationRequested();
             ThrowIfDisposed();
-            if (TrySelectBatch(out var selection))
+            if (_rebalanceListener is { } listener)
+                await DeliverRebalanceEventsAsync(listener, cancellationToken).ConfigureAwait(false);
+
+            if (TrySelectBatch(out var selection, out var rebalancePending))
             {
                 if (!HasPotentialConsumerFault())
                     return selection;
@@ -125,6 +128,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
 
                 continue;
             }
+
+            if (rebalancePending)
+                continue;
 
             await _cluster.WaitForRecordsAsync(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
         }
@@ -147,7 +153,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
     /// Selects the first unpaused assigned partition with a readable record, like
     /// <see cref="ConsumeOneAsync"/>, and collects every record readable from its position.
     /// </summary>
-    private bool TrySelectBatch(out BatchSelection selection)
+    private bool TrySelectBatch(out BatchSelection selection, out bool rebalancePending)
     {
         // Read before selecting, so a reposition that races the selection invalidates the batch.
         long repositionSequence;
@@ -166,6 +172,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
                 out var first,
                 out var position,
                 out _,
+                out rebalancePending,
                 lastBatchPartition))
         {
             selection = default;
