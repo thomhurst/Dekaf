@@ -107,7 +107,7 @@ await producer.FireAsync(
     eventValue,
     headers: null,
     partition: 3,
-    timestamp: sourceTimestamp,
+    timestamp: DateTimeOffset.UtcNow,
     deliveryHandler: (metadata, error) =>
     {
         if (error is not null)
@@ -115,7 +115,7 @@ await producer.FireAsync(
     });
 ```
 
-On cached topic metadata this allocates nothing per record. With a handler it behaves like `FireAsync(message, handler)`: every failure goes to the handler. Without one it behaves like `FireAsync(message)`, but does not start a publish activity.
+With `KafkaProducer`, no interceptors and cached topic metadata, this allocates nothing per record. With a handler it behaves like `FireAsync(message, handler)`: every failure goes to the handler. Without one it behaves like `FireAsync(message)`, but does not start a publish activity.
 
 ## Performance Comparison
 
