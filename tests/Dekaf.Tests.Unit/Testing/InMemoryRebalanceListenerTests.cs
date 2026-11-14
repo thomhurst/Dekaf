@@ -306,6 +306,35 @@ public sealed class InMemoryRebalanceListenerTests
     }
 
     [Test]
+    public async Task FailedUnsubscribe_KeepsAsynchronousRevocationPending()
+    {
+        var cluster = CreateCluster(partitions: 1);
+        var listener = new RecordingListener();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var consumer = CreateConsumer(cluster, "a", listener);
+        listener.OnRevoked = async () => await release.Task;
+        consumer.Subscribe("topic");
+        await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        cluster.FaultPlan.Fail(new KafkaFaultScope(KafkaFaultOperation.Rebalance), new InvalidOperationException("rebalance"));
+
+        await Assert.That(consumer.Unsubscribe).Throws<InvalidOperationException>();
+
+        var consume = consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask();
+        try
+        {
+            await Assert.That(consume.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            release.SetResult();
+        }
+
+        await consume;
+        await Assert.That(listener.Events).IsEquivalentTo(
+            ["assigned topic-0", "revoked topic-0", "assigned topic-0"], CollectionOrdering.Matching);
+    }
+
+    [Test]
     public async Task PendingUnsubscribeRevocation_ConsumeWaitIsCancellable()
     {
         var cluster = CreateCluster(partitions: 1);

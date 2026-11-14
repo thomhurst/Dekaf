@@ -491,7 +491,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
 
         // The listener's commit includes the offsets the departing partitions held now, even when
         // the callback completes asynchronously; the next consume or close call awaits it.
+        // A failed transition also keeps the started callback pending, so later calls await it.
         var revocation = StartListenerRevocation(closing: false, CancellationToken.None);
+        Task? pending = null;
         try
         {
             UnsubscribeCore();
@@ -500,13 +502,15 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         {
             lock (_gate)
                 _leavingGroup = _disposed;
+            if (!revocation.IsCompleted)
+            {
+                pending = revocation.AsTask();
+                Volatile.Write(ref _pendingRebalanceCallback, pending);
+            }
         }
 
-        if (!revocation.IsCompleted)
-        {
-            _pendingRebalanceCallback = revocation.AsTask();
+        if (pending is not null)
             return;
-        }
 
         try
         {
