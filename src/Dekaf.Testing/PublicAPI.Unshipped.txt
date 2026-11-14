@@ -28,6 +28,7 @@ Dekaf.Testing.InMemoryStreamsGroupMember.DisposeAsync() -> System.Threading.Task
 Dekaf.Testing.InMemoryStreamsGroupMember.GroupId.get -> string!
 Dekaf.Testing.InMemoryStreamsGroupMember.InitializeAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
 Dekaf.Testing.InMemoryStreamsGroupMember.InMemoryStreamsGroupMember(Dekaf.Streams.StreamsGroupMemberOptions! options) -> void
+Dekaf.Testing.InMemoryStreamsGroupMember.InMemoryStreamsGroupMember(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Streams.StreamsGroupMemberOptions! options) -> void
 Dekaf.Testing.InMemoryStreamsGroupMember.InstanceId.get -> string?
 Dekaf.Testing.InMemoryStreamsGroupMember.JoinAsync(Dekaf.Streams.StreamsGroupMemberUpdate! initialState, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Streams.StreamsGroupHeartbeatResult!>
 Dekaf.Testing.InMemoryStreamsGroupMember.LastCloseOptions.get -> Dekaf.Streams.StreamsGroupCloseOptions?
