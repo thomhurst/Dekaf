@@ -69,6 +69,7 @@ jobs:
             SharpFuzz.CommandLine \
             --version "$sharpfuzz_version"
           curl --fail --location --silent --show-error \
+            --retry 5 --retry-delay 10 --retry-all-errors \
             "https://github.com/Metalnem/libfuzzer-dotnet/releases/download/${LIBFUZZER_DOTNET_VERSION}/libfuzzer-dotnet-ubuntu" \
             --output artifacts/fuzz/tools/libfuzzer-dotnet
           echo "${LIBFUZZER_DOTNET_SHA256}  artifacts/fuzz/tools/libfuzzer-dotnet" | sha256sum --check
