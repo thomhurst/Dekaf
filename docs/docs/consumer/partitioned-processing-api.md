@@ -586,6 +586,7 @@ sealed class CommitTracing(ActivitySource source) : IOffsetCommitObserver
     {
         if (state is not Activity activity)
             return;
+        activity.SetTag("messaging.batch.message_count", observation.CompletedRecordCount);
         if (exception is not null)
             activity.SetStatus(ActivityStatusCode.Error, exception.Message);
         activity.Dispose();
@@ -600,6 +601,13 @@ shutdown) or `Seek`. Commits can overlap, so keep per-commit state in the value
 `OnCommitStarting` returns. The observer cannot change what is committed: an
 exception it throws is logged and the commit continues. Commits a handler requests
 with `CommitProcessedAsync` are not observed.
+
+`CompletedRecordCount` is the number of completed records the commit newly covers:
+records below the committed offsets that completed since the previous commit of
+each partition, including a commit the handler requested. It comes from completion
+tracking rather than offset arithmetic, so compacted offsets and transaction
+markers add nothing. A seek commit reports zero unless it commits the completed
+frontier.
 
 ## Low-Level Rebalance Callbacks
 

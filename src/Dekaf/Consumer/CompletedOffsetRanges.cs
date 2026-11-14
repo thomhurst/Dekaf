@@ -10,6 +10,9 @@ internal sealed class CompletedOffsetNode
     internal long Start;
     internal long End;
     internal int Epoch;
+    // The lane's delivery sequence of the record at End: how many records the lane delivered up
+    // to and including it. The frontier's sequence is the number of records it covers.
+    internal long Sequence;
     internal int Height;
     internal CompletedOffsetNode? Left;
     internal CompletedOffsetNode? Right;
@@ -54,7 +57,7 @@ internal sealed class OffsetCompletionBatch
 
     // Failed channel writes reuse the unpublished slot. All storage is reserved before
     // publication. The requested capacity bounds every independently pooled array.
-    internal int PrepareRecord(long previous)
+    internal int PrepareRecord(long previous, long sequence)
     {
         var index = _publishedRecords;
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, Capacity);
@@ -67,6 +70,7 @@ internal sealed class OffsetCompletionBatch
         // A record owns this slot until completion. Negative height marks a
         // pending record; completed nodes have zero or a positive AVL height.
         node.Start = previous;
+        node.Sequence = sequence;
         node.Height = -1;
         return index;
     }
@@ -450,12 +454,13 @@ internal sealed class CompletedOffsetRanges
     }
 
     internal bool Complete(OffsetCompletionBatch owner, CompletedOffsetNode reserved, long offset, int epoch,
-        long committed, out long completed, out int completedEpoch)
+        long committed, out long completed, out int completedEpoch, out long completedSequence)
     {
         var previous = reserved.Start;
         reserved.Height = 0;
         completed = offset;
         completedEpoch = epoch;
+        completedSequence = reserved.Sequence;
         if (_root is null && previous == committed)
         {
             owner.Complete();
@@ -470,6 +475,7 @@ internal sealed class CompletedOffsetRanges
         {
             completed = right.End;
             completedEpoch = right.Epoch;
+            completedSequence = right.Sequence;
             if (advances)
             {
                 _root = Remove(_root!, offset);
@@ -478,6 +484,7 @@ internal sealed class CompletedOffsetRanges
             {
                 left.End = completed;
                 left.Epoch = completedEpoch;
+                left.Sequence = completedSequence;
                 _root = Remove(_root!, offset);
             }
             else
@@ -493,6 +500,7 @@ internal sealed class CompletedOffsetRanges
             {
                 left.End = completed;
                 left.Epoch = completedEpoch;
+                left.Sequence = completedSequence;
             }
             else
             {
@@ -573,6 +581,7 @@ internal sealed class CompletedOffsetRanges
             root.Start = successor.Start;
             root.End = successor.End;
             root.Epoch = successor.Epoch;
+            root.Sequence = successor.Sequence;
             root.Right = Remove(root.Right, successor.Start);
         }
         return Balance(root);

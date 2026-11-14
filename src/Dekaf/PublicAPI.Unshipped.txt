@@ -283,7 +283,8 @@ Dekaf.Consumer.IOffsetCommitObserver.OnCommitCompleted(Dekaf.Consumer.OffsetComm
 Dekaf.Consumer.IOffsetCommitObserver.OnCommitStarting(Dekaf.Consumer.OffsetCommitObservation observation) -> object?
 Dekaf.Consumer.OffsetCommitObservation
 Dekaf.Consumer.OffsetCommitObservation.OffsetCommitObservation() -> void
-Dekaf.Consumer.OffsetCommitObservation.OffsetCommitObservation(Dekaf.Consumer.OffsetCommitReason reason, System.Collections.Generic.IReadOnlyList<Dekaf.TopicPartitionOffset>! offsets) -> void
+Dekaf.Consumer.OffsetCommitObservation.CompletedRecordCount.get -> long
+Dekaf.Consumer.OffsetCommitObservation.OffsetCommitObservation(Dekaf.Consumer.OffsetCommitReason reason, System.Collections.Generic.IReadOnlyList<Dekaf.TopicPartitionOffset>! offsets, long completedRecordCount) -> void
 Dekaf.Consumer.OffsetCommitObservation.Offsets.get -> System.Collections.Generic.IReadOnlyList<Dekaf.TopicPartitionOffset>!
 Dekaf.Consumer.OffsetCommitObservation.Reason.get -> Dekaf.Consumer.OffsetCommitReason
 Dekaf.Consumer.OffsetCommitReason

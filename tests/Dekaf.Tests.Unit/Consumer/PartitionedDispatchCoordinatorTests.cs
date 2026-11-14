@@ -219,7 +219,7 @@ public sealed class PartitionedDispatchCoordinatorTests
         {
             start.Wait();
             for (var offset = 1; offset <= 100000; offset++)
-                progress.Publish(offset, offset);
+                progress.Publish(offset, offset, offset);
             Volatile.Write(ref finished, 1);
         });
         var reader = Task.Run(() =>
@@ -227,7 +227,8 @@ public sealed class PartitionedDispatchCoordinatorTests
             start.Set();
             do
             {
-                if (lane.GetCommitOffset() is { } checkpoint && checkpoint.Offset != checkpoint.LeaderEpoch)
+                if (lane.GetCommitOffset(out var completedRecords) is { } checkpoint
+                    && (checkpoint.Offset != checkpoint.LeaderEpoch || checkpoint.Offset != completedRecords))
                     throw new InvalidOperationException("Checkpoint mixed two publications.");
             } while (Volatile.Read(ref finished) == 0);
         });
