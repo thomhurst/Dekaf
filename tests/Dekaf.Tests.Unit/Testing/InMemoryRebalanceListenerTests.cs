@@ -237,6 +237,55 @@ public sealed class InMemoryRebalanceListenerTests
     }
 
     [Test]
+    public async Task CloseDuringConsumeRevocation_WaitsForTheCallbackBeforeRevokingAgain()
+    {
+        var cluster = CreateCluster(partitions: 2);
+        await ProduceAsync(cluster, 1, partition: 0);
+        await ProduceAsync(cluster, 1, partition: 1);
+        var listener = new RecordingListener();
+        var revocationEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRevocation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var running = 0;
+        var overlapped = false;
+        var first = CreateConsumer(cluster, "a", listener, OffsetCommitMode.Manual);
+        listener.OnRevoked = async () =>
+        {
+            if (Interlocked.Increment(ref running) > 1)
+                overlapped = true;
+            revocationEntered.TrySetResult();
+            await releaseRevocation.Task;
+            await first.CommitAsync();
+            Interlocked.Decrement(ref running);
+        };
+        first.Subscribe("topic");
+        await Assert.That(await first.ConsumeOneAsync(TimeSpan.Zero)).IsNotNull();
+        await Assert.That(await first.ConsumeOneAsync(TimeSpan.Zero)).IsNotNull();
+
+        await using var second = CreateConsumer(cluster, "b", new RecordingListener(), OffsetCommitMode.Manual);
+        second.Subscribe("topic");
+        var consume = first.ConsumeOneAsync(TimeSpan.Zero).AsTask();
+        await revocationEntered.Task;
+
+        var close = first.CloseAsync().AsTask();
+        await Task.Yield();
+        releaseRevocation.SetResult();
+        await close;
+        try
+        {
+            // The consume call resumes after the callback and may observe the closed consumer.
+            await consume;
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        await first.DisposeAsync();
+
+        await Assert.That(overlapped).IsFalse();
+        await Assert.That(cluster.GetCommittedOffset("group", Partition0)).IsEqualTo(1);
+        await Assert.That(cluster.GetCommittedOffset("group", Partition1)).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Unsubscribe_AsynchronousRevocationStillCommitsDepartingOffsets()
     {
         var cluster = CreateCluster(partitions: 1);

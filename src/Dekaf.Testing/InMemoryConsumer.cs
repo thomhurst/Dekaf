@@ -130,6 +130,8 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     private int _listenerConsumerStateVersion = -1;
     private bool _leavingGroup;
     private Task? _pendingRebalanceCallback;
+    // Callbacks a consume call is running; leaving the group waits for them, as KafkaConsumer serializes rebalance callbacks.
+    private Task? _activeRebalanceDelivery;
     // Offsets the revoked partitions held, committed by CommitAsync until the revocation callback returns.
     private readonly Dictionary<TopicPartition, TopicPartitionOffset> _departingOffsets = [];
 
@@ -3658,6 +3660,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         List<TopicPartition>? revoked = null;
         List<TopicPartition>? assigned = null;
         bool lost;
+        TaskCompletionSource delivery;
         lock (_gate)
         {
             ThrowIfDisposed();
@@ -3696,6 +3699,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 _departingOffsets.Remove(partition);
             if (lost && revoked is not null)
                 RemoveDepartingOffsetsUnderLock(revoked);
+            // Published under the lock, so a leave that snapshots the assignment after this waits for it.
+            delivery = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _activeRebalanceDelivery = delivery.Task;
         }
 
         var revocationDelivered = revoked is null;
@@ -3740,6 +3746,11 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 _listenerConsumerStateVersion = -1;
             }
             throw;
+        }
+        finally
+        {
+            _ = Interlocked.CompareExchange(ref _activeRebalanceDelivery, null, delivery.Task);
+            delivery.SetResult();
         }
     }
 
@@ -3866,6 +3877,8 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             CancellationToken cancellationToken)
         {
             await AwaitPendingRebalanceCallbackAsync(cancellationToken).ConfigureAwait(false);
+            if (Volatile.Read(ref _activeRebalanceDelivery) is { } delivery)
+                await delivery.WaitAsync(cancellationToken).ConfigureAwait(false);
             if (revoked.Length == 0)
                 return;
 
