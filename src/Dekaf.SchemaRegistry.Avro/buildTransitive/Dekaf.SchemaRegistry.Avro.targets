@@ -1,0 +1,21 @@
+<Project>
+
+  <!--
+    Generated Avro POCO serializers run Schema Registry rules, inline validation and migrations through
+    Apache.Avro, which uses Newtonsoft.Json reflection. Trimmed and NativeAOT publishes turn that support off
+    so the trimmer removes those paths. Set DekafAvroPocoRulesSupport to true in a trimmed JIT app to keep it,
+    accepting the trim warnings; NativeAOT never supports it.
+  -->
+  <PropertyGroup>
+    <DekafAvroPocoRulesSupport Condition="'$(DekafAvroPocoRulesSupport)' == '' and '$(PublishTrimmed)' == 'true'">false</DekafAvroPocoRulesSupport>
+    <!-- The switch substitutes the whole guard, so NativeAOT must always see false. -->
+    <DekafAvroPocoRulesSupport Condition="'$(PublishAot)' == 'true'">false</DekafAvroPocoRulesSupport>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(DekafAvroPocoRulesSupport)' != ''">
+    <RuntimeHostConfigurationOption Include="Dekaf.SchemaRegistry.Avro.Poco.RulesSupport.IsSupported"
+                                    Value="$(DekafAvroPocoRulesSupport)"
+                                    Trim="true" />
+  </ItemGroup>
+
+</Project>

@@ -22,7 +22,7 @@ internal static class AvroPocoAotSmoke
         using var registry = new InMemorySchemaRegistry();
         await RunRoundTripAsync(registry);
         RunRuleConfigurationRejected(registry);
-        Console.WriteLine("Avro POCO NativeAOT smoke passed.");
+        Console.WriteLine("Avro POCO trim/AOT smoke passed.");
     }
 
     private static async Task RunRoundTripAsync(InMemorySchemaRegistry registry)
@@ -44,8 +44,9 @@ internal static class AvroPocoAotSmoke
 
     private static void RunRuleConfigurationRejected(InMemorySchemaRegistry registry)
     {
-        // Rule processing parses schemas with Apache.Avro, which NativeAOT cannot compile safely.
-        if (RuntimeFeature.IsDynamicCodeSupported)
+        // Rule processing parses schemas with Apache.Avro, so trimmed and NativeAOT publishes turn it off.
+        if (RuntimeFeature.IsDynamicCodeSupported &&
+            !(AppContext.TryGetSwitch("Dekaf.SchemaRegistry.Avro.Poco.RulesSupport.IsSupported", out var enabled) && !enabled))
             return;
 
         var ruleExecutor = new SchemaRegistryRuleExecutor([]);
