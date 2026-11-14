@@ -464,6 +464,21 @@ public sealed class InMemoryRebalanceListenerTests
         await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0,topic-1", "revoked topic-0,topic-1"], CollectionOrdering.Matching);
     }
 
+    [Test]
+    public async Task EmptyIncrementalAssign_RevokesSubscribedPartitions()
+    {
+        var cluster = CreateCluster(partitions: 1);
+        var listener = new RecordingListener();
+        await using var consumer = CreateConsumer(cluster, "a", listener);
+        consumer.Subscribe("topic");
+        await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        consumer.IncrementalAssign([]);
+        await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0", "revoked topic-0"], CollectionOrdering.Matching);
+    }
+
     private static InMemoryKafkaCluster CreateCluster(int partitions)
     {
         var cluster = new InMemoryKafkaCluster();

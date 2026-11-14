@@ -1496,14 +1496,15 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             // The listener's revocation commit still sees the subscribed partitions' offsets.
             foreach (var partition in _listenerAssignment)
                 PreserveDepartingOffsetUnderLock(partition);
-            // Manual assignment replaces any subscription, as KafkaConsumer.IncrementalAssign does.
+            // Manual assignment replaces any subscription, as KafkaConsumer.IncrementalAssign does,
+            // even for an empty enumerable, so ending one must also reach the listener.
+            var changed = _subscriptionTopologyVersion >= 0;
             _subscriptionPattern = null;
             _subscriptionRegex = null;
             _topicFilter = null;
             _subscriptionTopologyVersion = -1;
             _subscriptionTopicIds.Clear();
             _subscription.Clear();
-            var changed = false;
             foreach (var offset in partitions)
             {
                 changed = true;
