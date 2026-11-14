@@ -359,26 +359,30 @@ public sealed class InMemoryRebalanceListenerTests
     }
 
     [Test]
-    public async Task CancelledRevocation_StillReportsTheNewAssignment()
+    public async Task CancelledRevocation_IsRetriedOnNextConsumeWithItsOffsets()
     {
         var cluster = CreateCluster(partitions: 1);
         cluster.CreateTopic("other", 1);
+        await ProduceAsync(cluster, 2);
         var listener = new RecordingListener();
         var revocationEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseRevocation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        await using var consumer = CreateConsumer(cluster, "a", listener);
+        await using var consumer = CreateConsumer(cluster, "a", listener, OffsetCommitMode.Manual);
         var revocations = 0;
         listener.OnRevoked = async () =>
         {
             if (Interlocked.Increment(ref revocations) != 1)
+            {
+                await consumer.CommitAsync();
                 return;
+            }
 
             revocationEntered.SetResult();
             await releaseRevocation.Task;
             throw new OperationCanceledException();
         };
         consumer.Subscribe("topic");
-        await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        await Assert.That((await consumer.ConsumeOneAsync(TimeSpan.Zero))!.Value.Offset).IsEqualTo(0);
 
         consumer.Subscribe("other");
         using var cancellation = new CancellationTokenSource();
@@ -390,7 +394,26 @@ public sealed class InMemoryRebalanceListenerTests
 
         await consumer.ConsumeOneAsync(TimeSpan.Zero);
 
-        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0", "assigned other-0"], CollectionOrdering.Matching);
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0", "revoked topic-0", "assigned other-0"], CollectionOrdering.Matching);
+        await Assert.That(cluster.GetCommittedOffset("group", Partition0)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ListenerOwnCancellation_PropagatesAndIsReportedAgain()
+    {
+        var cluster = CreateCluster(partitions: 1);
+        var listener = new RecordingListener();
+        await using var consumer = CreateConsumer(cluster, "a", listener);
+        var assignments = 0;
+        listener.OnAssigned = () => Interlocked.Increment(ref assignments) == 1
+            ? throw new OperationCanceledException()
+            : ValueTask.CompletedTask;
+        consumer.Subscribe("topic");
+
+        await Assert.That(async () => await consumer.ConsumeOneAsync(TimeSpan.Zero)).Throws<OperationCanceledException>();
+        await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0", "assigned topic-0"], CollectionOrdering.Matching);
     }
 
     [Test]

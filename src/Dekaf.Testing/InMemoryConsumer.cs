@@ -501,10 +501,20 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 _leavingGroup = _disposed;
         }
 
-        if (revocation.IsCompleted)
-            revocation.GetAwaiter().GetResult();
-        else
+        if (!revocation.IsCompleted)
+        {
             _pendingRebalanceCallback = revocation.AsTask();
+            return;
+        }
+
+        try
+        {
+            revocation.GetAwaiter().GetResult();
+        }
+        catch (OperationCanceledException)
+        {
+            // See AwaitPendingRebalanceCallbackAsync: the member has left the group regardless.
+        }
     }
 
     private void UnsubscribeCore()
@@ -3634,6 +3644,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 RemoveDepartingOffsetsUnderLock(revoked);
         }
 
+        var revocationDelivered = revoked is null;
         try
         {
             if (revoked is not null)
@@ -3650,6 +3661,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 }
             }
 
+            revocationDelivered = true;
             if (assigned is not null)
             {
                 await InvokeListenerAsync(
@@ -3657,12 +3669,17 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                     listener, assigned, cancellationToken).ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException) when (assigned is not null)
+        catch (OperationCanceledException)
         {
-            // The assignment callback did not complete; the next consume call reports it again.
+            // A callback that did not complete is reported again by the next consume call, as
+            // KafkaConsumer keeps interrupted rebalance callbacks pending. An interrupted
+            // revocation keeps its departing offsets committable until it completes.
             lock (_gate)
             {
-                _listenerAssignment.ExceptWith(assigned);
+                if (!revocationDelivered)
+                    _listenerAssignment.UnionWith(revoked!);
+                if (assigned is not null)
+                    _listenerAssignment.ExceptWith(assigned);
                 _listenerConsumerStateVersion = -1;
             }
             throw;
@@ -3674,18 +3691,13 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         IEnumerable<TopicPartition> revoked,
         CancellationToken cancellationToken)
     {
-        try
-        {
-            await InvokeListenerAsync(
-                static (listener, partitions, token) => listener.OnPartitionsRevokedAsync(partitions, token),
-                listener, revoked, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            // Another revocation may have started meanwhile; keep the offsets it saved.
-            lock (_gate)
-                RemoveDepartingOffsetsUnderLock(revoked);
-        }
+        // A cancelled callback keeps the offsets for its retry. Another revocation may have
+        // started meanwhile; keep the offsets it saved.
+        await InvokeListenerAsync(
+            static (listener, partitions, token) => listener.OnPartitionsRevokedAsync(partitions, token),
+            listener, revoked, cancellationToken).ConfigureAwait(false);
+        lock (_gate)
+            RemoveDepartingOffsetsUnderLock(revoked);
     }
 
     private void RemoveDepartingOffsetsUnderLock(IEnumerable<TopicPartition> partitions)
@@ -3696,7 +3708,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
 
     /// <summary>
     /// Runs a listener callback the way <c>KafkaConsumer</c> does: an exception other than
-    /// cancellation of <paramref name="cancellationToken"/> is ignored and does not stop consumption.
+    /// <see cref="OperationCanceledException"/> is ignored and does not stop consumption.
     /// </summary>
     private static async ValueTask InvokeListenerAsync(
         Func<IRebalanceListener, IEnumerable<TopicPartition>, CancellationToken, ValueTask> callback,
@@ -3708,7 +3720,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         {
             await callback(listener, partitions, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // KafkaConsumer logs the failure; the in-memory consumer has no logger.
         }
@@ -3797,7 +3809,16 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         if (Volatile.Read(ref _pendingRebalanceCallback) is not { } pending)
             return;
 
-        await pending.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await pending.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (pending.IsCompleted)
+        {
+            // The listener cancelled its own revocation. Unsubscribe has left the group
+            // regardless, as KafkaConsumer does in the background.
+        }
+
         _ = Interlocked.CompareExchange(ref _pendingRebalanceCallback, null, pending);
     }
 
