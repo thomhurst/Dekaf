@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.Streams.Extensions.Hosting</PackageId>
+    <Description>Microsoft.Extensions.Hosting integration for Dekaf.Streams</Description>
+    <PackageTags>kafka;streams;hosting;background-service</PackageTags>
+    <!-- New package: no previously published baseline exists yet. -->
+    <PackageValidationBaselineVersion></PackageValidationBaselineVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dekaf.Streams\Dekaf.Streams.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+  </ItemGroup>
+
+</Project>

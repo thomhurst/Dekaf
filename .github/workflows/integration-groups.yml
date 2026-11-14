@@ -50,7 +50,7 @@ jobs:
               resilience: Resilience
               produce: Producer,MultiInFlightProducer,Backpressure,Compression,Transaction
               consume: Consumer,ConsumerLag,Offsets
-              consumer-groups: ConsumerGroup,ShareConsumerAdmin
+              consumer-groups: ConsumerGroup,ShareConsumerAdmin,Streams
               share-core: ShareConsumerCore
               share-other: ShareConsumerOther
               messaging: Messaging,MessagingPatterns,MessagingOrdering,Serialization,Interop,Telemetry,Admin

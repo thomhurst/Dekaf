@@ -43,6 +43,7 @@ internal static class AotSmoke
     public static async Task RunAsync()
     {
         PackedEpochSmoke.Run();
+        StreamsSmoke.Run();
         RunCompressionSmoke();
         RunJsonSmoke();
         await SchemaIdRoutingSmoke.RunAsync();

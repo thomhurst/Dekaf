@@ -26,6 +26,9 @@
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Protobuf\Dekaf.SchemaRegistry.Protobuf.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Serialization.Json\Dekaf.Serialization.Json.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Serialization.Routing\Dekaf.Serialization.Routing.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Streams\Dekaf.Streams.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Streams.Testing\Dekaf.Streams.Testing.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Streams.Storage.ZoneTree\Dekaf.Streams.Storage.ZoneTree.csproj" />
   </ItemGroup>
 
 </Project>

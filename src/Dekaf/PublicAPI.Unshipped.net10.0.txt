@@ -314,6 +314,10 @@ Dekaf.Consumer.ConsumeRawRecord.LeaderEpoch.get -> int?
 Dekaf.Streams.IStreamsGroupMember
 Dekaf.Streams.IStreamsGroupMember.CloseAsync(Dekaf.Streams.StreamsGroupCloseOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
 Dekaf.Streams.IStreamsGroupMember.CloseAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Streams.IStreamsGroupOffsetCommitter
+Dekaf.Streams.IStreamsGroupOffsetCommitter.CommitOffsetsAsync(System.Collections.Generic.IEnumerable<Dekaf.TopicPartitionOffset>! offsets, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Streams.StreamsGroupMemberExtensions
+static Dekaf.Streams.StreamsGroupMemberExtensions.CommitOffsetsAsync(this Dekaf.Streams.IStreamsGroupMember! member, System.Collections.Generic.IEnumerable<Dekaf.TopicPartitionOffset>! offsets, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
 Dekaf.Streams.IStreamsGroupMember.GroupId.get -> string!
 Dekaf.Streams.IStreamsGroupMember.InstanceId.get -> string?
 Dekaf.Streams.IStreamsGroupMember.JoinAsync(Dekaf.Streams.StreamsGroupMemberUpdate! initialState, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Streams.StreamsGroupHeartbeatResult!>
@@ -417,6 +421,8 @@ Dekaf.Streams.StreamsGroupMemberSnapshot.IsJoined.get -> bool
 Dekaf.Streams.StreamsGroupMemberSnapshot.IsJoined.init -> void
 Dekaf.Streams.StreamsGroupMemberSnapshot.MemberEpoch.get -> int
 Dekaf.Streams.StreamsGroupMemberSnapshot.MemberEpoch.init -> void
+Dekaf.Streams.StreamsGroupMemberSnapshot.MembershipGeneration.get -> int
+Dekaf.Streams.StreamsGroupMemberSnapshot.MembershipGeneration.init -> void
 Dekaf.Streams.StreamsGroupMemberSnapshot.MemberId.get -> string?
 Dekaf.Streams.StreamsGroupMemberSnapshot.MemberId.init -> void
 Dekaf.Streams.StreamsGroupMemberSnapshot.PartitionsByUserEndpoint.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupEndpointAssignment!>!

@@ -175,6 +175,99 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
+    public async Task Snapshot_MembershipGenerationIncreasesWhenTheMemberIsFenced()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1, active: [TaskIds("topology", 0)]));
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.FencedMemberEpoch,
+            ErrorMessage = "fenced",
+            MemberId = "member-1"
+        });
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate(topologyEpoch: 5));
+        var joined = fixture.Member.Snapshot.MembershipGeneration;
+
+        await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate());
+
+        // The member is joined again with a valid epoch; only the generation says its tasks were lost.
+        await Assert.That(fixture.Member.Snapshot.IsJoined).IsTrue();
+        await Assert.That(fixture.Member.Snapshot.MemberEpoch).IsEqualTo(2);
+        await Assert.That(fixture.Member.Snapshot.MembershipGeneration).IsEqualTo(joined + 1);
+    }
+
+    [Test]
+    public async Task CommitOffsetsAsync_SendsTheMemberIdentityAndGroupsPartitionsByTopic()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 7));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate(topologyEpoch: 0));
+
+        await fixture.Member.CommitOffsetsAsync(
+        [
+            new TopicPartitionOffset("orders", 0, 10),
+            new TopicPartitionOffset("orders", 1, 20) { Metadata = "note" },
+            new TopicPartitionOffset("payments", 0, 30, leaderEpoch: 4)
+        ]);
+
+        var request = connection.OffsetCommitRequests.Single();
+        await Assert.That(request.GroupId).IsEqualTo(fixture.Member.GroupId);
+        await Assert.That(request.MemberId).IsEqualTo(fixture.Member.Snapshot.MemberId);
+        await Assert.That(request.GenerationIdOrMemberEpoch).IsEqualTo(7);
+        await Assert.That(request.Topics.Select(static topic => topic.Name)).IsEquivalentTo(["orders", "payments"]);
+        var orders = request.Topics.Single(static topic => topic.Name == "orders").Partitions;
+        await Assert.That(orders.Select(static p => (p.PartitionIndex, p.CommittedOffset, p.CommittedMetadata)))
+            .IsEquivalentTo([(0, 10L, (string?)null), (1, 20L, "note")]);
+        await Assert.That(request.Topics.Single(static topic => topic.Name == "payments").Partitions.Single().CommittedLeaderEpoch)
+            .IsEqualTo(4);
+
+        // Name-addressed versions only: the member does not resolve topic ids.
+        await Assert.That(connection.OffsetCommitApiVersions.Single()).IsLessThan(OffsetCommitRequest.TopicIdVersion);
+
+        await fixture.Member.CommitOffsetsAsync([]);
+        await Assert.That(connection.OffsetCommitRequests.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task CommitOffsetsAsync_RetriesACoordinatorMoveAndRejectsAStaleEpoch()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 3));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate(topologyEpoch: 0));
+        var lookups = connection.FindCoordinatorRequestCount;
+
+        connection.EnqueueOffsetCommitError(ErrorCode.NotCoordinator);
+        await fixture.Member.CommitOffsetsAsync([new TopicPartitionOffset("orders", 0, 10)]);
+        await Assert.That(connection.OffsetCommitRequests.Count).IsEqualTo(2);
+        await Assert.That(connection.FindCoordinatorRequestCount).IsEqualTo(lookups + 1);
+
+        // A stale epoch means the assignment changed, so the offsets must not be retried.
+        connection.EnqueueOffsetCommitError(ErrorCode.StaleMemberEpoch);
+        var stale = await Assert.That(async () =>
+                await fixture.Member.CommitOffsetsAsync([new TopicPartitionOffset("orders", 0, 11)]))
+            .Throws<GroupException>();
+        await Assert.That(stale!.ErrorCode).IsEqualTo(ErrorCode.StaleMemberEpoch);
+        await Assert.That(connection.OffsetCommitRequests.Count).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task CommitOffsetsAsync_BeforeJoining_Throws()
+    {
+        var connection = new ScriptedConnection();
+        await using var fixture = CreateFixture(connection);
+
+        var notJoined = await Assert.That(async () =>
+                await fixture.Member.CommitOffsetsAsync([new TopicPartitionOffset("orders", 0, 10)]))
+            .Throws<GroupException>();
+        await Assert.That(notJoined!.ErrorCode).IsEqualTo(ErrorCode.UnknownMemberId);
+        await Assert.That(connection.OffsetCommitRequests).IsEmpty();
+    }
+
+    [Test]
     public async Task UpdateAsync_WhenStaticMemberFenced_RejoinsWithEpochZero()
     {
         var connection = new ScriptedConnection();
@@ -2121,6 +2214,10 @@ public sealed class StreamsGroupMemberTests
             StreamsGroupHeartbeatRequest.LowestSupportedVersion,
             brokerHeartbeatMaxVersion ?? StreamsGroupHeartbeatRequest.HighestSupportedVersion);
         metadataManager.SetApiVersion(
+            ApiKey.OffsetCommit,
+            OffsetCommitRequest.LowestSupportedVersion,
+            OffsetCommitRequest.HighestSupportedVersion);
+        metadataManager.SetApiVersion(
             ApiKey.StreamsGroupTopologyDescriptionUpdate,
             StreamsGroupTopologyDescriptionUpdateRequest.LowestSupportedVersion,
             StreamsGroupTopologyDescriptionUpdateRequest.HighestSupportedVersion);
@@ -2374,6 +2471,12 @@ public sealed class StreamsGroupMemberTests
             Func<CancellationToken, Task<StreamsGroupTopologyDescriptionUpdateResponse>> response) =>
             _publicationResponses.Enqueue(response);
 
+        public List<OffsetCommitRequest> OffsetCommitRequests { get; } = [];
+        public List<short> OffsetCommitApiVersions { get; } = [];
+        private readonly Queue<ErrorCode> _offsetCommitErrors = new();
+
+        public void EnqueueOffsetCommitError(ErrorCode error) => _offsetCommitErrors.Enqueue(error);
+
         public void EnqueueFindCoordinator(FindCoordinatorResponse response) =>
             _findCoordinatorResponses.Enqueue(Task.FromResult(response));
 
@@ -2445,6 +2548,25 @@ public sealed class StreamsGroupMemberTests
                 {
                     attempt.Completed.TrySetResult();
                 }
+            }
+
+            if (request is OffsetCommitRequest offsetCommit)
+            {
+                OffsetCommitRequests.Add(offsetCommit);
+                OffsetCommitApiVersions.Add(apiVersion);
+                var error = _offsetCommitErrors.Count == 0 ? ErrorCode.None : _offsetCommitErrors.Dequeue();
+                return (TResponse)(IKafkaResponse)new OffsetCommitResponse
+                {
+                    Topics = offsetCommit.Topics.Select(topic => new OffsetCommitResponseTopic
+                    {
+                        Name = topic.Name,
+                        Partitions = topic.Partitions.Select(partition => new OffsetCommitResponsePartition
+                        {
+                            PartitionIndex = partition.PartitionIndex,
+                            ErrorCode = error
+                        }).ToArray()
+                    }).ToArray()
+                };
             }
 
             if (request is StreamsGroupHeartbeatRequest heartbeat)

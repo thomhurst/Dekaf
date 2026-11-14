@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.Streams.Testing</PackageId>
+    <Description>Deterministic in-memory test driver for Dekaf.Streams topologies</Description>
+    <PackageTags>kafka;streams;testing</PackageTags>
+    <!-- New package: no previously published baseline exists yet. -->
+    <PackageValidationBaselineVersion></PackageValidationBaselineVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dekaf.Streams\Dekaf.Streams.csproj" />
+  </ItemGroup>
+
+</Project>

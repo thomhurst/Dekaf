@@ -82,6 +82,43 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
     }
 
     [Test]
+    [SupportsKafka(CompleteStreamsGroupSupport)]
+    public async Task MemberCommitsOffsetsUnderItsOwnIdentity()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2).ConfigureAwait(false);
+        var groupId = $"streams-group-{Guid.NewGuid():N}";
+        await using var client = Kafka.Connect(KafkaContainer.BootstrapServers, builder =>
+            builder.WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()));
+        await using var member = client.CreateStreamsGroupMember(new StreamsGroupMemberOptions { GroupId = groupId });
+        await member.InitializeAsync();
+        await member.JoinAsync(CreateInitialState(topic, "process-commit"));
+        await using var admin = client.CreateAdminClient().Build();
+        await ReceiveActiveTasksAsync(admin, member, [0, 1]);
+        await member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
+            ActiveTasks = member.Snapshot.Assignment.ActiveTasks,
+            StandbyTasks = [],
+            WarmupTasks = []
+        });
+
+        await member.CommitOffsetsAsync([new TopicPartitionOffset(topic, 0, 5), new TopicPartitionOffset(topic, 1, 9)]);
+
+        var committed = (await Dekaf.Admin.AdminClientStreamsGroupManagementExtensions.ListStreamsGroupOffsetsAsync(
+            admin,
+            new Dictionary<string, Dekaf.Admin.ListStreamsGroupOffsetsSpec> { [groupId] = new() }))[groupId];
+        await Assert.That(committed.Offsets[new TopicPartition(topic, 0)].Offset).IsEqualTo(5);
+        await Assert.That(committed.Offsets[new TopicPartition(topic, 1)].Offset).IsEqualTo(9);
+
+        // Once the member has left, its identity commits nothing.
+        await member.CloseAsync(new StreamsGroupCloseOptions
+        {
+            GroupMembershipOperation = StreamsGroupMembershipOperation.LeaveGroup
+        });
+        await Assert.That(async () => await member.CommitOffsetsAsync([new TopicPartitionOffset(topic, 0, 6)]))
+            .ThrowsException();
+    }
+
+    [Test]
     [SupportsKafka(AssignorNameSupport)]
     public async Task Kafka44SelectsAndDescribesStreamsAssignor()
     {

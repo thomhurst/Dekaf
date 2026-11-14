@@ -60,6 +60,7 @@
     <PackageVersion Include="TUnit.Logging.Microsoft" Version="1.84.0" />
     <PackageVersion Include="Verify.TUnit" Version="33.4.0" />
     <PackageVersion Include="ZstdSharp.Port" Version="0.8.8" />
+    <PackageVersion Include="ZoneTree" Version="2.1.5" />
   </ItemGroup>
 
   <!--
