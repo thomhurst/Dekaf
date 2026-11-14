@@ -1431,13 +1431,20 @@ public sealed class ProducerBuilder<TKey, TValue>
 
         ProducerOptions.ValidateArenaCapacity(_batchSize, _arenaCapacity);
 
-        var deliveryTimeoutMs = _deliveryTimeoutMs ?? 120_000;
         // A shared client's connections time out on the client's request timeout, so a
         // producer deadline that expired first would retry into the same connection.
         var requestTimeoutMs = _requestTimeoutMs
             ?? _clientInfrastructure?.RequestTimeoutMs
             ?? ProducerOptions.DefaultRequestTimeoutMs;
         var minimumDeliveryTimeoutMs = (long)requestTimeoutMs + _lingerMs;
+        var deliveryTimeoutMs = _deliveryTimeoutMs ?? 120_000;
+        if (_deliveryTimeoutMs is null && _requestTimeoutMs is null && deliveryTimeoutMs < minimumDeliveryTimeoutMs)
+        {
+            // An inherited client request timeout longer than the default delivery timeout
+            // raises the default instead of failing a build that sets neither value.
+            deliveryTimeoutMs = (int)Math.Min(minimumDeliveryTimeoutMs, int.MaxValue);
+        }
+
         if (deliveryTimeoutMs < minimumDeliveryTimeoutMs)
         {
             throw new InvalidOperationException(
