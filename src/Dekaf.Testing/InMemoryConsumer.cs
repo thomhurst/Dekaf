@@ -136,7 +136,10 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     private bool _leavingGroup;
     private Task? _pendingRebalanceCallback;
     // Callbacks a consume call is running; leaving the group waits for them, as KafkaConsumer serializes rebalance callbacks.
-    private Task? _activeRebalanceDelivery;
+    private Task<RebalanceDeliveryOutcome>? _activeRebalanceDelivery;
+    // Incremented when leaving the group takes its snapshot, so a delivery that started earlier hands
+    // its unfinished partitions to the leave instead of restoring them.
+    private int _listenerLeaveVersion;
     // Offsets the revoked partitions held, committed by CommitAsync until the revocation callback returns.
     private readonly Dictionary<TopicPartition, TopicPartitionOffset> _departingOffsets = [];
 
@@ -3669,12 +3672,16 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         List<TopicPartition>? assigned = null;
         List<(TopicPartition Partition, int Ownership)>? regained = null;
         bool lost;
-        TaskCompletionSource delivery;
+        int leaveVersion;
+        TaskCompletionSource<RebalanceDeliveryOutcome> delivery;
+        RebalanceDeliveryOutcome outcome = default;
         lock (_gate)
         {
             ThrowIfDisposed();
             if (_leavingGroup)
                 return;
+
+            leaveVersion = _listenerLeaveVersion;
 
             var subscribed = _subscriptionTopologyVersion >= 0;
             var current = subscribed ? GetCurrentAssignmentUnderLock() : null;
@@ -3728,7 +3735,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             if (lost && revoked is not null)
                 RemoveDepartingOffsetsUnderLock(revoked);
             // Published under the lock, so a leave that snapshots the assignment after this waits for it.
-            delivery = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            delivery = new TaskCompletionSource<RebalanceDeliveryOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
             _activeRebalanceDelivery = delivery.Task;
         }
 
@@ -3756,7 +3763,12 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 lock (_gate)
                 {
                     if (_leavingGroup || _disposed || !_listenerAssignment.Contains(assigned[0]))
+                    {
+                        // The leave's snapshot took these partitions, but they were never reported.
+                        if (_listenerLeaveVersion != leaveVersion)
+                            outcome = new RebalanceDeliveryOutcome(null, assigned, false);
                         return;
+                    }
                 }
 
                 await InvokeListenerAsync(
@@ -3771,6 +3783,14 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             // revocation keeps its departing offsets committable until it completes.
             lock (_gate)
             {
+                if (_listenerLeaveVersion != leaveVersion)
+                {
+                    // Leaving the group already took its snapshot; it revokes the interrupted
+                    // partitions and skips the unreported assignment instead.
+                    outcome = new RebalanceDeliveryOutcome(revocationDelivered ? null : revoked, assigned, lost);
+                    throw;
+                }
+
                 if (!revocationDelivered)
                 {
                     _listenerAssignment.UnionWith(revoked!);
@@ -3794,7 +3814,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         finally
         {
             _ = Interlocked.CompareExchange(ref _activeRebalanceDelivery, null, delivery.Task);
-            delivery.SetResult();
+            delivery.SetResult(outcome);
         }
     }
 
@@ -3912,6 +3932,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             revoked = _listenerAssignment.ToArray();
             _listenerAssignment.Clear();
             _listenerConsumerStateVersion = -1;
+            _listenerLeaveVersion++;
         }
 
         return RevokeAsync(listener, revoked, lost, cancellationToken);
@@ -3927,7 +3948,24 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             {
                 await AwaitPendingRebalanceCallbackAsync(cancellationToken).ConfigureAwait(false);
                 if (Volatile.Read(ref _activeRebalanceDelivery) is { } delivery)
-                    await delivery.WaitAsync(cancellationToken).ConfigureAwait(false);
+                {
+                    var outcome = await delivery.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    if (outcome.Restored is not null || outcome.Unreported is not null)
+                    {
+                        var partitions = new HashSet<TopicPartition>(revoked);
+                        if (outcome.Unreported is not null)
+                            partitions.ExceptWith(outcome.Unreported);
+                        if (outcome.Restored is not null)
+                            partitions.UnionWith(outcome.Restored);
+                        revoked = partitions.ToArray();
+                        if (outcome.Lost && !lost)
+                        {
+                            lost = true;
+                            lock (_gate)
+                                RemoveDepartingOffsetsUnderLock(revoked);
+                        }
+                    }
+                }
             }
             if (revoked.Length == 0)
                 return;
@@ -3977,6 +4015,15 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
 
         _ = Interlocked.CompareExchange(ref _pendingRebalanceCallback, null, pending);
     }
+
+    /// <summary>
+    /// What a consume-time rebalance delivery left unfinished after leaving the group took its
+    /// snapshot: an interrupted revocation, and assigned partitions the listener never saw.
+    /// </summary>
+    private readonly record struct RebalanceDeliveryOutcome(
+        List<TopicPartition>? Restored,
+        List<TopicPartition>? Unreported,
+        bool Lost);
 
     private void RevokePartitionUnderLock(TopicPartition partition)
     {
