@@ -1,10 +1,6 @@
-using ModularPipelines.Attributes;
+using ModularPipelines;
 using ModularPipelines.Context;
-using ModularPipelines.DotNet.Extensions;
 using ModularPipelines.DotNet.Options;
-using ModularPipelines.Git.Extensions;
-using ModularPipelines.Models;
-using ModularPipelines.Modules;
 using ModularPipelines.Options;
 
 namespace Dekaf.Pipeline.Modules;
@@ -16,15 +12,15 @@ namespace Dekaf.Pipeline.Modules;
 [DependsOn<BuildModule>]
 public class RunBenchmarksModule : Module<CommandResult>
 {
-    protected override async Task<CommandResult?> ExecuteAsync(IModuleContext context, CancellationToken cancellationToken)
+    protected override async Task<CommandResult> ExecuteAsync(IModuleContext context, CancellationToken cancellationToken)
     {
-        var benchmarkProject = context.Git().RootDirectory.FindFile(x => x.Name == "Dekaf.Benchmarks.csproj");
+        var benchmarkProject = (await context.Tools.Git.Information.GetRequiredInfoAsync(cancellationToken)).Root.FindFile(x => x.Name == "Dekaf.Benchmarks.csproj");
         if (benchmarkProject is null)
         {
             throw new InvalidOperationException("Dekaf.Benchmarks.csproj not found");
         }
 
-        return await context.DotNet().Run(
+        return await context.Tools.DotNet.RunAsync(
             new DotNetRunOptions
             {
                 Configuration = "Release",

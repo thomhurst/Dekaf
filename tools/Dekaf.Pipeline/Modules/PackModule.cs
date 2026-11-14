@@ -1,10 +1,6 @@
-using ModularPipelines.Attributes;
+using ModularPipelines;
 using ModularPipelines.Context;
-using ModularPipelines.DotNet.Extensions;
 using ModularPipelines.DotNet.Options;
-using ModularPipelines.Git.Extensions;
-using ModularPipelines.Models;
-using ModularPipelines.Modules;
 
 namespace Dekaf.Pipeline.Modules;
 
@@ -19,13 +15,13 @@ public record PackedProject(string Name, string Version);
 [DependsOn<GenerateVersionModule>]
 public class PackModule : Module<List<PackedProject>>
 {
-    protected override async Task<List<PackedProject>?> ExecuteAsync(IModuleContext context, CancellationToken cancellationToken)
+    protected override async Task<List<PackedProject>> ExecuteAsync(IModuleContext context, CancellationToken cancellationToken)
     {
         var versionModule = await context.GetModule<GenerateVersionModule>();
         var version = versionModule.ValueOrDefault?.SemVer ?? "1.0.0";
 
         var packedProjects = new List<PackedProject>();
-        var sourceDirectory = Path.Combine(context.Git().RootDirectory.Path, "src");
+        var sourceDirectory = Path.Combine((await context.Tools.Git.Information.GetRequiredInfoAsync(cancellationToken)).Root.Path, "src");
         var projectFiles = Directory
             .EnumerateFiles(sourceDirectory, "*.csproj", SearchOption.AllDirectories)
             .Order(StringComparer.Ordinal);
@@ -34,7 +30,7 @@ public class PackModule : Module<List<PackedProject>>
         {
             var projectName = Path.GetFileNameWithoutExtension(projectFile);
 
-            await context.DotNet().Pack(new DotNetPackOptions
+            await context.Tools.DotNet.PackAsync(new DotNetPackOptions
             {
                 ProjectSolution = projectFile,
                 Configuration = "Release",

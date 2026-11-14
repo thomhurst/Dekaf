@@ -1,7 +1,6 @@
 using Microsoft.Extensions.Logging;
+using ModularPipelines;
 using ModularPipelines.Context;
-using ModularPipelines.Git.Extensions;
-using ModularPipelines.Modules;
 
 namespace Dekaf.Pipeline.Modules;
 
@@ -9,7 +8,7 @@ public record VersionInfo(string SemVer, string? NuGetVersion);
 
 public class GenerateVersionModule : Module<VersionInfo>
 {
-    protected override async Task<VersionInfo?> ExecuteAsync(IModuleContext context, CancellationToken cancellationToken)
+    protected override async Task<VersionInfo> ExecuteAsync(IModuleContext context, CancellationToken cancellationToken)
     {
         // Use the version GitVersion computed directly. +semver: bump messages drive Major/Minor/Patch,
         // and the v{version} release tags CreateReleaseModule pushes act as GitVersion's version
@@ -35,7 +34,7 @@ public class GenerateVersionModule : Module<VersionInfo>
         // exported the GitVersion_* environment variables).
         try
         {
-            var gitVersionInformation = await context.Git().Versioning.GetGitVersioningInformation();
+            var gitVersionInformation = await context.Tools.Git.Versioning.GetVersioningInformationAsync(cancellationToken);
             var semVer = gitVersionInformation.SemVer ?? gitVersionInformation.FullSemVer ?? "1.0.0";
             context.Logger.LogInformation("Version is: {SemVer}", semVer);
             return new VersionInfo(semVer, semVer);

@@ -1,33 +1,26 @@
 using Microsoft.Extensions.Logging;
-using ModularPipelines.Attributes;
-using ModularPipelines.Configuration;
+using ModularPipelines;
 using ModularPipelines.Context;
-using ModularPipelines.DotNet.Extensions;
 using ModularPipelines.DotNet.Options;
-using ModularPipelines.Git.Extensions;
-using ModularPipelines.Models;
-using ModularPipelines.Modules;
 using ModularPipelines.Options;
 
 namespace Dekaf.Pipeline.Modules;
 
 [DependsOn<BuildModule>]
-public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandResult>>
+public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandResult>?>
 {
     /// <summary>
     /// The TUnit test category to filter by (matches [Category("X")] on test classes).
     /// </summary>
-    protected new abstract string Category { get; }
+    protected abstract string Category { get; }
 
     protected virtual TimeSpan ModuleTimeout => TimeSpan.FromMinutes(30);
 
     protected virtual TimeSpan ProcessTimeout => TimeSpan.FromMinutes(12);
 
-    protected override ModuleConfiguration Configure()
+    protected override void Configure(ModuleConfigurationBuilder module)
     {
-        return new ModuleConfigurationBuilder()
-            .WithTimeout(ModuleTimeout)
-            .Build();
+        module.WithTimeout(ModuleTimeout);
     }
 
     protected override async Task<IReadOnlyList<CommandResult>?> ExecuteAsync(
@@ -44,7 +37,7 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
 
         var results = new List<CommandResult>();
 
-        var project = context.Git().RootDirectory.FindFile(x => x.Name == "Dekaf.Tests.Integration.csproj");
+        var project = (await context.Tools.Git.Information.GetRequiredInfoAsync(cancellationToken)).Root.FindFile(x => x.Name == "Dekaf.Tests.Integration.csproj");
 
         if (project is null)
         {
@@ -69,7 +62,7 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
 
         try
         {
-            var testResult = await context.DotNet().Run(
+            var testResult = await context.Tools.DotNet.RunAsync(
                 new DotNetRunOptions
                 {
                     NoBuild = true,
