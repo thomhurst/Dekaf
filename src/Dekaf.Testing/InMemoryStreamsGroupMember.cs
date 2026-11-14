@@ -248,9 +248,12 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
                 return ValueTask.CompletedTask;
 
             _lastCloseOptions = options;
-            var remainInGroup = options.GroupMembershipOperation == StreamsGroupMembershipOperation.RemainInGroup
-                || (options.GroupMembershipOperation == StreamsGroupMembershipOperation.Default
-                    && _options.InstanceId is not null);
+            // The in-memory cluster has no session timer, so a cluster-backed dynamic member always leaves on
+            // close; with RemainInGroup it would otherwise hold its tasks forever.
+            var remainInGroup = (options.GroupMembershipOperation == StreamsGroupMembershipOperation.RemainInGroup
+                    || (options.GroupMembershipOperation == StreamsGroupMembershipOperation.Default
+                        && _options.InstanceId is not null))
+                && (_group is null || _options.InstanceId is not null);
             Volatile.Write(ref _snapshot, new StreamsGroupMemberSnapshot
             {
                 IsJoined = remainInGroup && _snapshot.IsJoined,
@@ -266,11 +269,7 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
                 TaskOffsetInterval = _snapshot.TaskOffsetInterval
             });
 
-            // The in-memory cluster has no session timer, so only a static member stays in the group after
-            // close; a dynamic member closed with RemainInGroup would otherwise hold its tasks forever.
-            if (_group is not null
-                && !(remainInGroup && _options.InstanceId is not null)
-                && _group.Members.Remove(this))
+            if (_group is not null && !remainInGroup && _group.Members.Remove(this))
             {
                 Rebalance(_group, _cluster!);
             }

@@ -108,6 +108,10 @@ public sealed class InMemoryStreamsGroupAssignorTests
         });
 
         await Assert.That(Tasks(first)).IsEquivalentTo(["sub-0:0", "sub-0:1", "sub-0:2", "sub-0:3"]);
+        await Assert.That(second.Snapshot.IsJoined).IsFalse();
+        await Assert.That(second.Snapshot.MemberId).IsNull();
+        await Assert.That(async () => await second.CommitOffsetsAsync([new TopicPartitionOffset("orders", 0, 1)]))
+            .Throws<Dekaf.Errors.GroupException>();
     }
 
     [Test]
