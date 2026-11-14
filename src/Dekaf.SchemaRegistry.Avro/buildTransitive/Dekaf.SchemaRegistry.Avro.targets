@@ -6,15 +6,20 @@
     so the trimmer removes those paths. Set DekafAvroPocoRulesSupport to true in a trimmed JIT app to keep it,
     accepting the trim warnings; NativeAOT never supports it.
   -->
+  <!--
+    The emitted value goes through a private property: a command-line DekafAvroPocoRulesSupport is a global
+    property that project files cannot reassign, and the switch substitutes the whole guard, so NativeAOT
+    must always see false.
+  -->
   <PropertyGroup>
-    <DekafAvroPocoRulesSupport Condition="'$(DekafAvroPocoRulesSupport)' == '' and '$(PublishTrimmed)' == 'true'">false</DekafAvroPocoRulesSupport>
-    <!-- The switch substitutes the whole guard, so NativeAOT must always see false. -->
-    <DekafAvroPocoRulesSupport Condition="'$(PublishAot)' == 'true'">false</DekafAvroPocoRulesSupport>
+    <_DekafAvroPocoRulesSupport>$(DekafAvroPocoRulesSupport)</_DekafAvroPocoRulesSupport>
+    <_DekafAvroPocoRulesSupport Condition="'$(_DekafAvroPocoRulesSupport)' == '' and '$(PublishTrimmed)' == 'true'">false</_DekafAvroPocoRulesSupport>
+    <_DekafAvroPocoRulesSupport Condition="'$(PublishAot)' == 'true'">false</_DekafAvroPocoRulesSupport>
   </PropertyGroup>
 
-  <ItemGroup Condition="'$(DekafAvroPocoRulesSupport)' != ''">
+  <ItemGroup Condition="'$(_DekafAvroPocoRulesSupport)' != ''">
     <RuntimeHostConfigurationOption Include="Dekaf.SchemaRegistry.Avro.Poco.RulesSupport.IsSupported"
-                                    Value="$(DekafAvroPocoRulesSupport)"
+                                    Value="$(_DekafAvroPocoRulesSupport)"
                                     Trim="true" />
   </ItemGroup>
 

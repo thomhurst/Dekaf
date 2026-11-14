@@ -257,6 +257,9 @@ settings is configured:
 - `ValidationRulesExecution` other than `Disabled` (serializer or deserializer)
 - `UseLatestVersion` on the deserializer, which runs migrations to the latest reader schema
 
+Setting `PublishTrimmed` or `PublishAot` in the project file also turns them off for `dotnet run`
+and `dotnet test` of that project, not only for `dotnet publish`.
+
 The same settings behave as documented in an untrimmed JIT app. The trimmer and the NativeAOT
 compiler remove the rule code, so these features add no Apache.Avro code to a POCO-only app.
 

@@ -45,6 +45,7 @@ internal static class AvroPocoAotSmoke
     private static void RunRuleConfigurationRejected(InMemorySchemaRegistry registry)
     {
         // Rule processing parses schemas with Apache.Avro, so trimmed and NativeAOT publishes turn it off.
+        // The switch name must match AvroPocoRuleSupport.SwitchName.
         if (RuntimeFeature.IsDynamicCodeSupported &&
             !(AppContext.TryGetSwitch("Dekaf.SchemaRegistry.Avro.Poco.RulesSupport.IsSupported", out var enabled) && !enabled))
             return;
