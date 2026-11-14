@@ -1942,8 +1942,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
             await processed.WaitAsync(cts.Token);
         }
 
-        await cts.CancelAsync();
-        await Assert.ThrowsAsync<OperationCanceledException>(async () => await runTask);
+        // The batch source can end normally when cancellation lands between batches, so
+        // stopping accepts either a normal return or OperationCanceledException.
+        await StopRuntimeAsync(cts, runTask);
         await Assert.That(consumer.CommitAttempts).IsEqualTo(0);
     }
 
