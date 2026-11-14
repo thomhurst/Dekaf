@@ -310,6 +310,55 @@ public sealed class InMemoryRebalanceListenerTests
     }
 
     [Test]
+    public async Task CancelledAssignmentCallback_IsReportedAgainOnNextConsume()
+    {
+        var cluster = CreateCluster(partitions: 1);
+        var listener = new RecordingListener();
+        var assignmentEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseAssignment = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var consumer = CreateConsumer(cluster, "a", listener);
+        var assignments = 0;
+        listener.OnAssigned = async () =>
+        {
+            if (Interlocked.Increment(ref assignments) != 1)
+                return;
+
+            assignmentEntered.SetResult();
+            await releaseAssignment.Task;
+            throw new OperationCanceledException();
+        };
+        consumer.Subscribe("topic");
+        using var cancellation = new CancellationTokenSource();
+        var consume = consumer.ConsumeOneAsync(TimeSpan.Zero, cancellation.Token).AsTask();
+        await assignmentEntered.Task;
+        await cancellation.CancelAsync();
+        releaseAssignment.SetResult();
+        await Assert.That(async () => await consume).Throws<OperationCanceledException>();
+
+        await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0", "assigned topic-0"], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task IncrementalAssignOfAnOwnedPartition_ListenerCommitIncludesItsOffset()
+    {
+        var cluster = CreateCluster(partitions: 1);
+        await ProduceAsync(cluster, 2);
+        var listener = new RecordingListener();
+        await using var consumer = CreateConsumer(cluster, "a", listener, OffsetCommitMode.Manual);
+        listener.OnRevoked = () => consumer.CommitAsync();
+        consumer.Subscribe("topic");
+        await Assert.That((await consumer.ConsumeOneAsync(TimeSpan.Zero))!.Value.Offset).IsEqualTo(0);
+
+        consumer.IncrementalAssign([new TopicPartitionOffset("topic", 0, 0)]);
+        await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0", "revoked topic-0"], CollectionOrdering.Matching);
+        await Assert.That(cluster.GetCommittedOffset("group", Partition0)).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task CancelledRevocation_StillReportsTheNewAssignment()
     {
         var cluster = CreateCluster(partitions: 1);
@@ -426,6 +475,8 @@ public sealed class InMemoryRebalanceListenerTests
 
         public Func<ValueTask>? OnRevoked { get; set; }
 
+        public Func<ValueTask>? OnAssigned { get; set; }
+
         public bool ThrowOnAssigned { get; init; }
 
         public TaskCompletionSource Revoked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -439,14 +490,15 @@ public sealed class InMemoryRebalanceListenerTests
             }
         }
 
-        public ValueTask OnPartitionsAssignedAsync(
+        public async ValueTask OnPartitionsAssignedAsync(
             IEnumerable<TopicPartition> partitions,
             CancellationToken cancellationToken)
         {
             Record("assigned", partitions);
             if (ThrowOnAssigned)
                 throw new InvalidOperationException("listener failure");
-            return ValueTask.CompletedTask;
+            if (OnAssigned is { } onAssigned)
+                await onAssigned();
         }
 
         public async ValueTask OnPartitionsRevokedAsync(

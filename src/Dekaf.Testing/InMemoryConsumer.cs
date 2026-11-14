@@ -1483,6 +1483,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             ThrowIfAutoCommitAdvancementPendingUnderLock();
             // Reconcile any unseen handoff before explicit offsets replace the old positions.
             _ = GetCurrentAssignmentUnderLock();
+            // The listener's revocation commit still sees the subscribed partitions' offsets.
+            foreach (var partition in _listenerAssignment)
+                PreserveDepartingOffsetUnderLock(partition);
             // Manual assignment replaces any subscription, as KafkaConsumer.IncrementalAssign does.
             _subscriptionPattern = null;
             _subscriptionRegex = null;
@@ -3631,9 +3634,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 RemoveDepartingOffsetsUnderLock(revoked);
         }
 
-        if (revoked is not null)
+        try
         {
-            try
+            if (revoked is not null)
             {
                 if (lost)
                 {
@@ -3646,23 +3649,23 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                     await RevokeListenerPartitionsAsync(listener, revoked, cancellationToken).ConfigureAwait(false);
                 }
             }
-            catch (OperationCanceledException) when (assigned is not null)
+
+            if (assigned is not null)
             {
-                // The assignment was never reported; the next consume call reports it.
-                lock (_gate)
-                {
-                    _listenerAssignment.ExceptWith(assigned);
-                    _listenerConsumerStateVersion = -1;
-                }
-                throw;
+                await InvokeListenerAsync(
+                    static (listener, partitions, token) => listener.OnPartitionsAssignedAsync(partitions, token),
+                    listener, assigned, cancellationToken).ConfigureAwait(false);
             }
         }
-
-        if (assigned is not null)
+        catch (OperationCanceledException) when (assigned is not null)
         {
-            await InvokeListenerAsync(
-                static (listener, partitions, token) => listener.OnPartitionsAssignedAsync(partitions, token),
-                listener, assigned, cancellationToken).ConfigureAwait(false);
+            // The assignment callback did not complete; the next consume call reports it again.
+            lock (_gate)
+            {
+                _listenerAssignment.ExceptWith(assigned);
+                _listenerConsumerStateVersion = -1;
+            }
+            throw;
         }
     }
 
