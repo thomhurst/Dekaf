@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using Dekaf.Consumer;
 using Dekaf.Producer;
+using Microsoft.Extensions.Logging;
+using TUnit.Logging.Microsoft;
 using ConfluentKafka = Confluent.Kafka;
 
 namespace Dekaf.Tests.Integration;
@@ -503,8 +505,19 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
                 .ConfigureAwait(false);
             // Produce only once the group has split, so the second member owns partitions that
             // still have records to deliver.
-            await WaitForStableAssignmentAsync(firstListener, secondListener, consumeTasks, cancellationToken)
-                .ConfigureAwait(false);
+            try
+            {
+                await WaitForStableAssignmentAsync(firstListener, secondListener, consumeTasks, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (TimeoutException ex)
+            {
+                // Tells a member that ignored its revocation target apart from a broker that
+                // never computed a split (#4162).
+                throw new TimeoutException(
+                    $"{ex.Message}; broker view: {await DescribeGroupAsync(groupId, cancellationToken).ConfigureAwait(false)}",
+                    ex);
+            }
             await ProduceRangeAsync(
                     topic,
                     startPerPartition: committedPerPartition,
@@ -868,12 +881,23 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
             .WithSessionTimeout(SessionTimeout)
             .WithHeartbeatInterval(TimeSpan.FromSeconds(1))
             .WithDefaultApiTimeout(TimeSpan.FromSeconds(45))
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory());
+            .WithLoggerFactory(CreateConsumerLoggerFactory());
         if (listener is not null)
             builder.WithRebalanceListener(listener);
 
         return await builder.BuildAsync(cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Coordinator heartbeats, assignment updates and epoch changes log at Debug. A failover
+    /// convergence failure is diagnosable only from that sequence, so these consumers keep it.
+    /// </summary>
+    private static ILoggerFactory CreateConsumerLoggerFactory() => LoggerFactory.Create(builder =>
+    {
+        builder.SetMinimumLevel(LogLevel.Information);
+        builder.AddFilter("Dekaf.Consumer", LogLevel.Debug);
+        builder.AddTUnit(TestContext.Current!, LogLevel.Debug);
+    });
 
     private ConfluentKafka.IConsumer<string, string> CreateClassicConsumer(
         string groupId,
@@ -1201,6 +1225,28 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
                   $"(first: [{Describe(first())}], second: [{Describe(second())}])",
             pollTasks,
             cancellationToken);
+
+    private async Task<string> DescribeGroupAsync(string groupId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var admin = kafka.CreateAdminClient();
+            var groups = await admin.DescribeConsumerGroupsAsync([groupId], cancellationToken)
+                .ConfigureAwait(false);
+            if (!groups.TryGetValue(groupId, out var group))
+                return "group not found";
+
+            return $"state {group.State}, group epoch {group.GroupEpoch}, assignment epoch {group.AssignmentEpoch}, members " +
+                   string.Join("; ", group.Members.Select(static member =>
+                       $"{member.MemberId} epoch {member.MemberEpoch} " +
+                       $"owns [{Describe(member.Assignment ?? [])}] " +
+                       $"target [{Describe(member.TargetAssignment ?? [])}]"));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return $"describe failed: {ex.Message}";
+        }
+    }
 
     private static string Describe(IEnumerable<TopicPartition> assignment) =>
         string.Join(", ", assignment.Select(static tp => tp.Partition).Order());
