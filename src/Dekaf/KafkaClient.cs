@@ -781,6 +781,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
         int? maxInFlightRequestsPerConnection,
         int maxConnectionsPerBroker,
         int producerMaxConnectionsPerBroker,
+        int requestTimeoutMs,
         int retryBackoffMs,
         int retryBackoffMaxMs,
         int bootstrapResolveTimeoutMs,
@@ -797,6 +798,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
         MaxInFlightRequestsPerConnection = maxInFlightRequestsPerConnection;
         MaxConnectionsPerBroker = maxConnectionsPerBroker;
         ProducerMaxConnectionsPerBroker = producerMaxConnectionsPerBroker;
+        RequestTimeoutMs = requestTimeoutMs;
         RetryBackoffMs = retryBackoffMs;
         RetryBackoffMaxMs = retryBackoffMaxMs;
         BootstrapResolveTimeoutMs = bootstrapResolveTimeoutMs;
@@ -814,6 +816,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
     public int? MaxInFlightRequestsPerConnection { get; }
     public int MaxConnectionsPerBroker { get; }
     public int ProducerMaxConnectionsPerBroker { get; }
+    public int RequestTimeoutMs { get; }
     public int RetryBackoffMs { get; }
     public int RetryBackoffMaxMs { get; }
     public int BootstrapResolveTimeoutMs { get; }
@@ -877,6 +880,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
             options.MaxInFlightRequestsPerConnection,
             options.MaxConnectionsPerBroker,
             options.ProducerMaxConnectionsPerBroker,
+            options.RequestTimeoutMs,
             options.RetryBackoffMs,
             options.RetryBackoffMaxMs,
             options.BootstrapResolveTimeoutMs,
