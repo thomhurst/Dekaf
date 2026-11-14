@@ -234,6 +234,51 @@ public sealed class InMemoryStreamsGroupAssignorTests
         await Assert.That(await listener.NextAsync()).IsEqualTo("assigned sub-0:2");
     }
 
+    [Test]
+    public async Task AssignmentListener_CloseCancellationStopsWaitingForTheRunningCallback()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var listener = new BlockingListener(started, release.Task);
+        await using var member = new InMemoryStreamsGroupMember(
+            new StreamsGroupMemberOptions { GroupId = "streams-group", AssignmentListener = listener });
+        await member.InitializeAsync();
+        await member.JoinAsync(new StreamsGroupMemberUpdate { Topology = CreateTopology() });
+        await member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
+            ActiveTasks = [new StreamsGroupTaskSet { SubtopologyId = "sub-0", Partitions = [2] }]
+        });
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        using var cts = new CancellationTokenSource();
+        var close = member.CloseAsync(cts.Token).AsTask();
+        await Assert.That(close.IsCompleted).IsFalse();
+
+        cts.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => close.WaitAsync(TimeSpan.FromSeconds(30)));
+
+        // A repeated close still waits for the callback, and finishes once it returns.
+        var secondClose = member.CloseAsync().AsTask();
+        await Assert.That(secondClose.IsCompleted).IsFalse();
+        release.SetResult();
+        await secondClose.WaitAsync(TimeSpan.FromSeconds(30));
+    }
+
+    private sealed class BlockingListener(TaskCompletionSource started, Task release) : IStreamsGroupAssignmentListener
+    {
+        public async ValueTask OnTasksAssignedAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken)
+        {
+            started.TrySetResult();
+            await release;
+        }
+
+        public ValueTask OnTasksRevokedAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+
+        public ValueTask OnTasksLostAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+    }
+
     private sealed class RecordingListener : IStreamsGroupAssignmentListener
     {
         private readonly System.Threading.Channels.Channel<string> _events =

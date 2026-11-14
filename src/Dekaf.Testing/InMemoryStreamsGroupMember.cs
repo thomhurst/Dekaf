@@ -254,7 +254,7 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
         lock (_gate)
         {
             if (_snapshot.IsClosed)
-                return StopAssignmentNotifierAsync();
+                return StopAssignmentNotifierAsync(cancellationToken);
 
             _lastCloseOptions = options;
             // The in-memory cluster has no session timer, so a cluster-backed dynamic member always leaves on
@@ -284,11 +284,14 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
             }
         }
 
-        return StopAssignmentNotifierAsync();
+        return StopAssignmentNotifierAsync(cancellationToken);
     }
 
-    private ValueTask StopAssignmentNotifierAsync() =>
-        _assignmentNotifier is null ? ValueTask.CompletedTask : new ValueTask(_assignmentNotifier.StopAsync());
+    // Stopping always proceeds; the token only bounds how long the caller waits for a running callback.
+    private ValueTask StopAssignmentNotifierAsync(CancellationToken cancellationToken) =>
+        _assignmentNotifier is null
+            ? ValueTask.CompletedTask
+            : new ValueTask(_assignmentNotifier.StopAsync().WaitAsync(cancellationToken));
 
     /// <summary>Replaces the snapshot and queues its assignment changes for the listener. Called under the lock.</summary>
     private void Publish(StreamsGroupMemberSnapshot snapshot)
