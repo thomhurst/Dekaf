@@ -1245,6 +1245,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             UnregisterConsumerGroupMemberUnderLock();
             _consumerStateVersion++;
             _disposed = true;
+            _unprovenBatch = null;
             _autoCommitAdvancementWaiterEntered?.TrySetResult();
             _autoCommitAdvancementWaiterEntered = null;
             if (_pendingAutoCommitAdvancements is not null)

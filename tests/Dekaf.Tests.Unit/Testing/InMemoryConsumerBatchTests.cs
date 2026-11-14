@@ -119,6 +119,52 @@ public sealed class InMemoryConsumerBatchTests
     }
 
     [Test]
+    public async Task ConsumeBatchAsync_ExplicitCommitThenBreakingStream_DoesNotRedeliverCommittedRecords()
+    {
+        var cluster = await CreateClusterAsync(partition0: 3, partition1: 0);
+        await using var consumer = CreateConsumer(cluster, OffsetCommitMode.Manual);
+        consumer.Assign(Partition0);
+        await foreach (var batch in consumer.ConsumeBatchAsync())
+        {
+            foreach (var record in batch)
+            {
+                if (record.Offset == 1)
+                    break;
+            }
+
+            await consumer.CommitAsync();
+            break;
+        }
+
+        await Assert.That(consumer.GetPosition(Partition0)).IsEqualTo(2);
+        await using var batches = consumer.ConsumeBatchAsync().GetAsyncEnumerator();
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(Offsets(batches.Current)).IsEquivalentTo([2L]);
+    }
+
+    [Test]
+    public async Task ConsumeBatchAsync_RecordsEnumeratedAfterExplicitCommit_StayUnprovenAfterBreak()
+    {
+        var cluster = await CreateClusterAsync(partition0: 3, partition1: 0);
+        await using var consumer = CreateConsumer(cluster, OffsetCommitMode.Manual);
+        consumer.Assign(Partition0);
+        await foreach (var batch in consumer.ConsumeBatchAsync())
+        {
+            using var records = batch.GetEnumerator();
+            _ = records.MoveNext();
+            await consumer.CommitAsync();
+            _ = records.MoveNext();
+            break;
+        }
+
+        await Assert.That(cluster.GetCommittedOffset("group", Partition0)).IsEqualTo(1);
+        await Assert.That(consumer.GetPosition(Partition0)).IsEqualTo(1);
+        await consumer.CommitAsync();
+        await Assert.That(cluster.GetCommittedOffset("group", Partition0)).IsEqualTo(2);
+        await Assert.That(consumer.GetPosition(Partition0)).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task ConsumeBatchAsync_BreakingStreamWithoutCommit_RedeliversBatch()
     {
         var cluster = await CreateClusterAsync(partition0: 2, partition1: 0);

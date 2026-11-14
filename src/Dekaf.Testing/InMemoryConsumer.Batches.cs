@@ -18,11 +18,16 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
     // reads the last full reset.
     private readonly Dictionary<TopicPartition, long> _repositionVersions = [];
 
-    private readonly record struct UnprovenBatch(BatchSelection Selection, object? Batch, long NextOffset);
+    private readonly record struct UnprovenBatch(
+        BatchSelection Selection,
+        object? Batch,
+        long NextOffset,
+        long CommittedOffset);
 
     // The batch being enumerated, or the enumerated progress of the last batch of a stream the
     // caller broke out of. Only an explicit CommitAsync vouches for it, as in the real consumer;
-    // auto-commit and close never do.
+    // auto-commit and close never do. CommittedOffset is the progress an explicit commit already
+    // vouched for while the batch was enumerated; the position reaches it when the stream ends.
     private UnprovenBatch? _unprovenBatch;
     private long _repositionSequence;
     private long _repositionResetVersion;
@@ -270,7 +275,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
     private void SetUnprovenBatch(BatchSelection selection, object batch)
     {
         lock (_gate)
-            _unprovenBatch = new UnprovenBatch(selection, batch, NextOffset: -1);
+            _unprovenBatch = new UnprovenBatch(selection, batch, NextOffset: -1, CommittedOffset: -1);
     }
 
     private void ClearUnprovenBatch(object batch)
@@ -283,8 +288,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
     }
 
     /// <summary>
-    /// Keeps the enumerated progress of a batch whose stream ended without requesting the next
-    /// batch, for a later explicit commit. Runs before its checkpoint window closes.
+    /// Ends a batch whose stream stopped without requesting the next batch: advances to the
+    /// progress an explicit commit already vouched for, and keeps any enumerated progress past it
+    /// for a later explicit commit. Runs before its checkpoint window closes.
     /// </summary>
     private void RetainUnprovenBatch(object? batch)
     {
@@ -296,9 +302,27 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
             if (_unprovenBatch is not { } unproven || !ReferenceEquals(unproven.Batch, batch))
                 return;
 
-            _unprovenBatch = TryGetBatchCheckpoint(batch, out var nextOffset)
-                ? unproven with { Batch = null, NextOffset = nextOffset }
-                : null;
+            _unprovenBatch = null;
+            // Read the checkpoint first: advancing the position stops the batch.
+            var hasCheckpoint = TryGetBatchCheckpoint(batch, out var nextOffset);
+            var selection = unproven.Selection;
+            if (unproven.CommittedOffset >= 0)
+            {
+                if (!AdvanceBatchUnderLock(selection, unproven.CommittedOffset))
+                    return;
+
+                selection = selection with { Position = unproven.CommittedOffset };
+            }
+
+            // Only the checkpoint is kept, not the batch's records.
+            if (hasCheckpoint && nextOffset > selection.Position)
+            {
+                _unprovenBatch = new UnprovenBatch(
+                    selection with { Records = [] },
+                    Batch: null,
+                    nextOffset,
+                    CommittedOffset: -1);
+            }
         }
     }
 
@@ -313,12 +337,14 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
 
         if (unproven.Batch is { } active)
         {
-            // Still being enumerated: requesting the next batch advances the position.
+            // Still being enumerated: requesting the next batch or ending the stream advances
+            // the position.
             if (_options.EnableAutoOffsetStore &&
                 IsBatchSelectionCurrentUnderLock(unproven.Selection) &&
                 TryGetBatchCheckpoint(active, out var nextOffset))
             {
                 StoreOffsetUnderLock(unproven.Selection.Partition, nextOffset);
+                _unprovenBatch = unproven with { CommittedOffset = nextOffset };
             }
 
             return;
