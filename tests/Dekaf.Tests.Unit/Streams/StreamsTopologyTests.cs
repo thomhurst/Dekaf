@@ -529,6 +529,26 @@ public sealed class StreamsTopologyTests
     }
 
     [Test]
+    public async Task Merge_RequiresItsSourceTopicsToBeCopartitioned()
+    {
+        var builder = new StreamsBuilder("app");
+        var first = builder.Stream("first", Text, Text);
+        var second = builder.Stream("second", Text, Text);
+        first.Merge(second).GroupByKey().Count("merged-counts");
+
+        // Without this the same key could sit in different tasks and be counted twice over.
+        var group = builder.Build().ToStreamsGroupTopology().Subtopologies.Single().CopartitionGroups.Single();
+        await Assert.That(group.SourceTopics.Order()).IsEquivalentTo(new short[] { 0, 1 });
+
+        // Branching a stream and merging it back reads one topic, which needs no constraint.
+        var branched = new StreamsBuilder("app");
+        var source = branched.Stream("only", Text, Text);
+        source.Where(static (_, value) => value.Length > 1).Merge(source.Where(static (_, value) => value.Length <= 1))
+            .ToTopic("out", Text, Text);
+        await Assert.That(branched.Build().ToStreamsGroupTopology().Subtopologies.Single().CopartitionGroups).IsEmpty();
+    }
+
+    [Test]
     public async Task HandlesFromAnotherBuilder_AreRejected()
     {
         var one = new StreamsBuilder("one");

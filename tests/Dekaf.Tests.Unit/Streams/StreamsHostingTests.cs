@@ -54,5 +54,37 @@ public sealed class StreamsHostingTests
         await Assert.That(streams.State).IsEqualTo(KafkaStreamsState.Created);
     }
 
+    [Test]
+    public async Task HostedService_StopsTheOtherApplicationsAndReportsTheFailure()
+    {
+        var failure = new TaskCompletionSource();
+        var healthyStopped = false;
+
+        async Task Healthy(CancellationToken stop)
+        {
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, stop);
+            }
+            catch (OperationCanceledException)
+            {
+                healthyStopped = true;
+            }
+        }
+
+        var run = KafkaStreamsHostedService.RunAllAsync([Healthy, _ => failure.Task], CancellationToken.None);
+        await Assert.That(run.IsCompleted).IsFalse();
+
+        failure.SetException(new StreamsException("failed"));
+        await Assert.That(async () => await run).Throws<StreamsException>();
+        await Assert.That(healthyStopped).IsTrue();
+
+        // A normal host shutdown stops everything without an error.
+        using var shutdown = new CancellationTokenSource();
+        var stopping = KafkaStreamsHostedService.RunAllAsync([Healthy, Healthy], shutdown.Token);
+        await shutdown.CancelAsync();
+        await stopping;
+    }
+
     private sealed record Marker(string Topic);
 }

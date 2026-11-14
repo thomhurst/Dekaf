@@ -25,7 +25,12 @@ public interface IStream<TKey, TValue>
     /// <summary>Runs <paramref name="action"/> for each record and forwards the record unchanged.</summary>
     IStream<TKey, TValue> Peek(Action<TKey, TValue> action);
 
-    /// <summary>Interleaves this stream with <paramref name="other"/>. Order across the two streams is not defined.</summary>
+    /// <summary>
+    /// Interleaves this stream with <paramref name="other"/>. Order across the two streams is not defined.
+    /// The topics both streams are read from must have the same number of partitions; the group
+    /// coordinator checks this and assigns no tasks while they differ. Call <see cref="Repartition"/> on
+    /// one side first to merge topics of different sizes.
+    /// </summary>
     IStream<TKey, TValue> Merge(IStream<TKey, TValue> other);
 
     /// <summary>

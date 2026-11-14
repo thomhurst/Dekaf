@@ -13,6 +13,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Dekaf.Streams\Dekaf.Streams.csproj" />
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+    <InternalsVisibleTo Include="Dekaf.Tests.Unit" />
   </ItemGroup>
 
 </Project>

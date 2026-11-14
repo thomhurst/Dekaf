@@ -22,7 +22,7 @@ Pass `static` lambdas where you can: they cannot capture state by accident, and 
 | `SelectKey(selector)` | Replaces the key; the stream is no longer partitioned by key |
 | `SelectMany(selector)` | Emits zero or more values per record through a sink |
 | `Peek(action)` | Runs an action and forwards the record |
-| `Merge(other)` | Interleaves two streams |
+| `Merge(other)` | Interleaves two streams. Their source topics must have the same number of partitions; `Repartition` one side first if they differ |
 | `Repartition(name, keySerde, valueSerde)` | Writes to an internal topic and reads back, partitioned by the current key |
 | `ToTopic(topic, keySerializer, valueSerializer)` | Writes the stream to a topic |
 

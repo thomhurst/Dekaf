@@ -289,26 +289,51 @@ public sealed class StreamsRuntimeIntegrationTests(KafkaTestContainer kafka) : K
     }
 
     [Test]
-    public async Task MergedTopicsOfDifferentSizes_AreAllRead()
+    public async Task MergedTopicsOfDifferentSizes_GetNoTasksUntilTheyAreRepartitioned()
     {
         var small = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
         var large = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         var output = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
-        var applicationId = $"streams-merge-{Guid.NewGuid():N}";
+        await using var client = Kafka.Connect(KafkaContainer.BootstrapServers);
+        await using var admin = client.CreateAdminClient().Build();
 
-        var builder = new StreamsBuilder(applicationId);
-        builder.Stream(small, Serializers.String, Serializers.String)
-            .Merge(builder.Stream(large, Serializers.String, Serializers.String))
-            .Select(static (_, _) => 1L)
+        // Merged as they are, the same key could land in different tasks, so the coordinator holds the
+        // group back instead of assigning tasks.
+        var mismatchedId = $"streams-merge-{Guid.NewGuid():N}";
+        var mismatched = new StreamsBuilder(mismatchedId);
+        mismatched.Stream(small, Serializers.String, Serializers.String)
+            .Merge(mismatched.Stream(large, Serializers.String, Serializers.String))
+            .ToTopic(output, Serializers.String, Serializers.String);
+        await using (var blocked = Start(mismatched.Build()))
+        {
+            await TestWait.WaitForConditionAsync(
+                async () => (await admin.DescribeStreamsGroupsAsync([mismatchedId]))[mismatchedId],
+                static group => group.Members.Count == 1,
+                maxRetries: 60,
+                description: "the member joined");
+            await Task.Delay(TimeSpan.FromSeconds(3));
+            var members = (await admin.DescribeStreamsGroupsAsync([mismatchedId]))[mismatchedId].Members;
+            await Assert.That(members.Sum(static member => member.Assignment.ActiveTasks.Count)).IsEqualTo(0);
+            await blocked.StopAsync();
+        }
+
+        // Repartitioning the small side gives both inputs of the merge the same shape.
+        var builder = new StreamsBuilder($"streams-merge-{Guid.NewGuid():N}");
+        builder.Stream(large, Serializers.String, Serializers.String)
+            .Merge(builder.Stream(small, Serializers.String, Serializers.String)
+                .Repartition("small-by-key", Serializers.String, Serializers.String))
+            .GroupByKey()
+            .Count("merged-counts")
+            .ToStream()
             .ToTopic(output, Serializers.String, Serializers.Int64);
-
-        // Tasks 1 and 2 exist for the large topic only; they must not ask for partitions the small one lacks.
         await using var app = Start(builder.Build());
         await ProduceAsync(small, Sentences(0, 8));
         await ProduceAsync(large, Sentences(8, 24));
 
-        var records = await ReadAsync<long>(output, Serializers.Int64, static read => read.Count >= 32);
-        await Assert.That(records.Count).IsEqualTo(32);
+        // One combined count per key across both topics.
+        var counts = await ReadLatestAsync(output, static latest =>
+            latest.Count == 8 && latest.Values.All(static count => count == 4));
+        await Assert.That(counts.Count).IsEqualTo(8);
         await app.StopAsync();
     }
 

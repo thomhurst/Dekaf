@@ -68,22 +68,36 @@ public static class StreamsServiceCollectionExtensions
 /// <summary>Runs every registered streams application for the lifetime of the host.</summary>
 internal sealed class KafkaStreamsHostedService(IEnumerable<KafkaStreams> applications) : BackgroundService
 {
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    protected override Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        using var stop = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-        var runs = new List<Task>();
+        var runs = new List<Func<CancellationToken, Task>>();
         foreach (var application in applications)
         {
-            runs.Add(application.RunAsync(stop.Token));
+            runs.Add(application.RunAsync);
         }
 
-        if (runs.Count == 0)
+        return RunAllAsync(runs, stoppingToken);
+    }
+
+    /// <summary>
+    /// Runs every application until the first one ends. A failure must reach the host while the others
+    /// still run, or the host would stay up with one application stopped, so the rest are stopped and
+    /// awaited, and then the failure is rethrown.
+    /// </summary>
+    internal static async Task RunAllAsync(IReadOnlyList<Func<CancellationToken, Task>> applications, CancellationToken stoppingToken)
+    {
+        if (applications.Count == 0)
         {
             return;
         }
 
-        // The first application to end decides: a failure must reach the host while the others still run,
-        // or the host would stay up with one application stopped. The rest are stopped and awaited first.
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        var runs = new Task[applications.Count];
+        for (var i = 0; i < runs.Length; i++)
+        {
+            runs[i] = applications[i](stop.Token);
+        }
+
         var first = await Task.WhenAny(runs).ConfigureAwait(false);
         await stop.CancelAsync().ConfigureAwait(false);
         await Task.WhenAll(runs).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);

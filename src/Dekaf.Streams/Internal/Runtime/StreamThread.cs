@@ -419,6 +419,7 @@ internal sealed partial class StreamThread
     private void ObserveStatus(IReadOnlyList<StreamsGroupStatus> statuses)
     {
         var description = "";
+        var onlyMissingInternalTopics = true;
         foreach (var status in statuses)
         {
             switch (status.Code)
@@ -433,6 +434,7 @@ internal sealed partial class StreamThread
                         $"Another member requested shutdown of application '{_topology.ApplicationId}'.");
                 default:
                     description += $"{status.Code}: {status.StatusDetail}. ";
+                    onlyMissingInternalTopics &= status.Code == StreamsGroupStatusCode.MissingInternalTopics;
                     break;
             }
         }
@@ -444,7 +446,14 @@ internal sealed partial class StreamThread
             _lastStatus = description;
             if (description.Length > 0)
             {
-                LogGroupNotReady(ThreadName, description);
+                if (onlyMissingInternalTopics)
+                {
+                    LogGroupNotReady(ThreadName, description);
+                }
+                else
+                {
+                    LogGroupBlocked(ThreadName, description);
+                }
             }
         }
     }
@@ -452,7 +461,6 @@ internal sealed partial class StreamThread
     private async ValueTask AddTasksAsync(List<TaskId> added, CancellationToken cancellationToken)
     {
         var created = new List<ActiveTask>(added.Count);
-        var partitionCounts = await DescribeSourceTopicsAsync(added, cancellationToken).ConfigureAwait(false);
         try
         {
             foreach (var id in added)
@@ -462,7 +470,7 @@ internal sealed partial class StreamThread
                 {
                     var task = new StreamTask(
                         _topology, id.Subtopology, id.Partition, _collector, _config.StoreEngine, directory?.Path);
-                    created.Add(new ActiveTask(id, task, directory, partitionCounts));
+                    created.Add(new ActiveTask(id, task, directory));
                 }
                 catch
                 {
@@ -478,7 +486,7 @@ internal sealed partial class StreamThread
             }
 
             var committed = await FetchStartOffsetsAsync(sources, cancellationToken).ConfigureAwait(false);
-            await RestoreAsync(created, committed, partitionCounts, cancellationToken).ConfigureAwait(false);
+            await RestoreAsync(created, committed, cancellationToken).ConfigureAwait(false);
 
             var assignment = new List<TopicPartitionOffset>(sources.Count);
             foreach (var task in created)
@@ -512,39 +520,6 @@ internal sealed partial class StreamThread
         }
 
         StreamsMetrics.ActiveTasks.Add(created.Count);
-    }
-
-    /// <summary>
-    /// Returns the partition count of every topic the new tasks read. A subtopology has one task per
-    /// partition of its largest source topic, so when it merges topics of different sizes, a task with a
-    /// high partition number reads only the topics that have that partition.
-    /// </summary>
-    private async ValueTask<Dictionary<string, int>> DescribeSourceTopicsAsync(
-        List<TaskId> tasks,
-        CancellationToken cancellationToken)
-    {
-        var topics = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var id in tasks)
-        {
-            var subtopology = _topology.Subtopologies[id.Subtopology];
-            topics.UnionWith(subtopology.SourceTopics);
-            topics.UnionWith(subtopology.RepartitionSourceTopics);
-        }
-
-        var counts = new Dictionary<string, int>(topics.Count, StringComparer.Ordinal);
-        var descriptions = await _admin.DescribeTopicsAsync(topics, cancellationToken).ConfigureAwait(false);
-        foreach (var topic in topics)
-        {
-            if (!descriptions.TryGetValue(topic, out var description) || description.ErrorCode != ErrorCode.None)
-            {
-                var error = description?.ErrorCode ?? ErrorCode.UnknownTopicOrPartition;
-                throw new KafkaException(error, $"Source topic '{topic}' could not be described: {error}.");
-            }
-
-            counts.Add(topic, description.Partitions.Count);
-        }
-
-        return counts;
     }
 
     /// <summary>
@@ -632,7 +607,6 @@ internal sealed partial class StreamThread
     private async ValueTask RestoreAsync(
         List<ActiveTask> tasks,
         Dictionary<TopicPartition, (long Offset, bool HasCommitted)> committed,
-        Dictionary<string, int> sourcePartitionCounts,
         CancellationToken cancellationToken)
     {
         var plans = new Dictionary<TopicPartition, (ActiveTask Task, long End)>();
@@ -642,12 +616,6 @@ internal sealed partial class StreamThread
         {
             foreach (var topic in task.Task.RestoreTopics)
             {
-                // A table's source topic can be smaller than the subtopology: nothing to restore then.
-                if (sourcePartitionCounts.TryGetValue(topic, out var count) && task.Id.Partition >= count)
-                {
-                    continue;
-                }
-
                 var partition = new TopicPartition(topic, task.Id.Partition);
                 var end = long.MaxValue;
                 if (committed.TryGetValue(partition, out var start))
@@ -1130,6 +1098,9 @@ internal sealed partial class StreamThread
     [LoggerMessage(Level = LogLevel.Information, Message = "Stream thread {Thread} has no assignment yet because the group is not ready: {Status}")]
     private partial void LogGroupNotReady(string thread, string status);
 
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Stream thread {Thread} is assigned nothing until this is fixed: {Status}")]
+    private partial void LogGroupBlocked(string thread, string status);
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "Stream thread {Thread} lost its group membership. Its uncommitted work is discarded and it rejoins")]
     private partial void LogMembershipLost(string thread);
 
@@ -1158,22 +1129,12 @@ internal sealed partial class StreamThread
 /// <summary>A task this thread owns, with its input partitions and how far it has read each.</summary>
 internal sealed class ActiveTask
 {
-    public ActiveTask(TaskId id, StreamTask task, TaskDirectory? directory, IReadOnlyDictionary<string, int> partitionCounts)
+    public ActiveTask(TaskId id, StreamTask task, TaskDirectory? directory)
     {
         Id = id;
         Task = task;
         Directory = directory;
-
-        // Only the topics that have this task's partition: merged topics can differ in size.
-        var topics = new List<string>();
-        foreach (var topic in task.SourceTopics)
-        {
-            if (partitionCounts[topic] > id.Partition)
-            {
-                topics.Add(topic);
-            }
-        }
-
+        var topics = new List<string>(task.SourceTopics);
         topics.Sort(StringComparer.Ordinal);
         Sources = new TopicPartition[topics.Count];
         for (var i = 0; i < Sources.Length; i++)

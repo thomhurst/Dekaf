@@ -262,12 +262,17 @@ public sealed class Topology
         };
     }
 
-    /// <summary>A join needs its stream and its table to have the same partition count.</summary>
+    /// <summary>
+    /// A join needs its stream and its table to have the same partition count, and so does a merge: a task
+    /// reads its partition number from every source topic of its subtopology, and records of one key must
+    /// meet in one task for a keyed operator after the merge to see them all. The coordinator enforces
+    /// the groups and assigns nothing while the counts differ.
+    /// </summary>
     private void CollectCopartitionGroups()
     {
         foreach (var node in _nodes)
         {
-            if (node.Dependencies.Count == 0)
+            if (node.Dependencies.Count == 0 && node.Parents.Count < 2)
             {
                 continue;
             }
