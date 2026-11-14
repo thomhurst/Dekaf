@@ -308,6 +308,58 @@ public sealed partial class PartitionedConsumerRuntimeTests
         await Assert.That(completions.Skip(firstIndex + 1).Sum(static c => c.CompletedRecordCount)).IsEqualTo(2L);
     }
 
+    [Test]
+    public async Task CommitObserver_IgnoreRestart_CountsRecordsTheFailedLaneCompleted()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.SetAssignment(partition);
+        var observer = new RecordingCommitObserver(consumer);
+        var attempts = 0;
+        var restarted = NewCompletionSource();
+        var lastSeen = NewCompletionSource();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, cancellationToken) =>
+            {
+                var failing = Interlocked.Increment(ref attempts) == 1;
+                if (!failing)
+                    restarted.TrySetResult();
+
+                await foreach (var message in context.Messages.WithCancellation(cancellationToken))
+                {
+                    if (failing && message.Offset == 1)
+                        throw new InvalidOperationException("ignored failure");
+
+                    context.MarkProcessed(message);
+                    if (message.Offset == 2)
+                        lastSeen.TrySetResult();
+                }
+            },
+            new PartitionedProcessingOptions
+            {
+                ErrorPolicy = PartitionWorkerErrorPolicy.Ignore,
+                IgnoreRestartBackoff = TimeSpan.FromMilliseconds(1),
+                IgnoreRestartBackoffMax = TimeSpan.FromMilliseconds(1),
+                CommitPolicy = PartitionCommitPolicy.CommitCompletedOnRevoke,
+                CommitObserver = observer
+            },
+            cts.Token).AsTask();
+
+        // Record 0 completes on the failing lane without a commit; record 1 fails it.
+        consumer.Enqueue(CreateResult(partition, 0), CreateResult(partition, 1));
+        await restarted.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        consumer.Enqueue(CreateResult(partition, 2));
+        await lastSeen.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+
+        var completed = await observer.Completed.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await Assert.That(completed.Offsets).IsEquivalentTo(new[] { new TopicPartitionOffset("topic-a", 0, 3) });
+        // Records 0 and 2 completed; the skipped record 1 did not.
+        await Assert.That(completed.CompletedRecordCount).IsEqualTo(2L);
+    }
+
     // Compacted offsets: three records spanning offsets 0 to 9.
     private static readonly long[] GappedOffsets = [0, 4, 9];
 

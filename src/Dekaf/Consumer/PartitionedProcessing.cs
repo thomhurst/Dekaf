@@ -874,6 +874,8 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     private readonly HashSet<TopicPartition> _stoppedByFailure = [];
     private readonly HashSet<TopicPartition> _pendingIgnoreRestarts = [];
     private readonly Dictionary<TopicPartition, int> _ignoreRestartFailures = [];
+    // Completed records a failed lane never committed; its restarted lane's first commit covers them.
+    private readonly Dictionary<TopicPartition, long> _ignoreRestartRecords = [];
     private readonly ConcurrentDictionary<Task, byte> _ignoreRestartTasks = [];
     private readonly List<TopicPartition> _partitionsToStop = [];
     private readonly List<PartitionLane<TKey, TValue>> _lanesToResume = [];
@@ -1280,6 +1282,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             _stoppedByFailure.Remove(partition);
             _pendingIgnoreRestarts.Remove(partition);
             _ignoreRestartFailures.Remove(partition);
+            _ignoreRestartRecords.Remove(partition);
 
             if (lane is not null)
             {
@@ -1477,6 +1480,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             if (removePause)
                 _pausedByRuntime.Remove(partition);
             _ignoreRestartFailures.Remove(partition);
+            _ignoreRestartRecords.Remove(partition);
         }
         _partitionsToStop.Clear();
     }
@@ -1640,7 +1644,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         published = 0;
     }
 
-    private PartitionLane<TKey, TValue> StartLane(TopicPartition partition)
+    private PartitionLane<TKey, TValue> StartLane(TopicPartition partition, long inheritedRecords = 0)
     {
         var lane = new PartitionLane<TKey, TValue>(
             partition,
@@ -1651,6 +1655,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             _limits,
             _options.Monitor);
 
+        lane.InheritUncommittedRecords(inheritedRecords);
         _lanes.Add(partition, lane);
         lane.Start(_processor);
         return lane;
@@ -1937,6 +1942,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
                 _consumer.Seek(rewindOffset);
 
             _pendingIgnoreRestarts.Add(lane.TopicPartition);
+            _ignoreRestartRecords[lane.TopicPartition] = lane.UncommittedRecords;
             ScheduleIgnoreRestart(lane.TopicPartition, restartDelay);
         }
         else if (!_lanes.ContainsKey(lane.TopicPartition) && _pausedByRuntime.Remove(lane.TopicPartition))
@@ -1951,6 +1957,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
     private void RestartLaneIfStillAssigned(TopicPartition partition)
     {
+        _ignoreRestartRecords.Remove(partition, out var inheritedRecords);
         if (!_pendingIgnoreRestarts.Remove(partition)
             || _shutdownCancellation.IsCancellationRequested
             || !IsAssigned(partition, ReadAssignment())
@@ -1963,7 +1970,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         if (_pausedByRuntime.Remove(partition))
             _consumer.Partitions.Resume(partition);
 
-        StartLane(partition);
+        StartLane(partition, inheritedRecords);
     }
 
     private void ScheduleIgnoreRestart(TopicPartition partition, TimeSpan delay)
@@ -2188,6 +2195,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         _pausedByRuntime.Remove(partition);
         _pendingIgnoreRestarts.Remove(partition);
         _ignoreRestartFailures.Remove(partition);
+        _ignoreRestartRecords.Remove(partition);
         return lane;
     }
 
@@ -2222,6 +2230,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             }
 
             _pendingIgnoreRestarts.Clear();
+            _ignoreRestartRecords.Clear();
         }
     }
 
@@ -3016,6 +3025,24 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     /// Completed records the last successful commit of this lane covered.
     /// </summary>
     public long CommittedRecords => Volatile.Read(ref _committedRecords);
+
+    /// <summary>
+    /// Completed records below the frontier that no successful commit of this lane covered.
+    /// </summary>
+    public long UncommittedRecords
+    {
+        get
+        {
+            GetCommitOffset(out var completedRecords);
+            return Math.Max(0, completedRecords - CommittedRecords);
+        }
+    }
+
+    /// <summary>
+    /// Adds a failed predecessor lane's uncommitted completed records to this lane's first commit:
+    /// the restarted lane's commit covers them. Call before the lane starts.
+    /// </summary>
+    public void InheritUncommittedRecords(long records) => _committedRecords = -records;
 
     /// <summary>
     /// Records a successful commit. Commits may finish out of order, so only advance. The offset and
