@@ -67,6 +67,8 @@ public sealed partial class InMemoryKafkaCluster
                 {
                     _consumerGroupMembers.Remove(groupId);
                     _consumerGroupGenerations[groupId] = 0;
+                    // Wake an evicted consumer blocked waiting for records.
+                    _recordsChanged.TrySetResult();
                 }
                 else
                 {

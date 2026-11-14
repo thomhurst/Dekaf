@@ -129,6 +129,29 @@ The in-memory clients await asynchronous serdes exactly where the real clients d
 `ProduceAsync`/`FireAsync` and on `ConsumeAsync`/`ConsumeOneAsync` (and `PollAsync` for the share
 consumer). `InMemoryShareConsumer<TKey, TValue>` accepts the same combinations.
 
+## Rebalance listeners
+
+Set `InMemoryConsumerOptions.RebalanceListener` to test `IRebalanceListener` code without a broker.
+A subscribed consumer reports assignment changes on its next `ConsumeAsync` or `ConsumeOneAsync`
+call: the partitions it gains after subscribing or when another member leaves, and the partitions
+revoked when another member joins. A consume call blocked waiting for records wakes to report the
+change. `CommitAsync()` called from `OnPartitionsRevokedAsync` still commits the offsets the revoked
+partitions held, including when `Unsubscribe` and `CloseAsync` revoke them before the member leaves.
+As with `KafkaConsumer`, an exception other than cancellation thrown by a callback is ignored and
+does not stop consumption. Removing the member through the admin client reports its partitions
+to `OnPartitionsLostAsync`. Manual assignment does not invoke the listener.
+
+```csharp
+using Dekaf.Testing;
+
+var cluster = new InMemoryKafkaCluster();
+var consumer = new InMemoryConsumer<string, string>(cluster, new InMemoryConsumerOptions
+{
+    GroupId = "orders-service",
+    RebalanceListener = new MyRebalanceListener()
+});
+```
+
 ## Share consumer offset reset
 
 Share groups start at `Latest` by default, matching Kafka. The first poll of each partition

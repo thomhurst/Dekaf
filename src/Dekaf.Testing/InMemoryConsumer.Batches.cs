@@ -29,6 +29,10 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
     // auto-commit and close never do. CommittedOffset is the progress an explicit commit already
     // vouched for while the batch was enumerated; the position reaches it when the stream ends.
     private UnprovenBatch? _unprovenBatch;
+
+    // Set while a revocation reads the batch checkpoint, so the batch guard skips the assignment
+    // check: that check refreshes the assignment, which would revoke the partition again.
+    private bool _readingDepartingCheckpoint;
     private TopicPartition? _lastBatchPartition;
     private long _repositionSequence;
     private long _repositionResetVersion;
@@ -111,7 +115,12 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
         {
             cancellationToken.ThrowIfCancellationRequested();
             ThrowIfDisposed();
-            if (TrySelectBatch(out var selection))
+            // Observe the wake signal before checking, so a change after the check is not missed.
+            var recordsChanged = _cluster.ObserveRecordsChanged();
+            if (_rebalanceListener is { } listener)
+                await DeliverRebalanceEventsAsync(listener, cancellationToken).ConfigureAwait(false);
+
+            if (TrySelectBatch(out var selection, out var rebalancePending))
             {
                 if (!HasPotentialConsumerFault())
                     return selection;
@@ -126,7 +135,10 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
                 continue;
             }
 
-            await _cluster.WaitForRecordsAsync(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            if (rebalancePending)
+                continue;
+
+            await recordsChanged.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -147,7 +159,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
     /// Selects the first unpaused assigned partition with a readable record, like
     /// <see cref="ConsumeOneAsync"/>, and collects every record readable from its position.
     /// </summary>
-    private bool TrySelectBatch(out BatchSelection selection)
+    private bool TrySelectBatch(out BatchSelection selection, out bool rebalancePending)
     {
         // Read before selecting, so a reposition that races the selection invalidates the batch.
         long repositionSequence;
@@ -166,6 +178,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
                 out var first,
                 out var position,
                 out _,
+                out rebalancePending,
                 lastBatchPartition))
         {
             selection = default;
@@ -226,7 +239,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
         {
             lock (_gate)
             {
-                if (_disposed || !IsBatchSelectionCurrentUnderLock(selection))
+                if (_disposed || !_readingDepartingCheckpoint && !IsBatchSelectionCurrentUnderLock(selection))
                     return BatchIterationStatus.Stopped;
 
                 return _paused.Contains(partition)
@@ -362,6 +375,40 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
 
         _unprovenBatch = null;
         _ = AdvanceBatchUnderLock(unproven.Selection, unproven.NextOffset);
+    }
+
+    /// <summary>
+    /// The enumerated batch progress an explicit commit would vouch for on a partition that is
+    /// being revoked, as <see cref="StageUnprovenBatchUnderLock"/> does. Skips the assignment
+    /// check because the caller is revoking the partition.
+    /// </summary>
+    private bool TryGetDepartingBatchCheckpointUnderLock(TopicPartition partition, out long nextOffset)
+    {
+        nextOffset = -1;
+        if (_unprovenBatch is not { } unproven ||
+            !unproven.Selection.Partition.Equals(partition) ||
+            !_positions.TryGetValue(partition, out var position) ||
+            position != unproven.Selection.Position ||
+            GetRepositionVersionUnderLock(partition) > unproven.Selection.RepositionSequence)
+        {
+            return false;
+        }
+
+        if (unproven.Batch is { } active)
+        {
+            _readingDepartingCheckpoint = true;
+            try
+            {
+                return TryGetBatchCheckpoint(active, out nextOffset);
+            }
+            finally
+            {
+                _readingDepartingCheckpoint = false;
+            }
+        }
+
+        nextOffset = unproven.NextOffset;
+        return true;
     }
 
     private static bool TryGetBatchCheckpoint(object batch, out long nextOffset)
