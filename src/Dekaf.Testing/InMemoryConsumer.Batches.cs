@@ -9,7 +9,16 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
     private readonly record struct BatchSelection(
         TopicPartition Partition,
         long Position,
+        long RepositionSequence,
         List<InMemoryRecord> Records);
+
+    // A batch stays current only while its partition keeps the position it was selected at and
+    // is not seeked, revoked or reassigned after selection, even back to the same offset. Each
+    // reposition takes the next value of one increasing sequence; a partition with no entry
+    // reads the last full reset.
+    private readonly Dictionary<TopicPartition, long> _repositionVersions = [];
+    private long _repositionSequence;
+    private long _repositionResetVersion;
 
     public async IAsyncEnumerable<ConsumeBatch<TKey, TValue>> ConsumeBatchAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -121,6 +130,11 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
     /// </summary>
     private bool TrySelectBatch(out BatchSelection selection)
     {
+        // Read before selecting, so a reposition that races the selection invalidates the batch.
+        long repositionSequence;
+        lock (_gate)
+            repositionSequence = _repositionSequence;
+
         var previousRecordProven = false;
         if (!TrySelectRecordWithVersion(
                 ref previousRecordProven,
@@ -137,7 +151,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
         var records = new List<InMemoryRecord> { first };
         _cluster.ReadRecordsFrom(partition, first.Offset + 1, _options.IsolationLevel, _borrowStoredRecords, records);
 
-        selection = new BatchSelection(partition, position, records);
+        selection = new BatchSelection(partition, position, repositionSequence, records);
         return true;
     }
 
@@ -244,5 +258,18 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
     private bool IsBatchSelectionCurrentUnderLock(BatchSelection selection) =>
         GetCurrentAssignmentUnderLock().Contains(selection.Partition) &&
         _positions.TryGetValue(selection.Partition, out var position) &&
-        position == selection.Position;
+        position == selection.Position &&
+        GetRepositionVersionUnderLock(selection.Partition) <= selection.RepositionSequence;
+
+    private void MarkRepositionedUnderLock(TopicPartition partition) =>
+        _repositionVersions[partition] = ++_repositionSequence;
+
+    private void MarkAllRepositionedUnderLock()
+    {
+        _repositionVersions.Clear();
+        _repositionResetVersion = ++_repositionSequence;
+    }
+
+    private long GetRepositionVersionUnderLock(TopicPartition partition) =>
+        _repositionVersions.TryGetValue(partition, out var version) ? version : _repositionResetVersion;
 }

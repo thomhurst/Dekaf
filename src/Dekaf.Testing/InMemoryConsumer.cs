@@ -493,6 +493,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             _assignment.Clear();
             _paused.Clear();
             _positions.Clear();
+            MarkAllRepositionedUnderLock();
             _assignmentOwnership = new Dictionary<TopicPartition, int>();
             _storedOffsets.Clear();
             _storedOffsetsVersion++;
@@ -1322,6 +1323,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             _ = GetCurrentAssignmentUnderLock();
             var partition = new TopicPartition(offset.Topic, offset.Partition);
             DiscardInDoubtRecordUnderLock(partition);
+            MarkRepositionedUnderLock(partition);
             _positions[partition] = offset.Offset;
             if (_options.EnableAutoOffsetStore)
                 StoreOffsetUnderLock(partition, offset.Offset);
@@ -1341,6 +1343,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             {
                 var position = _cluster.GetWatermarks(partition, _options.IsolationLevel).Low;
                 DiscardInDoubtRecordUnderLock(partition);
+                MarkRepositionedUnderLock(partition);
                 _positions[partition] = position;
                 if (_options.EnableAutoOffsetStore)
                     StoreOffsetUnderLock(partition, position);
@@ -1361,6 +1364,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             {
                 var position = _cluster.GetWatermarks(partition, _options.IsolationLevel).High;
                 DiscardInDoubtRecordUnderLock(partition);
+                MarkRepositionedUnderLock(partition);
                 _positions[partition] = position;
                 if (_options.EnableAutoOffsetStore)
                     StoreOffsetUnderLock(partition, position);
@@ -1406,6 +1410,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             _assignment.Clear();
             _paused.Clear();
             _positions.Clear();
+            MarkAllRepositionedUnderLock();
             _assignmentOwnership = new Dictionary<TopicPartition, int>();
             _storedOffsets.Clear();
             _storedOffsetsVersion++;
@@ -1439,6 +1444,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 var partition = new TopicPartition(offset.Topic, offset.Partition);
                 var position = offset.Offset >= 0 ? offset.Offset : GetStartOffset(partition);
                 DiscardInDoubtRecordUnderLock(partition);
+                MarkRepositionedUnderLock(partition);
                 _assignment.Add(partition);
                 _positions[partition] = position;
             }
@@ -1478,6 +1484,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 if (_storedOffsets.Remove(partition))
                     _storedOffsetsVersion++;
                 DiscardInDoubtRecordUnderLock(partition);
+                MarkRepositionedUnderLock(partition);
             }
 
             if (changed)
@@ -2435,6 +2442,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         _assignment.Clear();
         _paused.Clear();
         _positions.Clear();
+        MarkAllRepositionedUnderLock();
         _storedOffsets.Clear();
         _assignmentOwnership = new Dictionary<TopicPartition, int>();
         _storedOffsetsVersion++;
@@ -3511,6 +3519,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         if (_storedOffsets.Remove(partition))
             _storedOffsetsVersion++;
         DiscardInDoubtRecordUnderLock(partition);
+        MarkRepositionedUnderLock(partition);
         if (_retryInDoubtPartition.Equals(partition))
             _retryInDoubtNextOffset = -1;
     }

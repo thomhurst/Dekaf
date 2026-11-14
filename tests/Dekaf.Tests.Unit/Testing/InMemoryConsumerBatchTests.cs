@@ -127,6 +127,50 @@ public sealed class InMemoryConsumerBatchTests
     }
 
     [Test]
+    public async Task ConsumeBatchAsync_SeekToBatchStartDuringIteration_StopsBatchAndReplays()
+    {
+        var cluster = await CreateClusterAsync(partition0: 3, partition1: 0);
+        await using var consumer = CreateConsumer(cluster, OffsetCommitMode.Auto);
+        consumer.Assign(Partition0);
+        await using var batches = consumer.ConsumeBatchAsync().GetAsyncEnumerator();
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        var delivered = new List<long>();
+        foreach (var record in batches.Current)
+        {
+            delivered.Add(record.Offset);
+            consumer.Seek(new TopicPartitionOffset("topic", 0, 0));
+        }
+
+        await Assert.That(delivered).IsEquivalentTo([0L]);
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(Offsets(batches.Current)).IsEquivalentTo([0L, 1L, 2L]);
+        await Assert.That(cluster.GetCommittedOffset("group", Partition0)).IsNull();
+    }
+
+    [Test]
+    public async Task ConsumeBatchAsync_ReassignedAtBatchStartDuringIteration_StopsBatchAndReplays()
+    {
+        var cluster = await CreateClusterAsync(partition0: 3, partition1: 0);
+        await using var consumer = CreateConsumer(cluster, OffsetCommitMode.Manual);
+        consumer.Assign(Partition0);
+        await using var batches = consumer.ConsumeBatchAsync().GetAsyncEnumerator();
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        var delivered = new List<long>();
+        foreach (var record in batches.Current)
+        {
+            delivered.Add(record.Offset);
+            consumer.IncrementalUnassign([Partition0]);
+            consumer.IncrementalAssign([new TopicPartitionOffset("topic", 0, 0)]);
+        }
+
+        await Assert.That(delivered).IsEquivalentTo([0L]);
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(Offsets(batches.Current)).IsEquivalentTo([0L, 1L, 2L]);
+    }
+
+    [Test]
     public async Task ConsumeBatchAsync_ReadCommitted_SkipsAbortedRecords()
     {
         var cluster = new InMemoryKafkaCluster();
