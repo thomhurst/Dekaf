@@ -2227,11 +2227,176 @@ public sealed class StreamsGroupMemberTests
         await Assert.That(attempt.Completed.Task.IsCompleted).IsTrue();
     }
 
+    [Test]
+    public async Task AssignmentListener_SeesBackgroundHeartbeatChangesRevokedBeforeAssigned()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1, active: [TaskIds("sub", 0, 1)]));
+        connection.EnqueueHeartbeat(Success(epoch: 2, active: [TaskIds("sub", 1, 2)]));
+        var listener = new RecordingAssignmentListener();
+        await using var fixture = CreateFixture(connection, assignmentListener: listener);
+
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        await Assert.That(await listener.NextAsync()).IsEqualTo("assigned sub:0,1");
+
+        await Assert.That(fixture.Member.QueueHeartbeatForTesting()).IsTrue();
+
+        await Assert.That(await listener.NextAsync()).IsEqualTo("revoked sub:0");
+        await Assert.That(await listener.NextAsync()).IsEqualTo("assigned sub:2");
+    }
+
+    [Test]
+    public async Task AssignmentListener_RevokeCallbackAcknowledgesThroughUpdateAsync()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1, active: [TaskIds("sub", 0, 1)]));
+        connection.EnqueueHeartbeat(Success(epoch: 2, active: [TaskIds("sub", 1)]));
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        StreamsGroupMember? member = null;
+        var listener = new RecordingAssignmentListener
+        {
+            OnRevoked = async (_, cancellationToken) =>
+            {
+                await member!.UpdateAsync(
+                    new StreamsGroupMemberUpdate
+                    {
+                        ActiveTasks = [new StreamsGroupTaskSet { SubtopologyId = "sub", Partitions = [1] }]
+                    },
+                    cancellationToken);
+            }
+        };
+        await using var fixture = CreateFixture(connection, assignmentListener: listener);
+        member = fixture.Member;
+        await member.JoinAsync(CreateInitialUpdate());
+        await listener.NextAsync();
+        await listener.CallbackCompletedAsync();
+
+        await Assert.That(member.QueueHeartbeatForTesting()).IsTrue();
+        await Assert.That(await listener.NextAsync()).IsEqualTo("revoked sub:0");
+        await listener.CallbackCompletedAsync();
+
+        // The steady heartbeat leaves owned tasks unchanged; only the callback's update reports the reduced set.
+        await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(3);
+        await Assert.That(connection.HeartbeatRequests[1].ActiveTasks).IsNull();
+        await Assert.That(connection.HeartbeatRequests[2].ActiveTasks!.Single().Partitions).IsEquivalentTo([1]);
+    }
+
+    [Test]
+    public async Task AssignmentListener_FencingReportsEveryTaskLostThenTheRejoinAssignment()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1, active: [TaskIds("sub", 0, 1)]));
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.FencedMemberEpoch,
+            ErrorMessage = "fenced",
+            MemberId = "member-1"
+        });
+        connection.EnqueueHeartbeat(Success(epoch: 2, active: [TaskIds("sub", 1)]));
+        var listener = new RecordingAssignmentListener();
+        await using var fixture = CreateFixture(connection, assignmentListener: listener);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        await listener.NextAsync();
+
+        await Assert.That(fixture.Member.QueueHeartbeatForTesting()).IsTrue();
+
+        await Assert.That(await listener.NextAsync()).IsEqualTo("lost sub:0,1");
+        await Assert.That(await listener.NextAsync()).IsEqualTo("assigned sub:1");
+    }
+
+    [Test]
+    public async Task AssignmentListener_SteadyHeartbeatDeliversNothing()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1, active: [TaskIds("sub", 0)]));
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(Success(epoch: 1, active: [TaskIds("sub", 0, 1)]));
+        var listener = new RecordingAssignmentListener();
+        await using var fixture = CreateFixture(connection, assignmentListener: listener);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        await listener.NextAsync();
+
+        await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate());
+        await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate());
+
+        // Delivery is in order, so the next event is the second update's, not one for the steady heartbeat.
+        await Assert.That(await listener.NextAsync()).IsEqualTo("assigned sub:1");
+    }
+
+    [Test]
+    public async Task AssignmentListener_CloseCancelsTheRunningCallbackAndWaitsForIt()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1, active: [TaskIds("sub", 0)]));
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        var returned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var listener = new RecordingAssignmentListener
+        {
+            OnAssigned = async (_, cancellationToken) =>
+            {
+                try
+                {
+                    await Task.Delay(Timeout.Infinite, cancellationToken);
+                }
+                finally
+                {
+                    returned.SetResult();
+                }
+            }
+        };
+        await using var fixture = CreateFixture(connection, assignmentListener: listener);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        await listener.NextAsync();
+
+        await fixture.Member.CloseAsync();
+
+        await Assert.That(returned.Task.IsCompleted).IsTrue();
+    }
+
+    private sealed class RecordingAssignmentListener : IStreamsGroupAssignmentListener
+    {
+        private readonly Channel<string> _events = Channel.CreateUnbounded<string>();
+        private readonly Channel<bool> _completed = Channel.CreateUnbounded<bool>();
+
+        public Func<StreamsGroupAssignment, CancellationToken, Task>? OnAssigned { get; init; }
+        public Func<StreamsGroupAssignment, CancellationToken, Task>? OnRevoked { get; init; }
+
+        public ValueTask OnTasksAssignedAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken) =>
+            RecordAsync("assigned", tasks, OnAssigned, cancellationToken);
+
+        public ValueTask OnTasksRevokedAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken) =>
+            RecordAsync("revoked", tasks, OnRevoked, cancellationToken);
+
+        public ValueTask OnTasksLostAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken) =>
+            RecordAsync("lost", tasks, null, cancellationToken);
+
+        public async Task<string> NextAsync() =>
+            await _events.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+
+        public async Task CallbackCompletedAsync() =>
+            await _completed.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+
+        private async ValueTask RecordAsync(
+            string kind,
+            StreamsGroupAssignment tasks,
+            Func<StreamsGroupAssignment, CancellationToken, Task>? callback,
+            CancellationToken cancellationToken)
+        {
+            var parts = tasks.ActiveTasks.Concat(tasks.StandbyTasks).Concat(tasks.WarmupTasks)
+                .Select(static set => $"{set.SubtopologyId}:{string.Join(',', set.Partitions)}");
+            _events.Writer.TryWrite($"{kind} {string.Join(' ', parts)}");
+            if (callback is not null)
+                await callback(tasks, cancellationToken);
+            _completed.Writer.TryWrite(true);
+        }
+    }
+
     private static Fixture CreateFixture(
         ScriptedConnection connection,
         string? instanceId = null,
         short? brokerHeartbeatMaxVersion = null,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        IStreamsGroupAssignmentListener? assignmentListener = null)
     {
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
@@ -2263,7 +2428,8 @@ public sealed class StreamsGroupMemberTests
             {
                 GroupId = "streams-group",
                 InstanceId = instanceId,
-                RackId = "rack-a"
+                RackId = "rack-a",
+                AssignmentListener = assignmentListener
             },
             pool,
             metadataManager,

@@ -43,6 +43,7 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
     private readonly StreamsGroupHeartbeatRequestCache _steadyRequestCache = new();
     private readonly Action _requestWriteStartedCallback;
     private readonly Timer _heartbeatTimer;
+    private readonly StreamsGroupAssignmentNotifier? _assignmentNotifier;
     private readonly Task _workerTask;
     private readonly int _retryBackoffMs;
     private readonly int _retryBackoffMaxMs;
@@ -108,6 +109,8 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
         _retryBackoffMs = retryBackoffMs;
         _retryBackoffMaxMs = retryBackoffMaxMs;
         _requestWriteStartedCallback = MarkRequestWriteStarted;
+        if (options.AssignmentListener is { } assignmentListener)
+            _assignmentNotifier = new StreamsGroupAssignmentNotifier(assignmentListener, _logger);
         _heartbeatTimer = new Timer(
             static state => ((StreamsGroupMember)state!).QueueHeartbeat(),
             this,
@@ -363,6 +366,8 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
             throw;
         }
         await _workerTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+        if (_assignmentNotifier is not null)
+            await _assignmentNotifier.StopAsync().WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask WaitForInitializationDrainAsync(CancellationToken cancellationToken)
@@ -545,6 +550,8 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
         finally
         {
             _heartbeatTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            // The worker publishes every change, so none can follow. CloseAsync waits for the running callback.
+            _ = _assignmentNotifier?.StopAsync();
         }
     }
 
@@ -1156,6 +1163,7 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
             AcceptableRecoveryLagOffsets = current.AcceptableRecoveryLagOffsets,
             TaskOffsetInterval = current.TaskOffsetInterval
         };
+        _assignmentNotifier?.PublishLost();
     }
 
     private async ValueTask<int> FindCoordinatorAsync(CancellationToken cancellationToken)
@@ -1366,6 +1374,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
                 TaskOffsetInterval = taskOffsetInterval
             };
         }
+
+        // A steady-state heartbeat keeps the same assignment instance, which the notifier skips without work.
+        _assignmentNotifier?.PublishAssignment(assignment);
 
         if (response.TopologyDescriptionRequired)
             StartTopologyDescriptionPublication();

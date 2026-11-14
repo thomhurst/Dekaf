@@ -229,6 +229,40 @@ coordinator.
 [kip1331]: https://cwiki.apache.org/confluence/spaces/KAFKA/pages/421957212/KIP-1331+Streams+Group+Topology+Description+Plugin
 [kip1357]: https://cwiki.apache.org/confluence/spaces/KAFKA/pages/430408758/KIP-1357+Add+broker+side+custom+assignors+for+streams+groups
 
+## Reacting to assignment changes
+
+Set `StreamsGroupMemberOptions.AssignmentListener` to be told when the coordinator assigns, revokes or takes away tasks, including changes that a background heartbeat brings, instead of polling `Snapshot`:
+
+```csharp
+using Dekaf.Streams;
+
+sealed class TaskListener : IStreamsGroupAssignmentListener
+{
+    public IStreamsGroupMember Member { get; set; } = null!;
+    public List<StreamsGroupTaskSet> Owned { get; } = [];
+
+    public ValueTask OnTasksAssignedAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken)
+    {
+        // Open state and start reading the new tasks' partitions.
+        return ValueTask.CompletedTask;
+    }
+
+    public async ValueTask OnTasksRevokedAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken)
+    {
+        // Drain and commit the revoked tasks, then tell the coordinator they are released.
+        await Member.UpdateAsync(new StreamsGroupMemberUpdate { ActiveTasks = Owned }, cancellationToken);
+    }
+
+    public ValueTask OnTasksLostAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken)
+    {
+        // The tasks already run elsewhere: discard their uncommitted work.
+        return ValueTask.CompletedTask;
+    }
+}
+```
+
+Each callback receives only the tasks that changed. Callbacks run one at a time, in order, on a loop separate from heartbeats, so a slow callback does not delay heartbeats and a callback may call the member. When one change both revokes and assigns tasks, the revoke callback runs first. The member reports owned tasks only through `UpdateAsync`, so a revoked task stays with the member until you report the reduced set. A callback that throws is logged and delivery continues; closing the member drops undelivered changes and cancels the running callback's token. `InMemoryStreamsGroupMember` in `Dekaf.Testing` calls the same listener.
+
 ## Committing offsets as a member
 
 `Dekaf.Streams` is a complete runtime on top of streams membership; see [Stream processing](../streams/index.md). If you build your own, `IStreamsGroupMember` gives you the two things a runtime needs to commit safely.

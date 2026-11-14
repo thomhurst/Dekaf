@@ -16,6 +16,11 @@ namespace Dekaf.Testing;
 /// broker within its session timeout: it keeps its place in the round-robin, and its tasks do not run until a
 /// member with the same instance ID joins and takes over its member ID and tasks without moving any task. A
 /// dynamic member always leaves the group on close, so its tasks move. Standby and warmup tasks are never assigned.
+/// <para>
+/// A <see cref="StreamsGroupMemberOptions.AssignmentListener"/> is told of every assignment change, including one
+/// made by another member's join or close, in the same order and on the same kind of separate loop as a broker-backed
+/// member. The listener runs after the call that caused the change returns, so wait for it in the listener itself.
+/// </para>
 /// </remarks>
 public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGroupOffsetCommitter
 {
@@ -30,6 +35,7 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
     private readonly InMemoryKafkaCluster? _cluster;
     private readonly InMemoryStreamsGroup? _group;
     private readonly StreamsGroupMemberOptions _options;
+    private readonly StreamsGroupAssignmentNotifier? _assignmentNotifier;
     private StreamsGroupMemberSnapshot _snapshot = new()
     {
         Assignment = EmptyAssignment,
@@ -74,6 +80,8 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
         _cluster = cluster;
         _group = cluster?.GetOrCreateStreamsGroup(options.GroupId);
         _gate = (object?)_group ?? new object();
+        if (options.AssignmentListener is { } assignmentListener)
+            _assignmentNotifier = new StreamsGroupAssignmentNotifier(assignmentListener);
     }
 
     /// <inheritdoc />
@@ -246,7 +254,7 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
         lock (_gate)
         {
             if (_snapshot.IsClosed)
-                return ValueTask.CompletedTask;
+                return StopAssignmentNotifierAsync();
 
             _lastCloseOptions = options;
             // The in-memory cluster has no session timer, so a cluster-backed dynamic member always leaves on
@@ -255,7 +263,7 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
                     || (options.GroupMembershipOperation == StreamsGroupMembershipOperation.Default
                         && _options.InstanceId is not null))
                 && (_group is null || _options.InstanceId is not null);
-            Volatile.Write(ref _snapshot, new StreamsGroupMemberSnapshot
+            Publish(new StreamsGroupMemberSnapshot
             {
                 IsJoined = remainInGroup && _snapshot.IsJoined,
                 IsClosed = true,
@@ -276,7 +284,17 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
             }
         }
 
-        return ValueTask.CompletedTask;
+        return StopAssignmentNotifierAsync();
+    }
+
+    private ValueTask StopAssignmentNotifierAsync() =>
+        _assignmentNotifier is null ? ValueTask.CompletedTask : new ValueTask(_assignmentNotifier.StopAsync());
+
+    /// <summary>Replaces the snapshot and queues its assignment changes for the listener. Called under the lock.</summary>
+    private void Publish(StreamsGroupMemberSnapshot snapshot)
+    {
+        Volatile.Write(ref _snapshot, snapshot);
+        _assignmentNotifier?.PublishAssignment(snapshot.Assignment);
     }
 
     /// <inheritdoc />
@@ -301,7 +319,7 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
         };
         var memberId = isJoin ? "in-memory-streams-member" : previous.MemberId!;
         var memberEpoch = isJoin ? 1 : previous.MemberEpoch;
-        Volatile.Write(ref _snapshot, new StreamsGroupMemberSnapshot
+        Publish(new StreamsGroupMemberSnapshot
         {
             IsJoined = true,
             MemberId = memberId,
@@ -357,7 +375,7 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
         if (update.Topology is not null)
             group.Topology = update.Topology;
 
-        Volatile.Write(ref _snapshot, new StreamsGroupMemberSnapshot
+        Publish(new StreamsGroupMemberSnapshot
         {
             IsJoined = true,
             MemberId = memberId,
@@ -460,7 +478,7 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
             return;
 
         _assignmentPending = true;
-        Volatile.Write(ref _snapshot, new StreamsGroupMemberSnapshot
+        Publish(new StreamsGroupMemberSnapshot
         {
             IsJoined = current.IsJoined,
             IsClosed = current.IsClosed,

@@ -436,6 +436,114 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
         await Assert.That(brokerMember.MemberEpoch).IsGreaterThan(0);
     }
 
+    [Test]
+    public async Task AssignmentListenerReleasesTasksToASecondMemberWithoutPolling()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4).ConfigureAwait(false);
+        var groupId = $"streams-group-{Guid.NewGuid():N}";
+        await using var client = Kafka.Connect(KafkaContainer.BootstrapServers, builder =>
+            builder.WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()));
+        var firstListener = new OwnershipListener();
+        var secondListener = new OwnershipListener();
+        await using var first = client.CreateStreamsGroupMember(new StreamsGroupMemberOptions
+        {
+            GroupId = groupId,
+            AssignmentListener = firstListener
+        });
+        await using var second = client.CreateStreamsGroupMember(new StreamsGroupMemberOptions
+        {
+            GroupId = groupId,
+            AssignmentListener = secondListener
+        });
+        firstListener.Member = first;
+        secondListener.Member = second;
+        await first.InitializeAsync();
+        await second.InitializeAsync();
+
+        await first.JoinAsync(CreateInitialState(topic, "process-a"));
+        await TestWait.WaitForConditionAsync(
+            () => firstListener.Owned.Length == 4,
+            TimeSpan.FromSeconds(60),
+            description: "first member owns every task");
+
+        // From here on only background heartbeats and the listeners act on the first member.
+        await second.JoinAsync(CreateInitialState(topic, "process-b"));
+        await TestWait.WaitForConditionAsync(
+            () => firstListener.Owned.Length > 0
+                && secondListener.Owned.Length > 0
+                && firstListener.Owned.Length + secondListener.Owned.Length == 4,
+            TimeSpan.FromSeconds(90),
+            description: "tasks split across both members");
+
+        await Assert.That(firstListener.Revoked).IsGreaterThan(0);
+        await Assert.That(firstListener.Owned.Intersect(secondListener.Owned)).IsEmpty();
+    }
+
+    /// <summary>Reports owned tasks back to the coordinator as each change arrives.</summary>
+    private sealed class OwnershipListener : IStreamsGroupAssignmentListener
+    {
+        private readonly object _gate = new();
+        private readonly HashSet<int> _owned = [];
+        private int _revoked;
+
+        public IStreamsGroupMember Member { get; set; } = null!;
+
+        public int[] Owned
+        {
+            get
+            {
+                lock (_gate)
+                    return _owned.ToArray();
+            }
+        }
+
+        public int Revoked => Volatile.Read(ref _revoked);
+
+        public ValueTask OnTasksAssignedAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken) =>
+            ReportAsync(tasks, add: true, cancellationToken);
+
+        public ValueTask OnTasksRevokedAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _revoked);
+            return ReportAsync(tasks, add: false, cancellationToken);
+        }
+
+        public ValueTask OnTasksLostAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken)
+        {
+            lock (_gate)
+                _owned.Clear();
+            return ValueTask.CompletedTask;
+        }
+
+        private async ValueTask ReportAsync(StreamsGroupAssignment tasks, bool add, CancellationToken cancellationToken)
+        {
+            int[] owned;
+            lock (_gate)
+            {
+                foreach (var partition in tasks.ActiveTasks.SelectMany(static set => set.Partitions))
+                {
+                    if (add)
+                        _owned.Add(partition);
+                    else
+                        _owned.Remove(partition);
+                }
+
+                owned = _owned.Order().ToArray();
+            }
+
+            await Member.UpdateAsync(
+                new StreamsGroupMemberUpdate
+                {
+                    ActiveTasks = owned.Length == 0
+                        ? []
+                        : [new StreamsGroupTaskSet { SubtopologyId = "0", Partitions = owned }],
+                    StandbyTasks = [],
+                    WarmupTasks = []
+                },
+                cancellationToken);
+        }
+    }
+
     private static IStreamsGroupMember CreateStaticMember(
         KafkaClient client,
         string groupId,
