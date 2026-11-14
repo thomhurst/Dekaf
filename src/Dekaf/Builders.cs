@@ -1740,6 +1740,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private IConsumerAwareRebalanceListener? _consumerAwareRebalanceListener;
     private List<IRebalanceListener>? _additionalRebalanceListeners;
     private TimeSpan _partitionStopTimeout = TimeSpan.FromSeconds(5);
+    private IOffsetCommitObserver? _commitObserver;
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
     private bool _enablePartitionEof;
     private int _socketSendBufferBytes;
@@ -2657,6 +2658,21 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Sets an observer called before and after each offset commit the consumer sends on the
+    /// application's behalf in <see cref="OffsetCommitMode.Auto"/> mode: the periodic automatic
+    /// commit, the commit of revoked partitions and the commit on close. Commits the application
+    /// requests with <c>CommitAsync</c> are not observed.
+    /// </summary>
+    /// <param name="observer">The commit observer.</param>
+    /// <returns>This builder.</returns>
+    public ConsumerBuilder<TKey, TValue> WithCommitObserver(IOffsetCommitObserver observer)
+    {
+        ArgumentNullException.ThrowIfNull(observer);
+        _commitObserver = observer;
+        return this;
+    }
+
     public ConsumerBuilder<TKey, TValue> WithLoggerFactory(Microsoft.Extensions.Logging.ILoggerFactory loggerFactory)
     {
         _loggerFactory = loggerFactory;
@@ -3410,6 +3426,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             ConsumerAwareRebalanceListener = _consumerAwareRebalanceListener,
             AdditionalRebalanceListeners = _additionalRebalanceListeners?.ToArray(),
             PartitionStopTimeout = _partitionStopTimeout,
+            CommitObserver = _commitObserver,
             EnablePartitionEof = _enablePartitionEof,
             RecordFilter = _recordFilter,
             SocketSendBufferBytes = _socketSendBufferBytes,

@@ -3117,7 +3117,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         bool vouched,
         IReadOnlyList<TopicPartition>? partitions,
         bool retryUntilApiTimeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        OffsetCommitReason? observedReason = null)
     {
         if (GetCurrentDepartingOffsets() is not { } state)
             return false;
@@ -3131,8 +3132,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 return false;
             }
 
-            await GetCommitCoordinator()
-                .CommitOffsetsAsync(offsets, retryUntilApiTimeout, state.MembershipVersion, cancellationToken)
+            await CommitObservedOffsetsAsync(
+                    GetCommitCoordinator(),
+                    offsets,
+                    observedReason,
+                    retryUntilApiTimeout,
+                    state.MembershipVersion,
+                    cancellationToken)
                 .ConfigureAwait(false);
 
             RemoveCommittedDepartingOffsets(state, offsets, vouched);
@@ -8830,7 +8836,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// record the way an explicit <see cref="CommitAsync(CancellationToken)"/> does — the
     /// consumer may be closing precisely because that record's processing failed.
     /// The background auto-commit loop uses a third, narrower scope: already-staged
-    /// offsets only, via <see cref="CommitStoredOffsetsAsync(CancellationToken)"/> directly.
+    /// offsets only, via <see cref="CommitStoredOffsetsAsync(OffsetCommitReason, CancellationToken)"/> directly.
     /// </summary>
     private async ValueTask<bool> CommitProvenOffsetsAsync(CancellationToken cancellationToken)
     {
@@ -8839,18 +8845,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             FlushConsumedPositions(_pendingFetches.Peek());
         }
 
-        return await CommitStoredOffsetsAsync(cancellationToken)
+        return await CommitStoredOffsetsAsync(OffsetCommitReason.Stop, cancellationToken)
             .ConfigureAwait(false);
     }
 
-    private ValueTask<bool> CommitStoredOffsetsAsync(CancellationToken cancellationToken) =>
-        CommitStoredOffsetsAsync(partitions: null, cancellationToken);
+    private ValueTask<bool> CommitStoredOffsetsAsync(OffsetCommitReason observedReason, CancellationToken cancellationToken) =>
+        CommitStoredOffsetsAsync(partitions: null, cancellationToken, observedReason: observedReason);
 
+    /// <param name="observedReason">
+    /// The reason reported to the configured <see cref="ConsumerOptions.CommitObserver"/>, or
+    /// null for a commit the application requested, which is not observed.
+    /// </param>
     private async ValueTask<bool> CommitStoredOffsetsAsync(
         TopicPartitionSet? partitions,
         CancellationToken cancellationToken,
         bool retryUntilApiTimeout = false,
-        int? membershipVersion = null)
+        int? membershipVersion = null,
+        OffsetCommitReason? observedReason = null)
     {
         if (_coordinator is null)
             return false;
@@ -8915,8 +8926,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                 try
                 {
-                    await _coordinator.CommitOffsetsAsync(
+                    await CommitObservedOffsetsAsync(
+                            _coordinator,
                             offsets,
+                            observedReason,
                             retryUntilApiTimeout,
                             commitMembershipVersion,
                             cancellationToken,
@@ -8959,6 +8972,86 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // A commit rejected because the member's assignment changed after ownership was decided is
     // decided and sent again, at most this many times in all.
     private const int MaxOwnershipEpochCommitAttempts = 3;
+
+    /// <summary>
+    /// Sends a commit the consumer decided on (automatic, revoke or close), wrapped in the
+    /// configured <see cref="ConsumerOptions.CommitObserver"/>'s callbacks. Observer failures are
+    /// logged and never change the commit or its outcome. A null reason is not observed.
+    /// </summary>
+    private async ValueTask CommitObservedOffsetsAsync(
+        ConsumerCoordinator coordinator,
+        IReadOnlyList<TopicPartitionOffset> offsets,
+        OffsetCommitReason? reason,
+        bool retryUntilApiTimeout,
+        int membershipVersion,
+        CancellationToken cancellationToken,
+        int? ownershipMemberEpoch = null)
+    {
+        if (reason is not { } observedReason || _options.CommitObserver is not { } observer)
+        {
+            await coordinator.CommitOffsetsAsync(
+                    offsets,
+                    retryUntilApiTimeout,
+                    membershipVersion,
+                    cancellationToken,
+                    ownershipMemberEpoch)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        // A read-only copy, once per commit: the caller's buffer is pooled, and the observer must
+        // not be able to change what gets committed.
+        var copy = new TopicPartitionOffset[offsets.Count];
+        for (var i = 0; i < copy.Length; i++)
+            copy[i] = offsets[i];
+        var observation = new OffsetCommitObservation(
+            observedReason,
+            new System.Collections.ObjectModel.ReadOnlyCollection<TopicPartitionOffset>(copy));
+
+        object? state = null;
+        try
+        {
+            state = observer.OnCommitStarting(observation);
+        }
+        catch (Exception exception)
+        {
+            LogCommitObserverFailed(exception);
+        }
+
+        try
+        {
+            await coordinator.CommitOffsetsAsync(
+                    offsets,
+                    retryUntilApiTimeout,
+                    membershipVersion,
+                    cancellationToken,
+                    ownershipMemberEpoch)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            NotifyCommitObserverCompleted(observer, observation, state, exception);
+            throw;
+        }
+
+        NotifyCommitObserverCompleted(observer, observation, state, null);
+    }
+
+    private void NotifyCommitObserverCompleted(
+        IOffsetCommitObserver observer,
+        OffsetCommitObservation observation,
+        object? state,
+        Exception? exception)
+    {
+        try
+        {
+            observer.OnCommitCompleted(observation, state, exception);
+        }
+        catch (Exception observerException)
+        {
+            LogCommitObserverFailed(observerException);
+        }
+    }
 
     private bool IsGroupManagedSubscription() => _isGroupManaged;
 
@@ -9048,7 +9141,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     vouched: false,
                     partitions,
                     retryUntilApiTimeout: false,
-                    commitCancellationToken)
+                    commitCancellationToken,
+                    OffsetCommitReason.Revoke)
                 .ConfigureAwait(false);
 
             // During a leave the departing offsets are all this membership has to commit: the
@@ -9067,7 +9161,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (await CommitStoredOffsetsAsync(
                         revoked,
                         commitCancellationToken,
-                        membershipVersion: GetCommitCoordinator().MembershipVersion)
+                        membershipVersion: GetCommitCoordinator().MembershipVersion,
+                        observedReason: OffsetCommitReason.Revoke)
                     .ConfigureAwait(false)
                 || committed)
                 LogCommittedRevokedOffsets();
@@ -15558,7 +15653,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     /// <summary>
     /// Background auto-commit timer loop. Offset-safety contract: this loop commits only
-    /// stored offsets (<see cref="CommitStoredOffsetsAsync(CancellationToken)"/>), which are populated at
+    /// stored offsets (<see cref="CommitStoredOffsetsAsync(OffsetCommitReason, CancellationToken)"/>), which are populated at
     /// fetch-boundary position flushes — i.e. only for records the caller has already
     /// iterated past. It never reads the active consumed snapshot, so a record that has
     /// been yielded but not yet processed (or prefetched but not yet yielded) can never be
@@ -15590,7 +15685,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         try
         {
-            await CommitStoredOffsetsAsync(cancellationToken).ConfigureAwait(false);
+            await CommitStoredOffsetsAsync(OffsetCommitReason.Periodic, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -15606,7 +15701,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     _options.RetryBackoffMaxMs,
                     failureCount: 1);
                 await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
-                await CommitStoredOffsetsAsync(cancellationToken).ConfigureAwait(false);
+                await CommitStoredOffsetsAsync(OffsetCommitReason.Periodic, cancellationToken).ConfigureAwait(false);
             }
             catch { /* Best effort — will retry on next interval */ }
         }
@@ -16408,6 +16503,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to commit revoked offsets; continuing rebalance")]
     private partial void LogCommitRevokedOffsetsFailed(Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Offset commit observer threw; the commit proceeds unchanged")]
+    private partial void LogCommitObserverFailed(Exception exception);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Closing consumer gracefully")]
     private partial void LogClosingConsumer();

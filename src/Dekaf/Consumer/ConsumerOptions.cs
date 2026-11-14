@@ -429,6 +429,16 @@ public sealed class ConsumerOptions
     internal IRebalanceListener[]? AdditionalRebalanceListeners { get; init; }
 
     /// <summary>
+    /// Observer called before and after each offset commit the consumer sends on the
+    /// application's behalf when <see cref="OffsetCommitMode"/> is <see cref="Dekaf.Consumer.OffsetCommitMode.Auto"/>:
+    /// the periodic automatic commit (<see cref="OffsetCommitReason.Periodic"/>), the commit of
+    /// revoked partitions (<see cref="OffsetCommitReason.Revoke"/>) and the commit on close
+    /// (<see cref="OffsetCommitReason.Stop"/>). Commits the application requests with
+    /// <c>CommitAsync</c> are not observed.
+    /// </summary>
+    public IOffsetCommitObserver? CommitObserver { get; init; }
+
+    /// <summary>
     /// Socket send buffer size in bytes. Set to 0 to use system default.
     /// </summary>
     public int SocketSendBufferBytes { get; init; }

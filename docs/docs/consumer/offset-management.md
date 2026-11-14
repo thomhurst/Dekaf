@@ -209,6 +209,29 @@ await foreach (var msg in consumer.ConsumeAsync(ct))
 }
 ```
 
+## Observing Automatic Commits
+
+In `Auto` mode the consumer sends commits itself. To measure them, for example with a
+span per commit, pass an `IOffsetCommitObserver` to `WithCommitObserver`:
+
+```csharp
+var consumer = await Kafka.CreateConsumer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithGroupId("my-group")
+    .WithCommitObserver(new CommitTracing(source))
+    .BuildAsync();
+```
+
+`CommitTracing` is the observer shown in
+[Observing Runtime Commits](./partitioned-processing-api.md#observing-runtime-commits).
+`OnCommitStarting` runs before each commit request and `OnCommitCompleted` runs once
+after it, with the exception when it failed. The reason is `Periodic` for the
+automatic commit, `Revoke` for the commit of revoked partitions during a rebalance,
+and `Stop` for the commit on close. A failed request that is retried is observed once
+per request. Commits you request with `CommitAsync` are not observed. The observer
+cannot change what is committed: an exception it throws is logged and the commit
+continues.
+
 ## Checking Committed Offsets
 
 ```csharp

@@ -74,17 +74,19 @@ public readonly struct OffsetCommitObservation(
 public enum OffsetCommitReason
 {
     /// <summary>
-    /// A periodic commit of completed offsets.
+    /// A periodic commit: of completed offsets by <c>RunPartitionedAsync</c>, or of stored
+    /// offsets by the consumer's automatic commit.
     /// </summary>
     Periodic,
 
     /// <summary>
-    /// A commit of completed offsets for partitions the group coordinator revoked.
+    /// A commit of completed or stored offsets for partitions the group coordinator revoked.
     /// </summary>
     Revoke,
 
     /// <summary>
-    /// A commit of completed offsets for a partition that stopped, for example during shutdown.
+    /// A commit of completed offsets for a partition that stopped, for example during shutdown,
+    /// or of the consumer's stored offsets when it closes.
     /// </summary>
     Stop,
 
