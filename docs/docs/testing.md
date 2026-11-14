@@ -135,15 +135,20 @@ Set `InMemoryConsumerOptions.RebalanceListener` to test `IRebalanceListener` cod
 A subscribed consumer reports assignment changes on its next `ConsumeAsync` or `ConsumeOneAsync`
 call: the partitions it gains after subscribing or when another member leaves, and the partitions
 revoked when another member joins. A consume call blocked waiting for records wakes to report the
-change. `Unsubscribe` and `CloseAsync` call `OnPartitionsRevokedAsync` before the member leaves, so
-the listener can still commit. Removing the member through the admin client reports its partitions
+change. `CommitAsync()` called from `OnPartitionsRevokedAsync` still commits the offsets the revoked
+partitions held, including when `Unsubscribe` and `CloseAsync` revoke them before the member leaves.
+As with `KafkaConsumer`, an exception other than cancellation thrown by a callback is ignored and
+does not stop consumption. Removing the member through the admin client reports its partitions
 to `OnPartitionsLostAsync`. Manual assignment does not invoke the listener.
 
 ```csharp
+using Dekaf.Testing;
+
+var cluster = new InMemoryKafkaCluster();
 var consumer = new InMemoryConsumer<string, string>(cluster, new InMemoryConsumerOptions
 {
     GroupId = "orders-service",
-    RebalanceListener = new CommitOnRevokeListener()
+    RebalanceListener = new MyRebalanceListener()
 });
 ```
 

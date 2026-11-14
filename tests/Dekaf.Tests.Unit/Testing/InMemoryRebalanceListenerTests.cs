@@ -110,6 +110,85 @@ public sealed class InMemoryRebalanceListenerTests
     }
 
     [Test]
+    public async Task Unsubscribe_AsynchronousRevocationStillCommitsDepartingOffsets()
+    {
+        var cluster = CreateCluster(partitions: 1);
+        await ProduceAsync(cluster, 2);
+        var listener = new RecordingListener();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var consumer = CreateConsumer(cluster, "a", listener, OffsetCommitMode.Manual);
+        listener.OnRevoked = async () =>
+        {
+            await release.Task;
+            await consumer.CommitAsync();
+        };
+        consumer.Subscribe("topic");
+        await Assert.That((await consumer.ConsumeOneAsync(TimeSpan.Zero))!.Value.Offset).IsEqualTo(0);
+
+        consumer.Unsubscribe();
+        release.SetResult();
+        await consumer.CloseAsync();
+
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0", "revoked topic-0"], CollectionOrdering.Matching);
+        await Assert.That(cluster.GetCommittedOffset("group", Partition0)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task MemberJoining_ListenerCommitIncludesRevokedPartitionOffsets()
+    {
+        var cluster = CreateCluster(partitions: 2);
+        await ProduceAsync(cluster, 1, partition: 0);
+        await ProduceAsync(cluster, 1, partition: 1);
+        var listener = new RecordingListener();
+        await using var first = CreateConsumer(cluster, "a", listener, OffsetCommitMode.Manual);
+        listener.OnRevoked = () => first.CommitAsync();
+        first.Subscribe("topic");
+        await Assert.That(await first.ConsumeOneAsync(TimeSpan.Zero)).IsNotNull();
+        await Assert.That(await first.ConsumeOneAsync(TimeSpan.Zero)).IsNotNull();
+
+        await using var second = CreateConsumer(cluster, "b", new RecordingListener());
+        second.Subscribe("topic");
+        await first.ConsumeOneAsync(TimeSpan.Zero);
+
+        var moved = second.Assignment.Single();
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0,topic-1", $"revoked {Format(moved)}"], CollectionOrdering.Matching);
+        await Assert.That(cluster.GetCommittedOffset("group", moved)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task SwitchingToManualAssignment_ListenerCommitIncludesRevokedPartitionOffsets()
+    {
+        var cluster = CreateCluster(partitions: 2);
+        await ProduceAsync(cluster, 2);
+        var listener = new RecordingListener();
+        await using var consumer = CreateConsumer(cluster, "a", listener, OffsetCommitMode.Manual);
+        listener.OnRevoked = () => consumer.CommitAsync();
+        consumer.Subscribe("topic");
+        await Assert.That((await consumer.ConsumeOneAsync(TimeSpan.Zero))!.Value.Offset).IsEqualTo(0);
+
+        consumer.Assign(Partition1);
+        await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0,topic-1", "revoked topic-0,topic-1"], CollectionOrdering.Matching);
+        await Assert.That(cluster.GetCommittedOffset("group", Partition0)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ListenerException_DoesNotStopConsumption()
+    {
+        var cluster = CreateCluster(partitions: 1);
+        await ProduceAsync(cluster, 1);
+        var listener = new RecordingListener { ThrowOnAssigned = true };
+        await using var consumer = CreateConsumer(cluster, "a", listener);
+        consumer.Subscribe("topic");
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(result!.Value.Offset).IsEqualTo(0);
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0"], CollectionOrdering.Matching);
+    }
+
+    [Test]
     public async Task AdministrativeRemoval_ReportsPartitionsLost()
     {
         var cluster = CreateCluster(partitions: 2);
@@ -177,7 +256,7 @@ public sealed class InMemoryRebalanceListenerTests
             RebalanceListener = listener
         });
 
-    private static async Task ProduceAsync(InMemoryKafkaCluster cluster, int count)
+    private static async Task ProduceAsync(InMemoryKafkaCluster cluster, int count, int partition = 0)
     {
         await using var producer = new InMemoryProducer<string, string>(cluster);
         for (var i = 0; i < count; i++)
@@ -185,7 +264,7 @@ public sealed class InMemoryRebalanceListenerTests
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = "topic",
-                Partition = 0,
+                Partition = partition,
                 Key = "key",
                 Value = $"value-{i}"
             });
@@ -207,6 +286,8 @@ public sealed class InMemoryRebalanceListenerTests
 
         public Func<ValueTask>? OnRevoked { get; set; }
 
+        public bool ThrowOnAssigned { get; init; }
+
         public TaskCompletionSource Revoked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public IReadOnlyList<string> Events
@@ -223,6 +304,8 @@ public sealed class InMemoryRebalanceListenerTests
             CancellationToken cancellationToken)
         {
             Record("assigned", partitions);
+            if (ThrowOnAssigned)
+                throw new InvalidOperationException("listener failure");
             return ValueTask.CompletedTask;
         }
 

@@ -127,6 +127,8 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     private int _listenerConsumerStateVersion = -1;
     private bool _leavingGroup;
     private Task? _pendingRebalanceCallback;
+    // Offsets the revoked partitions held, committed by CommitAsync until the revocation callback returns.
+    private readonly Dictionary<TopicPartition, TopicPartitionOffset> _departingOffsets = [];
 
     [ThreadStatic]
     private static Action? _afterLagWatermarkReadForTest;
@@ -486,9 +488,8 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     {
         ThrowIfDisposed();
 
-        // The listener sees the revocation while the member still owns its partitions, so it can
-        // commit them. A revocation that completes asynchronously is awaited by the next consume
-        // or close call.
+        // The listener's commit includes the offsets the departing partitions held now, even when
+        // the callback completes asynchronously; the next consume or close call awaits it.
         var revocation = StartListenerRevocation(closing: false, CancellationToken.None);
         try
         {
@@ -2495,6 +2496,8 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         foreach (var partition in partitions.Distinct())
             nextPositions[partition] = initializePositions ? GetStartOffset(partition) : 0;
 
+        foreach (var partition in _listenerAssignment)
+            PreserveDepartingOffsetUnderLock(partition);
         _assignment.Clear();
         _paused.Clear();
         _positions.Clear();
@@ -2599,6 +2602,12 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 count++;
         }
 
+        foreach (var partition in _departingOffsets.Keys)
+        {
+            if (!assignment.Contains(partition))
+                count++;
+        }
+
         if (count == 0)
             return new CapturedCommitOffsets([], consumerGroupGeneration);
 
@@ -2609,6 +2618,12 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         foreach (var (partition, offset) in _storedOffsets)
         {
             if (partition != inDoubtPartition && assignment.Contains(partition))
+                offsets[index++] = offset;
+        }
+
+        foreach (var (partition, offset) in _departingOffsets)
+        {
+            if (!assignment.Contains(partition))
                 offsets[index++] = offset;
         }
 
@@ -3603,17 +3618,81 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 _listenerAssignment.ExceptWith(revoked);
             if (assigned is not null)
                 _listenerAssignment.UnionWith(assigned);
+            // Lost partitions cannot be committed; a partition regained before this call kept its offsets.
+            if (revoked is null || lost)
+                _departingOffsets.Clear();
         }
 
         if (revoked is not null)
         {
-            await (lost
-                ? listener.OnPartitionsLostAsync(revoked, cancellationToken)
-                : listener.OnPartitionsRevokedAsync(revoked, cancellationToken)).ConfigureAwait(false);
+            if (lost)
+            {
+                await InvokeListenerAsync(
+                    static (listener, partitions, token) => listener.OnPartitionsLostAsync(partitions, token),
+                    listener, revoked, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await RevokeListenerPartitionsAsync(listener, revoked, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         if (assigned is not null)
-            await listener.OnPartitionsAssignedAsync(assigned, cancellationToken).ConfigureAwait(false);
+        {
+            await InvokeListenerAsync(
+                static (listener, partitions, token) => listener.OnPartitionsAssignedAsync(partitions, token),
+                listener, assigned, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async ValueTask RevokeListenerPartitionsAsync(
+        IRebalanceListener listener,
+        IEnumerable<TopicPartition> revoked,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await InvokeListenerAsync(
+                static (listener, partitions, token) => listener.OnPartitionsRevokedAsync(partitions, token),
+                listener, revoked, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            lock (_gate)
+                _departingOffsets.Clear();
+        }
+    }
+
+    /// <summary>
+    /// Runs a listener callback the way <c>KafkaConsumer</c> does: an exception other than
+    /// cancellation of <paramref name="cancellationToken"/> is ignored and does not stop consumption.
+    /// </summary>
+    private static async ValueTask InvokeListenerAsync(
+        Func<IRebalanceListener, IEnumerable<TopicPartition>, CancellationToken, ValueTask> callback,
+        IRebalanceListener listener,
+        IEnumerable<TopicPartition> partitions,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await callback(listener, partitions, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            // KafkaConsumer logs the failure; the in-memory consumer has no logger.
+        }
+    }
+
+    private void PreserveDepartingOffsetUnderLock(TopicPartition partition)
+    {
+        if (!_listenerAssignment.Contains(partition))
+            return;
+
+        // Mirror CommitAsync: with automatic offset storage, the commit proves the record in doubt.
+        if (_options.EnableAutoOffsetStore && _inDoubtNextOffset >= 0 && _inDoubtPartition.Equals(partition))
+            _departingOffsets[partition] = new TopicPartitionOffset(partition.Topic, partition.Partition, _inDoubtNextOffset);
+        else if (_storedOffsets.TryGetValue(partition, out var stored))
+            _departingOffsets[partition] = stored;
     }
 
     /// <summary>
@@ -3632,6 +3711,8 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 return ValueTask.CompletedTask;
 
             _leavingGroup = true;
+            foreach (var partition in _listenerAssignment)
+                PreserveDepartingOffsetUnderLock(partition);
             revoked = _listenerAssignment.ToArray();
             _listenerAssignment.Clear();
             _listenerConsumerStateVersion = -1;
@@ -3646,7 +3727,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         {
             await TakePendingRebalanceCallback().ConfigureAwait(false);
             if (revoked.Length != 0)
-                await listener.OnPartitionsRevokedAsync(revoked, cancellationToken).ConfigureAwait(false);
+                await RevokeListenerPartitionsAsync(listener, revoked, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -3658,6 +3739,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
 
     private void RevokePartitionUnderLock(TopicPartition partition)
     {
+        PreserveDepartingOffsetUnderLock(partition);
         if (_pendingAutoCommitAdvancements is not null &&
             _pendingAutoCommitAdvancements.TryGetValue(partition, out var pending))
         {
