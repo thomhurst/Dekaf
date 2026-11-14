@@ -3795,8 +3795,11 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         if (_listenerAssignmentLost || !_listenerAssignment.Contains(partition))
             return;
 
-        // Mirror CommitAsync: with automatic offset storage, the commit proves the record in doubt.
-        if (_options.EnableAutoOffsetStore && _inDoubtNextOffset >= 0 && _inDoubtPartition.Equals(partition))
+        // Mirror CommitAsync: with automatic offset storage, the commit proves the batch progress
+        // or the record in doubt.
+        if (_options.EnableAutoOffsetStore && TryGetDepartingBatchCheckpointUnderLock(partition, out var batchOffset))
+            _departingOffsets[partition] = new TopicPartitionOffset(partition.Topic, partition.Partition, batchOffset);
+        else if (_options.EnableAutoOffsetStore && _inDoubtNextOffset >= 0 && _inDoubtPartition.Equals(partition))
             _departingOffsets[partition] = new TopicPartitionOffset(partition.Topic, partition.Partition, _inDoubtNextOffset);
         else if (_storedOffsets.TryGetValue(partition, out var stored))
             _departingOffsets[partition] = stored;

@@ -373,6 +373,30 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
         _ = AdvanceBatchUnderLock(unproven.Selection, unproven.NextOffset);
     }
 
+    /// <summary>
+    /// The enumerated batch progress an explicit commit would vouch for on a partition that is
+    /// being revoked, as <see cref="StageUnprovenBatchUnderLock"/> does. Skips the assignment
+    /// check because the caller is revoking the partition.
+    /// </summary>
+    private bool TryGetDepartingBatchCheckpointUnderLock(TopicPartition partition, out long nextOffset)
+    {
+        nextOffset = -1;
+        if (_unprovenBatch is not { } unproven ||
+            !unproven.Selection.Partition.Equals(partition) ||
+            !_positions.TryGetValue(partition, out var position) ||
+            position != unproven.Selection.Position ||
+            GetRepositionVersionUnderLock(partition) > unproven.Selection.RepositionSequence)
+        {
+            return false;
+        }
+
+        if (unproven.Batch is { } active)
+            return TryGetBatchCheckpoint(active, out nextOffset);
+
+        nextOffset = unproven.NextOffset;
+        return true;
+    }
+
     private static bool TryGetBatchCheckpoint(object batch, out long nextOffset)
     {
         TopicPartitionOffset checkpoint;

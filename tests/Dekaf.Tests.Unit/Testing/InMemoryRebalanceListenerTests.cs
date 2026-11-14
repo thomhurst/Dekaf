@@ -101,6 +101,33 @@ public sealed class InMemoryRebalanceListenerTests
     }
 
     [Test]
+    public async Task MemberJoining_ListenerCommitIncludesEnumeratedBatchProgress()
+    {
+        var cluster = CreateCluster(partitions: 2);
+        await ProduceAsync(cluster, 2, partition: 1);
+        var listener = new RecordingListener();
+        await using var first = CreateConsumer(cluster, "a", listener, OffsetCommitMode.Manual);
+        listener.OnRevoked = () => first.CommitAsync();
+        first.Subscribe("topic");
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await foreach (var batch in first.ConsumeBatchAsync(cancellation.Token))
+        {
+            foreach (var _ in batch)
+            {
+            }
+
+            break;
+        }
+
+        await using var second = CreateConsumer(cluster, "b", new RecordingListener());
+        second.Subscribe("topic");
+        await first.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0,topic-1", "revoked topic-1"], CollectionOrdering.Matching);
+        await Assert.That(cluster.GetCommittedOffset("group", Partition1)).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task Unsubscribe_RevokesBeforeLeavingSoTheListenerCanCommit()
     {
         var cluster = CreateCluster(partitions: 1);
