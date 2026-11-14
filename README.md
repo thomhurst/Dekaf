@@ -1,4 +1,4 @@
-# Dekaf - A .NET Kafka Client. Taking the Java out of Kafka.
+# Dekaf - A .NET Kafka Client. Taking the Java out of Kafka. 
 
 
 
