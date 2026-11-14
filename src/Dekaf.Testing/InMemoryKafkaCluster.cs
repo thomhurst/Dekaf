@@ -785,6 +785,46 @@ public sealed partial class InMemoryKafkaCluster
         }
     }
 
+    /// <summary>
+    /// Appends every record readable from <paramref name="offset"/> onward, in one pass under one
+    /// lock. Matches repeated <see cref="TryRead(TopicPartition, long, IsolationLevel, bool, out InMemoryRecord, out bool, out long)"/>
+    /// calls: hidden records are skipped and read-committed reads stop at the first unstable offset.
+    /// </summary>
+    internal void ReadRecordsFrom(
+        TopicPartition topicPartition,
+        long offset,
+        IsolationLevel isolationLevel,
+        bool borrowStoredRecords,
+        List<InMemoryRecord> destination)
+    {
+        lock (_gate)
+        {
+            if (!_topics.TryGetValue(topicPartition.Topic, out var topic) ||
+                (uint)topicPartition.Partition >= (uint)topic.Partitions.Count)
+            {
+                return;
+            }
+
+            var partition = topic.Partitions[topicPartition.Partition];
+            foreach (var candidate in partition.Records)
+            {
+                if (isolationLevel == IsolationLevel.ReadCommitted &&
+                    candidate.Offset >= partition.FirstUnstableOffset)
+                {
+                    return;
+                }
+
+                if (candidate.Offset < offset ||
+                    isolationLevel == IsolationLevel.ReadCommitted && !IsRecordVisibleUnderLock(candidate))
+                {
+                    continue;
+                }
+
+                destination.Add(borrowStoredRecords ? candidate : CloneRecord(candidate));
+            }
+        }
+    }
+
     private long GetReadEndOffsetUnderLock(
         TopicPartition topicPartition,
         IsolationLevel isolationLevel,

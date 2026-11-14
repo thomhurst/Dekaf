@@ -12,7 +12,7 @@ namespace Dekaf.Testing;
 /// <summary>
 /// In-memory <see cref="IKafkaConsumer{TKey,TValue}"/> backed by an <see cref="InMemoryKafkaCluster"/>.
 /// </summary>
-public sealed class InMemoryConsumer<TKey, TValue> :
+public sealed partial class InMemoryConsumer<TKey, TValue> :
     IKafkaConsumer<TKey, TValue>,
     IBoundedKafkaConsumer<TKey, TValue>,
     IConsumerPositions,
@@ -493,6 +493,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _assignment.Clear();
             _paused.Clear();
             _positions.Clear();
+            MarkAllRepositionedUnderLock();
             _assignmentOwnership = new Dictionary<TopicPartition, int>();
             _storedOffsets.Clear();
             _storedOffsetsVersion++;
@@ -841,28 +842,6 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         }
     }
 
-    public async IAsyncEnumerable<ConsumeBatch<TKey, TValue>> ConsumeBatchAsync(
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        await Task.CompletedTask.ConfigureAwait(false);
-        throw new NotSupportedException("In-memory consumer does not support batch fetch wrappers. Use ConsumeAsync or ConsumeOneAsync.");
-#pragma warning disable CS0162
-        yield break;
-#pragma warning restore CS0162
-    }
-
-    public async IAsyncEnumerable<ConsumeRawBatch> ConsumeRawBatchAsync(
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        await Task.CompletedTask.ConfigureAwait(false);
-        throw new NotSupportedException("In-memory consumer does not support raw batch fetch wrappers. Use InMemoryKafkaCluster.ReadRecords for raw records.");
-#pragma warning disable CS0162
-        yield break;
-#pragma warning restore CS0162
-    }
-
     public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
     {
         ArgumentNullException.ThrowIfNull(metric);
@@ -888,6 +867,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             _ = GetCurrentAssignmentUnderLock();
+            StageUnprovenBatchUnderLock();
             inDoubtRecord = _inDoubtNextOffset >= 0
                 ? new TopicPartitionOffset(
                     _inDoubtPartition.Topic,
@@ -1265,6 +1245,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             UnregisterConsumerGroupMemberUnderLock();
             _consumerStateVersion++;
             _disposed = true;
+            _unprovenBatch = null;
             _autoCommitAdvancementWaiterEntered?.TrySetResult();
             _autoCommitAdvancementWaiterEntered = null;
             if (_pendingAutoCommitAdvancements is not null)
@@ -1344,6 +1325,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _ = GetCurrentAssignmentUnderLock();
             var partition = new TopicPartition(offset.Topic, offset.Partition);
             DiscardInDoubtRecordUnderLock(partition);
+            MarkRepositionedUnderLock(partition);
             _positions[partition] = offset.Offset;
             if (_options.EnableAutoOffsetStore)
                 StoreOffsetUnderLock(partition, offset.Offset);
@@ -1363,6 +1345,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             {
                 var position = _cluster.GetWatermarks(partition, _options.IsolationLevel).Low;
                 DiscardInDoubtRecordUnderLock(partition);
+                MarkRepositionedUnderLock(partition);
                 _positions[partition] = position;
                 if (_options.EnableAutoOffsetStore)
                     StoreOffsetUnderLock(partition, position);
@@ -1383,6 +1366,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             {
                 var position = _cluster.GetWatermarks(partition, _options.IsolationLevel).High;
                 DiscardInDoubtRecordUnderLock(partition);
+                MarkRepositionedUnderLock(partition);
                 _positions[partition] = position;
                 if (_options.EnableAutoOffsetStore)
                     StoreOffsetUnderLock(partition, position);
@@ -1428,6 +1412,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _assignment.Clear();
             _paused.Clear();
             _positions.Clear();
+            MarkAllRepositionedUnderLock();
             _assignmentOwnership = new Dictionary<TopicPartition, int>();
             _storedOffsets.Clear();
             _storedOffsetsVersion++;
@@ -1461,6 +1446,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 var partition = new TopicPartition(offset.Topic, offset.Partition);
                 var position = offset.Offset >= 0 ? offset.Offset : GetStartOffset(partition);
                 DiscardInDoubtRecordUnderLock(partition);
+                MarkRepositionedUnderLock(partition);
                 _assignment.Add(partition);
                 _positions[partition] = position;
             }
@@ -1500,6 +1486,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 if (_storedOffsets.Remove(partition))
                     _storedOffsetsVersion++;
                 DiscardInDoubtRecordUnderLock(partition);
+                MarkRepositionedUnderLock(partition);
             }
 
             if (changed)
@@ -1939,7 +1926,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         out TopicPartition selectedPartition,
         out InMemoryRecord selectedRecord,
         out long selectedPosition,
-        out ConsumerSelectionVersion selectionVersion)
+        out ConsumerSelectionVersion selectionVersion,
+        TopicPartition? startAfter = null)
     {
         lock (_gate)
         {
@@ -1964,9 +1952,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             selectionVersion = new ConsumerSelectionVersion(
                 _consumerStateVersion,
                 consumerGroupGeneration);
+            // Batch selection starts after the last batch's partition, so a skipped batch does
+            // not block other partitions.
+            var startIndex = startAfter is { } previous ? Array.IndexOf(assignment, previous) + 1 : 0;
             for (var partitionIndex = 0; partitionIndex < assignment.Length; partitionIndex++)
             {
-                var partition = assignment[partitionIndex];
+                var partition = assignment[(startIndex + partitionIndex) % assignment.Length];
                 if (_paused.Contains(partition))
                     continue;
 
@@ -2457,6 +2448,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         _assignment.Clear();
         _paused.Clear();
         _positions.Clear();
+        MarkAllRepositionedUnderLock();
         _storedOffsets.Clear();
         _assignmentOwnership = new Dictionary<TopicPartition, int>();
         _storedOffsetsVersion++;
@@ -3533,6 +3525,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         if (_storedOffsets.Remove(partition))
             _storedOffsetsVersion++;
         DiscardInDoubtRecordUnderLock(partition);
+        MarkRepositionedUnderLock(partition);
         if (_retryInDoubtPartition.Equals(partition))
             _retryInDoubtNextOffset = -1;
     }

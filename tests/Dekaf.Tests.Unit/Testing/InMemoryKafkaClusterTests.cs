@@ -809,26 +809,49 @@ public sealed class InMemoryKafkaClusterTests
     {
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic("orders", partitionCount: 1);
+        await using (var producer = new InMemoryProducer<string, string>(cluster))
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = "orders", Key = "key", Value = "order-1"
+            });
+        }
+
         var consumer = new InMemoryConsumer<string, string>(
             cluster,
-            new InMemoryConsumerOptions { GroupId = "" });
+            new InMemoryConsumerOptions { GroupId = "", AutoOffsetReset = AutoOffsetReset.Earliest });
         consumer.Subscribe("orders");
 
-        // An empty GroupId means no group to auto-commit through, so the commit-mode
-        // guard must not fire. The run then fails on the in-memory consumer's missing
-        // batch-fetch support — proof execution got past the guard (a guard regression
-        // would surface InvalidOperationException here instead). The processor drains
-        // its stream rather than returning immediately so the lane exits cleanly and
-        // cannot fault first with its own InvalidOperationException.
-        await Assert.That(async () => await consumer.RunPartitionedAsync(
-                static async (context, token) =>
+        // An empty GroupId means no group to auto-commit through, so the commit-mode guard
+        // must not fire (a guard regression would surface InvalidOperationException here).
+        // The guard throws before any record is processed, so processing one proves the run
+        // got past it. Stopping then fails on its group-less commit (#4152); tolerate only that.
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        string? processed = null;
+        try
+        {
+            await consumer.RunPartitionedAsync(
+                async (context, token) =>
                 {
                     await foreach (var message in context.Messages.WithCancellation(token))
+                    {
+                        processed = message.Value;
                         context.MarkProcessed(message);
+                        await stop.CancelAsync();
+                    }
                 },
                 new PartitionedProcessingOptions(),
-                CancellationToken.None))
-            .Throws<NotSupportedException>();
+                stop.Token);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (InvalidOperationException ex) when (ex.Message.StartsWith(
+                       "Offset commits require a consumer group", StringComparison.Ordinal))
+        {
+        }
+
+        await Assert.That(processed).IsEqualTo("order-1");
     }
 
     [Test]
