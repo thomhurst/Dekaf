@@ -13,9 +13,10 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Dekaf.Streams;
 
-internal sealed partial class StreamsGroupMember : IStreamsGroupMember
+internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreamsGroupOffsetCommitter
 {
     private const int CommandCapacity = 64;
+    private const int MaxOffsetCommitAttempts = 8;
 
     private static readonly StreamsGroupAssignment EmptyAssignment = new()
     {
@@ -60,6 +61,7 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember
     private int _heartbeatsSuspendedForTesting;
     private int _coordinatorId = -1;
     private int _memberEpoch;
+    private int _membershipGeneration;
     private int _heartbeatIntervalMs = 5_000;
     private bool _ambiguousMembership;
     private bool _requestWriteStarted;
@@ -178,6 +180,116 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember
     {
         ArgumentNullException.ThrowIfNull(report);
         return QueueOperationAsync(MemberCommand.ReportOffsets(report), cancellationToken);
+    }
+
+    // Runs on the caller, not the worker: it reads the published snapshot and leases its own connection,
+    // so a commit never waits behind a heartbeat and a heartbeat never waits behind a commit.
+    public async ValueTask CommitOffsetsAsync(
+        IEnumerable<TopicPartitionOffset> offsets,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(offsets);
+        ThrowIfClosed();
+        ThrowIfNotInitialized();
+
+        var partitionsByTopic = new Dictionary<string, List<OffsetCommitRequestPartition>>(StringComparer.Ordinal);
+        foreach (var offset in offsets)
+        {
+            if (!partitionsByTopic.TryGetValue(offset.Topic, out var partitions))
+                partitionsByTopic.Add(offset.Topic, partitions = []);
+
+            partitions.Add(new OffsetCommitRequestPartition
+            {
+                PartitionIndex = offset.Partition,
+                CommittedOffset = offset.Offset,
+                CommittedLeaderEpoch = offset.LeaderEpoch,
+                CommittedMetadata = offset.Metadata
+            });
+        }
+
+        if (partitionsByTopic.Count == 0)
+            return;
+
+        var topics = new List<OffsetCommitRequestTopic>(partitionsByTopic.Count);
+        foreach (var entry in partitionsByTopic)
+            topics.Add(new OffsetCommitRequestTopic { Name = entry.Key, Partitions = entry.Value });
+
+        var coordinatorId = Volatile.Read(ref _coordinatorId);
+        for (var attempt = 1; ; attempt++)
+        {
+            var snapshot = _snapshot;
+            if (!snapshot.IsJoined || snapshot.MemberId is null)
+            {
+                throw new GroupException(
+                    ErrorCode.UnknownMemberId,
+                    "Offsets cannot be committed because the Streams group member is not joined.")
+                { GroupId = GroupId };
+            }
+
+            ErrorCode error;
+            try
+            {
+                if (coordinatorId < 0)
+                    coordinatorId = await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+
+                OffsetCommitResponse response;
+                using (var lease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken)
+                           .ConfigureAwait(false))
+                {
+                    // Versions below TopicIdVersion address topics by name, which needs no topic-id lookup.
+                    var version = _metadataManager.GetNegotiatedApiVersion(
+                        lease.Connection,
+                        ApiKey.OffsetCommit,
+                        OffsetCommitRequest.LowestSupportedVersion,
+                        (short)(OffsetCommitRequest.TopicIdVersion - 1));
+                    response = await lease.Connection
+                        .SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                            new OffsetCommitRequest
+                            {
+                                GroupId = GroupId,
+                                GenerationIdOrMemberEpoch = snapshot.MemberEpoch,
+                                MemberId = snapshot.MemberId,
+                                GroupInstanceId = _options.InstanceId,
+                                Topics = topics
+                            },
+                            version,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
+                error = ErrorCode.None;
+                foreach (var topic in response.Topics)
+                {
+                    foreach (var partition in topic.Partitions)
+                    {
+                        if (partition.ErrorCode != ErrorCode.None)
+                            error = partition.ErrorCode;
+                    }
+                }
+
+                if (error == ErrorCode.None)
+                    return;
+            }
+            catch (Exception exception) when (
+                attempt < MaxOffsetCommitAttempts && IsRetriableConnectionFailure(exception))
+            {
+                error = ErrorCode.CoordinatorNotAvailable;
+            }
+
+            if (error is ErrorCode.NotCoordinator or ErrorCode.CoordinatorNotAvailable)
+                coordinatorId = -1;
+
+            // A stale or fenced epoch means the assignment changed: the caller must not retry these offsets.
+            var retriable = error.IsRetriable()
+                && error is not (ErrorCode.StaleMemberEpoch or ErrorCode.FencedMemberEpoch or ErrorCode.UnknownMemberId);
+            if (!retriable || attempt >= MaxOffsetCommitAttempts)
+            {
+                throw new GroupException(error, $"Committing offsets for Streams group '{GroupId}' failed: {error}.")
+                { GroupId = GroupId };
+            }
+
+            await DelayForRetryAsync(attempt, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     public ValueTask CloseAsync(CancellationToken cancellationToken = default) =>
@@ -801,6 +913,7 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember
             var current = _snapshot;
             _snapshot = new StreamsGroupMemberSnapshot
             {
+                MembershipGeneration = _membershipGeneration,
                 IsJoined = retainMembership && current.IsJoined,
                 IsClosed = true,
                 MemberId = retainMembership ? current.MemberId : null,
@@ -1011,6 +1124,8 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember
 
     private void ResetTaskAssignment(bool markUnjoined)
     {
+        // Every path here ends the membership the tasks were held under: fencing, expiry or a failed rejoin.
+        _membershipGeneration++;
         _activeTasks = [];
         _standbyTasks = [];
         _warmupTasks = [];
@@ -1018,6 +1133,7 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember
         var current = _snapshot;
         _snapshot = new StreamsGroupMemberSnapshot
         {
+            MembershipGeneration = _membershipGeneration,
             IsJoined = !markUnjoined && current.IsJoined,
             MemberId = current.MemberId,
             MemberEpoch = markUnjoined ? 0 : current.MemberEpoch,
@@ -1226,6 +1342,7 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember
         {
             _snapshot = new StreamsGroupMemberSnapshot
             {
+                MembershipGeneration = _membershipGeneration,
                 IsJoined = response.MemberEpoch > 0,
                 MemberId = _memberId,
                 MemberEpoch = response.MemberEpoch,

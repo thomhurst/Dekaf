@@ -40,6 +40,50 @@ public interface IStreamsGroupMember : IInitializableKafkaClient, IAsyncDisposab
         CancellationToken cancellationToken = default);
 }
 
+/// <summary>
+/// Commits consumed offsets under a Streams group member's identity. Members created by
+/// <c>KafkaClient.CreateStreamsGroupMember</c> implement it; call it through
+/// <see cref="StreamsGroupMemberExtensions.CommitOffsetsAsync"/>.
+/// </summary>
+public interface IStreamsGroupOffsetCommitter
+{
+    /// <summary>
+    /// Commits consumed offsets for the group under this member's ID and current member epoch.
+    /// </summary>
+    /// <remarks>
+    /// Use this for offsets of partitions that belong to the member's assigned tasks when processing is
+    /// not transactional. Transactional processing commits through
+    /// <c>ITransaction.SendOffsetsToTransactionAsync</c> with a <c>ConsumerGroupMetadata</c> built from
+    /// <see cref="IStreamsGroupMember.Snapshot"/> instead. A member that is not joined, or whose epoch the coordinator no
+    /// longer accepts, gets a <see cref="Dekaf.Errors.GroupException"/>; coordinator moves and transport
+    /// failures are retried.
+    /// </remarks>
+    ValueTask CommitOffsetsAsync(
+        IEnumerable<TopicPartitionOffset> offsets,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>Operations on <see cref="IStreamsGroupMember"/> that were added after the interface shipped.</summary>
+public static class StreamsGroupMemberExtensions
+{
+    /// <summary>
+    /// Commits consumed offsets for the group under the member's ID and current member epoch.
+    /// See <see cref="IStreamsGroupOffsetCommitter.CommitOffsetsAsync"/>.
+    /// </summary>
+    /// <exception cref="NotSupportedException">The member implementation cannot commit offsets.</exception>
+    public static ValueTask CommitOffsetsAsync(
+        this IStreamsGroupMember member,
+        IEnumerable<TopicPartitionOffset> offsets,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(member);
+        return member is IStreamsGroupOffsetCommitter committer
+            ? committer.CommitOffsetsAsync(offsets, cancellationToken)
+            : throw new NotSupportedException(
+                $"{member.GetType().Name} does not implement {nameof(IStreamsGroupOffsetCommitter)}.");
+    }
+}
+
 /// <summary>Configuration shared by all heartbeats from one Streams group member.</summary>
 public sealed class StreamsGroupMemberOptions
 {
@@ -181,6 +225,17 @@ public sealed class StreamsGroupMemberSnapshot
 
     /// <summary>Gets the current member epoch.</summary>
     public int MemberEpoch { get; init; }
+
+    /// <summary>
+    /// Gets a counter that increases each time the member loses its membership: it was fenced, its
+    /// session expired, or a rejoin failed.
+    /// </summary>
+    /// <remarks>
+    /// The member rejoins on its own after fencing, with an empty assignment and a valid new epoch, so
+    /// neither tells a caller that tasks were lost rather than revoked. Tasks held under an earlier
+    /// generation belong to other members now: discard their uncommitted work instead of committing it.
+    /// </remarks>
+    public int MembershipGeneration { get; init; }
 
     /// <summary>Gets the current assignment.</summary>
     public required StreamsGroupAssignment Assignment { get; init; }

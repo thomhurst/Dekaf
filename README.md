@@ -37,7 +37,7 @@ assets and tested runtimes are separate:
 | Packages | Target frameworks shipped in NuGet |
 | --- | --- |
 | `Dekaf`, `Dekaf.Abstractions` | `net11.0`, `net10.0`, `netstandard2.0` |
-| `Dekaf.Compression.*`, `Dekaf.Serialization.*`, `Dekaf.SchemaRegistry` and its extensions, `Dekaf.Extensions.*`, `Dekaf.OpenTelemetry`, `Dekaf.Outbox` and its EF Core and DynamoDB extensions, `Dekaf.Testing`, `Dekaf.Aspire`, `Dekaf.Aspire.SchemaRegistry`, `Dekaf.Aspire.Hosting` | `net10.0`, `net11.0` |
+| `Dekaf.Compression.*`, `Dekaf.Serialization.*`, `Dekaf.SchemaRegistry` and its extensions, `Dekaf.Extensions.*`, `Dekaf.OpenTelemetry`, `Dekaf.Outbox` and its EF Core and DynamoDB extensions, `Dekaf.Testing`, `Dekaf.Streams` and its storage, hosting and testing packages, `Dekaf.Aspire`, `Dekaf.Aspire.SchemaRegistry`, `Dekaf.Aspire.Hosting` | `net10.0`, `net11.0` |
 
 - **Tested runtimes:** CI runs unit tests on .NET 10 and .NET 11. PR Kafka integration
   tests and GSSAPI package round trips run on both runtimes; the NuGet release gate tests both runtimes against Kafka
@@ -407,6 +407,40 @@ services.AddDekaf(dekaf =>
 ```
 
 Global interceptors execute before per-instance interceptors, in registration order. They are constructed via `ActivatorUtilities`, so their dependencies are resolved from the DI container.
+
+## Stream Processing
+
+`Dekaf.Streams` runs stateful topologies on Kafka 4.4+ as a streams group member: a typed DSL, changelog-backed state, windows, stream-table joins and exactly-once processing by default.
+
+```bash
+dotnet add package Dekaf.Streams
+```
+
+```csharp
+using Dekaf.Serialization;
+using Dekaf.Streams;
+
+var topology = new StreamsBuilder("word-count");
+topology.Stream("sentences", Serializers.String, Serializers.String)
+    .SelectMany<string>(static (key, sentence, words) =>
+    {
+        foreach (var word in sentence.Split(' '))
+        {
+            words.Add(word);
+        }
+    })
+    .GroupBy(static (key, word) => word, Serializers.String, Serializers.String)
+    .Count("counts")
+    .ToStream()
+    .ToTopic("word-counts", Serializers.String, Serializers.Int64);
+
+await KafkaStreams.Create(topology.Build())
+    .WithBootstrapServers("localhost:9092")
+    .Build()
+    .RunAsync(cancellationToken);
+```
+
+Persistent state (`Dekaf.Streams.Storage.ZoneTree`), generic host integration (`Dekaf.Streams.Extensions.Hosting`) and a broker-free test driver (`Dekaf.Streams.Testing`) are separate packages. See the [stream processing docs](https://dekaf.tomlonghurst.dev/docs/streams).
 
 ## Hosted Consumer Services
 

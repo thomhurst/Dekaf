@@ -88,6 +88,15 @@ const sidebars = {
     },
     {
       type: 'category',
+      label: 'Stream Processing',
+      items: [
+        'streams/index',
+        'streams/operators',
+        'streams/testing',
+      ],
+    },
+    {
+      type: 'category',
       label: 'Operations & Administration',
       items: [
         'admin/cluster-discovery',

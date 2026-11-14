@@ -3,7 +3,7 @@
 **Issue:** #3475
 **Date:** 2026-11-14
 **Supersedes:** the deferred RFC from #2562 and its scoping companion (#2768), both removed from the published docs in 63b2ae7ea.
-**Client prerequisites:** #4142, #4143, #4144
+**Related client issues:** #4142, #4143, #4144
 
 ## Overview
 
@@ -94,7 +94,7 @@ A task is one (subtopology, partition) pair and is the unit of ownership.
 
 - **Single writer.** One lane executes a task. Parallelism comes from tasks, never from concurrent access to a store.
 - **Hot path.** A record is deserialized once at the source, flows through sealed nodes as a typed value, and is serialized once at a sink or store. Operators call the next node directly; there is no per-record allocation in the library's own code. Deserializing a reference type allocates whatever the user's serde allocates.
-- **Stores.** `IKeyValueBytesStore` and `IWindowBytesStore` are span-based. Typed wrappers serialize into a reused buffer and report each write to the task's changelog writer. `IStateStoreEngine` creates them, so an engine only implements bytes in, bytes out. These contracts stay internal until the host lets an application choose an engine.
+- **Stores.** `IKeyValueBytesStore` and `IWindowBytesStore` are span-based. Typed wrappers serialize into a reused buffer and report each write to the task's changelog writer. `IStateStoreEngine` creates them, so an engine only implements bytes in, bytes out.
 - **Time.** Event time is the record timestamp. A windowed operator tracks the highest timestamp it has seen; a record whose window closed before that (window end plus grace) is dropped and counted.
 - **Windows.** Tumbling and hopping. Without `EmitOnClose` every update is forwarded; with it, a window is forwarded once when it closes. Closed windows are removed from the store.
 - **Window key format.** Serialized key followed by the window start as a big-endian 64-bit integer, the same as Java's time-windowed serde.
@@ -102,9 +102,9 @@ A task is one (subtopology, partition) pair and is the unit of ownership.
 The broker-facing host builds on that engine:
 
 1. Join with `IStreamsGroupMember`, sending the compiled topology.
-2. On assignment (#4142), create the task, restore each store from its changelog with a bounded read (`ConsumeSnapshotAsync`, read-committed), then start the lane.
-3. Feed the lane with `ConsumeBatchAsync` from a manually assigned consumer.
-4. Commit on an interval. Under exactly-once, one transactional producer per worker carries outputs, changelog records and input offsets (#4143) in one transaction. Store writes are buffered during the transaction and published with the changelog offset after it commits; an abort discards them. A crash between the two is repaired from the changelog.
+2. On assignment, create the task, restore each store from its changelog with a bounded read (`ConsumeSnapshotAsync`, read-committed), then start the lane.
+3. Feed the lane with `ConsumeRawBatchAsync` from a manually assigned consumer.
+4. Commit on an interval. Under exactly-once, one transactional producer per worker carries outputs, changelog records and input offsets in one transaction, with the member's id and epoch on the offset commit so a fenced member cannot commit. An abort discards the tasks' local state, which is then rebuilt from the changelog.
 5. On revocation, stop input, commit, close stores, then acknowledge.
 
 Later additions on the same model: stream-stream and foreign-key joins, session and sliding windows, standby tasks, versioned stores, punctuation, async per-key processing, read-only store queries with the endpoint map the coordinator already returns, and a `Dekaf.Streams` meter and activity source.
@@ -112,9 +112,10 @@ Later additions on the same model: stream-stream and foreign-key joins, session 
 ## Packages
 
 ```text
-Dekaf.Streams          DSL, topology compiler, task engine, in-memory stores, host
-Dekaf.Streams.Testing  TopologyTestDriver
-Dekaf.Streams.Storage.*  persistent engines (later)
+Dekaf.Streams                     DSL, topology compiler, task engine, in-memory stores, host
+Dekaf.Streams.Storage.ZoneTree    persistent state engine
+Dekaf.Streams.Extensions.Hosting  generic host integration
+Dekaf.Streams.Testing             TopologyTestDriver
         |
         v
       Dekaf            client, protocol, transactions (public API only)
@@ -123,16 +124,30 @@ Dekaf.Streams.Storage.*  persistent engines (later)
 ## Testing
 
 - `TopologyTestDriver` runs a topology in memory with one partition per topic: pipe typed records in with explicit timestamps, read typed output, inspect stores. Records sent to a repartition topic are fed to the downstream subtopology at once. It runs the same task engine as the host.
-- The host is tested with `Dekaf.Testing` once #4144 lands, and against Kafka 4.4 in the integration suite, with crash injection at each step of the commit sequence.
+- The host is tested against Kafka 4.4 in the integration suite: both guarantees, restart and restore, persistent state, rebalancing between instances and threads, a fenced member, a failing record, deletes, and a changed topology.
 
 ## Performance
 
 Per record, on the library's own path: one deserialize at the source, one virtual call per operator, one serialize per sink or store write, and one dictionary operation per store access. Nothing is allocated per record by the library; the in-memory store allocates when a key is first written or a value changes length. `StreamsTopologyBenchmarks` measures a stateless pipeline and a keyed count.
 
-## Phases
+## Status
 
-1. **Foundation:** DSL, topology compiler, task engine, in-memory stores, tumbling and hopping windows, stream-table join, processor API, error handler, test driver, benchmark.
-2. **Client prerequisites:** #4142 (assignment notification), #4143 (offset commit as a streams member), #4144 (`Dekaf.Testing` batch consume, rebalance callbacks, streams assignor).
-3. **Host:** group membership, restore, exactly-once commit loop, dependency injection and hosting, crash and rebalance tests on Kafka 4.4, Native AOT smoke test.
-4. **Persistent store engine:** ZoneTree prototype measured against RocksDB.
-5. **Later operators and features** as listed under Runtime.
+Built in #4145:
+
+- **Foundation:** DSL, topology compiler, task engine, in-memory stores, tumbling and hopping windows, stream-table join, processor API, error handler, test driver, benchmark.
+- **Client:** `CommitOffsetsAsync` on streams members (`IStreamsGroupOffsetCommitter`) for non-transactional commits (#4143) and `StreamsGroupMemberSnapshot.MembershipGeneration`, which tells lost tasks from revoked ones.
+- **Host:** `KafkaStreams`: group membership, restore, the commit loop for both guarantees, abort recovery, fencing, repartition purging, threads, metrics.
+- **Persistent state:** `Dekaf.Streams.Storage.ZoneTree`, with task directories, locks and checkpoints in `Dekaf.Streams`.
+- **Hosting:** `Dekaf.Streams.Extensions.Hosting`.
+
+How the host differs from the plan above:
+
+- The host polls `IStreamsGroupMember.Snapshot` once per loop instead of waiting for #4142. The snapshot is replaced only when it changes, so the check is one reference comparison.
+- Local store writes are applied as records are processed, not buffered until commit. An aborted commit discards the task's local state and rebuilds it from the changelog. Persistent state is checkpointed on clean close only; a crash leaves no checkpoint and the state is rebuilt in full.
+- One `ProducerMessage` is allocated per record written to Kafka, because the producer has no allocation-free send that takes a partition and a timestamp.
+
+Open:
+
+- #4142: a push notification for assignment changes would remove the polling latency of up to one poll interval.
+- #4144: `Dekaf.Testing` support for testing a host without a broker.
+- Later operators and features as listed under Runtime, and a measured comparison of ZoneTree against RocksDB.

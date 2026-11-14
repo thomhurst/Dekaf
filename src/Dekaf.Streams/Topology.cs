@@ -13,6 +13,7 @@ public sealed class Topology
     private readonly List<GraphNode> _nodes;
     private readonly List<List<string>> _copartitionGroups = [];
     private readonly Dictionary<string, int> _subtopologyBySourceTopic = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _repartitionTopics = new(StringComparer.Ordinal);
 
     internal Topology(string applicationId, List<GraphNode> nodes, Func<ProcessingError, ErrorResponse>? errorHandler)
     {
@@ -32,6 +33,10 @@ public sealed class Topology
                 if (node.SourceTopic is { } topic)
                 {
                     _subtopologyBySourceTopic.Add(topic, i);
+                    if (node.IsRepartition)
+                    {
+                        _repartitionTopics.Add(topic);
+                    }
                 }
             }
         }
@@ -49,6 +54,9 @@ public sealed class Topology
     internal Func<ProcessingError, ErrorResponse>? ErrorHandler { get; }
 
     internal IReadOnlyList<IReadOnlyList<GraphNode>> NodesBySubtopology { get; }
+
+    /// <summary>Whether <paramref name="topic"/> is an internal repartition topic of this topology.</summary>
+    internal bool IsRepartitionTopic(string topic) => _repartitionTopics.Contains(topic);
 
     /// <summary>Returns the index of the subtopology that reads <paramref name="topic"/>, or -1.</summary>
     internal int SubtopologyOfSourceTopic(string topic) => _subtopologyBySourceTopic.GetValueOrDefault(topic, -1);

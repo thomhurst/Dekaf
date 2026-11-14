@@ -5,7 +5,7 @@ namespace Dekaf.Testing;
 /// <summary>
 /// Deterministic in-memory implementation of <see cref="IStreamsGroupMember"/> for application tests.
 /// </summary>
-public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember
+public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGroupOffsetCommitter
 {
     private static readonly StreamsGroupAssignment EmptyAssignment = new()
     {
@@ -25,6 +25,7 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember
     private StreamsGroupMemberUpdate? _lastUpdate;
     private StreamsGroupTaskOffsetReport? _lastTaskOffsetReport;
     private StreamsGroupCloseOptions? _lastCloseOptions;
+    private readonly Dictionary<TopicPartition, long> _committedOffsets = [];
     private bool _initialized;
 
     public InMemoryStreamsGroupMember(StreamsGroupMemberOptions options)
@@ -50,6 +51,37 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember
 
     /// <inheritdoc />
     public StreamsGroupMemberSnapshot Snapshot => Volatile.Read(ref _snapshot);
+
+    /// <summary>Gets the offsets most recently committed through <see cref="CommitOffsetsAsync"/>.</summary>
+    public IReadOnlyDictionary<TopicPartition, long> CommittedOffsets
+    {
+        get
+        {
+            lock (_gate)
+                return new Dictionary<TopicPartition, long>(_committedOffsets);
+        }
+    }
+
+    /// <inheritdoc />
+    public ValueTask CommitOffsetsAsync(
+        IEnumerable<TopicPartitionOffset> offsets,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(offsets);
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            if (!_snapshot.IsJoined)
+                throw new Dekaf.Errors.GroupException(
+                    Dekaf.Protocol.ErrorCode.UnknownMemberId,
+                    "Offsets cannot be committed because the Streams group member is not joined.");
+
+            foreach (var offset in offsets)
+                _committedOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
+        }
+
+        return default;
+    }
 
     /// <summary>Gets the latest state update supplied by the test.</summary>
     public StreamsGroupMemberUpdate? LastUpdate

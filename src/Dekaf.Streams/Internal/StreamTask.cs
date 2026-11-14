@@ -66,7 +66,7 @@ internal sealed class TaskContext(string applicationId, string subtopologyId, in
 }
 
 /// <summary>Builds the runtime nodes and stores of one task from the topology graph.</summary>
-internal sealed class TaskBuilder(TaskContext context, IStateStoreEngine engine)
+internal sealed class TaskBuilder(TaskContext context, IStateStoreEngine engine, string? stateDirectory)
 {
     private readonly Dictionary<GraphNode, object> _built = [];
 
@@ -132,7 +132,12 @@ internal sealed class TaskBuilder(TaskContext context, IStateStoreEngine engine)
     }
 
     private StateStoreContext StoreContext(string name) =>
-        new(Context.ApplicationId, name, Context.SubtopologyId, Context.Partition);
+        new(
+            Context.ApplicationId,
+            name,
+            Context.SubtopologyId,
+            Context.Partition,
+            stateDirectory is null ? null : Path.Combine(stateDirectory, name));
 
     private void Register(string name, IRestorableStore store, IDisposable bytes, string? restoreTopic)
     {
@@ -162,13 +167,14 @@ internal sealed class StreamTask : IDisposable
         int subtopology,
         int partition,
         IRecordCollector collector,
-        IStateStoreEngine? engine = null)
+        IStateStoreEngine? engine = null,
+        string? stateDirectory = null)
     {
         var description = topology.Subtopologies[subtopology];
         _context = new TaskContext(topology.ApplicationId, description.Id, partition, collector);
         _errorHandler = topology.ErrorHandler;
 
-        var builder = new TaskBuilder(_context, engine ?? InMemoryStateStoreEngine.Instance);
+        var builder = new TaskBuilder(_context, engine ?? InMemoryStateStoreEngine.Instance, stateDirectory);
         var nodes = topology.NodesBySubtopology[subtopology];
 
         // Stores first: a join reads the store of a table node that may be built after it.
@@ -191,6 +197,12 @@ internal sealed class StreamTask : IDisposable
     }
 
     public long DroppedRecords => _context.DroppedRecords;
+
+    /// <summary>The topics this task consumes: source topics and internal repartition topics.</summary>
+    public IReadOnlyCollection<string> SourceTopics => _sources.Keys;
+
+    /// <summary>The topics this task's stores are rebuilt from.</summary>
+    public IReadOnlyCollection<string> RestoreTopics => _restoreTargets.Keys;
 
     public void Process(string topic, in RawRecord record)
     {

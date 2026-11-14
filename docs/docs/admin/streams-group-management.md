@@ -228,3 +228,35 @@ coordinator.
 
 [kip1331]: https://cwiki.apache.org/confluence/spaces/KAFKA/pages/421957212/KIP-1331+Streams+Group+Topology+Description+Plugin
 [kip1357]: https://cwiki.apache.org/confluence/spaces/KAFKA/pages/430408758/KIP-1357+Add+broker+side+custom+assignors+for+streams+groups
+
+## Committing offsets as a member
+
+`Dekaf.Streams` is a complete runtime on top of streams membership; see [Stream processing](../streams/index.md). If you build your own, `IStreamsGroupMember` gives you the two things a runtime needs to commit safely.
+
+Non-transactional processing commits with the member's own identity:
+
+```csharp
+Dekaf.Streams.IStreamsGroupMember member = null!;
+
+await member.CommitOffsetsAsync([new TopicPartitionOffset("orders", 0, 42)]);
+```
+
+Transactional processing sends the offsets to the transaction with the member's id and epoch, so the coordinator rejects a commit from a member whose epoch is no longer current:
+
+```csharp
+Dekaf.Streams.IStreamsGroupMember member = null!;
+ITransaction<string, string> transaction = null!;
+
+var snapshot = member.Snapshot;
+await transaction.SendOffsetsToTransactionAsync(
+    [new TopicPartitionOffset("orders", 0, 42)],
+    new ConsumerGroupMetadata
+    {
+        GroupId = member.GroupId,
+        GenerationId = snapshot.MemberEpoch,
+        MemberId = snapshot.MemberId!,
+        GroupInstanceId = member.InstanceId
+    });
+```
+
+A fenced member rejoins by itself with an empty assignment and a new, valid epoch. That looks the same as having every task revoked, but the tasks may already run on another member, so their uncommitted work must be discarded rather than committed. `StreamsGroupMemberSnapshot.MembershipGeneration` increases each time the membership is lost: remember its value when you take ownership of tasks, and compare it before every commit.

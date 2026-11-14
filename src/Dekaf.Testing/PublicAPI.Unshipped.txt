@@ -159,3 +159,5 @@ Dekaf.Testing.InMemoryShareConsumerOptions.AutoOffsetReset.get -> Dekaf.Consumer
 Dekaf.Testing.InMemoryShareConsumerOptions.AutoOffsetReset.init -> void
 Dekaf.Testing.InMemoryShareConsumerOptions.AutoOffsetResetDuration.get -> System.TimeSpan?
 Dekaf.Testing.InMemoryShareConsumerOptions.AutoOffsetResetDuration.init -> void
+Dekaf.Testing.InMemoryStreamsGroupMember.CommitOffsetsAsync(System.Collections.Generic.IEnumerable<Dekaf.TopicPartitionOffset>! offsets, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryStreamsGroupMember.CommittedOffsets.get -> System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, long>!

@@ -31,13 +31,22 @@ public interface IKeyValueStore<TKey, TValue> : IReadOnlyKeyValueStore<TKey, TVa
 /// <param name="StoreName">The store name.</param>
 /// <param name="SubtopologyId">The subtopology of the owning task.</param>
 /// <param name="Partition">The partition of the owning task.</param>
-internal readonly record struct StateStoreContext(string ApplicationId, string StoreName, string SubtopologyId, int Partition);
+/// <param name="Directory">
+/// The directory reserved for this store, or <see langword="null"/> for in-memory state. The runtime
+/// empties it before the store is created unless the previous owner closed the store cleanly.
+/// </param>
+public readonly record struct StateStoreContext(
+    string ApplicationId,
+    string StoreName,
+    string SubtopologyId,
+    int Partition,
+    string? Directory);
 
 /// <summary>
-/// Creates the byte stores of a task. This is the seam for persistent storage engines; it becomes public
-/// together with the host that lets an application choose one.
+/// Creates the byte stores of a task. Implement this to plug in a storage engine, and select it with
+/// <see cref="KafkaStreamsBuilder.WithPersistentState"/>.
 /// </summary>
-internal interface IStateStoreEngine
+public interface IStateStoreEngine
 {
     /// <summary>Creates a key-value store.</summary>
     IKeyValueBytesStore CreateKeyValueStore(StateStoreContext context);
@@ -47,7 +56,7 @@ internal interface IStateStoreEngine
 }
 
 /// <summary>A key-value store of serialized keys and values, used by one thread at a time.</summary>
-internal interface IKeyValueBytesStore : IDisposable
+public interface IKeyValueBytesStore : IDisposable
 {
     /// <summary>Gets the number of keys in the store.</summary>
     long Count { get; }
@@ -64,7 +73,7 @@ internal interface IKeyValueBytesStore : IDisposable
 }
 
 /// <summary>A store of serialized values per key and window start, used by one thread at a time.</summary>
-internal interface IWindowBytesStore : IDisposable
+public interface IWindowBytesStore : IDisposable
 {
     /// <summary>Gets the number of entries in the store.</summary>
     long Count { get; }
@@ -87,7 +96,7 @@ internal interface IWindowBytesStore : IDisposable
 }
 
 /// <summary>Receives the entries removed by <see cref="IWindowBytesStore.RemoveThrough"/>.</summary>
-internal interface IWindowEntryVisitor
+public interface IWindowEntryVisitor
 {
     /// <summary>Visits one entry. The memory is valid only during the call.</summary>
     void Visit(ReadOnlyMemory<byte> key, long windowStart, ReadOnlyMemory<byte> value);

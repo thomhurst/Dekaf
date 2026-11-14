@@ -305,4 +305,28 @@ public sealed class InMemoryStreamsGroupMemberTests
             }
         ]
     };
+
+    [Test]
+    public async Task CommitOffsetsAsync_RecordsOffsetsOnlyWhileJoined()
+    {
+        await using var member = new InMemoryStreamsGroupMember(new StreamsGroupMemberOptions { GroupId = "streams-group" });
+        await member.InitializeAsync();
+        await Assert.That(async () => await member.CommitOffsetsAsync([new TopicPartitionOffset("orders", 0, 1)]))
+            .Throws<Dekaf.Errors.GroupException>();
+
+        await member.JoinAsync(new StreamsGroupMemberUpdate
+        {
+            Topology = new StreamsGroupTopology { Subtopologies = [] },
+            ActiveTasks = [],
+            StandbyTasks = [],
+            WarmupTasks = [],
+            ProcessId = "process",
+            ClientTags = []
+        });
+        await member.CommitOffsetsAsync([new TopicPartitionOffset("orders", 0, 5), new TopicPartitionOffset("orders", 1, 9)]);
+        await member.CommitOffsetsAsync([new TopicPartitionOffset("orders", 0, 6)]);
+
+        await Assert.That(member.CommittedOffsets[new TopicPartition("orders", 0)]).IsEqualTo(6);
+        await Assert.That(member.CommittedOffsets[new TopicPartition("orders", 1)]).IsEqualTo(9);
+    }
 }

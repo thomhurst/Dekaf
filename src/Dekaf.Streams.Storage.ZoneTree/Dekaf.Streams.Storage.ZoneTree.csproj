@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.Streams.Storage.ZoneTree</PackageId>
+    <Description>Persistent state stores for Dekaf.Streams, backed by the managed ZoneTree LSM engine</Description>
+    <PackageTags>kafka;streams;state-store;zonetree</PackageTags>
+    <!-- New package: no previously published baseline exists yet. -->
+    <PackageValidationBaselineVersion></PackageValidationBaselineVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dekaf.Streams\Dekaf.Streams.csproj" />
+    <PackageReference Include="ZoneTree" />
+    <InternalsVisibleTo Include="Dekaf.Tests.Unit" />
+  </ItemGroup>
+
+</Project>
