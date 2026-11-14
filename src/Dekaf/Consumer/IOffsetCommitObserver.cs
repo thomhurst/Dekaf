@@ -64,6 +64,7 @@ public readonly struct OffsetCommitObservation(
     /// The count comes from completion tracking, not from subtracting offsets, so compacted offsets,
     /// transaction markers and other log gaps add nothing. Progress past gaps alone reports zero.
     /// A seek commit of a position other than the completed frontier also reports zero.
+    /// Commits the consumer sends itself (<c>ConsumerBuilder.WithCommitObserver</c>) always report zero.
     /// </remarks>
     public long CompletedRecordCount { get; } = completedRecordCount;
 }

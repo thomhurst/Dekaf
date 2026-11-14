@@ -251,6 +251,9 @@ second attempt is observed as another commit. Commits you request with
 `CommitAsync` are not observed. The observer cannot change what is committed: an
 exception it throws is logged and the commit continues.
 
+`CompletedRecordCount` is always zero for these commits: the consumer does not count
+the records behind its stored offsets.
+
 ## Checking Committed Offsets
 
 ```csharp

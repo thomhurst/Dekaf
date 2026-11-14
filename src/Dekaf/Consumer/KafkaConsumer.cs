@@ -9006,7 +9006,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             copy[i] = offsets[i];
         var observation = new OffsetCommitObservation(
             observedReason,
-            new System.Collections.ObjectModel.ReadOnlyCollection<TopicPartitionOffset>(copy));
+            new System.Collections.ObjectModel.ReadOnlyCollection<TopicPartitionOffset>(copy),
+            completedRecordCount: 0); // The consumer does not count stored records yet (#4137).
 
         object? state = null;
         try
