@@ -566,6 +566,17 @@ commits itself. To measure them, for example with a span per commit, pass an
 `IOffsetCommitObserver`:
 
 ```csharp
+var source = new ActivitySource("Orders");
+
+var run = consumer.RunPartitionedAsync(
+    async (context, message, cancellationToken) => await ProcessOrderAsync(message.Value, cancellationToken),
+    new PartitionedProcessingOptions
+    {
+        CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
+        CommitObserver = new CommitTracing(source)
+    },
+    stoppingToken);
+
 sealed class CommitTracing(ActivitySource source) : IOffsetCommitObserver
 {
     public object? OnCommitStarting(OffsetCommitObservation observation)
@@ -580,15 +591,6 @@ sealed class CommitTracing(ActivitySource source) : IOffsetCommitObserver
         activity.Dispose();
     }
 }
-
-var run = consumer.RunPartitionedAsync(
-    handler,
-    new PartitionedProcessingOptions
-    {
-        CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
-        CommitObserver = new CommitTracing(source)
-    },
-    stoppingToken);
 ```
 
 `OnCommitStarting` runs before the commit request and `OnCommitCompleted` runs once
