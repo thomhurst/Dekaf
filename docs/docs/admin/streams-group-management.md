@@ -236,9 +236,15 @@ coordinator.
 Non-transactional processing commits with the member's own identity:
 
 ```csharp
-Dekaf.Streams.IStreamsGroupMember member = null!;
+using Dekaf.Streams;
 
-await member.CommitOffsetsAsync([new TopicPartitionOffset("orders", 0, 42)]);
+IStreamsGroupMember member = null!;
+
+// Remember the generation when you take ownership of the tasks...
+var ownedUnder = member.Snapshot.MembershipGeneration;
+
+// ...and commit under it. The commit fails if the membership was lost in between.
+await member.CommitOffsetsAsync([new TopicPartitionOffset("orders", 0, 42)], ownedUnder);
 ```
 
 Transactional processing sends the offsets to the transaction with the member's id and epoch, so the coordinator rejects a commit from a member whose epoch is no longer current:
@@ -259,4 +265,4 @@ await transaction.SendOffsetsToTransactionAsync(
     });
 ```
 
-A fenced member rejoins by itself with an empty assignment and a new, valid epoch. That looks the same as having every task revoked, but the tasks may already run on another member, so their uncommitted work must be discarded rather than committed. `StreamsGroupMemberSnapshot.MembershipGeneration` increases each time the membership is lost: remember its value when you take ownership of tasks, and compare it before every commit.
+A fenced member rejoins by itself with an empty assignment and a new, valid epoch. That looks the same as having every task revoked, but the tasks may already run on another member, so their uncommitted work must be discarded rather than committed. `StreamsGroupMemberSnapshot.MembershipGeneration` increases each time the membership is lost. `CommitOffsetsAsync` checks it for you on every attempt; for a transactional commit, remember its value when you take ownership of tasks and compare it before you send the offsets.

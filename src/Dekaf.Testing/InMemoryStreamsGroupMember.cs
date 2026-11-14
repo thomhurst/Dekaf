@@ -65,6 +65,7 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
     /// <inheritdoc />
     public ValueTask CommitOffsetsAsync(
         IEnumerable<TopicPartitionOffset> offsets,
+        int membershipGeneration,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(offsets);
@@ -75,6 +76,11 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
                 throw new Dekaf.Errors.GroupException(
                     Dekaf.Protocol.ErrorCode.UnknownMemberId,
                     "Offsets cannot be committed because the Streams group member is not joined.");
+
+            if (_snapshot.MembershipGeneration != membershipGeneration)
+                throw new Dekaf.Errors.GroupException(
+                    Dekaf.Protocol.ErrorCode.FencedMemberEpoch,
+                    "Offsets cannot be committed because the Streams group member lost the membership they were consumed under.");
 
             foreach (var offset in offsets)
                 _committedOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;

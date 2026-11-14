@@ -206,31 +206,39 @@ internal sealed class ZoneTreeWindowStore : IWindowBytesStore
             return;
         }
 
-        _earliestStart = long.MaxValue;
-        using (var iterator = _store.CreateIterator())
+        var earliestLeft = long.MaxValue;
+        try
         {
+            using var iterator = _store.CreateIterator();
             while (iterator.Next())
             {
                 var composite = iterator.CurrentKey;
                 var start = BinaryPrimitives.ReadInt64BigEndian(composite.Span);
                 if (start > windowStart)
                 {
-                    _earliestStart = start;
+                    earliestLeft = start;
                     break;
                 }
 
-                visitor.Visit(composite[sizeof(long)..], start, ZoneTreeStore.ValueOf(iterator.CurrentValue));
+                // Queued before the visit: if the visitor throws, this entry is still deleted, like any
+                // other failed record, and the rest of its window stays for the next call.
                 _closing.Add(composite);
+                earliestLeft = start;
+                visitor.Visit(composite[sizeof(long)..], start, ZoneTreeStore.ValueOf(iterator.CurrentValue));
+                earliestLeft = long.MaxValue;
             }
         }
-
-        // Deleted after the scan so the iterator never sees its own tree change.
-        foreach (var composite in _closing)
+        finally
         {
-            _store.Delete(composite);
-        }
+            // Deleted after the scan so the iterator never sees its own tree change.
+            foreach (var composite in _closing)
+            {
+                _store.Delete(composite);
+            }
 
-        _closing.Clear();
+            _closing.Clear();
+            _earliestStart = earliestLeft;
+        }
     }
 
     public void Dispose() => _store.Dispose();

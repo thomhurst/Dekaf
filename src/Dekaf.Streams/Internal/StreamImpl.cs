@@ -49,6 +49,11 @@ internal sealed class StreamImpl<TKey, TValue>(
         ArgumentNullException.ThrowIfNull(other);
         var otherImpl = other as StreamImpl<TKey, TValue>
             ?? throw new TopologyException("The stream was not created by a StreamsBuilder.");
+        if (!ReferenceEquals(otherImpl.Builder, builder))
+        {
+            throw new TopologyException("The stream belongs to another StreamsBuilder. A topology is built from one builder.");
+        }
+
         var merge = builder.Add(new MergeNode<TKey, TValue>(builder.AutoName("merge")));
         node.AddDownstream(merge);
         otherImpl.Node.AddDownstream(merge);
@@ -141,6 +146,8 @@ internal sealed class StreamImpl<TKey, TValue>(
 
     internal ISerde<TKey>? KeySerde => keySerde;
 
+    internal StreamsBuilder Builder => builder;
+
     internal ISerde<TKey> RequireKeySerde(string operation) =>
         keySerde ?? throw new TopologyException(
             $"{operation} needs records partitioned by key, but the key was changed by SelectKey or Process. " +
@@ -173,6 +180,11 @@ internal sealed class StreamImpl<TKey, TValue>(
         ArgumentNullException.ThrowIfNull(table);
         var tableImpl = table as TableImpl<TKey, TTableValue>
             ?? throw new TopologyException("The table was not created by a StreamsBuilder.");
+        if (!ReferenceEquals(tableImpl.Builder, builder))
+        {
+            throw new TopologyException("The table belongs to another StreamsBuilder. A topology is built from one builder.");
+        }
+
         RequireKeySerde("Join");
         if (tableImpl.IsWindowed)
         {
@@ -279,6 +291,8 @@ internal sealed class TableImpl<TKey, TValue>(
     internal StreamNode<TKey, TValue> Node => node;
 
     internal bool IsWindowed => isWindowed;
+
+    internal StreamsBuilder Builder => builder;
 
     public string StoreName => storeName;
 

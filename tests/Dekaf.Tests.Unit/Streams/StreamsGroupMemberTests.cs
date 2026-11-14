@@ -255,6 +255,38 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
+    public async Task CommitOffsetsAsync_AfterTheMembershipWasLost_SendsNothing()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1, active: [TaskIds("topology", 0)]));
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.FencedMemberEpoch,
+            ErrorMessage = "fenced",
+            MemberId = "member-1"
+        });
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate(topologyEpoch: 5));
+        var ownedUnder = fixture.Member.Snapshot.MembershipGeneration;
+
+        // Fenced, then rejoined by itself: joined again, with an epoch the coordinator would accept.
+        await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate());
+        await Assert.That(fixture.Member.Snapshot.IsJoined).IsTrue();
+
+        var lost = await Assert.That(async () => await fixture.Member.CommitOffsetsAsync(
+                [new TopicPartitionOffset("orders", 0, 10)], ownedUnder))
+            .Throws<GroupException>();
+        await Assert.That(lost!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
+        await Assert.That(connection.OffsetCommitRequests).IsEmpty();
+
+        // Offsets consumed under the new membership commit with it.
+        await fixture.Member.CommitOffsetsAsync(
+            [new TopicPartitionOffset("orders", 0, 10)], fixture.Member.Snapshot.MembershipGeneration);
+        await Assert.That(connection.OffsetCommitRequests.Single().GenerationIdOrMemberEpoch).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task CommitOffsetsAsync_BeforeJoining_Throws()
     {
         var connection = new ScriptedConnection();

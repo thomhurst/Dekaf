@@ -540,14 +540,26 @@ internal sealed partial class StreamThread
         {
             offsets = (await _admin.ListStreamsGroupOffsetsAsync(spec, options, cancellationToken).ConfigureAwait(false))
                 [_topology.ApplicationId];
-            if (offsets.ErrorCode == ErrorCode.None)
+
+            // A failed lookup must never read as "nothing committed": that would start the partition from
+            // its beginning and process committed input again. The error can be on the group or on a partition.
+            var error = offsets.ErrorCode;
+            foreach (var description in offsets.Offsets.Values)
+            {
+                if (error == ErrorCode.None)
+                {
+                    error = description.ErrorCode;
+                }
+            }
+
+            if (error == ErrorCode.None)
             {
                 break;
             }
 
-            if (!offsets.ErrorCode.IsRetriable())
+            if (!error.IsRetriable())
             {
-                throw new KafkaException(offsets.ErrorCode, $"Fetching the committed offsets of group '{_topology.ApplicationId}' failed: {offsets.ErrorCode}.");
+                throw new KafkaException(error, $"Fetching the committed offsets of group '{_topology.ApplicationId}' failed: {error}.");
             }
 
             await Task.Delay(_config.PollInterval, cancellationToken).ConfigureAwait(false);
@@ -732,7 +744,9 @@ internal sealed partial class StreamThread
             {
                 await _producer.FlushAsync(CancellationToken.None).ConfigureAwait(false);
                 ThrowIfProduceFailed();
-                await _member.CommitOffsetsAsync(_commitOffsets, CancellationToken.None).ConfigureAwait(false);
+                // Bound to the generation the tasks were built under: a member that is fenced and rejoins while
+                // the flush or a retry is in flight has a valid new epoch, and must still not commit these.
+                await _member.CommitOffsetsAsync(_commitOffsets, _generation, CancellationToken.None).ConfigureAwait(false);
             }
         }
         catch (Exception exception) when (IsRecoverable(exception))

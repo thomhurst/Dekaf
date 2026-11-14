@@ -326,6 +326,10 @@ public sealed class InMemoryStreamsGroupMemberTests
         await member.CommitOffsetsAsync([new TopicPartitionOffset("orders", 0, 5), new TopicPartitionOffset("orders", 1, 9)]);
         await member.CommitOffsetsAsync([new TopicPartitionOffset("orders", 0, 6)]);
 
+        await Assert.That(async () => await member.CommitOffsetsAsync(
+                [new TopicPartitionOffset("orders", 0, 99)], member.Snapshot.MembershipGeneration + 1))
+            .Throws<Dekaf.Errors.GroupException>();
+
         await Assert.That(member.CommittedOffsets[new TopicPartition("orders", 0)]).IsEqualTo(6);
         await Assert.That(member.CommittedOffsets[new TopicPartition("orders", 1)]).IsEqualTo(9);
     }

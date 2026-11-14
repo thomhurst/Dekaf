@@ -41,6 +41,8 @@ payments
 
 `SelectMany` takes a sink instead of returning a sequence, so emitting several values allocates no enumerator.
 
+A record read with a null key or value keeps that fact even when the type is a value type: a lambda sees `default`, `Record<TKey, TValue>.IsKeyNull` and `IsValueNull` report it to a processor, keyed operators skip it, and `ToTopic` writes it back as null.
+
 ## Grouping and aggregation
 
 `GroupByKey` groups by the existing key. `GroupBy` groups by a new key and repartitions through an internal topic named after the aggregation that follows.
@@ -91,7 +93,7 @@ topology.Stream("clicks", Serializers.String, Serializers.String)
 - Without `EmitOnClose`, every update is forwarded. With it, each window is forwarded once, when it closes.
 - The result key is `Windowed<TKey>`. `WindowedSerde` writes the key followed by the window start as a big-endian 64-bit integer, the format of the Java time-windowed serde.
 
-A window that has closed is removed from its store.
+A window that has closed is removed from its store. The store also records how far its windows are closed, so they stay closed after a restart or when the task moves.
 
 ## Stream-table joins
 

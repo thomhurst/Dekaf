@@ -146,7 +146,7 @@ internal static class SourceReader
                     KeyData = raw.KeyIsNull ? default : raw.Key.IsEmpty ? Array.Empty<byte>() : raw.Key
                 });
 
-        return new Record<TKey, TValue>(key, value, raw.Timestamp, raw.Headers);
+        return new Record<TKey, TValue>(key, value, raw.Timestamp, raw.Headers, raw.KeyIsNull, raw.ValueIsNull);
     }
 }
 
@@ -266,13 +266,10 @@ internal sealed class SinkNode<TKey, TValue>(
 
         public override void Process(in Record<TKey, TValue> record)
         {
-            // Written as branches, not as "x = y is null": unoptimized code boxes a value type for the
-            // latter, which would allocate per record until the method is re-jitted.
-            var keyIsNull = true;
+            var keyIsNull = record.IsKeyNull;
             _keyBuffer.Reset();
-            if (record.Key is not null)
+            if (!keyIsNull)
             {
-                keyIsNull = false;
                 var writer = _keyBuffer;
                 keySerializer.Serialize(
                     record.Key,
@@ -280,11 +277,10 @@ internal sealed class SinkNode<TKey, TValue>(
                     new SerializationContext { Topic = topic, Component = SerializationComponent.Key, Headers = record.Headers });
             }
 
-            var valueIsNull = true;
+            var valueIsNull = record.IsValueNull;
             _valueBuffer.Reset();
-            if (record.Value is not null)
+            if (!valueIsNull)
             {
-                valueIsNull = false;
                 var writer = _valueBuffer;
                 valueSerializer.Serialize(
                     record.Value,
@@ -416,7 +412,7 @@ internal sealed class JoinNode<TKey, TValue, TTableValue, TResult>(
     {
         public override void Process(in Record<TKey, TValue> record)
         {
-            if (record.Key is null)
+            if (record.IsKeyNull)
             {
                 context.DroppedRecords++;
                 return;
@@ -474,7 +470,7 @@ internal sealed class AggregateNode<TKey, TValue, TAggregate> : OperatorNode<TKe
     {
         public override void Process(in Record<TKey, TValue> record)
         {
-            if (record.Key is null)
+            if (record.IsKeyNull)
             {
                 context.DroppedRecords++;
                 return;
@@ -528,7 +524,7 @@ internal sealed class ReduceNode<TKey, TValue> : OperatorNode<TKey, TValue, TKey
     {
         public override void Process(in Record<TKey, TValue> record)
         {
-            if (record.Key is null || record.Value is null)
+            if (record.IsKeyNull || record.IsValueNull)
             {
                 context.DroppedRecords++;
                 return;
@@ -586,11 +582,29 @@ internal sealed class WindowAggregateNode<TKey, TValue, TAggregate> : OperatorNo
         private readonly long _grace = node._windows.GraceMs;
         private readonly bool _emitOnClose = node._windows.IsEmitOnClose;
         private long _streamTime = long.MinValue;
+        private long _closedThrough = -1;
+        private bool _closePending;
+        private bool _resumed;
 
         public override void Process(in Record<TKey, TValue> record)
         {
+            if (!_resumed)
+            {
+                // The store is restored after the task is built, so what it closed is read on first use.
+                // Stream time resumes where every window it closed is still closed.
+                _resumed = true;
+                _closedThrough = store.ClosedThrough;
+                if (_closedThrough >= 0)
+                {
+                    _streamTime = _closedThrough + _size + _grace;
+
+                    // A close that was interrupted before the restart is finished by this record.
+                    _closePending = true;
+                }
+            }
+
             var timestamp = record.Timestamp;
-            if (record.Key is null || timestamp < 0)
+            if (record.IsKeyNull || timestamp < 0)
             {
                 context.DroppedRecords++;
                 return;
@@ -634,9 +648,26 @@ internal sealed class WindowAggregateNode<TKey, TValue, TAggregate> : OperatorNo
                 context.DroppedRecords++;
             }
 
-            if (advanced)
+            if (advanced && closedEnd >= _size)
             {
-                store.CloseThrough(closedEnd - _size, _emitOnClose ? this : null);
+                // Every window that starts at or before this is closed now.
+                var closing = closedEnd - _size;
+                closing -= closing % _advance;
+                if (closing > _closedThrough)
+                {
+                    // Recorded first: if emitting a closed window fails, the window still counts as closed.
+                    _closedThrough = closing;
+                    store.ClosedThrough = closing;
+                    _closePending = true;
+                }
+            }
+
+            if (_closePending)
+            {
+                // Cleared only once every closed entry was emitted. If emitting one fails downstream, the
+                // entries after it are still in the store and the next record emits them.
+                store.CloseThrough(_closedThrough, _emitOnClose ? this : null);
+                _closePending = false;
             }
         }
 
@@ -733,7 +764,7 @@ internal sealed class StatefulProcessor<TKey, TValue, TState, TKeyOut, TValueOut
     public void Process(in Record<TKey, TValue> record)
     {
         // State is kept per key, so a record without a key has nowhere to keep it.
-        if (record.Key is null)
+        if (record.IsKeyNull)
         {
             return;
         }

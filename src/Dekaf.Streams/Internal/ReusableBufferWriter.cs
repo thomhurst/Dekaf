@@ -12,6 +12,9 @@ internal sealed class ReusableBufferWriter : IBufferWriter<byte>
 
     public ReadOnlySpan<byte> WrittenSpan => _buffer.AsSpan(0, _written);
 
+    /// <summary>The written bytes as memory. Valid until the next write to this buffer.</summary>
+    public ReadOnlyMemory<byte> WrittenMemory => _buffer.AsMemory(0, _written);
+
     public void Reset() => _written = 0;
 
     /// <summary>Drops everything written after the first <paramref name="length"/> bytes.</summary>

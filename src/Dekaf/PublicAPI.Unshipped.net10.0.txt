@@ -315,9 +315,10 @@ Dekaf.Streams.IStreamsGroupMember
 Dekaf.Streams.IStreamsGroupMember.CloseAsync(Dekaf.Streams.StreamsGroupCloseOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
 Dekaf.Streams.IStreamsGroupMember.CloseAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
 Dekaf.Streams.IStreamsGroupOffsetCommitter
-Dekaf.Streams.IStreamsGroupOffsetCommitter.CommitOffsetsAsync(System.Collections.Generic.IEnumerable<Dekaf.TopicPartitionOffset>! offsets, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Streams.IStreamsGroupOffsetCommitter.CommitOffsetsAsync(System.Collections.Generic.IEnumerable<Dekaf.TopicPartitionOffset>! offsets, int membershipGeneration, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
 Dekaf.Streams.StreamsGroupMemberExtensions
 static Dekaf.Streams.StreamsGroupMemberExtensions.CommitOffsetsAsync(this Dekaf.Streams.IStreamsGroupMember! member, System.Collections.Generic.IEnumerable<Dekaf.TopicPartitionOffset>! offsets, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+static Dekaf.Streams.StreamsGroupMemberExtensions.CommitOffsetsAsync(this Dekaf.Streams.IStreamsGroupMember! member, System.Collections.Generic.IEnumerable<Dekaf.TopicPartitionOffset>! offsets, int membershipGeneration, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
 Dekaf.Streams.IStreamsGroupMember.GroupId.get -> string!
 Dekaf.Streams.IStreamsGroupMember.InstanceId.get -> string?
 Dekaf.Streams.IStreamsGroupMember.JoinAsync(Dekaf.Streams.StreamsGroupMemberUpdate! initialState, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Streams.StreamsGroupHeartbeatResult!>

@@ -36,7 +36,8 @@ internal sealed class KeyValueStore<TKey, TValue> : IKeyValueStore<TKey, TValue>
         ISerde<TKey> keySerde,
         ISerde<TValue> valueSerde,
         TaskContext context,
-        string? changelogTopic)
+        string? changelogTopic,
+        string? restoreTopic)
     {
         Name = name;
         _bytes = bytes;
@@ -44,7 +45,10 @@ internal sealed class KeyValueStore<TKey, TValue> : IKeyValueStore<TKey, TValue>
         _valueSerde = valueSerde;
         _context = context;
         _changelogTopic = changelogTopic;
-        var topic = changelogTopic ?? name;
+
+        // The bytes in the store are the bytes of the topic it is restored from, so serdes are given that
+        // topic. A serde that encodes per topic then reads restored entries the way it wrote them.
+        var topic = changelogTopic ?? restoreTopic ?? name;
         _keyContext = new SerializationContext { Topic = topic, Component = SerializationComponent.Key };
         _valueContext = new SerializationContext { Topic = topic, Component = SerializationComponent.Value };
     }
@@ -57,7 +61,7 @@ internal sealed class KeyValueStore<TKey, TValue> : IKeyValueStore<TKey, TValue>
     {
         if (_bytes.TryGet(SerializeKey(key), out var bytes))
         {
-            value = _valueSerde.Deserialize(bytes, _valueContext);
+            value = _valueSerde.Deserialize(bytes, _valueContext with { KeyData = _keyBuffer.WrittenMemory });
             return true;
         }
 
@@ -147,6 +151,9 @@ internal sealed class WindowStore<TKey, TValue> : IRestorableStore, IWindowEntry
     private readonly ReusableBufferWriter _keyBuffer = new();
     private readonly ReusableBufferWriter _valueBuffer = new();
     private readonly ReusableBufferWriter _closedKeyBuffer = new();
+    // No window starts here, and no key is empty with it: the entry that remembers ClosedThrough.
+    private const long ClosedMarkerStart = long.MaxValue;
+
     private IClosedWindowHandler<TKey, TValue>? _closedHandler;
     private int _keyLength;
 
@@ -181,7 +188,7 @@ internal sealed class WindowStore<TKey, TValue> : IRestorableStore, IWindowEntry
     {
         if (_bytes.TryGet(_keyBuffer.WrittenSpan, windowStart, out var bytes))
         {
-            value = _valueSerde.Deserialize(bytes, _valueContext);
+            value = _valueSerde.Deserialize(bytes, _valueContext with { KeyData = _keyBuffer.WrittenMemory });
             return true;
         }
 
@@ -189,8 +196,45 @@ internal sealed class WindowStore<TKey, TValue> : IRestorableStore, IWindowEntry
         return false;
     }
 
+    /// <summary>
+    /// The highest window start this store has closed, or -1. It is kept in the store under a reserved
+    /// entry, so it is logged and restored with the windows and closed windows stay closed after a restart.
+    /// </summary>
+    public long ClosedThrough
+    {
+        get
+        {
+            return _bytes.TryGet(default, ClosedMarkerStart, out var bytes)
+                ? BinaryPrimitives.ReadInt64BigEndian(bytes.Span)
+                : -1;
+        }
+
+        set
+        {
+            Span<byte> marker = stackalloc byte[sizeof(long)];
+            Span<byte> markerKey = stackalloc byte[sizeof(long)];
+            BinaryPrimitives.WriteInt64BigEndian(marker, value);
+            BinaryPrimitives.WriteInt64BigEndian(markerKey, ClosedMarkerStart);
+            _bytes.Put(default, ClosedMarkerStart, marker);
+            _context.Collector.Send(
+                _changelogTopic, _context.Partition, markerKey, false, marker, false, _context.Timestamp, headers: null);
+        }
+    }
+
+    /// <summary>Writes the aggregate of the selected key for a window. A null aggregate deletes the entry.</summary>
     public void Put(long windowStart, TValue value)
     {
+        if (value is null)
+        {
+            _bytes.Delete(_keyBuffer.WrittenSpan, windowStart);
+            BinaryPrimitives.WriteInt64BigEndian(_keyBuffer.GetSpan(sizeof(long)), windowStart);
+            _keyBuffer.Advance(sizeof(long));
+            _context.Collector.Send(
+                _changelogTopic, _context.Partition, _keyBuffer.WrittenSpan, false, default, true, _context.Timestamp, headers: null);
+            _keyBuffer.Truncate(_keyLength);
+            return;
+        }
+
         _valueBuffer.Reset();
         var writer = _valueBuffer;
         _valueSerde.Serialize(value, ref writer, _valueContext);
@@ -236,7 +280,7 @@ internal sealed class WindowStore<TKey, TValue> : IRestorableStore, IWindowEntry
         _closedHandler?.OnClosed(
             _keySerde.Deserialize(key, _keyContext),
             windowStart,
-            _valueSerde.Deserialize(value, _valueContext));
+            _valueSerde.Deserialize(value, _valueContext with { KeyData = key }));
     }
 
     public void Restore(ReadOnlySpan<byte> key, ReadOnlySpan<byte> value, bool valueIsNull)

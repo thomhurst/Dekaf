@@ -186,6 +186,7 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
     // so a commit never waits behind a heartbeat and a heartbeat never waits behind a commit.
     public async ValueTask CommitOffsetsAsync(
         IEnumerable<TopicPartitionOffset> offsets,
+        int membershipGeneration,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(offsets);
@@ -217,12 +218,22 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
         var coordinatorId = Volatile.Read(ref _coordinatorId);
         for (var attempt = 1; ; attempt++)
         {
+            // Read once per attempt: the generation check and the epoch that is sent come from the same
+            // snapshot, so a member fenced after this point sends an epoch the coordinator rejects.
             var snapshot = _snapshot;
             if (!snapshot.IsJoined || snapshot.MemberId is null)
             {
                 throw new GroupException(
                     ErrorCode.UnknownMemberId,
                     "Offsets cannot be committed because the Streams group member is not joined.")
+                { GroupId = GroupId };
+            }
+
+            if (snapshot.MembershipGeneration != membershipGeneration)
+            {
+                throw new GroupException(
+                    ErrorCode.FencedMemberEpoch,
+                    "Offsets cannot be committed because the Streams group member lost the membership they were consumed under.")
                 { GroupId = GroupId };
             }
 

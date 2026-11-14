@@ -234,7 +234,10 @@ public sealed class TestOutputTopic<TKey, TValue>
     /// <summary>Gets the number of records not read yet.</summary>
     public int Count => _records.Count;
 
-    /// <summary>Reads the next record. A null key or value is returned as <see langword="default"/>.</summary>
+    /// <summary>
+    /// Reads the next record. A null key or value is returned as <see langword="default"/>, with
+    /// <see cref="Record{TKey, TValue}.IsKeyNull"/> or <see cref="Record{TKey, TValue}.IsValueNull"/> set.
+    /// </summary>
     public bool TryRead(out Record<TKey, TValue> record)
     {
         if (!_records.TryDequeue(out var captured))
@@ -259,7 +262,8 @@ public sealed class TestOutputTopic<TKey, TValue>
                     Headers = captured.Headers,
                     KeyData = captured.Key
                 });
-        record = new Record<TKey, TValue>(key, value, captured.Timestamp, captured.Headers);
+        record = new Record<TKey, TValue>(
+            key, value, captured.Timestamp, captured.Headers, captured.Key is null, captured.Value is null);
         return true;
     }
 

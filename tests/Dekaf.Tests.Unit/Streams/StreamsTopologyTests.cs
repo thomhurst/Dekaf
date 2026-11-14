@@ -220,9 +220,10 @@ public sealed class StreamsTopologyTests
             .IsEquivalentTo([("a", 0L, 1L), ("b", 0L, 1L)]);
         await Assert.That(closed[0].Timestamp).IsEqualTo(9_999);
 
-        // A closed window leaves the store and gets a changelog tombstone.
+        // Four updates, the record of how far windows are closed, and a tombstone per closed entry.
         var changelog = driver.CreateOutputTopic("app-final-counts-changelog", serde, Long).ReadAll();
-        await Assert.That(changelog.Count).IsEqualTo(6);
+        await Assert.That(changelog.Count).IsEqualTo(7);
+        await Assert.That(changelog.Count(static record => record.IsValueNull)).IsEqualTo(2);
     }
 
     [Test]
@@ -429,6 +430,136 @@ public sealed class StreamsTopologyTests
         await Assert.That(buffer.WrittenSpan.ToArray()).IsEquivalentTo(new byte[] { (byte)'a', (byte)'b', 0, 0, 0, 0, 0, 0, 1, 2 });
         await Assert.That(serde.Deserialize(buffer.WrittenMemory, context)).IsEqualTo(new Windowed<string>("ab", 258, 10_258));
         await Assert.That(() => serde.Deserialize(new byte[3], context)).Throws<StreamsException>();
+    }
+
+    [Test]
+    public async Task NullKeysAndValues_StayNullForValueTypes()
+    {
+        var builder = new StreamsBuilder("app");
+        var numbers = builder.Stream("numbers", Long, Long);
+        numbers.ToTopic("copy", Long, Long);
+        numbers.GroupByKey().Count("counts");
+        builder.Table("balances", "balances-store", Text, Long).ToStream().ToTopic("balance-changes", Text, Long);
+
+        using var driver = new TopologyTestDriver(builder.Build());
+        ISerializer<byte[]?> bytes = Serializers.ByteArray!;
+        var raw = driver.CreateInputTopic("numbers", bytes, bytes);
+        raw.Pipe(null, new byte[8]);
+        raw.Pipe(new byte[8], null);
+
+        // A null key read as long is not key 0: it is not counted, and it is written back as null.
+        await Assert.That(driver.GetKeyValueStore<long, long>("counts").Count).IsEqualTo(1);
+        await Assert.That(driver.DroppedRecordCount).IsEqualTo(1);
+        var copies = driver.CreateOutputTopic("copy", Long, Long).ReadAll();
+        await Assert.That(copies[0].IsKeyNull).IsTrue();
+        await Assert.That(copies[0].IsValueNull).IsFalse();
+        await Assert.That(copies[1].IsKeyNull).IsFalse();
+        await Assert.That(copies[1].IsValueNull).IsTrue();
+
+        // A tombstone on a table of longs deletes the key and is forwarded as a tombstone, not as 0.
+        var balances = driver.CreateInputTopic("balances", Text, bytes);
+        balances.Pipe("a", new byte[8]);
+        balances.Pipe("a", null);
+        var changes = driver.CreateOutputTopic("balance-changes", Text, Long).ReadAll();
+        await Assert.That(changes[0].IsValueNull).IsFalse();
+        await Assert.That(changes[1].IsValueNull).IsTrue();
+        await Assert.That(driver.GetKeyValueStore<string, long>("balances-store").Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task EmitOnClose_AFailingResultDoesNotDiscardTheOthers()
+    {
+        var builder = new StreamsBuilder("app");
+        builder.OnError(static _ => ErrorResponse.Continue);
+        var windows = TimeWindows.Tumbling(TimeSpan.FromSeconds(10)).EmitOnClose();
+        builder.Stream("clicks", Text, Text)
+            .GroupByKey()
+            .WindowedBy(windows)
+            .Count("final")
+            .ToStream()
+            .Select(static (key, count) => key.Key == "bad" ? throw new InvalidOperationException("bad") : count)
+            .SelectKey(static (key, _) => key.Key)
+            .ToTopic("out", Text, Long);
+
+        using var driver = new TopologyTestDriver(builder.Build());
+        var input = driver.CreateInputTopic("clicks", Text, Text);
+        foreach (var key in new[] { "a", "bad", "b", "c" })
+        {
+            input.Pipe(key, "x", timestamp: 1_000);
+        }
+
+        // Closing the window fails on "bad". The record that closed it is skipped; the other results of the
+        // window are still in the store and are emitted by the next record.
+        input.Pipe("z", "x", timestamp: 10_000);
+        input.Pipe("z", "x", timestamp: 10_001);
+
+        var emitted = driver.CreateOutputTopic("out", Text, Long).ReadAll().Select(static r => r.Key).ToArray();
+        await Assert.That(emitted.Order()).IsEquivalentTo(["a", "b", "c"]);
+    }
+
+    [Test]
+    public async Task Stores_GiveValueSerdesTheKeyBytesAndTheTopicTheyAreRestoredFrom()
+    {
+        var serde = new RecordingSerde();
+        var builder = new StreamsBuilder("app");
+        var table = builder.Table("customers", "customers-store", Text, serde);
+        builder.Stream("orders", Text, Text)
+            .Join(table, static (order, customer) => $"{customer}:{order}")
+            .ToTopic("out", Text, Text);
+        builder.Stream("events", Text, Text)
+            .GroupByKey()
+            .Aggregate("latest", static () => "", static (_, value, _) => value, serde);
+
+        using var driver = new TopologyTestDriver(builder.Build());
+        driver.CreateInputTopic("customers", Text, Text).Pipe("c1", "Ada");
+        driver.CreateInputTopic("orders", Text, Text).Pipe("c1", "o1");
+        var events = driver.CreateInputTopic("events", Text, Text);
+        events.Pipe("e1", "first");
+        events.Pipe("e1", "second");
+
+        // The table is restored from its source topic, so its serdes work in that topic's context.
+        await Assert.That(serde.Topics).Contains("customers");
+        await Assert.That(serde.Topics).Contains("app-latest-changelog");
+        await Assert.That(serde.Topics).DoesNotContain("customers-store");
+
+        // Reads from a store pass the key bytes, as a read from the source does.
+        await Assert.That(serde.ReadKeys).Contains("c1");
+        await Assert.That(serde.ReadKeys).Contains("e1");
+        await Assert.That(serde.ReadKeys).DoesNotContain("");
+    }
+
+    [Test]
+    public async Task HandlesFromAnotherBuilder_AreRejected()
+    {
+        var one = new StreamsBuilder("one");
+        var other = new StreamsBuilder("other");
+        var stream = one.Stream("a", Text, Text);
+        var foreignStream = other.Stream("b", Text, Text);
+        var foreignTable = other.Table("c", "store", Text, Text);
+
+        await Assert.That(() => stream.Merge(foreignStream)).Throws<TopologyException>();
+        await Assert.That(() => stream.Join(foreignTable, static (left, right) => left + right)).Throws<TopologyException>();
+    }
+
+    private sealed class RecordingSerde : ISerde<string>
+    {
+        public HashSet<string> Topics { get; } = [];
+
+        public HashSet<string> ReadKeys { get; } = [];
+
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : System.Buffers.IBufferWriter<byte>, allows ref struct
+        {
+            Topics.Add(context.Topic);
+            Serializers.String.Serialize(value, ref destination, context);
+        }
+
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            Topics.Add(context.Topic);
+            ReadKeys.Add(System.Text.Encoding.UTF8.GetString(context.KeyData.Span));
+            return Serializers.String.Deserialize(data, context);
+        }
     }
 
     private sealed class RunningTotal : IProcessor<string, long, string, long>

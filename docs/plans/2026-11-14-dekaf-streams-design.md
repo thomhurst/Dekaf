@@ -143,6 +143,7 @@ Built in #4145:
 How the host differs from the plan above:
 
 - The host polls `IStreamsGroupMember.Snapshot` once per loop instead of waiting for #4142. The snapshot is replaced only when it changes, so the check is one reference comparison.
+- A window store records how far its windows are closed in a reserved entry, so closed windows stay closed after a restore.
 - Local store writes are applied as records are processed, not buffered until commit. An aborted commit discards the task's local state and rebuilds it from the changelog. Persistent state is checkpointed on clean close only; a crash leaves no checkpoint and the state is rebuilt in full.
 - One `ProducerMessage` is allocated per record written to Kafka, because the producer has no allocation-free send that takes a partition and a timestamp.
 

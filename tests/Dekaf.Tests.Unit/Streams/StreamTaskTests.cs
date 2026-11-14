@@ -53,6 +53,52 @@ public sealed class StreamTaskTests
     }
 
     [Test]
+    public async Task Restore_KeepsClosedWindowsClosed()
+    {
+        var topology = BuildCountingTopology();
+        var changelog = new RecordingCollector();
+        using (var original = new StreamTask(topology, 0, 0, changelog))
+        {
+            original.Process("numbers", Raw(key: 1, value: 0, timestamp: 1_000));
+            original.Process("numbers", Raw(key: 1, value: 0, timestamp: 20_000));
+        }
+
+        var output = new RecordingCollector();
+        using var restored = new StreamTask(topology, 0, 0, output);
+        foreach (var record in changelog.Records.Where(static r => r.Topic.EndsWith("-changelog", StringComparison.Ordinal)))
+        {
+            restored.Restore(record.Topic, record.Key, record.Value, record.Value is null);
+        }
+
+        // The window [0s, 2s) closed before the restart. A record for it is late, not the start of a new window.
+        restored.Process("numbers", Raw(key: 1, value: 0, timestamp: 1_500));
+        await Assert.That(output.Records.Any(static r => r.Topic == "windowed-out")).IsFalse();
+        await Assert.That(restored.DroppedRecords).IsEqualTo(1);
+
+        restored.Process("numbers", Raw(key: 1, value: 0, timestamp: 20_500));
+        var update = output.Records.Single(static r => r.Topic == "windowed-out");
+        await Assert.That(BinaryPrimitives.ReadInt64BigEndian(update.Value)).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task Construction_ClosesTheStoresItOpenedWhenAProcessorFails()
+    {
+        var builder = new StreamsBuilder("app");
+        builder.Stream("numbers", Long, Long)
+            .Process<long, long>(
+                "failing",
+                static () => throw new InvalidOperationException("factory"),
+                Stores.KeyValue("first", Long, Long),
+                Stores.KeyValue("second", Long, Long));
+        var engine = new CountingEngine();
+
+        await Assert.That(() => new StreamTask(builder.Build(), 0, 0, new RecordingCollector(), engine))
+            .Throws<InvalidOperationException>();
+        await Assert.That(engine.Opened).IsEqualTo(2);
+        await Assert.That(engine.Disposed).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task Process_RejectsATopicTheSubtopologyDoesNotRead()
     {
         using var task = new StreamTask(BuildCountingTopology(), 0, 0, new RecordingCollector());
@@ -141,6 +187,40 @@ public sealed class StreamTaskTests
             long timestamp,
             Headers? headers) =>
             Records.Add(new Sent(topic, partition, key.ToArray(), valueIsNull ? null : value.ToArray()));
+    }
+
+    private sealed class CountingEngine : IStateStoreEngine
+    {
+        public int Opened { get; private set; }
+
+        public int Disposed { get; private set; }
+
+        public IKeyValueBytesStore CreateKeyValueStore(StateStoreContext context)
+        {
+            Opened++;
+            return new Store(this);
+        }
+
+        public IWindowBytesStore CreateWindowStore(StateStoreContext context) => throw new NotSupportedException();
+
+        private sealed class Store(CountingEngine engine) : IKeyValueBytesStore
+        {
+            public long Count => 0;
+
+            public bool TryGet(ReadOnlySpan<byte> key, out ReadOnlyMemory<byte> value)
+            {
+                value = default;
+                return false;
+            }
+
+            public void Put(ReadOnlySpan<byte> key, ReadOnlySpan<byte> value)
+            {
+            }
+
+            public bool Delete(ReadOnlySpan<byte> key) => false;
+
+            public void Dispose() => engine.Disposed++;
+        }
     }
 
     private sealed class DiscardingCollector : IRecordCollector

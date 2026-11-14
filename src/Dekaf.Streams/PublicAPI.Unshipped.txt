@@ -95,6 +95,8 @@ Dekaf.Streams.ProcessingGuarantee.AtLeastOnce = 1 -> Dekaf.Streams.ProcessingGua
 Dekaf.Streams.ProcessingGuarantee.ExactlyOnce = 0 -> Dekaf.Streams.ProcessingGuarantee
 Dekaf.Streams.Record<TKey, TValue>
 Dekaf.Streams.Record<TKey, TValue>.Headers.get -> Dekaf.Serialization.Headers?
+Dekaf.Streams.Record<TKey, TValue>.IsKeyNull.get -> bool
+Dekaf.Streams.Record<TKey, TValue>.IsValueNull.get -> bool
 Dekaf.Streams.Record<TKey, TValue>.Key.get -> TKey
 Dekaf.Streams.Record<TKey, TValue>.Record() -> void
 Dekaf.Streams.Record<TKey, TValue>.Record(TKey key, TValue value, long timestamp, Dekaf.Serialization.Headers? headers = null) -> void

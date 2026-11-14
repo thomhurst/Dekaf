@@ -102,7 +102,7 @@ internal sealed class TaskBuilder(TaskContext context, IStateStoreEngine engine,
         string? restoreTopic)
     {
         var bytes = engine.CreateKeyValueStore(StoreContext(name));
-        var store = new KeyValueStore<TKey, TValue>(name, bytes, keySerde, valueSerde, Context, changelogTopic);
+        var store = new KeyValueStore<TKey, TValue>(name, bytes, keySerde, valueSerde, Context, changelogTopic, restoreTopic);
         Register(name, store, bytes, restoreTopic);
         return store;
     }
@@ -177,18 +177,31 @@ internal sealed class StreamTask : IDisposable
         var builder = new TaskBuilder(_context, engine ?? InMemoryStateStoreEngine.Instance, stateDirectory);
         var nodes = topology.NodesBySubtopology[subtopology];
 
-        // Stores first: a join reads the store of a table node that may be built after it.
-        foreach (var node in nodes)
+        try
         {
-            node.CreateStores(builder);
-        }
-
-        foreach (var node in nodes)
-        {
-            if (node is ISourceNode source)
+            // Stores first: a join reads the store of a table node that may be built after it.
+            foreach (var node in nodes)
             {
-                _sources.Add(source.Topic, source.BuildSource(builder));
+                node.CreateStores(builder);
             }
+
+            foreach (var node in nodes)
+            {
+                if (node is ISourceNode source)
+                {
+                    _sources.Add(source.Topic, source.BuildSource(builder));
+                }
+            }
+        }
+        catch
+        {
+            // A store engine or a processor's Init failed: close what was opened, or its files stay locked.
+            foreach (var disposable in builder.Disposables)
+            {
+                disposable.Dispose();
+            }
+
+            throw;
         }
 
         _stores = builder.Stores;

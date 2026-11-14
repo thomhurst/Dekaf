@@ -206,4 +206,3 @@ Operator and store names are part of the topology: they name the internal topics
 - A table supports `ToStream` and being joined against; it has no `Where` or `Select` of its own.
 - Standby and warmup tasks are acknowledged but not kept up to date. A task that moves restores from its changelog.
 - Stores cannot be queried from outside the topology.
-- A windowed operator does not remember how far event time had advanced across a restart. A record that arrives after a restart for a window that had already closed is accepted into a new window instead of being dropped.
