@@ -452,6 +452,7 @@ internal sealed partial class StreamThread
     private async ValueTask AddTasksAsync(List<TaskId> added, CancellationToken cancellationToken)
     {
         var created = new List<ActiveTask>(added.Count);
+        var partitionCounts = await DescribeSourceTopicsAsync(added, cancellationToken).ConfigureAwait(false);
         try
         {
             foreach (var id in added)
@@ -461,7 +462,7 @@ internal sealed partial class StreamThread
                 {
                     var task = new StreamTask(
                         _topology, id.Subtopology, id.Partition, _collector, _config.StoreEngine, directory?.Path);
-                    created.Add(new ActiveTask(id, task, directory));
+                    created.Add(new ActiveTask(id, task, directory, partitionCounts));
                 }
                 catch
                 {
@@ -477,7 +478,7 @@ internal sealed partial class StreamThread
             }
 
             var committed = await FetchStartOffsetsAsync(sources, cancellationToken).ConfigureAwait(false);
-            await RestoreAsync(created, committed, cancellationToken).ConfigureAwait(false);
+            await RestoreAsync(created, committed, partitionCounts, cancellationToken).ConfigureAwait(false);
 
             var assignment = new List<TopicPartitionOffset>(sources.Count);
             foreach (var task in created)
@@ -511,6 +512,39 @@ internal sealed partial class StreamThread
         }
 
         StreamsMetrics.ActiveTasks.Add(created.Count);
+    }
+
+    /// <summary>
+    /// Returns the partition count of every topic the new tasks read. A subtopology has one task per
+    /// partition of its largest source topic, so when it merges topics of different sizes, a task with a
+    /// high partition number reads only the topics that have that partition.
+    /// </summary>
+    private async ValueTask<Dictionary<string, int>> DescribeSourceTopicsAsync(
+        List<TaskId> tasks,
+        CancellationToken cancellationToken)
+    {
+        var topics = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var id in tasks)
+        {
+            var subtopology = _topology.Subtopologies[id.Subtopology];
+            topics.UnionWith(subtopology.SourceTopics);
+            topics.UnionWith(subtopology.RepartitionSourceTopics);
+        }
+
+        var counts = new Dictionary<string, int>(topics.Count, StringComparer.Ordinal);
+        var descriptions = await _admin.DescribeTopicsAsync(topics, cancellationToken).ConfigureAwait(false);
+        foreach (var topic in topics)
+        {
+            if (!descriptions.TryGetValue(topic, out var description) || description.ErrorCode != ErrorCode.None)
+            {
+                var error = description?.ErrorCode ?? ErrorCode.UnknownTopicOrPartition;
+                throw new KafkaException(error, $"Source topic '{topic}' could not be described: {error}.");
+            }
+
+            counts.Add(topic, description.Partitions.Count);
+        }
+
+        return counts;
     }
 
     /// <summary>
@@ -598,6 +632,7 @@ internal sealed partial class StreamThread
     private async ValueTask RestoreAsync(
         List<ActiveTask> tasks,
         Dictionary<TopicPartition, (long Offset, bool HasCommitted)> committed,
+        Dictionary<string, int> sourcePartitionCounts,
         CancellationToken cancellationToken)
     {
         var plans = new Dictionary<TopicPartition, (ActiveTask Task, long End)>();
@@ -607,6 +642,12 @@ internal sealed partial class StreamThread
         {
             foreach (var topic in task.Task.RestoreTopics)
             {
+                // A table's source topic can be smaller than the subtopology: nothing to restore then.
+                if (sourcePartitionCounts.TryGetValue(topic, out var count) && task.Id.Partition >= count)
+                {
+                    continue;
+                }
+
                 var partition = new TopicPartition(topic, task.Id.Partition);
                 var end = long.MaxValue;
                 if (committed.TryGetValue(partition, out var start))
@@ -1117,12 +1158,22 @@ internal sealed partial class StreamThread
 /// <summary>A task this thread owns, with its input partitions and how far it has read each.</summary>
 internal sealed class ActiveTask
 {
-    public ActiveTask(TaskId id, StreamTask task, TaskDirectory? directory)
+    public ActiveTask(TaskId id, StreamTask task, TaskDirectory? directory, IReadOnlyDictionary<string, int> partitionCounts)
     {
         Id = id;
         Task = task;
         Directory = directory;
-        var topics = new List<string>(task.SourceTopics);
+
+        // Only the topics that have this task's partition: merged topics can differ in size.
+        var topics = new List<string>();
+        foreach (var topic in task.SourceTopics)
+        {
+            if (partitionCounts[topic] > id.Partition)
+            {
+                topics.Add(topic);
+            }
+        }
+
         topics.Sort(StringComparer.Ordinal);
         Sources = new TopicPartition[topics.Count];
         for (var i = 0; i < Sources.Length; i++)

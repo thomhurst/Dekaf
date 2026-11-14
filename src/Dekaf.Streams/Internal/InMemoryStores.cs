@@ -146,17 +146,11 @@ internal sealed class InMemoryWindowBytesStore : IWindowBytesStore
             var start = _windows.GetKeyAtIndex(0);
             var entries = _windows.GetValueAtIndex(0);
 
-            // One entry at a time, removed before it is visited: if the visitor throws, that entry is
-            // gone like any other failed record, and the rest of the window is still here for the next call.
-            while (entries.Count > 0)
+            // One pass, each entry removed before it is visited: if the visitor throws, that entry is gone
+            // like any other failed record, and the entries not reached yet are still here for the next
+            // call. Removing from a Dictionary does not invalidate its enumerator.
+            foreach (var entry in entries)
             {
-                KeyValuePair<byte[], byte[]> entry;
-                using (var enumerator = entries.GetEnumerator())
-                {
-                    enumerator.MoveNext();
-                    entry = enumerator.Current;
-                }
-
                 entries.Remove(entry.Key);
                 _count--;
                 visitor.Visit(entry.Key, start, entry.Value);

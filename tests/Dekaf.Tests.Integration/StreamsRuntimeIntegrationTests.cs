@@ -289,6 +289,30 @@ public sealed class StreamsRuntimeIntegrationTests(KafkaTestContainer kafka) : K
     }
 
     [Test]
+    public async Task MergedTopicsOfDifferentSizes_AreAllRead()
+    {
+        var small = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        var large = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
+        var output = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
+        var applicationId = $"streams-merge-{Guid.NewGuid():N}";
+
+        var builder = new StreamsBuilder(applicationId);
+        builder.Stream(small, Serializers.String, Serializers.String)
+            .Merge(builder.Stream(large, Serializers.String, Serializers.String))
+            .Select(static (_, _) => 1L)
+            .ToTopic(output, Serializers.String, Serializers.Int64);
+
+        // Tasks 1 and 2 exist for the large topic only; they must not ask for partitions the small one lacks.
+        await using var app = Start(builder.Build());
+        await ProduceAsync(small, Sentences(0, 8));
+        await ProduceAsync(large, Sentences(8, 24));
+
+        var records = await ReadAsync<long>(output, Serializers.Int64, static read => read.Count >= 32);
+        await Assert.That(records.Count).IsEqualTo(32);
+        await app.StopAsync();
+    }
+
+    [Test]
     public async Task FencedMember_DiscardsItsUncommittedWorkAndRecoversExactlyOnce()
     {
         var input = await KafkaContainer.CreateTestTopicAsync(partitions: 2);

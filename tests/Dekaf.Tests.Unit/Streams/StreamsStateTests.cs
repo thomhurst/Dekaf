@@ -240,6 +240,33 @@ public sealed class StreamsStateTests
     }
 
     [Test]
+    public async Task InMemoryWindowStore_ClosesALargeWindowInOnePassAndKeepsWhatAFailedVisitDidNotReach()
+    {
+        using var store = new InMemoryWindowBytesStore();
+        const int keys = 50_000;
+        var key = new byte[sizeof(int)];
+        for (var i = 0; i < keys; i++)
+        {
+            BinaryPrimitives.WriteInt32BigEndian(key, i);
+            store.Put(key, 1_000, [1]);
+        }
+
+        // The fifth visit fails: five entries are gone, the rest stay for the next call.
+        var failing = new CountingVisitor(failAt: 5);
+        await Assert.That(() => store.RemoveThrough(1_000, failing)).Throws<InvalidOperationException>();
+        await Assert.That(store.Count).IsEqualTo(keys - 5);
+
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        var visitor = new CountingVisitor(failAt: -1);
+        store.RemoveThrough(1_000, visitor);
+        await Assert.That(visitor.Visits).IsEqualTo(keys - 5);
+        await Assert.That(store.Count).IsEqualTo(0);
+
+        // A quadratic scan of this window takes seconds; one pass takes milliseconds.
+        await Assert.That(System.Diagnostics.Stopwatch.GetElapsedTime(started)).IsLessThan(TimeSpan.FromSeconds(1));
+    }
+
+    [Test]
     public async Task NullableBytesSerde_TellsNullFromEmpty()
     {
         var serde = NullableBytesSerde.Instance;
@@ -262,6 +289,19 @@ public sealed class StreamsStateTests
         BinaryPrimitives.WriteInt64BigEndian(keyBytes, key);
         BinaryPrimitives.WriteInt64BigEndian(valueBytes, value);
         return new RawRecord(keyBytes, false, valueBytes, false, timestamp, offset: 0, headers: null);
+    }
+
+    private sealed class CountingVisitor(int failAt) : IWindowEntryVisitor
+    {
+        public int Visits { get; private set; }
+
+        public void Visit(ReadOnlyMemory<byte> key, long windowStart, ReadOnlyMemory<byte> value)
+        {
+            if (++Visits == failAt)
+            {
+                throw new InvalidOperationException("visit");
+            }
+        }
     }
 
     private sealed class RecordingVisitor : IWindowEntryVisitor
