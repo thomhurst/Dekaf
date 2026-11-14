@@ -55,6 +55,49 @@ public sealed class InMemoryRebalanceListenerTests
     }
 
     [Test]
+    public async Task MemberJoiningAndLeavingBetweenConsumes_ReportsTheRegainedPartition()
+    {
+        var cluster = CreateCluster(partitions: 2);
+        var firstListener = new RecordingListener();
+        await using var first = CreateConsumer(cluster, "a", firstListener);
+        await using var second = CreateConsumer(cluster, "b", new RecordingListener());
+        first.Subscribe("topic");
+        await first.ConsumeOneAsync(TimeSpan.Zero);
+
+        second.Subscribe("topic");
+        second.Unsubscribe();
+        await first.ConsumeOneAsync(TimeSpan.Zero);
+
+        var events = firstListener.Events;
+        await Assert.That(events).Count().IsEqualTo(3);
+        await Assert.That(events[0]).IsEqualTo("assigned topic-0,topic-1");
+        await Assert.That(events[1]).StartsWith("revoked ");
+        await Assert.That(events[2]).IsEqualTo($"assigned {events[1]["revoked ".Length..]}");
+    }
+
+    [Test]
+    public async Task CloseFromAConsumeTimeCallback_DoesNotWaitForItself()
+    {
+        var cluster = CreateCluster(partitions: 2);
+        var listener = new RecordingListener();
+        var consumer = CreateConsumer(cluster, "a", listener);
+        listener.OnAssigned = () => consumer.CloseAsync();
+        consumer.Subscribe("topic");
+
+        try
+        {
+            await consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        catch (ObjectDisposedException)
+        {
+            // The consume call resumes after the callback and observes the closed consumer.
+        }
+        await consumer.DisposeAsync();
+
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0,topic-1", "revoked topic-0,topic-1"], CollectionOrdering.Matching);
+    }
+
+    [Test]
     public async Task BlockedConsume_ReportsRevocationWhenAnotherMemberJoins()
     {
         var cluster = CreateCluster(partitions: 2);

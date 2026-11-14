@@ -125,6 +125,11 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     // version they were computed at, and an Unsubscribe revocation that completed asynchronously.
     private readonly IRebalanceListener? _rebalanceListener;
     private readonly HashSet<TopicPartition> _listenerAssignment = [];
+    // Ownership token each reported partition had, so a partition lost and regained between consume calls is reported again.
+    private readonly Dictionary<TopicPartition, int> _listenerOwnership = [];
+    // The consumer whose rebalance callback is running on this async flow, so a callback that
+    // closes or unsubscribes does not wait for itself.
+    private static readonly AsyncLocal<object?> s_rebalanceCallbackOwner = new();
     // Set when a transition ends an evicted subscription before the listener saw the loss.
     private bool _listenerAssignmentLost;
     private int _listenerConsumerStateVersion = -1;
@@ -3659,6 +3664,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
 
         List<TopicPartition>? revoked = null;
         List<TopicPartition>? assigned = null;
+        List<(TopicPartition Partition, int Ownership)>? regained = null;
         bool lost;
         TaskCompletionSource delivery;
         lock (_gate)
@@ -3678,7 +3684,19 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             foreach (var partition in _listenerAssignment)
             {
                 if (current is null || !current.Contains(partition))
+                {
                     (revoked ??= []).Add(partition);
+                }
+                else if (_listenerOwnership.TryGetValue(partition, out var reportedOwnership) &&
+                         _assignmentOwnership.TryGetValue(partition, out var ownership) &&
+                         reportedOwnership != ownership)
+                {
+                    // Lost and regained since the last report: its position was reset, so the
+                    // listener sees it revoked and assigned again.
+                    (revoked ??= []).Add(partition);
+                    (assigned ??= []).Add(partition);
+                    (regained ??= []).Add((partition, reportedOwnership));
+                }
             }
 
             if (current is not null)
@@ -3693,7 +3711,14 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             if (revoked is not null)
                 _listenerAssignment.ExceptWith(revoked);
             if (assigned is not null)
+            {
                 _listenerAssignment.UnionWith(assigned);
+                foreach (var partition in assigned)
+                {
+                    if (_assignmentOwnership.TryGetValue(partition, out var ownership))
+                        _listenerOwnership[partition] = ownership;
+                }
+            }
             // Lost partitions cannot be committed; a partition regained before this call kept its offsets.
             foreach (var partition in _listenerAssignment)
                 _departingOffsets.Remove(partition);
@@ -3724,6 +3749,13 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             revocationDelivered = true;
             if (assigned is not null)
             {
+                // A revocation callback that closed or unsubscribed has already revoked everything.
+                lock (_gate)
+                {
+                    if (_leavingGroup || _disposed || !_listenerAssignment.Contains(assigned[0]))
+                        return;
+                }
+
                 await InvokeListenerAsync(
                     static (listener, partitions, token) => listener.OnPartitionsAssignedAsync(partitions, token),
                     listener, assigned, cancellationToken).ConfigureAwait(false);
@@ -3743,6 +3775,15 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 }
                 if (assigned is not null)
                     _listenerAssignment.ExceptWith(assigned);
+                if (!revocationDelivered && regained is not null)
+                {
+                    // A regained partition keeps its old token, so the retry reports it again.
+                    foreach (var (partition, ownership) in regained)
+                    {
+                        _listenerAssignment.Add(partition);
+                        _listenerOwnership[partition] = ownership;
+                    }
+                }
                 _listenerConsumerStateVersion = -1;
             }
             throw;
@@ -3782,12 +3823,14 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     /// Runs a listener callback the way <c>KafkaConsumer</c> does: an exception other than
     /// <see cref="OperationCanceledException"/> is ignored and does not stop consumption.
     /// </summary>
-    private static async ValueTask InvokeListenerAsync(
+    private async ValueTask InvokeListenerAsync(
         Func<IRebalanceListener, IEnumerable<TopicPartition>, CancellationToken, ValueTask> callback,
         IRebalanceListener listener,
         IEnumerable<TopicPartition> partitions,
         CancellationToken cancellationToken)
     {
+        // Flows into the callback only; the async method restores the previous value on return.
+        s_rebalanceCallbackOwner.Value = this;
         try
         {
             await callback(listener, partitions, cancellationToken).ConfigureAwait(false);
@@ -3876,9 +3919,13 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             bool lost,
             CancellationToken cancellationToken)
         {
-            await AwaitPendingRebalanceCallbackAsync(cancellationToken).ConfigureAwait(false);
-            if (Volatile.Read(ref _activeRebalanceDelivery) is { } delivery)
-                await delivery.WaitAsync(cancellationToken).ConfigureAwait(false);
+            // A callback that closes or unsubscribes must not wait for its own completion.
+            if (!ReferenceEquals(s_rebalanceCallbackOwner.Value, this))
+            {
+                await AwaitPendingRebalanceCallbackAsync(cancellationToken).ConfigureAwait(false);
+                if (Volatile.Read(ref _activeRebalanceDelivery) is { } delivery)
+                    await delivery.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
             if (revoked.Length == 0)
                 return;
 
