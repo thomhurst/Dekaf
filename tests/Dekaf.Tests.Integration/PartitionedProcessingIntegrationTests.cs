@@ -190,6 +190,71 @@ public sealed class PartitionedProcessingIntegrationTests(KafkaTestContainer kaf
             .IsEqualTo(recordCount);
     }
 
+    [Test]
+    public async Task RunPartitionedAsync_ConsumerWithoutGroup_StopsOnCancellationWithoutCommitting()
+    {
+        const int recordCount = 3;
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+
+        await using (var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync())
+        {
+            for (var offset = 0; offset < recordCount; offset++)
+            {
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Partition = 0,
+                    Key = $"key-{offset}",
+                    Value = $"value-{offset}"
+                }, CancellationToken.None);
+            }
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithQueuedMinMessages(1)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        consumer.Assign(new TopicPartition(topic, 0));
+
+        var processed = new ConcurrentQueue<long>();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, cancellationToken) =>
+            {
+                await foreach (var message in context.Messages.WithCancellation(cancellationToken))
+                {
+                    processed.Enqueue(message.Offset);
+                    context.MarkProcessed(message);
+                    if (processed.Count >= recordCount)
+                        await cts.CancelAsync().ConfigureAwait(false);
+                }
+            },
+            new PartitionedProcessingOptions
+            {
+                CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
+                CommitInterval = TimeSpan.FromMilliseconds(10)
+            },
+            cts.Token).AsTask();
+
+        // Without a group there is nothing to commit to: the run ends on cancellation
+        // instead of failing in a periodic or stop commit.
+        try
+        {
+            await runTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+        }
+
+        await Assert.That(processed.ToArray()).IsEquivalentTo([0L, 1L, 2L]);
+    }
+
     private static TaskCompletionSource NewCompletionSource()
         => new(TaskCreationOptions.RunContinuationsAsynchronously);
 

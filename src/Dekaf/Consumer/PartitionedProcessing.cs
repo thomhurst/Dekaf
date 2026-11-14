@@ -900,6 +900,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     private readonly object _failureGate = new();
     private ExceptionDispatchInfo? _failure;
     private DateTimeOffset _nextPeriodicCommit;
+    // A consumer without a group has nowhere to commit, so the runtime skips its own commits.
+    // Consumers that do not report their configuration are assumed to have a group.
+    private readonly bool _hasConsumerGroup;
 
     public PartitionedConsumerRuntime(
         IKafkaConsumer<TKey, TValue> consumer,
@@ -918,6 +921,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             SingleWriter = false
         });
         _nextPeriodicCommit = DateTimeOffset.UtcNow.Add(_options.CommitInterval);
+        _hasConsumerGroup = consumer is not IConsumerCommitConfiguration { HasConsumerGroup: false };
         _limits = options.CreateLimits(
             () => Volatile.Read(ref _capacitySignal)?.Signal(),
             () => TryQueueCommand(RuntimeCommand<TKey, TValue>.ResumeBudgetPaused()));
@@ -2272,7 +2276,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
     private async ValueTask CommitPeriodicallyAsync(CancellationToken cancellationToken)
     {
-        if (_options.CommitPolicy != PartitionCommitPolicy.CommitCompletedPeriodically)
+        if (_options.CommitPolicy != PartitionCommitPolicy.CommitCompletedPeriodically || !_hasConsumerGroup)
             return;
 
         var now = DateTimeOffset.UtcNow;
@@ -2476,7 +2480,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             or ErrorCode.UnknownMemberId
             or ErrorCode.StaleMemberEpoch;
 
-    private bool ShouldCommitOnPartitionStop() => _options.IsRuntimeManagedCommitPolicy;
+    private bool ShouldCommitOnPartitionStop() => _options.IsRuntimeManagedCommitPolicy && _hasConsumerGroup;
 
     private int RecordIgnoreRestartFailure(TopicPartition partition)
     {

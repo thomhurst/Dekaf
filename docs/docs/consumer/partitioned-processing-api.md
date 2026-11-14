@@ -302,6 +302,12 @@ warning and keeps running: the consumer reports the partitions through
 from the last successful commit. A commit you request with
 `CommitProcessedAsync` still throws the `GroupException` to your handler.
 
+A consumer without a group ID (manual assignment with offsets kept in your own
+storage) has nowhere to commit, so the runtime skips its revoke, seek, periodic
+and shutdown commits and the run ends on cancellation as usual. `MarkProcessed`
+still tracks progress, and `CommitProcessedAsync` throws
+`InvalidOperationException` because the consumer cannot commit.
+
 Auto commit mode with automatic offset store (`OffsetCommitMode.Auto` +
 `EnableAutoOffsetStore = true`, the consumer defaults) stages offsets based on
 consume-loop progress. The partitioned runtime pulls records off the loop and
