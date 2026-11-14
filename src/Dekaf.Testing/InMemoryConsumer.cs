@@ -1276,7 +1276,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 : new AggregateException(failure, ex);
         }
 
-        if (listenerFailure is not null)
+        // A listener cancelled by the close token is the same cancellation as close's own.
+        if (listenerFailure is not null
+            && !(listenerFailure is OperationCanceledException && failure is OperationCanceledException))
         {
             failure = failure is null
                 ? listenerFailure

@@ -110,6 +110,34 @@ public sealed class InMemoryRebalanceListenerTests
     }
 
     [Test]
+    public async Task Close_CancelledDuringRevocationIsCancelledNotFaulted()
+    {
+        var cluster = CreateCluster(partitions: 1);
+        await ProduceAsync(cluster, 1);
+        using var cancellation = new CancellationTokenSource();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var listener = new RecordingListener
+        {
+            OnRevoked = async () =>
+            {
+                started.SetResult();
+                await Task.Delay(Timeout.Infinite, cancellation.Token);
+            }
+        };
+        var consumer = CreateConsumer(cluster, "a", listener);
+        consumer.Subscribe("topic");
+        await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        var close = consumer.CloseAsync(cancellation.Token).AsTask();
+        await started.Task;
+        cancellation.Cancel();
+        var failure = await Assert.ThrowsAsync<OperationCanceledException>(() => close);
+
+        await Assert.That(failure!.CancellationToken).IsEqualTo(cancellation.Token);
+        await consumer.DisposeAsync();
+    }
+
+    [Test]
     public async Task Unsubscribe_AsynchronousRevocationStillCommitsDepartingOffsets()
     {
         var cluster = CreateCluster(partitions: 1);
