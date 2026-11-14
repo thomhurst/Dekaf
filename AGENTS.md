@@ -43,6 +43,7 @@ dotnet test --project tests/Dekaf.Tests.Unit --configuration Release --framework
 dotnet test --project tests/Dekaf.Tests.Integration --configuration Release --framework net10.0
 ```
 
+- Add a project to the solution with `dotnet sln Dekaf.sln add --include-references false <project>`. Without that flag, SDK 11 also tries to add the project's references, stops at the first one already in the solution (`Solution folder 'src' already contains a project with the filename 'Dekaf.csproj'`), and writes nothing ([dotnet/sdk#53825](https://github.com/dotnet/sdk/issues/53825)).
 - TUnit uses `--treenode-filter "/*/*/ClassName/TestName"` with `/<Assembly>/<Namespace>/<Class>/<Test>` segments. With MTP, use `--project` and pass test options directly, without an extra `--` or VSTest's `--filter`.
 - Wildcards and segment-local OR are supported: `/*/*/(ClassA|ClassB)/*`. Use separate commands for different path shapes. Built test executables also accept these options.
 - Features require TUnit unit tests; client behavior changes require integration tests; performance changes require benchmarks only as [Performance requirements](#performance-requirements) defines.
