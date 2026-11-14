@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- MTP cannot yet select covering tests per mutant, so keep this campaign protocol-only. -->
+    <!-- With coverage-analysis "all", every surviving mutant runs this whole suite, so keep this campaign protocol-only. -->
     <Compile Include="..\Dekaf.Tests.Unit\AssemblyInfo.cs" Link="AssemblyInfo.cs" />
     <!-- Module initializers configure the whole Dekaf.Tests.Unit host (thread pool, test-only switches);
          link all of them so the linked suites run as they do in the unit project. -->

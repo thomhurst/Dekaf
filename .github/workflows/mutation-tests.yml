@@ -36,10 +36,27 @@ jobs:
             config: stryker-config.json
           # Producer campaign split per mutated file so the legs run on
           # parallel runners; --mutate overrides the config's combined list.
-          - campaign: producer-accumulator
+          # RecordAccumulator.cs has about 2900 tested mutants, more than one
+          # runner finishes in the job timeout, so it is split again into
+          # member-aligned character spans (.github/scripts/mutation_shard.py).
+          - campaign: producer-accumulator-1
             project_dir: src/Dekaf
             config: stryker-producer-config.json
-            extra_args: --mutate "Producer/RecordAccumulator.cs"
+            shard_file: Producer/RecordAccumulator.cs
+            shard: 1
+            shards: 3
+          - campaign: producer-accumulator-2
+            project_dir: src/Dekaf
+            config: stryker-producer-config.json
+            shard_file: Producer/RecordAccumulator.cs
+            shard: 2
+            shards: 3
+          - campaign: producer-accumulator-3
+            project_dir: src/Dekaf
+            config: stryker-producer-config.json
+            shard_file: Producer/RecordAccumulator.cs
+            shard: 3
+            shards: 3
           - campaign: producer-sender
             project_dir: src/Dekaf
             config: stryker-producer-config.json
@@ -101,11 +118,18 @@ jobs:
 
       - name: Run focused mutation tests
         working-directory: ${{ matrix.project_dir }}
-        run: >-
-          dotnet stryker
-          --config-file "${{ matrix.config }}"
-          ${{ matrix.extra_args }}
-          --output "${{ github.workspace }}/artifacts/mutation/${{ matrix.campaign }}"
+        env:
+          SHARD_FILE: ${{ matrix.shard_file }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ matrix.shards }}
+        run: |
+          args=(--config-file "${{ matrix.config }}" --output "${{ github.workspace }}/artifacts/mutation/${{ matrix.campaign }}")
+          if [ -n "$SHARD_FILE" ]; then
+            pattern=$(python3 "${{ github.workspace }}/.github/scripts/mutation_shard.py" . "$SHARD_FILE" "$SHARD" "$SHARDS")
+            echo "Mutating $pattern"
+            args+=(--mutate "$pattern")
+          fi
+          dotnet stryker "${args[@]}" ${{ matrix.extra_args }}
 
       - name: Report trend and enforce large-drop gate
         env:

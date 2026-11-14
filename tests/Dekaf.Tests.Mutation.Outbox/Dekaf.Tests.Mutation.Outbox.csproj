@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- MTP cannot yet select covering tests per mutant, so every surviving mutant runs this whole
+    <!-- With coverage-analysis "all", every surviving mutant runs this whole
          suite: link only the pure lease-planning and fair-share suites, which need no store. -->
     <Compile Include="..\Dekaf.Tests.Unit\AssemblyInfo.cs" Link="AssemblyInfo.cs" />
     <!-- Module initializers configure the whole Dekaf.Tests.Unit host (thread pool, test-only switches);
