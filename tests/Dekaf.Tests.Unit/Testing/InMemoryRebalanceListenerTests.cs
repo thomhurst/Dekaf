@@ -134,6 +134,23 @@ public sealed class InMemoryRebalanceListenerTests
     }
 
     [Test]
+    public async Task Unsubscribe_CancelledRevocationDropsDepartingOffsets()
+    {
+        var cluster = CreateCluster(partitions: 1);
+        await ProduceAsync(cluster, 2);
+        var listener = new RecordingListener { OnRevoked = static () => throw new OperationCanceledException() };
+        await using var consumer = CreateConsumer(cluster, "a", listener, OffsetCommitMode.Manual);
+        consumer.Subscribe("topic");
+        await Assert.That((await consumer.ConsumeOneAsync(TimeSpan.Zero))!.Value.Offset).IsEqualTo(0);
+
+        consumer.Unsubscribe();
+        await consumer.CommitAsync();
+
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0"], CollectionOrdering.Matching);
+        await Assert.That(cluster.GetCommittedOffset("group", Partition0)).IsNull();
+    }
+
+    [Test]
     public async Task MemberJoining_ListenerCommitIncludesRevokedPartitionOffsets()
     {
         var cluster = CreateCluster(partitions: 2);

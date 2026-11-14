@@ -3795,7 +3795,18 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             }
             else
             {
-                await RevokeListenerPartitionsAsync(listener, revoked, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await RevokeListenerPartitionsAsync(listener, revoked, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Leaving the group never retries the callback, so its offsets must not
+                    // stay committable.
+                    lock (_gate)
+                        RemoveDepartingOffsetsUnderLock(revoked);
+                    throw;
+                }
             }
         }
     }
