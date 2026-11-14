@@ -232,20 +232,95 @@ public sealed class Headers : IReadOnlyList<Header>
     /// </summary>
     public Headers Remove(string key)
     {
-        if (_serializationSource is not null && ContainsSerializationHeader(key))
+        RemoveMatching(new KeyMatcher(key));
+        return this;
+    }
+
+    /// <summary>
+    /// Removes every header for which <paramref name="predicate"/> returns <see langword="true"/>,
+    /// in a single pass over the collection.
+    /// </summary>
+    /// <remarks>
+    /// The predicate is called once per header and receives <paramref name="state"/>, so a static
+    /// lambda can be used without allocating a closure. Retained headers keep their order.
+    /// The predicate must not modify this collection.
+    /// </remarks>
+    /// <typeparam name="TState">The type of the caller-supplied state.</typeparam>
+    /// <param name="predicate">Returns <see langword="true"/> for headers to remove.</param>
+    /// <param name="state">State passed to every <paramref name="predicate"/> call.</param>
+    /// <returns>This headers collection.</returns>
+    public Headers RemoveAll<TState>(Func<Header, TState, bool> predicate, TState state)
+    {
+#if NETSTANDARD2_0
+        if (predicate is null)
+            throw new ArgumentNullException(nameof(predicate));
+#else
+        ArgumentNullException.ThrowIfNull(predicate);
+#endif
+
+        RemoveMatching(new PredicateMatcher<TState>(predicate, state));
+        return this;
+    }
+
+    private void RemoveMatching<TMatcher>(TMatcher matcher)
+        where TMatcher : struct, IHeaderMatcher
+    {
+        if (_serializationSource is not null)
         {
-            MaterializeWithout(key);
-            return this;
+            var firstMatch = FindFirstSerializationMatch(ref matcher);
+            if (firstMatch >= 0)
+                MaterializeWithout(ref matcher, firstMatch);
+            return;
         }
 
-        // Manual loop to avoid closure allocation from RemoveAll predicate
-        for (var i = _headers.Count - 1; i >= 0; i--)
+        RemoveMatchingHeaders(ref matcher);
+        RemoveStagedHeaders(ref matcher);
+    }
+
+    private void RemoveMatchingHeaders<TMatcher>(ref TMatcher matcher)
+        where TMatcher : struct, IHeaderMatcher
+    {
+        var count = _headers.Count;
+        var first = 0;
+        while (first < count && !matcher.IsMatch(_headers[first]))
+            first++;
+        if (first == count)
+            return;
+
+        var traceparentIndex = _deferredTraceparentIndex;
+        var tracestateIndex = _deferredTracestateIndex;
+        var keySchemaIdentityIndex = _keySchemaIdentityIndex;
+        var valueSchemaIdentityIndex = _valueSchemaIdentityIndex;
+        var newTraceparentIndex = traceparentIndex < first ? traceparentIndex : -1;
+        var newTracestateIndex = tracestateIndex < first ? tracestateIndex : -1;
+        if (keySchemaIdentityIndex >= first)
+            _keySchemaIdentityIndex = -1;
+        if (valueSchemaIdentityIndex >= first)
+            _valueSchemaIdentityIndex = -1;
+
+        var retained = first;
+        for (var index = first + 1; index < count; index++)
         {
-            if (_headers[i].Key == key)
-                RemoveAt(i);
+            var header = _headers[index];
+            if (matcher.IsMatch(header))
+                continue;
+
+            _headers[retained] = header;
+            if (index == traceparentIndex)
+                newTraceparentIndex = retained;
+            else if (index == tracestateIndex)
+                newTracestateIndex = retained;
+            TrackSchemaIdentityCandidate(header.Key, retained);
+            retained++;
         }
-        RemoveStagedHeaders(key);
-        return this;
+
+        _headers.RemoveRange(retained, count - retained);
+        _deferredTraceparentIndex = newTraceparentIndex;
+        _deferredTracestateIndex = newTracestateIndex;
+        if (keySchemaIdentityIndex >= first && _keySchemaIdentityIndex < 0)
+            _keySchemaIdentityIndex = FindLastSchemaIdentityIndex(KeySchemaIdentityHeader, first);
+        if (valueSchemaIdentityIndex >= first && _valueSchemaIdentityIndex < 0)
+            _valueSchemaIdentityIndex = FindLastSchemaIdentityIndex(ValueSchemaIdentityHeader, first);
     }
 
     /// <summary>
@@ -539,19 +614,21 @@ public sealed class Headers : IReadOnlyList<Header>
             ValueSchemaIdentityHeader);
     }
 
-    private bool ContainsSerializationHeader(string key)
+    private int FindFirstSerializationMatch<TMatcher>(ref TMatcher matcher)
+        where TMatcher : struct, IHeaderMatcher
     {
         var count = SerializationCount;
         for (var index = 0; index < count; index++)
         {
-            if (GetSerializationHeader(index).Key == key)
-                return true;
+            if (matcher.IsMatch(GetSerializationHeader(index)))
+                return index;
         }
-        return false;
+        return -1;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private void MaterializeWithout(string key)
+    private void MaterializeWithout<TMatcher>(ref TMatcher matcher, int firstMatch)
+        where TMatcher : struct, IHeaderMatcher
     {
         var count = SerializationCount;
         var source = _serializationSource!;
@@ -565,7 +642,7 @@ public sealed class Headers : IReadOnlyList<Header>
         for (var index = 0; index < count; index++)
         {
             var header = GetSerializationHeader(index);
-            if (header.Key == key)
+            if (index == firstMatch || (index > firstMatch && matcher.IsMatch(header)))
                 continue;
 
             var materializedIndex = _headers.Count;
@@ -585,14 +662,15 @@ public sealed class Headers : IReadOnlyList<Header>
         _stagingRecordHeaders = true;
     }
 
-    private void RemoveStagedHeaders(string key)
+    private void RemoveStagedHeaders<TMatcher>(ref TMatcher matcher)
+        where TMatcher : struct, IHeaderMatcher
     {
         var count = _stagedHeaderCount;
         var retained = 0;
         for (var index = 0; index < count; index++)
         {
             var header = GetStagedHeader(index);
-            if (header.Key != key)
+            if (!matcher.IsMatch(header))
                 SetStagedHeader(retained++, header);
         }
         if (retained == count)
@@ -604,6 +682,24 @@ public sealed class Headers : IReadOnlyList<Header>
         if (retained <= 2)
             ReturnStagedHeaderOverflow();
         RebuildStagedSchemaIdentityIndexes();
+    }
+
+    private interface IHeaderMatcher
+    {
+        bool IsMatch(Header header);
+    }
+
+    private readonly struct KeyMatcher(string key) : IHeaderMatcher
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool IsMatch(Header header) => header.Key == key;
+    }
+
+    private readonly struct PredicateMatcher<TState>(Func<Header, TState, bool> predicate, TState state)
+        : IHeaderMatcher
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool IsMatch(Header header) => predicate(header, state);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

@@ -944,3 +944,4 @@ Dekaf.Consumer.PartitionedProcessingMonitor.PartitionedProcessingMonitor() -> vo
 Dekaf.Consumer.PartitionedProcessingOptions.Monitor.get -> Dekaf.Consumer.PartitionedProcessingMonitor?
 Dekaf.Consumer.PartitionedProcessingOptions.Monitor.init -> void
 Dekaf.Consumer.ConsumeResult<TKey, TValue>.TryGetHeader(string! key, out Dekaf.Serialization.Header header) -> bool
+Dekaf.Serialization.Headers.RemoveAll<TState>(System.Func<Dekaf.Serialization.Header, TState, bool>! predicate, TState state) -> Dekaf.Serialization.Headers! (forwarded, contained in Dekaf.Abstractions)
