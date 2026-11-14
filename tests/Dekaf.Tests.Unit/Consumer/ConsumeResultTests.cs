@@ -543,6 +543,92 @@ public class ConsumeResultTests
         }
     }
 
+    [Test]
+    public async Task TryGetHeader_PooledHeaders_ReturnsFirstMatchWithoutCopying()
+    {
+        var backing = "abcdef"u8.ToArray();
+        Header[] pooledHeaders =
+        [
+            new("ce_id", backing.AsMemory(0, 3)),
+            new("nullable", ReadOnlyMemory<byte>.Empty, isNull: true),
+            new("ce_id", backing.AsMemory(3, 3))
+        ];
+        using var pending = CreatePendingFetchData(pooledHeaders);
+        pending.EagerParseAll();
+        pending.MoveNext();
+        var result = CreatePooledResult(pooledHeaders, pending);
+
+        var found = result.TryGetHeader("ce_id", out var header);
+        var nullFound = result.TryGetHeader("nullable", out var nullHeader);
+        var missing = result.TryGetHeader("attempts", out var missingHeader);
+        "zzz"u8.CopyTo(backing);
+
+        await Assert.That(found).IsTrue();
+        await Assert.That(header.GetValueAsString()).IsEqualTo("zzz");
+        await Assert.That(nullFound).IsTrue();
+        await Assert.That(nullHeader.IsValueNull).IsTrue();
+        await Assert.That(missing).IsFalse();
+        await Assert.That(missingHeader).IsEqualTo(default(Header));
+        await Assert.That(MeasureLookupAllocations(result)).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task TryGetHeader_AfterFetchDisposed_ThrowsObjectDisposedException()
+    {
+        Header[] pooledHeaders = [new("ce_id", "abc"u8.ToArray())];
+        var pending = CreatePendingFetchData(pooledHeaders);
+        pending.EagerParseAll();
+        pending.MoveNext();
+        var result = CreatePooledResult(pooledHeaders, pending);
+        pending.Dispose();
+
+        await Assert.That(() => result.TryGetHeader("ce_id", out _)).Throws<ObjectDisposedException>();
+    }
+
+    [Test]
+    public async Task TryGetHeader_CallerOwnedHeaders_SearchesList()
+    {
+        IReadOnlyList<Header> headers = new List<Header> { new("ce_type", "t"u8.ToArray()) };
+        var result = ConsumeResult<string, string>.CreateWithCallerOwnedHeaders(
+            "topic", 0, 1, default, true, default, true, headers,
+            0, TimestampType.CreateTime, null, Serializers.String, Serializers.String, deferHeaderSnapshot: true);
+
+        await Assert.That(result.TryGetHeader("ce_type", out var header)).IsTrue();
+        await Assert.That(header.GetValueAsString()).IsEqualTo("t");
+        await Assert.That(result.TryGetHeader("ce_id", out _)).IsFalse();
+    }
+
+    private static ConsumeResult<string, string> CreatePooledResult(Header[] pooledHeaders, PendingFetchData pending) =>
+        new(
+            topic: "test-topic",
+            partition: 0,
+            offset: 0,
+            keyData: default,
+            isKeyNull: true,
+            valueData: default,
+            isValueNull: true,
+            pooledHeaders: pooledHeaders,
+            pooledHeaderCount: pooledHeaders.Length,
+            headerOwner: pending,
+            timestampMs: 0,
+            timestampType: TimestampType.CreateTime,
+            leaderEpoch: null,
+            keyDeserializer: null,
+            valueDeserializer: null);
+
+    private static long MeasureLookupAllocations(ConsumeResult<string, string> result)
+    {
+        _ = result.TryGetHeader("ce_id", out _);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 100; i++)
+        {
+            _ = result.TryGetHeader("ce_id", out _);
+            _ = result.TryGetHeader("attempts", out _);
+        }
+
+        return GC.GetAllocatedBytesForCurrentThread() - before;
+    }
+
     private static PendingFetchData CreatePendingFetchData(Header[] headers)
     {
         var batch = new RecordBatch

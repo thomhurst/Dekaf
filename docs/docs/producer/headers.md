@@ -109,18 +109,19 @@ await foreach (var message in consumer.ConsumeAsync(ct))
         Console.WriteLine($"{header.Key}: {header.GetValueAsString()}");
     }
 
-    // Or get a specific header (loop, not LINQ, to stay allocation-free)
-    string? traceId = null;
-    foreach (var header in message.Headers)
+    // Or look up a specific header without copying the headers
+    if (message.TryGetHeader("trace-id", out var traceId) && !traceId.IsValueNull)
     {
-        if (header.Key == "trace-id")
-        {
-            traceId = header.GetValueAsString();
-            break;
-        }
+        Console.WriteLine(traceId.GetValueAsString());
     }
 }
 ```
+
+`Headers` copies the record's headers into a snapshot the first time you index or enumerate it, so
+the list stays valid after the consumer moves on. `TryGetHeader` returns the first header with the key
+without copying or allocating, but its value borrows the fetch's buffers: use it before the consumer
+advances past the record's batch, and copy the value (for example with `GetValueAsArray()`) if you
+need to keep it. It throws `ObjectDisposedException` once the batch has been released.
 
 ## Common Header Patterns
 
