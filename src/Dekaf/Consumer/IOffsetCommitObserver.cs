@@ -71,8 +71,11 @@ public readonly struct OffsetCommitObservation(
     /// <c>WithAutoOffsetStore(false)</c>, the count is the offsets the application stored
     /// (<c>StoreOffset</c> and <c>StoreOffsets</c>, one per stored offset) for the committed
     /// partitions since the previous successful commit of each. A failed commit's count is reported
-    /// again by the next commit of those partitions. With automatic offset storage the consumer
-    /// stores offsets itself without counting records, and these commits report zero.
+    /// again by the next commit of those partitions. The count is read when the commit starts, so
+    /// commits that overlap (an automatic commit sent while a revoke commit or your own
+    /// <c>CommitAsync</c> is in flight) can each count the same stores. With automatic offset
+    /// storage the consumer stores offsets itself without counting records, and these commits
+    /// report zero.
     /// </para>
     /// </remarks>
     public long CompletedRecordCount { get; } = completedRecordCount;

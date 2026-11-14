@@ -259,7 +259,9 @@ offsets, so compacted offsets and transaction markers add nothing. When a commit
 the next commit of those partitions reports its count again. Your own `CommitAsync`
 calls are not observed, but they do end the count for the stores they commit: a
 `CommitAsync(offsets)` call ends a partition's count when it commits that partition's
-stored offset or a later one.
+stored offset or a later one. The count is read when a commit starts, so commits that
+overlap, such as an automatic commit sent while a revoke commit or your own
+`CommitAsync` call is still in flight, can each count the same stores.
 
 With automatic offset storage, `CompletedRecordCount` is zero: the consumer stores
 offsets itself, by default once per fetch rather than once per record, so it has no
