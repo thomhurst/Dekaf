@@ -198,7 +198,7 @@ public class PartitionedCompletionStorageTests
         var record = Deliver(lane, batch, 10);
         try
         {
-            await Assert.That(() => batch.PrepareRecord(10)).Throws<ArgumentOutOfRangeException>();
+            await Assert.That(() => batch.PrepareRecord(10, 2)).Throws<ArgumentOutOfRangeException>();
         }
         finally
         {

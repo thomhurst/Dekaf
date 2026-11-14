@@ -194,6 +194,7 @@ public static class PartitionedConsumerExtensions
         var handlerContext = new PartitionRecordProcessorContext<TKey, TValue>(context);
         var progress = context.EnableAutomaticCompletion();
         var slot = context.CreateHandlerSlotWaiter();
+        var completedRecords = 0L;
 
         while (await context.WaitToReadMessageAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -227,7 +228,7 @@ public static class PartitionedConsumerExtensions
                     if (!message.IsPartitionEof)
                     {
                         progress.MarkProcessed(message.Offset);
-                        progress.Publish(message.Offset + 1, message.LeaderEpoch ?? -1);
+                        progress.Publish(message.Offset + 1, message.LeaderEpoch ?? -1, ++completedRecords);
                     }
                 }
                 finally
@@ -249,6 +250,7 @@ public static class PartitionedConsumerExtensions
         var batch = new PartitionRecordBatch<TKey, TValue>(options.MaxHandlerBatchSize);
         var progress = context.EnableAutomaticCompletion();
         var slot = context.CreateHandlerSlotWaiter();
+        var completedRecords = 0L;
 
         while (await context.WaitToReadMessageAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -289,10 +291,11 @@ public static class PartitionedConsumerExtensions
                         progress.MarkProcessed(records[i].Offset);
                         completedOffset = records[i].Offset + 1;
                         leaderEpoch = records[i].LeaderEpoch ?? -1;
+                        completedRecords++;
                     }
                 }
                 if (completedOffset >= 0)
-                    progress.Publish(completedOffset, leaderEpoch);
+                    progress.Publish(completedOffset, leaderEpoch, completedRecords);
             }
             finally
             {
@@ -1326,7 +1329,8 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         CancellationToken cancellationToken)
     {
         var offset = target;
-        var completed = lane?.GetCommitOffset();
+        var completedRecords = 0L;
+        var completed = lane?.GetCommitOffset(out completedRecords);
         if (completed is { } value && value.Offset < target.Offset)
         {
             if (lane!.GetUncommittedOffset() is null)
@@ -1334,6 +1338,12 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
             offset = value;
         }
+
+        // Only a commit at the completed frontier has a tracked record count. Committing any other
+        // seek target reports zero: completed records below an arbitrary offset are not counted.
+        var newlyCompleted = completed is { } frontier && frontier.Offset == offset.Offset
+            ? GetNewlyCompletedRecords(lane!, completedRecords)
+            : 0L;
 
         using var commitCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         if (_options.StopTimeout != Timeout.InfiniteTimeSpan)
@@ -1352,7 +1362,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
                     return;
             }
 
-            await CommitRuntimeOffsetsAsync([offset], OffsetCommitReason.Seek, commitCancellation.Token)
+            await CommitRuntimeOffsetsAsync([offset], newlyCompleted, OffsetCommitReason.Seek, commitCancellation.Token)
                 .ConfigureAwait(false);
         }
         catch (GroupException exception) when (IsMembershipLoss(exception))
@@ -2262,11 +2272,11 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
         _nextPeriodicCommit = now.Add(_options.CommitInterval);
 
-        List<(PartitionLane<TKey, TValue> Lane, TopicPartitionOffset Offset)>? pending = null;
+        List<(PartitionLane<TKey, TValue> Lane, TopicPartitionOffset Offset, long CompletedRecords)>? pending = null;
         foreach (var lane in _lanes.Values)
         {
-            if (lane.GetUncommittedOffset() is { } offset)
-                (pending ??= []).Add((lane, offset));
+            if (lane.GetUncommittedOffset(out var completedRecords) is { } offset)
+                (pending ??= []).Add((lane, offset, completedRecords));
         }
 
         if (pending is not null)
@@ -2282,11 +2292,11 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         PartitionLane<TKey, TValue>?[] lanes,
         CancellationToken cancellationToken)
     {
-        List<(PartitionLane<TKey, TValue> Lane, TopicPartitionOffset Offset)>? pending = null;
+        List<(PartitionLane<TKey, TValue> Lane, TopicPartitionOffset Offset, long CompletedRecords)>? pending = null;
         foreach (var lane in lanes)
         {
-            if (lane is not null && lane.GetUncommittedOffset() is { } offset)
-                (pending ??= []).Add((lane, offset));
+            if (lane is not null && lane.GetUncommittedOffset(out var completedRecords) is { } offset)
+                (pending ??= []).Add((lane, offset, completedRecords));
         }
 
         if (pending is null)
@@ -2314,17 +2324,21 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     }
 
     private async ValueTask CommitPendingOffsetsAsync(
-        List<(PartitionLane<TKey, TValue> Lane, TopicPartitionOffset Offset)> pending,
+        List<(PartitionLane<TKey, TValue> Lane, TopicPartitionOffset Offset, long CompletedRecords)> pending,
         OffsetCommitReason reason,
         CancellationToken cancellationToken)
     {
         var offsets = new TopicPartitionOffset[pending.Count];
+        var newlyCompleted = 0L;
         for (var i = 0; i < offsets.Length; i++)
+        {
             offsets[i] = pending[i].Offset;
+            newlyCompleted += GetNewlyCompletedRecords(pending[i].Lane, pending[i].CompletedRecords);
+        }
 
         try
         {
-            await CommitRuntimeOffsetsAsync(offsets, reason, cancellationToken).ConfigureAwait(false);
+            await CommitRuntimeOffsetsAsync(offsets, newlyCompleted, reason, cancellationToken).ConfigureAwait(false);
         }
         catch (GroupException exception) when (IsMembershipLoss(exception))
         {
@@ -2334,8 +2348,8 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             return;
         }
 
-        foreach (var (lane, offset) in pending)
-            lane.MarkCommitted(offset.Offset);
+        foreach (var (lane, offset, completedRecords) in pending)
+            lane.MarkCommitted(offset.Offset, completedRecords);
     }
 
     // skipUnchanged applies only to runtime-managed commits. A handler's CommitProcessedAsync always
@@ -2346,15 +2360,29 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         bool skipUnchanged = false,
         OffsetCommitReason reason = OffsetCommitReason.Stop)
     {
-        if ((skipUnchanged ? lane.GetUncommittedOffset() : lane.GetCommitOffset()) is not { } offset)
+        var completedRecords = 0L;
+        if ((skipUnchanged ? lane.GetUncommittedOffset(out completedRecords) : lane.GetCommitOffset(out completedRecords)) is not { } offset)
             return;
 
         if (skipUnchanged)
-            await CommitRuntimeOffsetsAsync([offset], reason, cancellationToken).ConfigureAwait(false);
+        {
+            await CommitRuntimeOffsetsAsync(
+                [offset],
+                GetNewlyCompletedRecords(lane, completedRecords),
+                reason,
+                cancellationToken).ConfigureAwait(false);
+        }
         else
+        {
             await _consumer.CommitAsync([offset], cancellationToken).ConfigureAwait(false);
-        lane.MarkCommitted(offset.Offset);
+        }
+
+        lane.MarkCommitted(offset.Offset, completedRecords);
     }
+
+    // A commit that finished meanwhile may already cover more than this snapshot; report no negative count.
+    private static long GetNewlyCompletedRecords(PartitionLane<TKey, TValue> lane, long completedRecords)
+        => Math.Max(0, completedRecords - lane.CommittedRecords);
 
     /// <summary>
     /// Sends a commit the runtime decided on, wrapped in the configured observer's callbacks.
@@ -2362,6 +2390,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     /// </summary>
     private async ValueTask CommitRuntimeOffsetsAsync(
         TopicPartitionOffset[] offsets,
+        long completedRecords,
         OffsetCommitReason reason,
         CancellationToken cancellationToken)
     {
@@ -2373,7 +2402,10 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         }
 
         // Read-only view: the observer must not be able to change what gets committed.
-        var observation = new OffsetCommitObservation(reason, new System.Collections.ObjectModel.ReadOnlyCollection<TopicPartitionOffset>(offsets));
+        var observation = new OffsetCommitObservation(
+            reason,
+            new System.Collections.ObjectModel.ReadOnlyCollection<TopicPartitionOffset>(offsets),
+            completedRecords);
         object? state = null;
         try
         {
@@ -2595,6 +2627,11 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     private long? _lastProcessedOffset;
     private int _lastCommittedLeaderEpoch = -1;
     private long _committedOffset = -1;
+    // Completed-record counts: records the lane delivered below the frontier, all of them completed.
+    // _enqueuedRecords is written only by the runtime loop; _completedRecords under _completedRanges.
+    private long _enqueuedRecords;
+    private long _completedRecords;
+    private long _committedRecords;
     private AutomaticPartitionProgress? _automaticProgress;
     private TopicPartitionOffset? _firstUndeliveredOffset;
     private readonly PartitionedProcessingMonitor? _monitor;
@@ -2835,7 +2872,7 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
         if (completionBatch is not null && Volatile.Read(ref _automaticProgress) is not null)
             completionBatch = null;
         var isEof = result.IsPartitionEof;
-        var index = isEof || completionBatch is null ? 0 : completionBatch.PrepareRecord(_lastEnqueuedOffset);
+        var index = isEof || completionBatch is null ? 0 : completionBatch.PrepareRecord(_lastEnqueuedOffset, _enqueuedRecords + 1);
         var queued = result with { ProcessingIndex = index, ProcessingBatch = completionBatch };
         if (!_channel.Writer.TryWrite(queued))
         {
@@ -2847,6 +2884,7 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
         if (!isEof)
         {
             completionBatch?.PublishRecord();
+            _enqueuedRecords++;
             // Monitor reads race this write; the volatile store keeps it atomic on 32-bit runtimes.
             Volatile.Write(ref _lastEnqueuedOffset, result.Offset);
         }
@@ -2947,11 +2985,12 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
             if (node.Height != -1)
                 return;
             if (_completedRanges.Complete(completionBatch, node, message.Offset,
-                    message.LeaderEpoch ?? -1, _lastCompletedOffset, out var completed, out var epoch))
+                    message.LeaderEpoch ?? -1, _lastCompletedOffset, out var completed, out var epoch, out var completedRecords))
             {
                 _lastCompletedOffset = completed;
                 _completedOffset = completed + 1;
                 _lastCommittedLeaderEpoch = epoch;
+                _completedRecords = completedRecords;
             }
         }
     }
@@ -2959,37 +2998,62 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     /// <summary>
     /// Returns the commit offset when it is ahead of the last offset this lane committed.
     /// </summary>
-    public TopicPartitionOffset? GetUncommittedOffset()
+    public TopicPartitionOffset? GetUncommittedOffset() => GetUncommittedOffset(out _);
+
+    /// <summary>
+    /// Returns the commit offset when it is ahead of the last offset this lane committed, with the
+    /// number of completed records the frontier covers since the start of this lane.
+    /// </summary>
+    public TopicPartitionOffset? GetUncommittedOffset(out long completedRecords)
     {
-        var offset = GetCommitOffset();
+        var offset = GetCommitOffset(out completedRecords);
         return offset is { } value && value.Offset > Volatile.Read(ref _committedOffset)
             ? offset
             : null;
     }
 
     /// <summary>
-    /// Records a successful commit. Commits may finish out of order, so only advance.
+    /// Completed records the last successful commit of this lane covered.
     /// </summary>
-    public void MarkCommitted(long offset)
+    public long CommittedRecords => Volatile.Read(ref _committedRecords);
+
+    /// <summary>
+    /// Records a successful commit. Commits may finish out of order, so only advance. The offset and
+    /// the record count both grow with the frontier, so advancing each to its maximum keeps them paired.
+    /// </summary>
+    public void MarkCommitted(long offset, long completedRecords)
     {
-        var current = Volatile.Read(ref _committedOffset);
-        while (offset > current)
+        AdvanceTo(ref _committedOffset, offset);
+        AdvanceTo(ref _committedRecords, completedRecords);
+    }
+
+    private static void AdvanceTo(ref long location, long value)
+    {
+        var current = Volatile.Read(ref location);
+        while (value > current)
         {
-            var observed = Interlocked.CompareExchange(ref _committedOffset, offset, current);
+            var observed = Interlocked.CompareExchange(ref location, value, current);
             if (observed == current)
                 return;
             current = observed;
         }
     }
 
-    public TopicPartitionOffset? GetCommitOffset()
+    public TopicPartitionOffset? GetCommitOffset() => GetCommitOffset(out _);
+
+    /// <summary>
+    /// Returns the commit offset and the number of completed records it covers since the start of
+    /// this lane. Offset gaps and partition EOF markers are not records, so they add nothing.
+    /// </summary>
+    public TopicPartitionOffset? GetCommitOffset(out long completedRecords)
     {
         var automaticProgress = Volatile.Read(ref _automaticProgress);
         if (automaticProgress is not null)
-            return automaticProgress.GetCommitOffset();
+            return automaticProgress.GetCommitOffset(out completedRecords);
 
         lock (_completedRanges)
         {
+            completedRecords = _completedRecords;
             return _completedOffset.HasValue
                 ? new TopicPartitionOffset(
                     TopicPartition.Topic,

@@ -42,6 +42,8 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
     private int _freeRecord;
     private long _lastReadOffset = -1;
     private int _lastReadEpoch = -1;
+    // Records read from the lane, excluding partition EOF markers.
+    private long _readRecords;
     private int _used;
     private int _activeWorkers;
     private int _laneCount;
@@ -253,7 +255,8 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
             PreviousPending = _tail,
             NextPending = -1,
             PreviousOffset = _lastReadOffset,
-            PreviousEpoch = _lastReadEpoch
+            PreviousEpoch = _lastReadEpoch,
+            PreviousRecords = _readRecords
         };
         if (_tail >= 0)
             _records[_tail].NextPending = index;
@@ -264,6 +267,7 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
         {
             _lastReadOffset = record.Offset;
             _lastReadEpoch = record.LeaderEpoch ?? -1;
+            _readRecords++;
         }
         // One sequential record handler needs no key comparison. Other shapes
         // preserve wire-null identity and cache binary hashes through lane removal.
@@ -569,8 +573,9 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
     {
         var offset = _head >= 0 ? _records[_head].PreviousOffset : _lastReadOffset;
         var epoch = _head >= 0 ? _records[_head].PreviousEpoch : _lastReadEpoch;
+        var completedRecords = _head >= 0 ? _records[_head].PreviousRecords : _readRecords;
         if (offset >= 0)
-            _progress?.Publish(offset + 1, epoch);
+            _progress?.Publish(offset + 1, epoch, completedRecords);
     }
 
     private void BeginInputWait()
@@ -654,6 +659,7 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
         internal ConsumeResult<TKey, TValue> Record;
         internal long PreviousOffset;
         internal int PreviousEpoch;
+        internal long PreviousRecords;
         internal int Next;
         internal int PreviousPending;
         internal int NextPending;

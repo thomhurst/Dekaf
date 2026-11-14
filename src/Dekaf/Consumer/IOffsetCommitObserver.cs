@@ -40,7 +40,11 @@ public interface IOffsetCommitObserver
 /// </summary>
 /// <param name="reason">Why the commit was sent.</param>
 /// <param name="offsets">The offsets the commit request carries.</param>
-public readonly struct OffsetCommitObservation(OffsetCommitReason reason, IReadOnlyList<TopicPartitionOffset> offsets)
+/// <param name="completedRecordCount">The completed records the commit newly covers.</param>
+public readonly struct OffsetCommitObservation(
+    OffsetCommitReason reason,
+    IReadOnlyList<TopicPartitionOffset> offsets,
+    long completedRecordCount)
 {
     /// <summary>
     /// Gets why the commit was sent.
@@ -51,6 +55,17 @@ public readonly struct OffsetCommitObservation(OffsetCommitReason reason, IReadO
     /// Gets the offsets the commit request carries: the next offset to consume for each partition.
     /// </summary>
     public IReadOnlyList<TopicPartitionOffset> Offsets { get; } = offsets;
+
+    /// <summary>
+    /// Gets how many completed records the commit newly covers across its partitions: records
+    /// below the committed offsets that completed since the previous commit of each partition.
+    /// </summary>
+    /// <remarks>
+    /// The count comes from completion tracking, not from subtracting offsets, so compacted offsets,
+    /// transaction markers and other log gaps add nothing. Progress past gaps alone reports zero.
+    /// A seek commit of a position other than the completed frontier also reports zero.
+    /// </remarks>
+    public long CompletedRecordCount { get; } = completedRecordCount;
 }
 
 /// <summary>
