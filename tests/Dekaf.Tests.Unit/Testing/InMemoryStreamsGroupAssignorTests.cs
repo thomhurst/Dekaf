@@ -96,6 +96,21 @@ public sealed class InMemoryStreamsGroupAssignorTests
     }
 
     [Test]
+    public async Task DynamicMember_RemainInGroupCloseReleasesItsTasks()
+    {
+        var cluster = CreateCluster();
+        await using var first = await JoinAsync(cluster, "streams-group");
+        var second = await JoinAsync(cluster, "streams-group");
+
+        await second.CloseAsync(new StreamsGroupCloseOptions
+        {
+            GroupMembershipOperation = StreamsGroupMembershipOperation.RemainInGroup
+        });
+
+        await Assert.That(Tasks(first)).IsEquivalentTo(["sub-0:0", "sub-0:1", "sub-0:2", "sub-0:3"]);
+    }
+
+    [Test]
     public async Task Join_RoundRobinContinuesAcrossSubtopologiesAndUsesLargestSourcePartitionCount()
     {
         var cluster = CreateCluster();

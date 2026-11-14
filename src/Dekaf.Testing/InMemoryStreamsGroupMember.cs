@@ -13,7 +13,8 @@ namespace Dekaf.Testing;
 /// repartition source topics (the largest partition count among them; source topic regexes are not matched).
 /// Tasks move when a member joins or leaves, and on any heartbeat after the topology or a source topic's
 /// partition count changes. A static member that closes while remaining in the group keeps its tasks until a
-/// member with the same instance ID joins and takes them over. Standby and warmup tasks are never assigned.
+/// member with the same instance ID joins and takes them over. A dynamic member always leaves the group on close,
+/// so its tasks move. Standby and warmup tasks are never assigned.
 /// </remarks>
 public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGroupOffsetCommitter
 {
@@ -265,8 +266,14 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
                 TaskOffsetInterval = _snapshot.TaskOffsetInterval
             });
 
-            if (_group is not null && !remainInGroup && _group.Members.Remove(this))
+            // The in-memory cluster has no session timer, so only a static member stays in the group after
+            // close; a dynamic member closed with RemainInGroup would otherwise hold its tasks forever.
+            if (_group is not null
+                && !(remainInGroup && _options.InstanceId is not null)
+                && _group.Members.Remove(this))
+            {
                 Rebalance(_group, _cluster!);
+            }
         }
 
         return ValueTask.CompletedTask;
