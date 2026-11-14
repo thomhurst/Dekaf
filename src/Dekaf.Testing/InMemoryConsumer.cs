@@ -125,6 +125,8 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
     // version they were computed at, and an Unsubscribe revocation that completed asynchronously.
     private readonly IRebalanceListener? _rebalanceListener;
     private readonly HashSet<TopicPartition> _listenerAssignment = [];
+    // Set when a transition ends an evicted subscription before the listener saw the loss.
+    private bool _listenerAssignmentLost;
     private int _listenerConsumerStateVersion = -1;
     private bool _leavingGroup;
     private Task? _pendingRebalanceCallback;
@@ -439,6 +441,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             ThrowIfAutoCommitAdvancementPendingUnderLock();
             ApplyGroupTransitionFaults();
             ThrowIfDisposed();
+            ObserveListenerMembershipLossUnderLock();
             _subscriptionPattern = null;
             _subscriptionRegex = null;
             _topicFilter = topicFilter;
@@ -476,6 +479,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             ThrowIfAutoCommitAdvancementPendingUnderLock();
             ApplyGroupTransitionFaults();
             ThrowIfDisposed();
+            ObserveListenerMembershipLossUnderLock();
             _subscriptionPattern = pattern;
             _subscriptionRegex = regex;
             _topicFilter = null;
@@ -848,6 +852,8 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            // Observe the wake signal before checking, so a change after the check is not missed.
+            var recordsChanged = _cluster.ObserveRecordsChanged();
             if (_rebalanceListener is { } listener)
                 await DeliverRebalanceEventsAsync(listener, cancellationToken).ConfigureAwait(false);
 
@@ -871,7 +877,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
 
             if (deadline is null)
             {
-                await _cluster.WaitForRecordsAsync(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+                await recordsChanged.WaitAsync(cancellationToken).ConfigureAwait(false);
                 ThrowIfDisposed();
                 continue;
             }
@@ -882,7 +888,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
 
             try
             {
-                await _cluster.WaitForRecordsAsync(remaining, cancellationToken).ConfigureAwait(false);
+                await recordsChanged.WaitAsync(remaining, cancellationToken).ConfigureAwait(false);
                 ThrowIfDisposed();
             }
             catch (TimeoutException)
@@ -1452,6 +1458,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             ThrowIfAutoCommitAdvancementPendingUnderLock();
+            ObserveListenerMembershipLossUnderLock();
             _subscriptionPattern = null;
             _subscriptionRegex = null;
             _topicFilter = null;
@@ -1502,6 +1509,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             ThrowIfAutoCommitAdvancementPendingUnderLock();
             // Reconcile any unseen handoff before explicit offsets replace the old positions.
             _ = GetCurrentAssignmentUnderLock();
+            ObserveListenerMembershipLossUnderLock();
             // The listener's revocation commit still sees the subscribed partitions' offsets.
             foreach (var partition in _listenerAssignment)
                 PreserveDepartingOffsetUnderLock(partition);
@@ -3648,7 +3656,8 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 return;
 
             _listenerConsumerStateVersion = _consumerStateVersion;
-            lost = IsGroupMembershipLostUnderLock();
+            lost = _listenerAssignmentLost || IsGroupMembershipLostUnderLock();
+            _listenerAssignmentLost = false;
             foreach (var partition in _listenerAssignment)
             {
                 if (current is null || !current.Contains(partition))
@@ -3708,7 +3717,10 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             lock (_gate)
             {
                 if (!revocationDelivered)
+                {
                     _listenerAssignment.UnionWith(revoked!);
+                    _listenerAssignmentLost |= lost;
+                }
                 if (assigned is not null)
                     _listenerAssignment.ExceptWith(assigned);
                 _listenerConsumerStateVersion = -1;
@@ -3761,9 +3773,26 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         }
     }
 
+    /// <summary>
+    /// Called before a transition replaces an evicted subscription: the reported partitions are
+    /// lost, so their offsets must not become committable and the listener must see a loss.
+    /// </summary>
+    private void ObserveListenerMembershipLossUnderLock()
+    {
+        if (_listenerAssignment.Count == 0 || _subscriptionTopologyVersion < 0)
+            return;
+
+        _ = GetCurrentAssignmentUnderLock();
+        if (!IsGroupMembershipLostUnderLock())
+            return;
+
+        RemoveDepartingOffsetsUnderLock(_listenerAssignment);
+        _listenerAssignmentLost = true;
+    }
+
     private void PreserveDepartingOffsetUnderLock(TopicPartition partition)
     {
-        if (!_listenerAssignment.Contains(partition))
+        if (_listenerAssignmentLost || !_listenerAssignment.Contains(partition))
             return;
 
         // Mirror CommitAsync: with automatic offset storage, the commit proves the record in doubt.
@@ -3794,7 +3823,8 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             var subscribed = _subscriptionTopologyVersion >= 0;
             if (subscribed)
                 _ = GetCurrentAssignmentUnderLock();
-            lost = IsGroupMembershipLostUnderLock();
+            lost = _listenerAssignmentLost || IsGroupMembershipLostUnderLock();
+            _listenerAssignmentLost = false;
             _leavingGroup = true;
             if (lost)
             {

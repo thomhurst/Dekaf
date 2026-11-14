@@ -111,6 +111,8 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
         {
             cancellationToken.ThrowIfCancellationRequested();
             ThrowIfDisposed();
+            // Observe the wake signal before checking, so a change after the check is not missed.
+            var recordsChanged = _cluster.ObserveRecordsChanged();
             if (_rebalanceListener is { } listener)
                 await DeliverRebalanceEventsAsync(listener, cancellationToken).ConfigureAwait(false);
 
@@ -132,7 +134,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
             if (rebalancePending)
                 continue;
 
-            await _cluster.WaitForRecordsAsync(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            await recordsChanged.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 

@@ -410,6 +410,26 @@ public sealed class InMemoryRebalanceListenerTests
     }
 
     [Test]
+    public async Task AdministrativeRemovalThenManualAssignment_ReportsPartitionsLostWithoutCommitting()
+    {
+        var cluster = CreateCluster(partitions: 2);
+        await ProduceAsync(cluster, 2);
+        var listener = new RecordingListener();
+        await using var consumer = CreateConsumer(cluster, "a", listener, OffsetCommitMode.Manual);
+        listener.OnRevoked = () => consumer.CommitAsync();
+        consumer.Subscribe("topic");
+        await Assert.That((await consumer.ConsumeOneAsync(TimeSpan.Zero))!.Value.Offset).IsEqualTo(0);
+
+        cluster.RemoveConsumerGroupMembers("group", [new ConsumerGroupMemberIdentity { MemberId = "a" }]);
+        consumer.Assign(Partition1);
+        await consumer.CommitAsync();
+        await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0,topic-1", "lost topic-0,topic-1"], CollectionOrdering.Matching);
+        await Assert.That(cluster.GetCommittedOffset("group", Partition0)).IsNull();
+    }
+
+    [Test]
     public async Task AdministrativeRemovalDuringRevocation_DoesNotCommitRevokedOffsets()
     {
         var cluster = CreateCluster(partitions: 2);
