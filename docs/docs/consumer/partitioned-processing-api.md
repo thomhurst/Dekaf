@@ -559,6 +559,46 @@ mode, neighbouring batches share the earlier timestamp. The reported time
 can then be earlier than the real arrival of later records, but never later, so a
 stuck record is never hidden.
 
+## Observing Runtime Commits
+
+Under `CommitCompletedOnRevoke` or `CommitCompletedPeriodically`, the runtime sends
+commits itself. To measure them, for example with a span per commit, pass an
+`IOffsetCommitObserver`:
+
+```csharp
+sealed class CommitTracing(ActivitySource source) : IOffsetCommitObserver
+{
+    public object? OnCommitStarting(OffsetCommitObservation observation)
+        => source.StartActivity($"commit {observation.Reason}");
+
+    public void OnCommitCompleted(OffsetCommitObservation observation, object? state, Exception? exception)
+    {
+        if (state is not Activity activity)
+            return;
+        if (exception is not null)
+            activity.SetStatus(ActivityStatusCode.Error, exception.Message);
+        activity.Dispose();
+    }
+}
+
+var run = consumer.RunPartitionedAsync(
+    handler,
+    new PartitionedProcessingOptions
+    {
+        CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
+        CommitObserver = new CommitTracing(source)
+    },
+    stoppingToken);
+```
+
+`OnCommitStarting` runs before the commit request and `OnCommitCompleted` runs once
+after it, with the exception when it failed. The observation carries the offsets
+and the reason: `Periodic`, `Revoke`, `Stop` (a partition stopping, for example at
+shutdown) or `Seek`. Commits can overlap, so keep per-commit state in the value
+`OnCommitStarting` returns. The observer cannot change what is committed: an
+exception it throws is logged and the commit continues. Commits a handler requests
+with `CommitProcessedAsync` are not observed.
+
 ## Low-Level Rebalance Callbacks
 
 `RunPartitionedAsync` builds on the lower-level rebalance lifecycle described in
