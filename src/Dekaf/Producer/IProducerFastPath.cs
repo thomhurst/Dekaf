@@ -13,6 +13,15 @@ internal interface IProducerFastPath<TKey, TValue>
         DateTimeOffset? timestamp,
         CancellationToken cancellationToken);
 
+    ValueTask FireAsync(
+        string topic,
+        TKey? key,
+        TValue value,
+        Headers? headers,
+        int? partition,
+        DateTimeOffset? timestamp,
+        Action<RecordMetadata, Exception?>? deliveryHandler);
+
     Task<RecordMetadata[]> ProduceAllAsync(
         string topic,
         IEnumerable<TopicProducerMessage<TKey, TValue>> messages,

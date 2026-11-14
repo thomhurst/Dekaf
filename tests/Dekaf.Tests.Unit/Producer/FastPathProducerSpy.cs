@@ -9,6 +9,8 @@ internal sealed class FastPathProducerSpy<TKey, TValue> : IKafkaProducer<TKey, T
     public int FastPathCalls { get; private set; }
     public int BatchFastPathCalls { get; private set; }
     public int MessageCalls { get; private set; }
+    public int FireFastPathCalls { get; private set; }
+    public Action<RecordMetadata, Exception?>? CapturedDeliveryHandler { get; private set; }
     public string? CapturedTopic { get; private set; }
     public TKey? CapturedKey { get; private set; }
     public TValue? CapturedValue { get; private set; }
@@ -96,6 +98,26 @@ internal sealed class FastPathProducerSpy<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     public ValueTask FireAsync(ProducerMessage<TKey, TValue> message) => ValueTask.CompletedTask;
+
+    ValueTask IProducerFastPath<TKey, TValue>.FireAsync(
+        string topic,
+        TKey? key,
+        TValue value,
+        Headers? headers,
+        int? partition,
+        DateTimeOffset? timestamp,
+        Action<RecordMetadata, Exception?>? deliveryHandler)
+    {
+        FireFastPathCalls++;
+        CapturedTopic = topic;
+        CapturedKey = key;
+        CapturedValue = value;
+        CapturedHeaders = headers;
+        CapturedPartition = partition;
+        CapturedTimestamp = timestamp;
+        CapturedDeliveryHandler = deliveryHandler;
+        return ValueTask.CompletedTask;
+    }
 
     public ValueTask FireAsync(string topic, TKey? key, TValue value) => ValueTask.CompletedTask;
 

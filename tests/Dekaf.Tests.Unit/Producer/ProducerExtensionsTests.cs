@@ -183,4 +183,74 @@ public sealed class ProducerExtensionsTests
     }
 
     #endregion
+
+    #region FireAsync with fields
+
+    [Test]
+    public async Task FireAsync_WithFields_UsesFastPath_WhenProducerSupportsIt()
+    {
+        var producer = new FastPathProducerSpy<string, string>();
+        var headers = Headers.Create("h1", "v1");
+        var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(1_700_000_000_000);
+        Action<RecordMetadata, Exception?> handler = static (_, _) => { };
+
+        await producer.FireAsync("my-topic", "key", "value", headers, 3, timestamp, handler);
+
+        await Assert.That(producer.FireFastPathCalls).IsEqualTo(1);
+        await Assert.That(producer.CapturedTopic).IsEqualTo("my-topic");
+        await Assert.That(producer.CapturedKey).IsEqualTo("key");
+        await Assert.That(producer.CapturedValue).IsEqualTo("value");
+        await Assert.That(producer.CapturedHeaders).IsSameReferenceAs(headers);
+        await Assert.That(producer.CapturedPartition).IsEqualTo(3);
+        await Assert.That(producer.CapturedTimestamp).IsEqualTo(timestamp);
+        await Assert.That(producer.CapturedDeliveryHandler).IsSameReferenceAs(handler);
+    }
+
+    [Test]
+    public async Task FireAsync_WithFields_AndHandler_FallsBackToMessageOverloadWithHandler()
+    {
+        var producer = Substitute.For<IKafkaProducer<string, string>>();
+        var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(1_700_000_000_000);
+        Action<RecordMetadata, Exception?> handler = static (_, _) => { };
+
+        await producer.FireAsync("my-topic", "key", "value", headers: null, 3, timestamp, handler);
+
+        await producer.Received(1).FireAsync(
+            Arg.Is<ProducerMessage<string, string>>(m =>
+                m != null && m.Topic == "my-topic" &&
+                m.Key == "key" &&
+                m.Value == "value" &&
+                m.Headers == null &&
+                m.Partition == 3 &&
+                m.Timestamp == timestamp),
+            handler);
+        await producer.DidNotReceive().FireAsync(Arg.Any<ProducerMessage<string, string>>());
+    }
+
+    [Test]
+    public async Task FireAsync_WithFields_NoHandler_FallsBackToMessageOverload()
+    {
+        var producer = Substitute.For<IKafkaProducer<string, string>>();
+        var headers = Headers.Create("h1", "v1");
+
+        await producer.FireAsync("my-topic", "key", "value", headers, partition: null, timestamp: null, deliveryHandler: null);
+
+        await producer.Received(1).FireAsync(
+            Arg.Is<ProducerMessage<string, string>>(m =>
+                m != null && m.Topic == "my-topic" &&
+                m.Headers == headers &&
+                m.Partition == null &&
+                m.Timestamp == null));
+    }
+
+    [Test]
+    public async Task FireAsync_WithFields_NullTopic_ThrowsArgumentNullException()
+    {
+        var producer = Substitute.For<IKafkaProducer<string, string>>();
+
+        await Assert.ThrowsAsync<ArgumentNullException>(async () =>
+            await producer.FireAsync(null!, "key", "value", null, null, null, null));
+    }
+
+    #endregion
 }

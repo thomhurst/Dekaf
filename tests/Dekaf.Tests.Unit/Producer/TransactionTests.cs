@@ -351,8 +351,13 @@ public sealed class TransactionTests
                     new ProducerMessage<string, string> { Topic = "test-topic", Key = "key", Value = "value" }).AsTask())
             .Throws<TransactionException>();
 
+        var fields = await Assert.That(
+                () => producer.FireAsync("test-topic", "key", "value", null, 0, DateTimeOffset.UnixEpoch, null).AsTask())
+            .Throws<TransactionException>();
+
         await Assert.That(componentwise!.ErrorCode).IsEqualTo(ErrorCode.InvalidTxnState);
         await Assert.That(message!.ErrorCode).IsEqualTo(ErrorCode.InvalidTxnState);
+        await Assert.That(fields!.ErrorCode).IsEqualTo(ErrorCode.InvalidTxnState);
     }
 
     [Test]
@@ -377,6 +382,31 @@ public sealed class TransactionTests
 
         await producer.FireAsync(
             new ProducerMessage<string, string> { Topic = "test-topic", Key = "key", Value = "value" },
+            (_, error) =>
+            {
+                calls++;
+                reported = error;
+            });
+
+        await Assert.That(calls).IsEqualTo(1);
+        await Assert.That(reported).IsTypeOf<TransactionException>();
+        await Assert.That(((TransactionException)reported!).ErrorCode).IsEqualTo(ErrorCode.InvalidTxnState);
+    }
+
+    [Test]
+    public async Task FireAsync_WithFieldsAndDeliveryHandler_OutsideOpenTransaction_ReportsThroughHandler()
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.Ready);
+        Exception? reported = null;
+        var calls = 0;
+
+        await producer.FireAsync(
+            "test-topic",
+            "key",
+            "value",
+            headers: null,
+            partition: 0,
+            DateTimeOffset.UnixEpoch,
             (_, error) =>
             {
                 calls++;

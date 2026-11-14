@@ -96,6 +96,27 @@ var headers = Headers.Create()
 await producer.FireAsync("events", eventKey, eventValue, headers);
 ```
 
+## With Partition and Timestamp
+
+To set the partition, timestamp or headers on every record without creating a `ProducerMessage`, pass them as arguments. Any of them can be `null`, and so can the delivery handler:
+
+```csharp
+await producer.FireAsync(
+    "events",
+    eventKey,
+    eventValue,
+    headers: null,
+    partition: 3,
+    timestamp: sourceTimestamp,
+    deliveryHandler: (metadata, error) =>
+    {
+        if (error is not null)
+            logger.LogError(error, "Delivery failed");
+    });
+```
+
+On cached topic metadata this allocates nothing per record. With a handler it behaves like `FireAsync(message, handler)`: every failure goes to the handler. Without one it behaves like `FireAsync(message)`, but does not start a publish activity.
+
 ## Performance Comparison
 
 Here's how the different methods compare:
