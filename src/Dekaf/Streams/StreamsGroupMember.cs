@@ -355,6 +355,7 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
             }
         }
 
+        ExceptionDispatchInfo? closeFailure = null;
         try
         {
             await WaitForInitializationDrainAsync(cancellationToken).ConfigureAwait(false);
@@ -365,9 +366,24 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
             TaskFaultObserver.ObserveFault(command.Completion.Task);
             throw;
         }
-        await _workerTask.WaitAsync(cancellationToken).ConfigureAwait(false);
-        if (_assignmentNotifier is not null)
-            await _assignmentNotifier.StopAsync().WaitAsync(cancellationToken).ConfigureAwait(false);
+        catch (Exception exception)
+        {
+            // A failed terminal heartbeat still stops the worker; wait for it and the running callback first.
+            closeFailure = ExceptionDispatchInfo.Capture(exception);
+        }
+
+        try
+        {
+            await _workerTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+            if (_assignmentNotifier is not null)
+                await _assignmentNotifier.StopAsync().WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception) when (closeFailure is not null && !cancellationToken.IsCancellationRequested)
+        {
+            // The close command's failure is the one callers observe.
+        }
+
+        closeFailure?.Throw();
     }
 
     private async ValueTask WaitForInitializationDrainAsync(CancellationToken cancellationToken)

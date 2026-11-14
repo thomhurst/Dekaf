@@ -36,7 +36,9 @@ internal sealed partial class StreamsGroupAssignmentNotifier
     {
         _listener = listener;
         _logger = logger ?? NullLogger.Instance;
-        _dispatchTask = DispatchAsync();
+        // Callbacks run on the thread pool: never on the publisher's thread, which holds the member's worker or
+        // the group lock, and never on a context captured from the thread that created the member.
+        _dispatchTask = Task.Run(DispatchAsync);
     }
 
     /// <summary>Queues the revoked and newly assigned tasks between the last published assignment and this one.</summary>
@@ -78,8 +80,6 @@ internal sealed partial class StreamsGroupAssignmentNotifier
 
     private async Task DispatchAsync()
     {
-        // Callbacks must not run on the publisher's thread, which holds the member's worker or the group lock.
-        await Task.Yield();
         Dispatching.Value = this;
         var token = _stopping.Token;
         while (!token.IsCancellationRequested

@@ -2353,6 +2353,43 @@ public sealed class StreamsGroupMemberTests
         await Assert.That(returned.Task.IsCompleted).IsTrue();
     }
 
+    [Test]
+    public async Task AssignmentListener_FailedCloseStillWaitsForTheRunningCallback()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1, active: [TaskIds("sub", 0)]));
+        connection.EnqueueHeartbeat(Task.FromException<StreamsGroupHeartbeatResponse>(
+            new NotSupportedException("terminal heartbeat failed")));
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var listener = new RecordingAssignmentListener
+        {
+            OnAssigned = async (_, cancellationToken) =>
+            {
+                try
+                {
+                    await Task.Delay(Timeout.Infinite, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    cancelled.SetResult();
+                    await release.Task;
+                    throw;
+                }
+            }
+        };
+        await using var fixture = CreateFixture(connection, assignmentListener: listener);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        await listener.NextAsync();
+
+        var close = fixture.Member.CloseAsync().AsTask();
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        await Assert.That(close.IsCompleted).IsFalse();
+        release.SetResult();
+        await Assert.ThrowsAsync<NotSupportedException>(() => close);
+    }
+
     private sealed class RecordingAssignmentListener : IStreamsGroupAssignmentListener
     {
         private readonly Channel<string> _events = Channel.CreateUnbounded<string>();
