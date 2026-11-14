@@ -251,17 +251,25 @@ public sealed class InMemoryStreamsGroupAssignorTests
         await started.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         using var cts = new CancellationTokenSource();
-        var close = member.CloseAsync(cts.Token).AsTask();
-        await Assert.That(close.IsCompleted).IsFalse();
+        try
+        {
+            var close = member.CloseAsync(cts.Token).AsTask();
+            await Assert.That(close.IsCompleted).IsFalse();
 
-        cts.Cancel();
-        await Assert.ThrowsAsync<OperationCanceledException>(() => close.WaitAsync(TimeSpan.FromSeconds(30)));
+            cts.Cancel();
+            await Assert.ThrowsAsync<OperationCanceledException>(() => close.WaitAsync(TimeSpan.FromSeconds(30)));
 
-        // A repeated close still waits for the callback, and finishes once it returns.
-        var secondClose = member.CloseAsync().AsTask();
-        await Assert.That(secondClose.IsCompleted).IsFalse();
-        release.SetResult();
-        await secondClose.WaitAsync(TimeSpan.FromSeconds(30));
+            // A repeated close still waits for the callback, and finishes once it returns.
+            var secondClose = member.CloseAsync().AsTask();
+            await Assert.That(secondClose.IsCompleted).IsFalse();
+            release.SetResult();
+            await secondClose.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        finally
+        {
+            // A failed assertion must not leave disposal waiting on the blocked callback.
+            release.TrySetResult();
+        }
     }
 
     private sealed class BlockingListener(TaskCompletionSource started, Task release) : IStreamsGroupAssignmentListener

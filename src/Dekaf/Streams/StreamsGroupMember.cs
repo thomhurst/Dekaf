@@ -567,7 +567,11 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
         {
             _heartbeatTimer.Change(Timeout.Infinite, Timeout.Infinite);
             // The worker publishes every change, so none can follow. CloseAsync waits for the running callback.
-            _ = _assignmentNotifier?.StopAsync();
+            // A worker that stopped on a failure, not a close, still delivers what it queued, such as lost tasks.
+            if (Volatile.Read(ref _closeCommand) is null)
+                _assignmentNotifier?.Complete();
+            else
+                _ = _assignmentNotifier?.StopAsync();
         }
     }
 
@@ -1159,6 +1163,16 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
     private void ResetTaskAssignment(bool markUnjoined)
     {
         // Every path here ends the membership the tasks were held under: fencing, expiry or a failed rejoin.
+        if (_assignmentNotifier is not null)
+        {
+            _assignmentNotifier.PublishLost(new StreamsGroupAssignment
+            {
+                ActiveTasks = MapTaskSets(_activeTasks ?? []),
+                StandbyTasks = MapTaskSets(_standbyTasks ?? []),
+                WarmupTasks = MapTaskSets(_warmupTasks ?? [])
+            });
+        }
+
         _membershipGeneration++;
         _activeTasks = [];
         _standbyTasks = [];
@@ -1179,7 +1193,6 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
             AcceptableRecoveryLagOffsets = current.AcceptableRecoveryLagOffsets,
             TaskOffsetInterval = current.TaskOffsetInterval
         };
-        _assignmentNotifier?.PublishLost();
     }
 
     private async ValueTask<int> FindCoordinatorAsync(CancellationToken cancellationToken)

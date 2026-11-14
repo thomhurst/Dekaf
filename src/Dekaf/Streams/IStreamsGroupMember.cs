@@ -177,7 +177,9 @@ public interface IStreamsGroupAssignmentListener
     /// instead of committing it. Tasks assigned after the member rejoins arrive through
     /// <see cref="OnTasksAssignedAsync"/>.
     /// </summary>
-    /// <param name="tasks">Every active, standby and warmup task the member held.</param>
+    /// <param name="tasks">
+    /// Every active, standby and warmup task the member held, including revoked tasks not yet reported as released.
+    /// </param>
     /// <param name="cancellationToken">Cancelled when the member closes.</param>
     ValueTask OnTasksLostAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken);
 }

@@ -2305,6 +2305,66 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
+    public async Task AssignmentListener_FencingReportsUnacknowledgedRevokedTasksAsLost()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1, active: [TaskIds("sub", 0, 1)]));
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(Success(epoch: 2, active: [TaskIds("sub", 1)]));
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.FencedMemberEpoch,
+            ErrorMessage = "fenced",
+            MemberId = "member-1"
+        });
+        connection.EnqueueHeartbeat(Success(epoch: 3, active: [TaskIds("sub", 1)]));
+        var listener = new RecordingAssignmentListener();
+        await using var fixture = CreateFixture(connection, assignmentListener: listener);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        await listener.NextAsync();
+        await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
+            ActiveTasks = [new StreamsGroupTaskSet { SubtopologyId = "sub", Partitions = [0, 1] }]
+        });
+
+        await Assert.That(fixture.Member.QueueHeartbeatForTesting()).IsTrue();
+        await Assert.That(await listener.NextAsync()).IsEqualTo("revoked sub:0");
+
+        // Task 0 is revoked but not yet reported as released, so the member still holds it when fenced.
+        await Assert.That(fixture.Member.QueueHeartbeatForTesting()).IsTrue();
+        await Assert.That(await listener.NextAsync()).IsEqualTo("lost sub:1,0");
+        await Assert.That(await listener.NextAsync()).IsEqualTo("assigned sub:1");
+    }
+
+    [Test]
+    public async Task AssignmentListener_WorkerFailureStillDeliversTheLostTasks()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1, heartbeatIntervalMs: 1, active: [TaskIds("sub", 0)]));
+        connection.EnqueueHeartbeat(Task.FromException<StreamsGroupHeartbeatResponse>(
+            new InvalidOperationException("unexpected heartbeat failure")));
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Holding the first callback until the worker has stopped proves the lost change outlives the worker.
+        var listener = new RecordingAssignmentListener { OnAssigned = (_, _) => release.Task };
+        var fixture = CreateFixture(connection, assignmentListener: listener);
+        try
+        {
+            await fixture.Member.JoinAsync(CreateInitialUpdate());
+            await Assert.That(await listener.NextAsync()).IsEqualTo("assigned sub:0");
+
+            await GetWorkerTask(fixture.Member).WaitAsync(TimeSpan.FromSeconds(30));
+            release.SetResult();
+
+            await Assert.That(await listener.NextAsync()).IsEqualTo("lost sub:0");
+        }
+        finally
+        {
+            release.TrySetResult();
+            await fixture.DisposeMemberAndMetadataAsync();
+        }
+    }
+
+    [Test]
     public async Task AssignmentListener_SteadyHeartbeatDeliversNothing()
     {
         var connection = new ScriptedConnection();

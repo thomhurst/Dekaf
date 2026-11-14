@@ -57,14 +57,25 @@ internal sealed partial class StreamsGroupAssignmentNotifier
             _notifications.Writer.TryWrite(new Notification(NotificationKind.Assigned, assigned));
     }
 
-    /// <summary>Queues the whole last published assignment as lost and starts again from an empty one.</summary>
-    internal void PublishLost()
+    /// <summary>
+    /// Queues every task the member held as lost and starts again from an empty assignment. The member held the
+    /// last published assignment and the tasks it last reported as owned, which still include revoked tasks the
+    /// caller has not yet acknowledged through <see cref="IStreamsGroupMember.UpdateAsync"/>.
+    /// </summary>
+    internal void PublishLost(StreamsGroupAssignment reported)
     {
         var previous = _published;
         _published = Empty;
-        if (!IsEmpty(previous))
-            _notifications.Writer.TryWrite(new Notification(NotificationKind.Lost, previous));
+        var lost = Union(previous, reported);
+        if (!IsEmpty(lost))
+            _notifications.Writer.TryWrite(new Notification(NotificationKind.Lost, lost));
     }
+
+    /// <summary>
+    /// Stops accepting changes but keeps delivering the queued ones, for a member whose worker stopped without
+    /// being closed. A later <see cref="StopAsync"/> still drops what is left.
+    /// </summary>
+    internal void Complete() => _notifications.Writer.TryComplete();
 
     /// <summary>
     /// Stops delivery: queued notifications are dropped and the running callback's token is cancelled. Waits for
@@ -116,6 +127,62 @@ internal sealed partial class StreamsGroupAssignmentNotifier
 
     private static bool IsEmpty(StreamsGroupAssignment assignment) =>
         assignment.ActiveTasks.Count == 0 && assignment.StandbyTasks.Count == 0 && assignment.WarmupTasks.Count == 0;
+
+    private static StreamsGroupAssignment Union(StreamsGroupAssignment left, StreamsGroupAssignment right)
+    {
+        var extra = Subtract(right, left);
+        return extra is null
+            ? left
+            : new StreamsGroupAssignment
+            {
+                ActiveTasks = Concat(left.ActiveTasks, extra.ActiveTasks),
+                StandbyTasks = Concat(left.StandbyTasks, extra.StandbyTasks),
+                WarmupTasks = Concat(left.WarmupTasks, extra.WarmupTasks)
+            };
+    }
+
+    /// <summary>Merges task sets that share no task, keeping one entry per subtopology.</summary>
+    private static IReadOnlyList<StreamsGroupTaskSet> Concat(
+        IReadOnlyList<StreamsGroupTaskSet> left,
+        IReadOnlyList<StreamsGroupTaskSet> right)
+    {
+        if (right.Count == 0)
+            return left;
+
+        var result = new List<StreamsGroupTaskSet>(left.Count + right.Count);
+        foreach (var taskSet in left)
+        {
+            List<int>? partitions = null;
+            foreach (var other in right)
+            {
+                if (other.SubtopologyId == taskSet.SubtopologyId)
+                    (partitions ??= [.. taskSet.Partitions]).AddRange(other.Partitions);
+            }
+
+            result.Add(partitions is null
+                ? taskSet
+                : new StreamsGroupTaskSet { SubtopologyId = taskSet.SubtopologyId, Partitions = partitions.ToArray() });
+        }
+
+        foreach (var other in right)
+        {
+            if (!ContainsSubtopology(left, other.SubtopologyId))
+                result.Add(other);
+        }
+
+        return result.ToArray();
+    }
+
+    private static bool ContainsSubtopology(IReadOnlyList<StreamsGroupTaskSet> taskSets, string subtopologyId)
+    {
+        foreach (var taskSet in taskSets)
+        {
+            if (taskSet.SubtopologyId == subtopologyId)
+                return true;
+        }
+
+        return false;
+    }
 
     /// <summary>Returns the tasks in <paramref name="left"/> missing from <paramref name="right"/>, or null when none are.</summary>
     private static StreamsGroupAssignment? Subtract(StreamsGroupAssignment left, StreamsGroupAssignment right)
