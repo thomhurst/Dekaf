@@ -80,6 +80,82 @@ public sealed class InMemoryConsumerBatchTests
     }
 
     [Test]
+    public async Task ConsumeBatchAsync_ExplicitCommitDuringBatch_CommitsEnumeratedRecords()
+    {
+        var cluster = await CreateClusterAsync(partition0: 3, partition1: 0);
+        await using var consumer = CreateConsumer(cluster, OffsetCommitMode.Manual);
+        consumer.Assign(Partition0);
+        await using var batches = consumer.ConsumeBatchAsync().GetAsyncEnumerator();
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        foreach (var record in batches.Current)
+        {
+            if (record.Offset == 1)
+                break;
+        }
+
+        await consumer.CommitAsync();
+        await Assert.That(cluster.GetCommittedOffset("group", Partition0)).IsEqualTo(2);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(Offsets(batches.Current)).IsEquivalentTo([2L]);
+    }
+
+    [Test]
+    public async Task ConsumeBatchAsync_ExplicitCommitAfterBreakingStream_CommitsEnumeratedRecords()
+    {
+        var cluster = await CreateClusterAsync(partition0: 3, partition1: 0);
+        await using var consumer = CreateConsumer(cluster, OffsetCommitMode.Manual);
+        consumer.Assign(Partition0);
+        await foreach (var batch in consumer.ConsumeBatchAsync())
+        {
+            _ = Offsets(batch);
+            break;
+        }
+
+        await consumer.CommitAsync();
+        await Assert.That(cluster.GetCommittedOffset("group", Partition0)).IsEqualTo(3);
+        await Assert.That(consumer.GetPosition(Partition0)).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task ConsumeBatchAsync_BreakingStreamWithoutCommit_RedeliversBatch()
+    {
+        var cluster = await CreateClusterAsync(partition0: 2, partition1: 0);
+        await using var consumer = CreateConsumer(cluster, OffsetCommitMode.Manual);
+        consumer.Assign(Partition0);
+        await foreach (var batch in consumer.ConsumeBatchAsync())
+        {
+            _ = Offsets(batch);
+            break;
+        }
+
+        await using var batches = consumer.ConsumeBatchAsync().GetAsyncEnumerator();
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(Offsets(batches.Current)).IsEquivalentTo([0L, 1L]);
+        await consumer.CommitAsync();
+        await Assert.That(cluster.GetCommittedOffset("group", Partition0)).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ConsumeRawBatchAsync_ExplicitCommitAfterBreakingStream_CommitsEnumeratedRecords()
+    {
+        var cluster = await CreateClusterAsync(partition0: 2, partition1: 0);
+        await using var consumer = CreateConsumer(cluster, OffsetCommitMode.Manual);
+        consumer.Assign(Partition0);
+        await foreach (var batch in consumer.ConsumeRawBatchAsync())
+        {
+            foreach (var _ in batch)
+            {
+            }
+            break;
+        }
+
+        await consumer.CommitAsync();
+        await Assert.That(cluster.GetCommittedOffset("group", Partition0)).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task ConsumeBatchAsync_PausedDuringIteration_HoldsRemainingRecords()
     {
         var cluster = await CreateClusterAsync(partition0: 3, partition1: 1);

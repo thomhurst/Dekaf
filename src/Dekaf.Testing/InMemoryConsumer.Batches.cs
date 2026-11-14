@@ -17,6 +17,13 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
     // reposition takes the next value of one increasing sequence; a partition with no entry
     // reads the last full reset.
     private readonly Dictionary<TopicPartition, long> _repositionVersions = [];
+
+    private readonly record struct UnprovenBatch(BatchSelection Selection, object? Batch, long NextOffset);
+
+    // The batch being enumerated, or the enumerated progress of the last batch of a stream the
+    // caller broke out of. Only an explicit CommitAsync vouches for it, as in the real consumer;
+    // auto-commit and close never do.
+    private UnprovenBatch? _unprovenBatch;
     private long _repositionSequence;
     private long _repositionResetVersion;
 
@@ -45,14 +52,17 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
                     _valueDeserializer,
                     CreateBatchIterationGuard(selection),
                     CreateBatchOffsetStore());
+                SetUnprovenBatch(selection, batch);
                 yield return batch;
                 // Requesting the next batch proves only the records enumerated from this one. A batch
                 // that was not enumerated has no checkpoint, so its records are redelivered.
+                ClearUnprovenBatch(batch);
                 if (batch.TryGetNextOffset(out var checkpoint))
                     CompleteBatch(selection, checkpoint.Offset);
             }
             finally
             {
+                RetainUnprovenBatch(batch);
                 pending.EndCheckpointWindow(batch);
                 pending.Dispose();
             }
@@ -74,12 +84,15 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
                     pending,
                     CreateBatchIterationGuard(selection),
                     CreateBatchOffsetStore());
+                SetUnprovenBatch(selection, batch);
                 yield return batch;
+                ClearUnprovenBatch(batch);
                 if (batch.TryGetNextOffset(out var checkpoint))
                     CompleteBatch(selection, checkpoint.Offset);
             }
             finally
             {
+                RetainUnprovenBatch(batch);
                 pending.EndCheckpointWindow(batch);
                 pending.Dispose();
             }
@@ -231,19 +244,101 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
         lock (_gate)
         {
             ThrowIfDisposed();
-            if (!IsBatchSelectionCurrentUnderLock(selection) ||
-                _pendingAutoCommitAdvancements is not null &&
-                _pendingAutoCommitAdvancements.ContainsKey(selection.Partition))
+            if (AdvanceBatchUnderLock(selection, nextOffset) &&
+                _options.OffsetCommitMode == OffsetCommitMode.Auto)
             {
+                CommitStoredOffsets();
+            }
+        }
+    }
+
+    private bool AdvanceBatchUnderLock(BatchSelection selection, long nextOffset)
+    {
+        if (!IsBatchSelectionCurrentUnderLock(selection) ||
+            _pendingAutoCommitAdvancements is not null &&
+            _pendingAutoCommitAdvancements.ContainsKey(selection.Partition))
+        {
+            return false;
+        }
+
+        _positions[selection.Partition] = nextOffset;
+        if (_options.EnableAutoOffsetStore)
+            StoreOffsetUnderLock(selection.Partition, nextOffset);
+        return true;
+    }
+
+    private void SetUnprovenBatch(BatchSelection selection, object batch)
+    {
+        lock (_gate)
+            _unprovenBatch = new UnprovenBatch(selection, batch, NextOffset: -1);
+    }
+
+    private void ClearUnprovenBatch(object batch)
+    {
+        lock (_gate)
+        {
+            if (ReferenceEquals(_unprovenBatch?.Batch, batch))
+                _unprovenBatch = null;
+        }
+    }
+
+    /// <summary>
+    /// Keeps the enumerated progress of a batch whose stream ended without requesting the next
+    /// batch, for a later explicit commit. Runs before its checkpoint window closes.
+    /// </summary>
+    private void RetainUnprovenBatch(object? batch)
+    {
+        if (batch is null)
+            return;
+
+        lock (_gate)
+        {
+            if (_unprovenBatch is not { } unproven || !ReferenceEquals(unproven.Batch, batch))
                 return;
+
+            _unprovenBatch = TryGetBatchCheckpoint(batch, out var nextOffset)
+                ? unproven with { Batch = null, NextOffset = nextOffset }
+                : null;
+        }
+    }
+
+    /// <summary>
+    /// Explicit commit staging: the caller vouches for every record enumerated from the current
+    /// batch, or from the last batch of a stream it broke out of.
+    /// </summary>
+    private void StageUnprovenBatchUnderLock()
+    {
+        if (_unprovenBatch is not { } unproven)
+            return;
+
+        if (unproven.Batch is { } active)
+        {
+            // Still being enumerated: requesting the next batch advances the position.
+            if (_options.EnableAutoOffsetStore &&
+                IsBatchSelectionCurrentUnderLock(unproven.Selection) &&
+                TryGetBatchCheckpoint(active, out var nextOffset))
+            {
+                StoreOffsetUnderLock(unproven.Selection.Partition, nextOffset);
             }
 
-            _positions[selection.Partition] = nextOffset;
-            if (_options.EnableAutoOffsetStore)
-                StoreOffsetUnderLock(selection.Partition, nextOffset);
-            if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
-                CommitStoredOffsets();
+            return;
         }
+
+        _unprovenBatch = null;
+        _ = AdvanceBatchUnderLock(unproven.Selection, unproven.NextOffset);
+    }
+
+    private static bool TryGetBatchCheckpoint(object batch, out long nextOffset)
+    {
+        TopicPartitionOffset checkpoint;
+        var captured = batch switch
+        {
+            ConsumeBatch<TKey, TValue> typed => typed.TryGetNextOffset(out checkpoint),
+            ConsumeRawBatch raw => raw.TryGetNextOffset(out checkpoint),
+            _ => throw new InvalidOperationException("Unexpected batch type.")
+        };
+        nextOffset = captured ? checkpoint.Offset : -1;
+        return captured;
     }
 
     private bool IsBatchSelectionCurrent(BatchSelection selection)

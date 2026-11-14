@@ -867,6 +867,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             _ = GetCurrentAssignmentUnderLock();
+            StageUnprovenBatchUnderLock();
             inDoubtRecord = _inDoubtNextOffset >= 0
                 ? new TopicPartitionOffset(
                     _inDoubtPartition.Topic,
