@@ -35,10 +35,10 @@
     <PackageVersion Include="Microsoft.CodeAnalysis.PublicApiAnalyzers" Version="5.6.0" />
     <PackageVersion Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="4.0.0" />
     <PackageVersion Include="Microsoft.Testing.Extensions.HangDump" Version="2.5.3" />
-    <PackageVersion Include="ModularPipelines" Version="3.2.8" />
-    <PackageVersion Include="ModularPipelines.DotNet" Version="3.2.8" />
-    <PackageVersion Include="ModularPipelines.Git" Version="3.2.8" />
-    <PackageVersion Include="ModularPipelines.GitHub" Version="3.2.8" />
+    <PackageVersion Include="ModularPipelines" Version="4.0.0" />
+    <PackageVersion Include="ModularPipelines.DotNet" Version="4.0.0" />
+    <PackageVersion Include="ModularPipelines.Git" Version="4.0.0" />
+    <PackageVersion Include="ModularPipelines.GitHub" Version="4.0.0" />
     <PackageVersion Include="NSubstitute" Version="6.2.0" />
     <PackageVersion Include="OpenTelemetry" Version="1.21.0" />
     <PackageVersion Include="OpenTelemetry.Api" Version="1.21.0" />
