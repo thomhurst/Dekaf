@@ -114,9 +114,11 @@ internal sealed class LazyConsumeHeaders : IReadOnlyList<Header>
         return published ?? snapshot;
     }
 
-    private void ThrowIfStale()
+    private void ThrowIfStale() => ThrowIfStale(_owner, _generation);
+
+    internal static void ThrowIfStale(PendingFetchData owner, int generation)
     {
-        if (!_owner.IsHeaderGenerationActive(_generation))
+        if (!owner.IsHeaderGenerationActive(generation))
             throw new ObjectDisposedException(nameof(Headers), StaleHeadersMessage);
     }
 }

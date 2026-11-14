@@ -43,6 +43,7 @@ public class RecordHeaderMaterializationBenchmarks
 
         _ = TwoDecoratorsWith32Headers();
         _ = LazyHeadersFirstAccessWith32Headers();
+        _ = TryGetHeaderWith32Headers();
     }
 
     [GlobalCleanup]
@@ -76,6 +77,25 @@ public class RecordHeaderMaterializationBenchmarks
             _pooledHeaders.Length,
             _headerOwner,
             _headerOwner.HeaderGeneration)[0];
+
+    [Benchmark]
+    public bool TryGetHeaderWith32Headers() =>
+        new ConsumeResult<string, string>(
+            topic: "benchmark-topic",
+            partition: 0,
+            offset: 1,
+            keyData: default,
+            isKeyNull: true,
+            valueData: default,
+            isValueNull: true,
+            _pooledHeaders,
+            _pooledHeaders.Length,
+            _headerOwner,
+            timestampMs: 0,
+            timestampType: TimestampType.CreateTime,
+            leaderEpoch: null,
+            keyDeserializer: null,
+            valueDeserializer: null).TryGetHeader("header-31", out _);
 
     private sealed class HeaderDeserializer : IDeserializer<string>, IRecordHeaderDeserializer
     {

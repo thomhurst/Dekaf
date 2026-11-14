@@ -1247,6 +1247,62 @@ public readonly struct ConsumeResult<TKey, TValue>
     }
 
     /// <summary>
+    /// Finds the first header with the specified key without copying or allocating.
+    /// Unlike <see cref="Headers"/>, the returned header is not a snapshot: for a record from a fetch,
+    /// its key and value borrow the fetch's storage and stay valid only until the owning fetch batch
+    /// is disposed (the consumer advances past the batch). Copy the value, or use <see cref="Headers"/>,
+    /// to keep it longer. Check <see cref="Header.IsValueNull"/> to distinguish a null value from an
+    /// empty one.
+    /// </summary>
+    /// <param name="key">The header key to find.</param>
+    /// <param name="header">The first header with <paramref name="key"/>, or default when none matches.</param>
+    /// <returns><see langword="true"/> when a header with <paramref name="key"/> exists.</returns>
+    /// <exception cref="ObjectDisposedException">The owning fetch batch was already disposed.</exception>
+    public bool TryGetHeader(string key, out Header header)
+    {
+        if (_headerOwner is null || _pooledHeaderCount < 0)
+        {
+            if (_headerSource is { } headers)
+            {
+                var count = headers.Count;
+                for (var index = 0; index < count; index++)
+                {
+                    var candidate = headers[index];
+                    if (string.Equals(candidate.Key, key, StringComparison.Ordinal))
+                    {
+                        header = candidate;
+                        return true;
+                    }
+                }
+            }
+
+            header = default;
+            return false;
+        }
+
+        header = default;
+        if (_headerSource is not Header[] pooledHeaders || _pooledHeaderCount == 0)
+            return false;
+
+        LazyConsumeHeaders.ThrowIfStale(_headerOwner, _headerGeneration);
+        var found = false;
+        foreach (ref readonly var candidate in pooledHeaders.AsSpan(0, _pooledHeaderCount))
+        {
+            if (string.Equals(candidate.Key, key, StringComparison.Ordinal))
+            {
+                header = candidate;
+                found = true;
+                break;
+            }
+        }
+
+        // The pooled header array is reused by the next fetch; a read that raced with disposal may
+        // have seen another record's headers.
+        LazyConsumeHeaders.ThrowIfStale(_headerOwner, _headerGeneration);
+        return found;
+    }
+
+    /// <summary>
     /// The message timestamp as a DateTimeOffset.
     /// Computed on demand from the stored Unix milliseconds to avoid per-message construction overhead.
     /// </summary>

@@ -638,6 +638,49 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
     }
 
     [Test]
+    public async Task ConsumeBatchAsync_TryGetHeader_ReadsBorrowedHeadersDuringBatch()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "key",
+            Value = "value",
+            Headers = new Headers
+            {
+                { "ce_id", "benchmark"u8.ToArray() },
+                { "ce_null", (byte[]?)null }
+            }
+        }, CancellationToken.None);
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        consumer.Assign(new TopicPartition(topic, 0));
+        consumer.Seek(new TopicPartitionOffset(topic, 0, 0));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var batches = consumer.ConsumeBatchAsync(cancellation.Token).GetAsyncEnumerator();
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        var record = batches.Current.Single();
+        var hasId = record.TryGetHeader("ce_id", out var id);
+        var idValue = id.GetValueAsString();
+        var hasNull = record.TryGetHeader("ce_null", out var nullHeader);
+        var hasMissing = record.TryGetHeader("attempts", out _);
+
+        await Assert.That(hasId).IsTrue();
+        await Assert.That(idValue).IsEqualTo("benchmark");
+        await Assert.That(hasNull).IsTrue();
+        await Assert.That(nullHeader.IsValueNull).IsTrue();
+        await Assert.That(hasMissing).IsFalse();
+    }
+
+    [Test]
     public async Task Consumer_PauseAndResume_WorksCorrectly()
     {
         // Arrange

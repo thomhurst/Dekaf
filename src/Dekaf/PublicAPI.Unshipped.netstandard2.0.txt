@@ -943,3 +943,4 @@ Dekaf.Consumer.PartitionedProcessingMonitor.OldestOutstandingRecordAt.get -> Sys
 Dekaf.Consumer.PartitionedProcessingMonitor.PartitionedProcessingMonitor() -> void
 Dekaf.Consumer.PartitionedProcessingOptions.Monitor.get -> Dekaf.Consumer.PartitionedProcessingMonitor?
 Dekaf.Consumer.PartitionedProcessingOptions.Monitor.init -> void
+Dekaf.Consumer.ConsumeResult<TKey, TValue>.TryGetHeader(string! key, out Dekaf.Serialization.Header header) -> bool
