@@ -600,6 +600,20 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         SnapshotPartitionBound[] partitions;
         int consumerStateVersion;
         int consumerGroupGeneration;
+        // Report assignment changes before capturing the snapshot bounds, as the single-record
+        // path does, so the listener can seek first. Repeat for a change made during a callback.
+        while (_rebalanceListener is { } listener)
+        {
+            await DeliverRebalanceEventsAsync(listener, cancellationToken).ConfigureAwait(false);
+            lock (_gate)
+            {
+                ThrowIfDisposed();
+                _ = GetCurrentAssignmentUnderLock();
+                if (_leavingGroup || _listenerConsumerStateVersion == _consumerStateVersion)
+                    break;
+            }
+        }
+
         lock (_gate)
         {
             ThrowIfDisposed();

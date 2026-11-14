@@ -128,6 +128,52 @@ public sealed class InMemoryRebalanceListenerTests
     }
 
     [Test]
+    public async Task MemberJoiningDuringActiveBatch_StopsTheRevokedBatch()
+    {
+        var cluster = CreateCluster(partitions: 2);
+        await ProduceAsync(cluster, 2, partition: 1);
+        var listener = new RecordingListener();
+        await using var first = CreateConsumer(cluster, "a", listener);
+        await using var second = CreateConsumer(cluster, "b", new RecordingListener());
+        first.Subscribe("topic");
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var batches = first.ConsumeBatchAsync(cancellation.Token).GetAsyncEnumerator(cancellation.Token);
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        using var records = batches.Current.GetEnumerator();
+        await Assert.That(records.MoveNext()).IsTrue();
+
+        second.Subscribe("topic");
+        await second.ConsumeOneAsync(TimeSpan.Zero);
+        await Assert.That(second.Assignment).IsEquivalentTo([Partition1]);
+
+        await Assert.That(records.MoveNext()).IsFalse();
+    }
+
+    [Test]
+    public async Task SnapshotConsume_ReportsAssignmentAndRevocation()
+    {
+        var cluster = CreateCluster(partitions: 2);
+        await ProduceAsync(cluster, 2);
+        var listener = new RecordingListener();
+        var consumer = CreateConsumer(cluster, "a", listener);
+        listener.OnAssigned = () =>
+        {
+            consumer.Seek(new TopicPartitionOffset("topic", 0, 1));
+            return ValueTask.CompletedTask;
+        };
+        consumer.Subscribe("topic");
+
+        var values = new List<string>();
+        await foreach (var record in consumer.ConsumeSnapshotAsync())
+            values.Add(record.Value!);
+        await consumer.CloseAsync();
+        await consumer.DisposeAsync();
+
+        await Assert.That(values).IsEquivalentTo(["value-1"], CollectionOrdering.Matching);
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0,topic-1", "revoked topic-0,topic-1"], CollectionOrdering.Matching);
+    }
+
+    [Test]
     public async Task Unsubscribe_RevokesBeforeLeavingSoTheListenerCanCommit()
     {
         var cluster = CreateCluster(partitions: 1);

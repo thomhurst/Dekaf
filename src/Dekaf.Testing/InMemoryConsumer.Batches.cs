@@ -29,6 +29,10 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
     // auto-commit and close never do. CommittedOffset is the progress an explicit commit already
     // vouched for while the batch was enumerated; the position reaches it when the stream ends.
     private UnprovenBatch? _unprovenBatch;
+
+    // Set while a revocation reads the batch checkpoint, so the batch guard skips the assignment
+    // check: that check refreshes the assignment, which would revoke the partition again.
+    private bool _readingDepartingCheckpoint;
     private TopicPartition? _lastBatchPartition;
     private long _repositionSequence;
     private long _repositionResetVersion;
@@ -235,7 +239,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
         {
             lock (_gate)
             {
-                if (_disposed || !IsBatchSelectionCurrentUnderLock(selection))
+                if (_disposed || !_readingDepartingCheckpoint && !IsBatchSelectionCurrentUnderLock(selection))
                     return BatchIterationStatus.Stopped;
 
                 return _paused.Contains(partition)
@@ -391,7 +395,17 @@ public sealed partial class InMemoryConsumer<TKey, TValue>
         }
 
         if (unproven.Batch is { } active)
-            return TryGetBatchCheckpoint(active, out nextOffset);
+        {
+            _readingDepartingCheckpoint = true;
+            try
+            {
+                return TryGetBatchCheckpoint(active, out nextOffset);
+            }
+            finally
+            {
+                _readingDepartingCheckpoint = false;
+            }
+        }
 
         nextOffset = unproven.NextOffset;
         return true;
