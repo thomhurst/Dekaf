@@ -547,6 +547,217 @@ public class HeadersTests
             .IsEquivalentTo(["remove", "source-keep"]);
     }
 
+    [Test]
+    public async Task RemoveAll_ReplacementKeys_RemovesConflictsAndPreservesOrderAndNullValues()
+    {
+        var headers = new Headers()
+            .Add("interceptor", "keep")
+            .Add("tenant", "old")
+            .Add("nullable", (byte[]?)null)
+            .Add("duplicate", "old")
+            .Add("tail", "keep");
+        var replacement = new Headers()
+            .Add("tenant", "new")
+            .Add("duplicate", "first")
+            .Add("duplicate", "second");
+
+        headers.RemoveAll(static (header, keys) => keys.GetFirst(header.Key) is not null, replacement);
+        for (var i = 0; i < replacement.Count; i++)
+            headers.Add(replacement[i]);
+
+        await Assert.That(Keys(headers))
+            .IsEqualTo("interceptor,nullable,tail,tenant,duplicate,duplicate");
+        await Assert.That(headers[1].IsValueNull).IsTrue();
+        await Assert.That(headers[4].GetValueAsString()).IsEqualTo("first");
+        await Assert.That(headers[5].GetValueAsString()).IsEqualTo("second");
+    }
+
+    [Test]
+    public async Task RemoveAll_CallsPredicateOncePerHeaderAndReturnsThis()
+    {
+        var headers = new Headers().Add("a", "1").Add("b", "2").Add("c", "3");
+        var calls = new List<string>();
+
+        var result = headers.RemoveAll(static (header, seen) =>
+        {
+            seen.Add(header.Key);
+            return header.Key == "b";
+        }, calls);
+
+        await Assert.That(result).IsSameReferenceAs(headers);
+        await Assert.That(string.Join(",", calls)).IsEqualTo("a,b,c");
+        await Assert.That(Keys(headers))
+            .IsEqualTo("a,c");
+    }
+
+    [Test]
+    public async Task RemoveAll_NullPredicate_Throws()
+    {
+        var headers = new Headers();
+        await Assert.That(() => headers.RemoveAll<object?>(null!, null)).Throws<ArgumentNullException>();
+    }
+
+    [Test]
+    public async Task RemoveAll_SchemaIdentity_FallsBackToRetainedEarlierIdentity()
+    {
+        var headers = new Headers()
+            .Add("__value_schema_id", "first")
+            .Add("noise", "value")
+            .Add("__value_schema_id", "last")
+            .Add("__key_schema_id", "key");
+
+        headers.RemoveAll(static (header, _) => header.Key == "noise" || header.GetValueAsString() == "last", 0);
+
+        var foundValue = headers.TryGetLastSchemaIdentity(SerializationComponent.Value, out var valueHeader);
+        var foundKey = headers.TryGetLastSchemaIdentity(SerializationComponent.Key, out var keyHeader);
+        await Assert.That(foundValue).IsTrue();
+        await Assert.That(valueHeader.GetValueAsString()).IsEqualTo("first");
+        await Assert.That(foundKey).IsTrue();
+        await Assert.That(keyHeader.GetValueAsString()).IsEqualTo("key");
+    }
+
+    [Arguments(null)]
+    [Arguments("vendor=value")]
+    [Test]
+    public async Task RemoveAll_PreservesDeferredTraceContextPosition(string? traceState)
+    {
+        var activity = new object();
+        var headers = new Headers().Add("remove", "1").Add("keep", "2");
+        headers.AddDeferredTraceContext(activity, traceState);
+
+        headers.RemoveAll(static (header, key) => header.Key == key, "remove");
+        headers.Add("added", "3");
+
+        var expected = traceState is null ? "keep,added,traceparent" : "keep,added,traceparent,tracestate";
+        await Assert.That(Keys(headers))
+            .IsEqualTo(expected);
+        await Assert.That(headers.CountWithoutDeferredTraceContext).IsEqualTo(2);
+
+        headers.RemoveDeferredTraceContext(activity);
+
+        await Assert.That(Keys(headers))
+            .IsEqualTo("keep,added");
+    }
+
+    [Test]
+    public async Task RemoveAll_StagedViewRemovesSourceAndStagedHeadersWithoutMutatingSource()
+    {
+        var source = new Headers()
+            .Add("remove", "source")
+            .Add("source-keep", "value");
+        var headers = new Headers();
+        headers.BeginRecordHeaderStaging(source);
+        headers.Add("remove", "staged");
+        headers.Add("staged-keep", "value");
+
+        headers.RemoveAll(static (header, key) => header.Key == key, "remove");
+        headers.Add("remove", "added-after-removal");
+
+        await Assert.That(Keys(headers))
+            .IsEqualTo("source-keep,staged-keep,remove");
+        await Assert.That(Keys(source))
+            .IsEqualTo("remove,source-keep");
+    }
+
+    [Test]
+    public async Task RemoveAll_StagedHeadersWithoutSource_RemovesOnlyMatches()
+    {
+        var headers = new Headers().Add("remove", "1").Add("keep", "2");
+        headers.BeginRecordHeaderStaging();
+        headers.Add("remove", "staged");
+        headers.Add("staged-keep", "value");
+        headers.Add("remove", "staged-overflow");
+
+        headers.RemoveAll(static (header, key) => header.Key == key, "remove");
+
+        await Assert.That(Keys(headers))
+            .IsEqualTo("keep,staged-keep");
+    }
+
+    [Test]
+    public async Task RemoveAll_ThrowingPredicate_RemovesEarlierMatchesAndKeepsStateConsistent()
+    {
+        var headers = new Headers()
+            .Add("remove", "1")
+            .Add("__value_schema_id", "schema")
+            .Add("tail", "2");
+
+        await Assert.That(() => headers.RemoveAll(static (header, _) => header.Key switch
+        {
+            "remove" => true,
+            "__value_schema_id" => throw new InvalidOperationException("boom"),
+            _ => true,
+        }, 0)).Throws<InvalidOperationException>();
+
+        await Assert.That(Keys(headers)).IsEqualTo("__value_schema_id,tail");
+        var found = headers.TryGetLastSchemaIdentity(SerializationComponent.Value, out var valueHeader);
+        await Assert.That(found).IsTrue();
+        await Assert.That(valueHeader.GetValueAsString()).IsEqualTo("schema");
+    }
+
+    [Test]
+    public async Task RemoveAll_ThrowingPredicateOnStagedHeaders_KeepsUnvisitedStagedHeaders()
+    {
+        var headers = new Headers().Add("remove", "1");
+        headers.BeginRecordHeaderStaging();
+        headers.Add("remove", "staged");
+        headers.Add("throw", "staged");
+        headers.Add("remove", "staged-overflow");
+
+        await Assert.That(() => headers.RemoveAll(static (header, _) => header.Key == "throw"
+            ? throw new InvalidOperationException("boom")
+            : header.Key == "remove", 0)).Throws<InvalidOperationException>();
+
+        await Assert.That(Keys(headers)).IsEqualTo("throw,remove");
+    }
+
+    [Test]
+    public async Task RemoveAll_ThrowingPredicateOnStagedView_KeepsUnvisitedHeadersAndSource()
+    {
+        var source = new Headers()
+            .Add("remove", "source")
+            .Add("throw", "source")
+            .Add("remove", "source-tail");
+        var headers = new Headers();
+        headers.BeginRecordHeaderStaging(source);
+        headers.Add("staged-keep", "value");
+
+        await Assert.That(() => headers.RemoveAll(static (header, _) => header.Key == "throw"
+            ? throw new InvalidOperationException("boom")
+            : header.Key == "remove", 0)).Throws<InvalidOperationException>();
+        headers.Add("added", "value");
+
+        await Assert.That(Keys(headers)).IsEqualTo("throw,remove,staged-keep,added");
+        await Assert.That(Keys(source)).IsEqualTo("remove,throw,remove");
+    }
+
+    [Test]
+    public async Task RemoveAll_StaticPredicate_DoesNotAllocate()
+    {
+        var headers = new Headers(8);
+        var replacement = new Headers().Add("tenant", "new");
+        var header = new Header("tenant", "old"u8.ToArray());
+        var keep = new Header("keep", "value"u8.ToArray());
+
+        static void Run(Headers headers, Headers replacement, Header header, Header keep)
+        {
+            headers.Add(keep).Add(header).Add(keep);
+            headers.RemoveAll(static (h, keys) => keys.GetFirst(h.Key) is not null, replacement);
+            headers.Clear();
+        }
+
+        Run(headers, replacement, header, keep);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 100; i++)
+            Run(headers, replacement, header, keep);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    private static string Keys(IEnumerable<Header> headers) =>
+        string.Join(",", headers.Select(static header => header.Key));
+
     #endregion
 
     #region Clear Tests

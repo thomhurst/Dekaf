@@ -354,3 +354,4 @@ Dekaf.Serialization.IAsyncDeserializerPreparer<T>.TryDeserialize(System.ReadOnly
 Dekaf.Serialization.IAsyncDeserializerPreparer<T>.PrepareAsync(System.ReadOnlyMemory<byte> data, Dekaf.Serialization.SerializationContext context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
 Dekaf.Serialization.IAsyncDeserializerPreparationRequirement
 Dekaf.Serialization.IAsyncDeserializerPreparationRequirement.RequiresPreparation.get -> bool
+Dekaf.Serialization.Headers.RemoveAll<TState>(System.Func<Dekaf.Serialization.Header, TState, bool>! predicate, TState state) -> Dekaf.Serialization.Headers!
