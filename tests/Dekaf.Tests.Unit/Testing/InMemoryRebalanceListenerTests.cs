@@ -98,6 +98,50 @@ public sealed class InMemoryRebalanceListenerTests
     }
 
     [Test]
+    public async Task CloseFromTheCloseRevocationCallback_DoesNotWaitForItself()
+    {
+        var cluster = CreateCluster(partitions: 1);
+        var listener = new RecordingListener();
+        var consumer = CreateConsumer(cluster, "a", listener);
+        listener.OnRevoked = () => consumer.CloseAsync();
+        consumer.Subscribe("topic");
+        await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await consumer.CloseAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+        await consumer.DisposeAsync();
+
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0", "revoked topic-0"], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task CloseDuringCancelledAssignmentCallback_RevokesTheStartedAssignment()
+    {
+        var cluster = CreateCluster(partitions: 1);
+        var listener = new RecordingListener();
+        var assignmentEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseAssignment = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var consumer = CreateConsumer(cluster, "a", listener);
+        listener.OnAssigned = async () =>
+        {
+            assignmentEntered.SetResult();
+            await releaseAssignment.Task;
+            throw new OperationCanceledException();
+        };
+        consumer.Subscribe("topic");
+        var consume = consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask();
+        await assignmentEntered.Task;
+
+        var close = consumer.CloseAsync().AsTask();
+        await Task.Yield();
+        releaseAssignment.SetResult();
+        await Assert.That(async () => await consume).Throws<OperationCanceledException>();
+        await close.WaitAsync(TimeSpan.FromSeconds(30));
+        await consumer.DisposeAsync();
+
+        await Assert.That(listener.Events).IsEquivalentTo(["assigned topic-0", "revoked topic-0"], CollectionOrdering.Matching);
+    }
+
+    [Test]
     public async Task BlockedConsume_ReportsRevocationWhenAnotherMemberJoins()
     {
         var cluster = CreateCluster(partitions: 2);

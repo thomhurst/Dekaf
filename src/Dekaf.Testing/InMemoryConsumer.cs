@@ -1224,6 +1224,10 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         {
             if (_closeTask is { IsCompleted: false } activeClose)
             {
+                // A callback the active close is running must not wait for that close.
+                if (ReferenceEquals(s_rebalanceCallbackOwner.Value, this))
+                    return ValueTask.CompletedTask;
+
                 closeTask = activeClose;
             }
             else
@@ -3740,6 +3744,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         }
 
         var revocationDelivered = revoked is null;
+        var assignmentStarted = false;
         try
         {
             if (revoked is not null)
@@ -3771,6 +3776,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                     }
                 }
 
+                assignmentStarted = true;
                 await InvokeListenerAsync(
                     static (listener, partitions, token) => listener.OnPartitionsAssignedAsync(partitions, token),
                     listener, assigned, cancellationToken).ConfigureAwait(false);
@@ -3786,8 +3792,12 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 if (_listenerLeaveVersion != leaveVersion)
                 {
                     // Leaving the group already took its snapshot; it revokes the interrupted
-                    // partitions and skips the unreported assignment instead.
-                    outcome = new RebalanceDeliveryOutcome(revocationDelivered ? null : revoked, assigned, lost);
+                    // partitions and skips an assignment the listener never saw. A started
+                    // assigned callback stays in the snapshot so leaving revokes it.
+                    outcome = new RebalanceDeliveryOutcome(
+                        revocationDelivered ? null : revoked,
+                        assignmentStarted ? null : assigned,
+                        lost);
                     throw;
                 }
 
@@ -3907,6 +3917,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
 
         TopicPartition[] revoked;
         bool lost;
+        Task<RebalanceDeliveryOutcome>? activeDelivery;
         lock (_gate)
         {
             if (closing ? _disposed : _leavingGroup)
@@ -3933,21 +3944,25 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             _listenerAssignment.Clear();
             _listenerConsumerStateVersion = -1;
             _listenerLeaveVersion++;
+            // Captured with the snapshot: a delivery that ends after this hands its unfinished
+            // partitions to this task's outcome, even if it clears the field first.
+            activeDelivery = _activeRebalanceDelivery;
         }
 
-        return RevokeAsync(listener, revoked, lost, cancellationToken);
+        return RevokeAsync(listener, revoked, lost, activeDelivery, cancellationToken);
 
         async ValueTask RevokeAsync(
             IRebalanceListener listener,
             TopicPartition[] revoked,
             bool lost,
+            Task<RebalanceDeliveryOutcome>? activeDelivery,
             CancellationToken cancellationToken)
         {
             // A callback that closes or unsubscribes must not wait for its own completion.
             if (!ReferenceEquals(s_rebalanceCallbackOwner.Value, this))
             {
                 await AwaitPendingRebalanceCallbackAsync(cancellationToken).ConfigureAwait(false);
-                if (Volatile.Read(ref _activeRebalanceDelivery) is { } delivery)
+                if (activeDelivery is { } delivery)
                 {
                     var outcome = await delivery.WaitAsync(cancellationToken).ConfigureAwait(false);
                     if (outcome.Restored is not null || outcome.Unreported is not null)
