@@ -257,7 +257,9 @@ previous successful commit of each, so storing once per processed record gives t
 number of records the commit covers. It is a count of stores, not a difference of
 offsets, so compacted offsets and transaction markers add nothing. When a commit fails,
 the next commit of those partitions reports its count again. Your own `CommitAsync`
-calls are not observed, but they do end the count for the stores they commit.
+calls are not observed, but they do end the count for the stores they commit: a
+`CommitAsync(offsets)` call ends a partition's count when it commits that partition's
+stored offset or a later one.
 
 With automatic offset storage, `CompletedRecordCount` is zero: the consumer stores
 offsets itself, by default once per fetch rather than once per record, so it has no

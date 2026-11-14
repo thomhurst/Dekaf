@@ -220,6 +220,117 @@ public sealed partial class ConsumerDirtyCommitTests
     }
 
     [Test]
+    public async Task CommitObserver_WithoutAutoOffsetStore_StoreRepeatedDuringACommitIsCountedByTheNext()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        var observer = new RecordingCommitObserver(requests);
+        var firstCommit = new HeldFirstCommit();
+        await using var consumer = CreateConsumer(
+            requests,
+            ErrorCode.None,
+            OffsetCommitMode.Auto,
+            enableAutoOffsetStore: false,
+            onOffsetCommitAsync: firstCommit.OnCommitAsync,
+            commitObserver: observer);
+        SetCoordinatorState(consumer, CoordinatorState.Stable);
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 10));
+
+        var commit = RunAutoCommitCycleAsync(consumer);
+        await firstCommit.Started;
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 10));
+        firstCommit.Release();
+        await commit;
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 11));
+        await RunAutoCommitCycleAsync(consumer);
+
+        await Assert.That(observer.Calls.Count).IsEqualTo(2);
+        await Assert.That(observer.Calls[0].RecordCount).IsEqualTo(1L);
+        await Assert.That(observer.Calls[1].RecordCount).IsEqualTo(2L);
+    }
+
+    [Test]
+    public async Task CommitObserver_WithoutAutoOffsetStore_CommitOfAPartitionReassignedMeanwhileLeavesItsNewCount()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        var observer = new RecordingCommitObserver(requests);
+        var firstCommit = new HeldFirstCommit();
+        await using var consumer = CreateConsumer(
+            requests,
+            ErrorCode.None,
+            OffsetCommitMode.Auto,
+            enableAutoOffsetStore: false,
+            onOffsetCommitAsync: firstCommit.OnCommitAsync,
+            commitObserver: observer);
+        SetCoordinatorState(consumer, CoordinatorState.Stable);
+        var partition = new TopicPartition("topic-a", 0);
+        consumer.Assign(partition);
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 10));
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 11));
+
+        var commit = RunAutoCommitCycleAsync(consumer);
+        await firstCommit.Started;
+        consumer.Unassign();
+        consumer.Assign(partition);
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 30));
+        firstCommit.Release();
+        await commit;
+        await RunAutoCommitCycleAsync(consumer);
+
+        await Assert.That(observer.Calls.Count).IsEqualTo(2);
+        await Assert.That(observer.Calls[0].RecordCount).IsEqualTo(2L);
+        await Assert.That(observer.Calls[1].RecordCount).IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task CommitObserver_WithoutAutoOffsetStore_ExplicitOffsetCommitEndsTheCountOfTheStoresBeforeIt()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        var observer = new RecordingCommitObserver(requests);
+        var firstCommit = new HeldFirstCommit();
+        await using var consumer = CreateConsumer(
+            requests,
+            ErrorCode.None,
+            OffsetCommitMode.Auto,
+            enableAutoOffsetStore: false,
+            onOffsetCommitAsync: firstCommit.OnCommitAsync,
+            commitObserver: observer);
+        SetCoordinatorState(consumer, CoordinatorState.Stable);
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 10));
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 11));
+        // Stored with a leader epoch the explicit commit below does not name.
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 1, 5, 2));
+
+        var commit = consumer.CommitAsync(
+            [new TopicPartitionOffset("topic-a", 0, 11), new TopicPartitionOffset("topic-a", 1, 5)],
+            CancellationToken.None);
+        await firstCommit.Started;
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 12));
+        firstCommit.Release();
+        await commit;
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 1, 6, 2));
+        await RunAutoCommitCycleAsync(consumer);
+
+        await Assert.That(observer.Calls.Single().RecordCount).IsEqualTo(2L);
+    }
+
+    [Test]
+    public async Task CommitObserver_WithoutAutoOffsetStore_ExplicitCommitBelowTheStoredOffsetKeepsTheCount()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        var observer = new RecordingCommitObserver(requests);
+        await using var consumer = CreateConsumer(
+            requests, ErrorCode.None, OffsetCommitMode.Auto, enableAutoOffsetStore: false, commitObserver: observer);
+        SetCoordinatorState(consumer, CoordinatorState.Stable);
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 10));
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 11));
+
+        await consumer.CommitAsync([new TopicPartitionOffset("topic-a", 0, 5)], CancellationToken.None);
+        await RunAutoCommitCycleAsync(consumer);
+
+        await Assert.That(observer.Calls.Single().RecordCount).IsEqualTo(2L);
+    }
+
+    [Test]
     public async Task CommitObserver_WithAutoOffsetStore_ReportsZeroRecords()
     {
         var requests = new List<OffsetCommitRequest>();
@@ -269,6 +380,27 @@ public sealed partial class ConsumerDirtyCommitTests
             call.Completed = true;
             call.Exception = exception;
             call.CompletedRecordCount = observation.CompletedRecordCount;
+        }
+    }
+
+    /// <summary>Holds the first OffsetCommit request in flight until released.</summary>
+    private sealed class HeldFirstCommit
+    {
+        private readonly TaskCompletionSource _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _attempts;
+
+        public Task Started => _started.Task;
+
+        public void Release() => _release.SetResult();
+
+        public async ValueTask OnCommitAsync(CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref _attempts) != 1)
+                return;
+
+            _started.SetResult();
+            await _release.Task.WaitAsync(cancellationToken);
         }
     }
 
