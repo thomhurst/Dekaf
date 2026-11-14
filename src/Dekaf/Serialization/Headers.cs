@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Collections;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 #if NETSTANDARD2_0
 using System.Runtime.InteropServices;
 #endif
@@ -243,7 +244,8 @@ public sealed class Headers : IReadOnlyList<Header>
     /// <remarks>
     /// The predicate is called once per header and receives <paramref name="state"/>, so a static
     /// lambda can be used without allocating a closure. Retained headers keep their order.
-    /// The predicate must not modify this collection.
+    /// The predicate must not modify this collection. If the predicate throws, headers it already
+    /// matched are removed, the remaining headers are kept, and the exception is rethrown.
     /// </remarks>
     /// <typeparam name="TState">The type of the caller-supplied state.</typeparam>
     /// <param name="predicate">Returns <see langword="true"/> for headers to remove.</param>
@@ -270,11 +272,14 @@ public sealed class Headers : IReadOnlyList<Header>
             var firstMatch = FindFirstSerializationMatch(ref matcher);
             if (firstMatch >= 0)
                 MaterializeWithout(ref matcher, firstMatch);
-            return;
+        }
+        else
+        {
+            RemoveMatchingHeaders(ref matcher);
+            RemoveStagedHeaders(ref matcher);
         }
 
-        RemoveMatchingHeaders(ref matcher);
-        RemoveStagedHeaders(ref matcher);
+        matcher.ThrowIfFailed();
     }
 
     private void RemoveMatchingHeaders<TMatcher>(ref TMatcher matcher)
@@ -687,19 +692,44 @@ public sealed class Headers : IReadOnlyList<Header>
     private interface IHeaderMatcher
     {
         bool IsMatch(Header header);
+
+        void ThrowIfFailed();
     }
 
     private readonly struct KeyMatcher(string key) : IHeaderMatcher
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool IsMatch(Header header) => header.Key == key;
+
+        public void ThrowIfFailed()
+        {
+        }
     }
 
-    private readonly struct PredicateMatcher<TState>(Func<Header, TState, bool> predicate, TState state)
+    // Removal loops compact in place, so a predicate exception is captured and every later header is
+    // treated as retained. The loops then finish with consistent indexes before the exception is rethrown.
+    private struct PredicateMatcher<TState>(Func<Header, TState, bool> predicate, TState state)
         : IHeaderMatcher
     {
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool IsMatch(Header header) => predicate(header, state);
+        private ExceptionDispatchInfo? _failure;
+
+        public bool IsMatch(Header header)
+        {
+            if (_failure is not null)
+                return false;
+
+            try
+            {
+                return predicate(header, state);
+            }
+            catch (Exception exception)
+            {
+                _failure = ExceptionDispatchInfo.Capture(exception);
+                return false;
+            }
+        }
+
+        public readonly void ThrowIfFailed() => _failure?.Throw();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

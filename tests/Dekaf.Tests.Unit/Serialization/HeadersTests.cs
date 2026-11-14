@@ -675,6 +675,63 @@ public class HeadersTests
     }
 
     [Test]
+    public async Task RemoveAll_ThrowingPredicate_RemovesEarlierMatchesAndKeepsStateConsistent()
+    {
+        var headers = new Headers()
+            .Add("remove", "1")
+            .Add("__value_schema_id", "schema")
+            .Add("tail", "2");
+
+        await Assert.That(() => headers.RemoveAll(static (header, _) => header.Key switch
+        {
+            "remove" => true,
+            "__value_schema_id" => throw new InvalidOperationException("boom"),
+            _ => true,
+        }, 0)).Throws<InvalidOperationException>();
+
+        await Assert.That(Keys(headers)).IsEqualTo("__value_schema_id,tail");
+        var found = headers.TryGetLastSchemaIdentity(SerializationComponent.Value, out var valueHeader);
+        await Assert.That(found).IsTrue();
+        await Assert.That(valueHeader.GetValueAsString()).IsEqualTo("schema");
+    }
+
+    [Test]
+    public async Task RemoveAll_ThrowingPredicateOnStagedHeaders_KeepsUnvisitedStagedHeaders()
+    {
+        var headers = new Headers().Add("remove", "1");
+        headers.BeginRecordHeaderStaging();
+        headers.Add("remove", "staged");
+        headers.Add("throw", "staged");
+        headers.Add("remove", "staged-overflow");
+
+        await Assert.That(() => headers.RemoveAll(static (header, _) => header.Key == "throw"
+            ? throw new InvalidOperationException("boom")
+            : header.Key == "remove", 0)).Throws<InvalidOperationException>();
+
+        await Assert.That(Keys(headers)).IsEqualTo("throw,remove");
+    }
+
+    [Test]
+    public async Task RemoveAll_ThrowingPredicateOnStagedView_KeepsUnvisitedHeadersAndSource()
+    {
+        var source = new Headers()
+            .Add("remove", "source")
+            .Add("throw", "source")
+            .Add("remove", "source-tail");
+        var headers = new Headers();
+        headers.BeginRecordHeaderStaging(source);
+        headers.Add("staged-keep", "value");
+
+        await Assert.That(() => headers.RemoveAll(static (header, _) => header.Key == "throw"
+            ? throw new InvalidOperationException("boom")
+            : header.Key == "remove", 0)).Throws<InvalidOperationException>();
+        headers.Add("added", "value");
+
+        await Assert.That(Keys(headers)).IsEqualTo("throw,remove,staged-keep,added");
+        await Assert.That(Keys(source)).IsEqualTo("remove,throw,remove");
+    }
+
+    [Test]
     public async Task RemoveAll_StaticPredicate_DoesNotAllocate()
     {
         var headers = new Headers(8);
