@@ -171,7 +171,10 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
         await container.StartAsync();
         try
         {
-            await WaitForKafkaSslAsync(maxAttempts: 10);
+            // The restarted broker cannot re-register until its previous session expires
+            // (DUPLICATE_BROKER_REGISTRATION for about broker.session.timeout.ms, 9s by default),
+            // so a 10-attempt budget races that delay. Use the full startup budget.
+            await WaitForKafkaSslAsync();
         }
         catch
         {
