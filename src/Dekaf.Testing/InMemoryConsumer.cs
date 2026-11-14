@@ -2604,7 +2604,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
 
         foreach (var partition in _departingOffsets.Keys)
         {
-            if (!assignment.Contains(partition))
+            if (!HasCurrentCommitOffset(partition))
                 count++;
         }
 
@@ -2623,11 +2623,17 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
 
         foreach (var (partition, offset) in _departingOffsets)
         {
-            if (!assignment.Contains(partition))
+            if (!HasCurrentCommitOffset(partition))
                 offsets[index++] = offset;
         }
 
         return new CapturedCommitOffsets(offsets, consumerGroupGeneration);
+
+        // A partition reassigned manually keeps its departing offset until it has a new one.
+        bool HasCurrentCommitOffset(TopicPartition partition) =>
+            partition == inDoubtPartition
+                ? includeInDoubt
+                : assignment.Contains(partition) && _storedOffsets.ContainsKey(partition);
     }
 
     private bool TryApplyMatchingCapturedCommitFault(
@@ -3581,7 +3587,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         IRebalanceListener listener,
         CancellationToken cancellationToken)
     {
-        await TakePendingRebalanceCallback().ConfigureAwait(false);
+        await AwaitPendingRebalanceCallbackAsync(cancellationToken).ConfigureAwait(false);
 
         List<TopicPartition>? revoked = null;
         List<TopicPartition>? assigned = null;
@@ -3619,8 +3625,10 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             if (assigned is not null)
                 _listenerAssignment.UnionWith(assigned);
             // Lost partitions cannot be committed; a partition regained before this call kept its offsets.
-            if (revoked is null || lost)
-                _departingOffsets.Clear();
+            foreach (var partition in _listenerAssignment)
+                _departingOffsets.Remove(partition);
+            if (lost && revoked is not null)
+                RemoveDepartingOffsetsUnderLock(revoked);
         }
 
         if (revoked is not null)
@@ -3658,9 +3666,16 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         }
         finally
         {
+            // Another revocation may have started meanwhile; keep the offsets it saved.
             lock (_gate)
-                _departingOffsets.Clear();
+                RemoveDepartingOffsetsUnderLock(revoked);
         }
+    }
+
+    private void RemoveDepartingOffsetsUnderLock(IEnumerable<TopicPartition> partitions)
+    {
+        foreach (var partition in partitions)
+            _departingOffsets.Remove(partition);
     }
 
     /// <summary>
@@ -3725,16 +3740,23 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             TopicPartition[] revoked,
             CancellationToken cancellationToken)
         {
-            await TakePendingRebalanceCallback().ConfigureAwait(false);
+            await AwaitPendingRebalanceCallbackAsync(cancellationToken).ConfigureAwait(false);
             if (revoked.Length != 0)
                 await RevokeListenerPartitionsAsync(listener, revoked, cancellationToken).ConfigureAwait(false);
         }
     }
 
-    private Task TakePendingRebalanceCallback()
+    /// <summary>
+    /// Waits for an Unsubscribe revocation that completed asynchronously. Cancellation stops the
+    /// wait but keeps the callback pending, so a later consume or close call still awaits it.
+    /// </summary>
+    private async ValueTask AwaitPendingRebalanceCallbackAsync(CancellationToken cancellationToken)
     {
-        var pending = Interlocked.Exchange(ref _pendingRebalanceCallback, null);
-        return pending ?? Task.CompletedTask;
+        if (Volatile.Read(ref _pendingRebalanceCallback) is not { } pending)
+            return;
+
+        await pending.WaitAsync(cancellationToken).ConfigureAwait(false);
+        _ = Interlocked.CompareExchange(ref _pendingRebalanceCallback, null, pending);
     }
 
     private void RevokePartitionUnderLock(TopicPartition partition)
