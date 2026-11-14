@@ -209,6 +209,51 @@ await foreach (var msg in consumer.ConsumeAsync(ct))
 }
 ```
 
+## Observing Automatic Commits
+
+In `Auto` mode the consumer sends commits itself. To measure them, for example with a
+span per commit, pass an `IOffsetCommitObserver` to `WithCommitObserver`:
+
+```csharp
+var source = new ActivitySource("Orders");
+
+var consumer = await Kafka.CreateConsumer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithGroupId("my-group")
+    .WithCommitObserver(new CommitTracing(source))
+    .BuildAsync();
+
+sealed class CommitTracing(ActivitySource source) : IOffsetCommitObserver
+{
+    public object? OnCommitStarting(OffsetCommitObservation observation)
+        => source.StartActivity($"commit {observation.Reason}");
+
+    public void OnCommitCompleted(OffsetCommitObservation observation, object? state, Exception? exception)
+    {
+        if (state is not Activity activity)
+            return;
+        if (exception is not null)
+            activity.SetStatus(ActivityStatusCode.Error, exception.Message);
+        activity.Dispose();
+    }
+}
+```
+
+The same observer type works for the commits `RunPartitionedAsync` sends; see
+[Observing Runtime Commits](./partitioned-processing-api.md#observing-runtime-commits).
+`OnCommitStarting` runs before each commit request and `OnCommitCompleted` runs once
+after it, with the exception when it failed. The reason is `Periodic` for the
+automatic commit, `Revoke` for the commit of revoked partitions during a rebalance,
+and `Stop` for the commit on close. Each commit is observed once, including the
+coordinator's own retries of retriable errors, so the measured duration covers them;
+when an automatic commit fails and the consumer tries it again after a backoff, the
+second attempt is observed as another commit. Commits you request with
+`CommitAsync` are not observed. The observer cannot change what is committed: an
+exception it throws is logged and the commit continues.
+
+`CompletedRecordCount` is always zero for these commits: the consumer does not count
+the records behind its stored offsets.
+
 ## Checking Committed Offsets
 
 ```csharp

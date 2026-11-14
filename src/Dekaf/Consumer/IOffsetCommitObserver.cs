@@ -64,6 +64,7 @@ public readonly struct OffsetCommitObservation(
     /// The count comes from completion tracking, not from subtracting offsets, so compacted offsets,
     /// transaction markers and other log gaps add nothing. Progress past gaps alone reports zero.
     /// A seek commit of a position other than the completed frontier also reports zero.
+    /// Commits the consumer sends itself (<c>ConsumerBuilder.WithCommitObserver</c>) always report zero.
     /// </remarks>
     public long CompletedRecordCount { get; } = completedRecordCount;
 }
@@ -74,17 +75,19 @@ public readonly struct OffsetCommitObservation(
 public enum OffsetCommitReason
 {
     /// <summary>
-    /// A periodic commit of completed offsets.
+    /// A periodic commit: of completed offsets by <c>RunPartitionedAsync</c>, or of stored
+    /// offsets by the consumer's automatic commit.
     /// </summary>
     Periodic,
 
     /// <summary>
-    /// A commit of completed offsets for partitions the group coordinator revoked.
+    /// A commit of completed or stored offsets for partitions the group coordinator revoked.
     /// </summary>
     Revoke,
 
     /// <summary>
-    /// A commit of completed offsets for a partition that stopped, for example during shutdown.
+    /// A commit of completed offsets for a partition that stopped, for example during shutdown,
+    /// or of the consumer's stored offsets when it closes.
     /// </summary>
     Stop,
 

@@ -1453,7 +1453,8 @@ public sealed partial class ConsumerDirtyCommitTests
         Func<CancellationToken, ValueTask>? onOffsetCommitAsync = null,
         int defaultApiTimeoutMs = 60_000,
         string? groupId = "group-a",
-        Func<OffsetCommitRequest, ErrorCode>? respond = null)
+        Func<OffsetCommitRequest, ErrorCode>? respond = null,
+        IOffsetCommitObserver? commitObserver = null)
         => CreateConsumer(
             requests,
             new Queue<ErrorCode>([responseError]),
@@ -1464,7 +1465,8 @@ public sealed partial class ConsumerDirtyCommitTests
             onOffsetCommitAsync,
             defaultApiTimeoutMs,
             groupId,
-            respond);
+            respond,
+            commitObserver);
 
     private static KafkaConsumer<string, string> CreateConsumer(
         List<OffsetCommitRequest> requests,
@@ -1476,7 +1478,8 @@ public sealed partial class ConsumerDirtyCommitTests
         Func<CancellationToken, ValueTask>? onOffsetCommitAsync = null,
         int defaultApiTimeoutMs = 60_000,
         string? groupId = "group-a",
-        Func<OffsetCommitRequest, ErrorCode>? respond = null)
+        Func<OffsetCommitRequest, ErrorCode>? respond = null,
+        IOffsetCommitObserver? commitObserver = null)
     {
         var connectionPool = Substitute.For<IConnectionPool>();
         var connection = Substitute.For<IKafkaConnection>();
@@ -1544,7 +1547,8 @@ public sealed partial class ConsumerDirtyCommitTests
                 OffsetCommitMode = offsetCommitMode,
                 EnableAutoOffsetStore = enableAutoOffsetStore,
                 RebalanceTimeoutMs = rebalanceTimeoutMs,
-                DefaultApiTimeoutMs = defaultApiTimeoutMs
+                DefaultApiTimeoutMs = defaultApiTimeoutMs,
+                CommitObserver = commitObserver
             },
             Serializers.String,
             Serializers.String,
@@ -1634,10 +1638,10 @@ public sealed partial class ConsumerDirtyCommitTests
             "CommitStoredOffsetsAsync",
             BindingFlags.NonPublic | BindingFlags.Instance,
             binder: null,
-            types: [typeof(CancellationToken)],
+            types: [typeof(OffsetCommitReason), typeof(CancellationToken)],
             modifiers: null)!;
 
-        var commit = method.Invoke(consumer, [CancellationToken.None])!;
+        var commit = method.Invoke(consumer, [OffsetCommitReason.Periodic, CancellationToken.None])!;
         if (commit is ValueTask valueTask)
         {
             await valueTask.ConfigureAwait(false);
