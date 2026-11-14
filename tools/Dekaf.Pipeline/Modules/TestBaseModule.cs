@@ -1,11 +1,6 @@
-using ModularPipelines.Attributes;
-using ModularPipelines.Configuration;
+using ModularPipelines;
 using ModularPipelines.Context;
-using ModularPipelines.DotNet.Extensions;
 using ModularPipelines.DotNet.Options;
-using ModularPipelines.Git.Extensions;
-using ModularPipelines.Models;
-using ModularPipelines.Modules;
 using ModularPipelines.Options;
 
 namespace Dekaf.Pipeline.Modules;
@@ -27,29 +22,27 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
         return string.IsNullOrWhiteSpace(framework) ? "net10.0" : framework;
     }
 
-    protected override ModuleConfiguration Configure()
+    protected override void Configure(ModuleConfigurationBuilder module)
     {
-        return new ModuleConfigurationBuilder()
-            .WithTimeout(TimeSpan.FromMinutes(30))
-            .Build();
+        module.WithTimeout(TimeSpan.FromMinutes(30));
     }
 
     protected abstract string ProjectFileName { get; }
 
-    protected sealed override async Task<IReadOnlyList<CommandResult>?> ExecuteAsync(
+    protected sealed override async Task<IReadOnlyList<CommandResult>> ExecuteAsync(
         IModuleContext context, CancellationToken cancellationToken)
     {
         var results = new List<CommandResult>();
 
         foreach (var framework in TestableFrameworks)
         {
-            var project = context.Git().RootDirectory.FindFile(x => x.Name == ProjectFileName);
+            var project = (await context.Tools.Git.Information.GetRequiredInfoAsync(cancellationToken)).Root.FindFile(x => x.Name == ProjectFileName);
             if (project is null)
             {
                 throw new InvalidOperationException($"Project {ProjectFileName} not found");
             }
 
-            var testResult = await context.DotNet().Run(
+            var testResult = await context.Tools.DotNet.RunAsync(
                 new DotNetRunOptions
                 {
                     NoBuild = true,

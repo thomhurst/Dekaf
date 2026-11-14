@@ -1,11 +1,7 @@
 using Microsoft.Extensions.Logging;
-using ModularPipelines.Attributes;
-using ModularPipelines.Configuration;
+using ModularPipelines;
 using ModularPipelines.Context;
-using ModularPipelines.Git.Attributes;
-using ModularPipelines.GitHub.Extensions;
-using ModularPipelines.Models;
-using ModularPipelines.Modules;
+using ModularPipelines.Git;
 using Octokit;
 
 namespace Dekaf.Pipeline.Modules;
@@ -25,9 +21,8 @@ namespace Dekaf.Pipeline.Modules;
 [DependsOn<GenerateVersionModule>]
 public class CreateReleaseModule : Module<Release>
 {
-    protected override ModuleConfiguration Configure() =>
-        new ModuleConfigurationBuilder()
-            .WithSkipWhen(async ctx =>
+    protected override void Configure(ModuleConfigurationBuilder module) =>
+        module.WithSkipWhen(async (ctx, _) =>
             {
                 // Only release when the NuGet upload ran and actually published something. The upload
                 // module returns an empty list when publishing is disabled (no ShouldPublish / no API
@@ -40,7 +35,7 @@ public class CreateReleaseModule : Module<Release>
 
                 var upload = await uploadModule;
 
-                if (upload.IsSkipped)
+                if (upload.SkipDecisionOrDefault is not null)
                 {
                     return SkipDecision.Skip("NuGet upload was skipped");
                 }
@@ -48,16 +43,15 @@ public class CreateReleaseModule : Module<Release>
                 return upload.ValueOrDefault is { Count: > 0 }
                     ? SkipDecision.DoNotSkip
                     : SkipDecision.Skip("No NuGet packages were published");
-            })
-            .Build();
+            });
 
-    protected override async Task<Release?> ExecuteAsync(IModuleContext context, CancellationToken cancellationToken)
+    protected override async Task<Release> ExecuteAsync(IModuleContext context, CancellationToken cancellationToken)
     {
         var versionModule = await context.GetModule<GenerateVersionModule>();
         var version = versionModule.ValueOrDefault?.SemVer
             ?? throw new InvalidOperationException("No version was generated for the release.");
 
-        var github = context.GitHub();
+        var github = context.Tools.GitHub;
         var repositoryId = long.Parse(github.EnvironmentVariables.RepositoryId!);
         var tag = $"v{version}";
 

@@ -1,13 +1,9 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using ModularPipelines.Attributes;
+using ModularPipelines;
 using ModularPipelines.Context;
-using ModularPipelines.DotNet.Extensions;
+using ModularPipelines.Git;
 using ModularPipelines.DotNet.Options;
-using ModularPipelines.Git.Attributes;
-using ModularPipelines.Git.Extensions;
-using ModularPipelines.Models;
-using ModularPipelines.Modules;
 
 namespace Dekaf.Pipeline.Modules;
 
@@ -15,7 +11,7 @@ namespace Dekaf.Pipeline.Modules;
 [DependsOn<PackModule>]
 public class UploadToNuGetModule(IOptions<NuGetOptions> nuGetOptions) : Module<List<CommandResult>>
 {
-    protected override async Task<List<CommandResult>?> ExecuteAsync(IModuleContext context, CancellationToken cancellationToken)
+    protected override async Task<List<CommandResult>> ExecuteAsync(IModuleContext context, CancellationToken cancellationToken)
     {
         var options = nuGetOptions.Value;
 
@@ -47,7 +43,7 @@ public class UploadToNuGetModule(IOptions<NuGetOptions> nuGetOptions) : Module<L
 
         foreach (var package in packedProjects)
         {
-            var nupkgFile = context.Git().RootDirectory.FindFile(x => x.Name == $"{package.Name}.{package.Version}.nupkg");
+            var nupkgFile = (await context.Tools.Git.Information.GetRequiredInfoAsync(cancellationToken)).Root.FindFile(x => x.Name == $"{package.Name}.{package.Version}.nupkg");
 
             if (nupkgFile is null)
             {
@@ -99,9 +95,8 @@ public class UploadToNuGetModule(IOptions<NuGetOptions> nuGetOptions) : Module<L
 
         Task<CommandResult> PushPackageAsync(string packagePath)
         {
-            return context.DotNet().Nuget.Push(new DotNetNugetPushOptions
+            return context.Tools.DotNet.NuGet.PushAsync(new DotNetNuGetPushOptions([packagePath])
             {
-                Path = packagePath,
                 Source = options.Source,
                 ApiKey = options.ApiKey,
                 SkipDuplicate = true

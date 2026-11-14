@@ -3,7 +3,6 @@ using Dekaf.Pipeline.Modules;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using ModularPipelines;
-using ModularPipelines.Extensions;
 using ModularPipelines.Options;
 
 var builder = Pipeline.CreateBuilder();
@@ -11,7 +10,7 @@ var builder = Pipeline.CreateBuilder();
 builder.Configuration.AddEnvironmentVariables();
 builder.Configuration.AddCommandLine(args);
 builder.Services.Configure<NuGetOptions>(builder.Configuration.GetSection("NuGet"));
-builder.Options.ExecutionMode = ExecutionMode.WaitForAllModules;
+builder.ConfigureOptions(options => options with { FailureMode = FailureMode.ContinueOnFailure });
 
 var skipUnitTests = string.Equals(
     Environment.GetEnvironmentVariable("SKIP_UNIT_TESTS"), "true", StringComparison.OrdinalIgnoreCase);
@@ -29,34 +28,34 @@ var runBenchmarks = string.Equals(
     Environment.GetEnvironmentVariable("RUN_BENCHMARKS"), "true", StringComparison.OrdinalIgnoreCase);
 
 // Core modules - always needed
-builder.Services.AddModule<RestoreModule>();
-builder.Services.AddModule<GenerateVersionModule>();
-builder.Services.AddModule<BuildModule>();
+builder.AddModule<RestoreModule>();
+builder.AddModule<GenerateVersionModule>();
+builder.AddModule<BuildModule>();
 
 // Test and packaging modules are gated independently so a caller can drop one without
 // losing the other. CI runs the unit tests in their own job, off the build critical path,
 // while the build job still has to pack.
 if (!skipUnitTests)
 {
-    builder.Services.AddModule<RunUnitTestsModule>();
-    builder.Services.AddModule<RunStressTestsUnitTestsModule>();
+    builder.AddModule<RunUnitTestsModule>();
+    builder.AddModule<RunStressTestsUnitTestsModule>();
 }
 
 if (!skipAotSmokeTests)
 {
-    builder.Services.AddModule<RunAotSmokeTestsModule>();
+    builder.AddModule<RunAotSmokeTestsModule>();
 }
 
 if (!skipPackaging)
 {
-    builder.Services.AddModule<PackModule>();
-    builder.Services.AddModule<UploadToNuGetModule>();
-    builder.Services.AddModule<CreateReleaseModule>();
+    builder.AddModule<PackModule>();
+    builder.AddModule<UploadToNuGetModule>();
+    builder.AddModule<CreateReleaseModule>();
 }
 
 if (runBenchmarks)
 {
-    builder.Services.AddModule<RunBenchmarksModule>();
+    builder.AddModule<RunBenchmarksModule>();
 }
 
 // Integration test modules - register only the matching category, or all if no category specified
@@ -64,30 +63,30 @@ if (!skipIntegrationTests)
 {
     var integrationTestModules = new Dictionary<string, Action>(StringComparer.OrdinalIgnoreCase)
     {
-        ["Admin"] = () => builder.Services.AddModule<RunAdminIntegrationTestsModule>(),
-        ["Authentication"] = () => builder.Services.AddModule<RunAuthenticationIntegrationTestsModule>(),
-        ["Backpressure"] = () => builder.Services.AddModule<RunBackpressureIntegrationTestsModule>(),
-        ["Compression"] = () => builder.Services.AddModule<RunCompressionIntegrationTestsModule>(),
-        ["Consumer"] = () => builder.Services.AddModule<RunConsumerIntegrationTestsModule>(),
-        ["ConsumerGroup"] = () => builder.Services.AddModule<RunConsumerGroupIntegrationTestsModule>(),
-        ["ConsumerLag"] = () => builder.Services.AddModule<RunConsumerLagIntegrationTestsModule>(),
-        ["Interop"] = () => builder.Services.AddModule<RunInteropIntegrationTestsModule>(),
-        ["Messaging"] = () => builder.Services.AddModule<RunMessagingIntegrationTestsModule>(),
-        ["MessagingPatterns"] = () => builder.Services.AddModule<RunMessagingPatternsIntegrationTestsModule>(),
-        ["MessagingOrdering"] = () => builder.Services.AddModule<RunMessagingOrderingIntegrationTestsModule>(),
-        ["MultiInFlightProducer"] = () => builder.Services.AddModule<RunMultiInFlightProducerIntegrationTestsModule>(),
-        ["NetworkPartition"] = () => builder.Services.AddModule<RunNetworkPartitionIntegrationTestsModule>(),
-        ["Offsets"] = () => builder.Services.AddModule<RunOffsetsIntegrationTestsModule>(),
-        ["Producer"] = () => builder.Services.AddModule<RunProducerIntegrationTestsModule>(),
-        ["Authorization"] = () => builder.Services.AddModule<RunAuthorizationIntegrationTestsModule>(),
-        ["Resilience"] = () => builder.Services.AddModule<RunResilienceIntegrationTestsModule>(),
-        ["Retry"] = () => builder.Services.AddModule<RunRetryIntegrationTestsModule>(),
-        ["Serialization"] = () => builder.Services.AddModule<RunSerializationIntegrationTestsModule>(),
-        ["ShareConsumer"] = () => builder.Services.AddModule<RunShareConsumerIntegrationTestsModule>(),
-        ["ShareConsumerAdmin"] = () => builder.Services.AddModule<RunShareConsumerAdminIntegrationTestsModule>(),
-        ["Telemetry"] = () => builder.Services.AddModule<RunTelemetryIntegrationTestsModule>(),
-        ["Tls"] = () => builder.Services.AddModule<RunTlsIntegrationTestsModule>(),
-        ["Transaction"] = () => builder.Services.AddModule<RunTransactionIntegrationTestsModule>(),
+        ["Admin"] = () => builder.AddModule<RunAdminIntegrationTestsModule>(),
+        ["Authentication"] = () => builder.AddModule<RunAuthenticationIntegrationTestsModule>(),
+        ["Backpressure"] = () => builder.AddModule<RunBackpressureIntegrationTestsModule>(),
+        ["Compression"] = () => builder.AddModule<RunCompressionIntegrationTestsModule>(),
+        ["Consumer"] = () => builder.AddModule<RunConsumerIntegrationTestsModule>(),
+        ["ConsumerGroup"] = () => builder.AddModule<RunConsumerGroupIntegrationTestsModule>(),
+        ["ConsumerLag"] = () => builder.AddModule<RunConsumerLagIntegrationTestsModule>(),
+        ["Interop"] = () => builder.AddModule<RunInteropIntegrationTestsModule>(),
+        ["Messaging"] = () => builder.AddModule<RunMessagingIntegrationTestsModule>(),
+        ["MessagingPatterns"] = () => builder.AddModule<RunMessagingPatternsIntegrationTestsModule>(),
+        ["MessagingOrdering"] = () => builder.AddModule<RunMessagingOrderingIntegrationTestsModule>(),
+        ["MultiInFlightProducer"] = () => builder.AddModule<RunMultiInFlightProducerIntegrationTestsModule>(),
+        ["NetworkPartition"] = () => builder.AddModule<RunNetworkPartitionIntegrationTestsModule>(),
+        ["Offsets"] = () => builder.AddModule<RunOffsetsIntegrationTestsModule>(),
+        ["Producer"] = () => builder.AddModule<RunProducerIntegrationTestsModule>(),
+        ["Authorization"] = () => builder.AddModule<RunAuthorizationIntegrationTestsModule>(),
+        ["Resilience"] = () => builder.AddModule<RunResilienceIntegrationTestsModule>(),
+        ["Retry"] = () => builder.AddModule<RunRetryIntegrationTestsModule>(),
+        ["Serialization"] = () => builder.AddModule<RunSerializationIntegrationTestsModule>(),
+        ["ShareConsumer"] = () => builder.AddModule<RunShareConsumerIntegrationTestsModule>(),
+        ["ShareConsumerAdmin"] = () => builder.AddModule<RunShareConsumerAdminIntegrationTestsModule>(),
+        ["Telemetry"] = () => builder.AddModule<RunTelemetryIntegrationTestsModule>(),
+        ["Tls"] = () => builder.AddModule<RunTlsIntegrationTestsModule>(),
+        ["Transaction"] = () => builder.AddModule<RunTransactionIntegrationTestsModule>(),
     };
 
     if (!string.IsNullOrEmpty(integrationTestCategory))
@@ -117,7 +116,7 @@ if (!skipIntegrationTests)
 var categoriesArg = args.SkipWhile(a => a != "--categories").Skip(1).TakeWhile(a => !a.StartsWith("--", StringComparison.Ordinal)).ToArray();
 if (categoriesArg.Length > 0)
 {
-    builder.RunCategories(categoriesArg);
+    builder.ConfigureOptions(options => options with { RunOnlyCategories = categoriesArg });
 }
 
-await builder.Build().RunAsync();
+await builder.RunAsync();

@@ -1,18 +1,13 @@
 using Microsoft.Extensions.Logging;
-using ModularPipelines.Attributes;
-using ModularPipelines.Configuration;
+using ModularPipelines;
 using ModularPipelines.Context;
-using ModularPipelines.DotNet.Extensions;
 using ModularPipelines.DotNet.Options;
-using ModularPipelines.Git.Extensions;
-using ModularPipelines.Models;
-using ModularPipelines.Modules;
 using ModularPipelines.Options;
 
 namespace Dekaf.Pipeline.Modules;
 
 [DependsOn<BuildModule>]
-public class RunAotSmokeTestsModule(ICommand command) : Module<IReadOnlyList<CommandResult>>
+public class RunAotSmokeTestsModule : Module<IReadOnlyList<CommandResult>?>
 {
     private static readonly AotSmokeProject[] Projects =
     [
@@ -20,11 +15,9 @@ public class RunAotSmokeTestsModule(ICommand command) : Module<IReadOnlyList<Com
         new("Dekaf.Tests.Aot.DependencyInjection.csproj", "dependency-injection")
     ];
 
-    protected override ModuleConfiguration Configure()
+    protected override void Configure(ModuleConfigurationBuilder module)
     {
-        return new ModuleConfigurationBuilder()
-            .WithTimeout(TimeSpan.FromMinutes(20))
-            .Build();
+        module.WithTimeout(TimeSpan.FromMinutes(20));
     }
 
     protected override async Task<IReadOnlyList<CommandResult>?> ExecuteAsync(
@@ -37,7 +30,7 @@ public class RunAotSmokeTestsModule(ICommand command) : Module<IReadOnlyList<Com
             return null;
         }
 
-        var rootDirectory = context.Git().RootDirectory;
+        var rootDirectory = (await context.Tools.Git.Information.GetRequiredInfoAsync(cancellationToken)).Root;
         var results = new List<CommandResult>(Projects.Length * 2);
 
         foreach (var smokeProject in Projects)
@@ -54,7 +47,7 @@ public class RunAotSmokeTestsModule(ICommand command) : Module<IReadOnlyList<Com
                 "aot",
                 smokeProject.OutputName);
 
-            var publishResult = await context.DotNet().Publish(
+            var publishResult = await context.Tools.DotNet.PublishAsync(
                 new DotNetPublishOptions
                 {
                     ProjectSolution = project.Path,
@@ -78,8 +71,8 @@ public class RunAotSmokeTestsModule(ICommand command) : Module<IReadOnlyList<Com
             var executablePath = Path.Combine(
                 outputDirectory,
                 Path.GetFileNameWithoutExtension(smokeProject.ProjectFileName));
-            var runResult = await command.ExecuteCommandLineTool(
-                new GenericCommandLineToolOptions(executablePath),
+            var runResult = await context.Shell.RunAsync(
+                new CommandLineToolOptions(executablePath),
                 new CommandExecutionOptions
                 {
                     WorkingDirectory = outputDirectory
