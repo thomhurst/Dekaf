@@ -1907,6 +1907,47 @@ public sealed partial class PartitionedConsumerRuntimeTests
     }
 
     [Test]
+    [Arguments(PartitionCommitPolicy.CommitCompletedOnRevoke)]
+    [Arguments(PartitionCommitPolicy.CommitCompletedPeriodically)]
+    public async Task RunPartitionedAsync_ConsumerWithoutGroup_SkipsRuntimeCommitsAndStopsCleanly(
+        PartitionCommitPolicy commitPolicy)
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer { HasConsumerGroup = false };
+        consumer.SetAssignment(partition);
+        using var processed = new SemaphoreSlim(0);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            (_, _, _) =>
+            {
+                processed.Release();
+                return ValueTask.CompletedTask;
+            },
+            new PartitionedProcessingOptions
+            {
+                CommitPolicy = commitPolicy,
+                CommitInterval = TimeSpan.FromMilliseconds(1)
+            },
+            cts.Token).AsTask();
+
+        consumer.Enqueue(CreateResult(partition, 0));
+        await processed.WaitAsync(cts.Token);
+        // Past the commit interval, two more batches make the loop run its periodic commit
+        // check between them with completed, uncommitted progress.
+        await Task.Delay(10, cts.Token);
+        for (var offset = 1; offset <= 2; offset++)
+        {
+            consumer.Enqueue(CreateResult(partition, offset));
+            await processed.WaitAsync(cts.Token);
+        }
+
+        await cts.CancelAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await runTask);
+        await Assert.That(consumer.CommitAttempts).IsEqualTo(0);
+    }
+
+    [Test]
     [Arguments(ErrorCode.FencedMemberEpoch)]
     [Arguments(ErrorCode.UnknownMemberId)]
     [Arguments(ErrorCode.StaleMemberEpoch)]
@@ -2412,6 +2453,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
         {
             ArgumentNullException.ThrowIfNull(offsets);
             cancellationToken.ThrowIfCancellationRequested();
+            // Mirrors KafkaConsumer, which has no coordinator to commit through without a group.
+            if (!HasConsumerGroup)
+                throw new InvalidOperationException("Offset commits require a consumer group");
 
             // Arm cancellation before telling the test it can cancel and release us.
             // WaitAsync on an already-completed release task would ignore cancellation.
