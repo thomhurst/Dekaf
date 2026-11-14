@@ -102,12 +102,17 @@ public class StreamsProducerCollectorBenchmarks
         _collector.Reset();
     }
 
+    /// <summary>
+    /// Recycles only published batches: the deque-polling <c>TryDrainBatch</c> can take a batch
+    /// before the sealing thread's last touch (<c>StartPreSerialization</c>) and return it to the
+    /// pool under it.
+    /// </summary>
     private void DrainLoop(CancellationToken cancellationToken)
     {
         var spinner = new SpinWait();
         while (!cancellationToken.IsCancellationRequested)
         {
-            if (_accumulator.TryDrainBatch(out var batch))
+            if (_accumulator.TryDrainPublishedBatch(out var batch))
             {
                 _accumulator.OnBatchExitsPipeline(batch);
                 _accumulator.ReleaseMemory(batch.DataSize);
