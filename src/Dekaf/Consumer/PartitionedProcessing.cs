@@ -2640,6 +2640,8 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     // _enqueuedRecords is written only by the runtime loop; _completedRecords under _completedRanges.
     private long _enqueuedRecords;
     private long _completedRecords;
+    // Manual completions in any order, including those above the frontier; under _completedRanges.
+    private long _markedRecords;
     private long _committedRecords;
     private AutomaticPartitionProgress? _automaticProgress;
     private TopicPartitionOffset? _firstUndeliveredOffset;
@@ -2993,6 +2995,7 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
             var node = completionBatch.GetCompletionNode(message.ProcessingIndex);
             if (node.Height != -1)
                 return;
+            _markedRecords++;
             if (_completedRanges.Complete(completionBatch, node, message.Offset,
                     message.LeaderEpoch ?? -1, _lastCompletedOffset, out var completed, out var epoch, out var completedRecords))
             {
@@ -3027,13 +3030,26 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     public long CommittedRecords => Volatile.Read(ref _committedRecords);
 
     /// <summary>
-    /// Completed records below the frontier that no successful commit of this lane covered.
+    /// Completed records that no successful commit of this lane covered, including completions
+    /// above the frontier. Read only after the processor task completes.
     /// </summary>
     public long UncommittedRecords
     {
         get
         {
-            GetCommitOffset(out var completedRecords);
+            long completedRecords;
+            var automaticProgress = Volatile.Read(ref _automaticProgress);
+            if (automaticProgress is not null)
+            {
+                // In-order handlers complete exactly the records below the frontier.
+                automaticProgress.GetCommitOffset(out completedRecords);
+                completedRecords = Math.Max(completedRecords, automaticProgress.CompletedRecordTotal);
+            }
+            else
+            {
+                lock (_completedRanges)
+                    completedRecords = _markedRecords;
+            }
             return Math.Max(0, completedRecords - CommittedRecords);
         }
     }

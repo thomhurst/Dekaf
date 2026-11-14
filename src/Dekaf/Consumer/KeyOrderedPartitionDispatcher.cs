@@ -44,6 +44,8 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
     private int _lastReadEpoch = -1;
     // Records read from the lane, excluding partition EOF markers.
     private long _readRecords;
+    // Records whose handler succeeded, excluding partition EOF markers, in any order.
+    private long _completedRecordTotal;
     private int _used;
     private int _activeWorkers;
     private int _laneCount;
@@ -214,6 +216,8 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
                 ReleaseFailureLaneKeys();
             }
             Volatile.Write(ref _laneCount, 0);
+            // Every worker has finished: hand over completions above the frontier too.
+            _progress?.SetCompletedRecordTotal(_completedRecordTotal);
             registration.Dispose();
             _signal.Dispose();
         }
@@ -482,7 +486,10 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
             if (!succeeded)
                 continue;
             if (!record.IsPartitionEof)
+            {
                 _progress?.MarkProcessed(record.Offset);
+                _completedRecordTotal++;
+            }
 
             // Unlink a completed record in constant time. The next unfinished
             // record remembers its delivered predecessor, including compacted

@@ -9,6 +9,15 @@ internal sealed class AutomaticPartitionProgress(TopicPartition partition)
     private int _leaderEpoch = -1;
     private long _completedRecords;
     private long _lastProcessedOffset = -1;
+    private long _completedRecordTotal = -1;
+
+    /// <summary>
+    /// Every completed record of a finished out-of-order dispatcher, including completions above
+    /// the frontier, or -1 when none reported it. Read only after the processor task completes.
+    /// </summary>
+    internal long CompletedRecordTotal => Volatile.Read(ref _completedRecordTotal);
+
+    internal void SetCompletedRecordTotal(long records) => Volatile.Write(ref _completedRecordTotal, records);
 
     internal long? LastProcessedOffset
     {
