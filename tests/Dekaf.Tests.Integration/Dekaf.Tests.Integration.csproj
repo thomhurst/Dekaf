@@ -18,6 +18,8 @@
     <ProjectReference Include="..\..\src\Dekaf.Aspire.SchemaRegistry\Dekaf.Aspire.SchemaRegistry.csproj" Condition="'$(PublishAot)' != 'true'" />
     <ProjectReference Include="..\..\src\Dekaf.Serialization.Json\Dekaf.Serialization.Json.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Serialization.Routing\Dekaf.Serialization.Routing.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Streams\Dekaf.Streams.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Streams.Storage.ZoneTree\Dekaf.Streams.Storage.ZoneTree.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry\Dekaf.SchemaRegistry.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Kms.Aws\Dekaf.SchemaRegistry.Kms.Aws.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Json\Dekaf.SchemaRegistry.Json.csproj" />

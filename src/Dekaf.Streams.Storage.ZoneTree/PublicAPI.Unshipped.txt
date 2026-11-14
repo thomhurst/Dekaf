@@ -1,0 +1,7 @@
+#nullable enable
+Dekaf.Streams.Storage.ZoneTree.ZoneTreeStateExtensions
+Dekaf.Streams.Storage.ZoneTree.ZoneTreeStateStoreEngine
+Dekaf.Streams.Storage.ZoneTree.ZoneTreeStateStoreEngine.CreateKeyValueStore(Dekaf.Streams.StateStoreContext context) -> Dekaf.Streams.IKeyValueBytesStore!
+Dekaf.Streams.Storage.ZoneTree.ZoneTreeStateStoreEngine.CreateWindowStore(Dekaf.Streams.StateStoreContext context) -> Dekaf.Streams.IWindowBytesStore!
+static Dekaf.Streams.Storage.ZoneTree.ZoneTreeStateExtensions.UseZoneTreeState(this Dekaf.Streams.KafkaStreamsBuilder! builder, string! directory) -> Dekaf.Streams.KafkaStreamsBuilder!
+static Dekaf.Streams.Storage.ZoneTree.ZoneTreeStateStoreEngine.Instance.get -> Dekaf.Streams.Storage.ZoneTree.ZoneTreeStateStoreEngine!

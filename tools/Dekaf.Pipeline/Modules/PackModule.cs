@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using ModularPipelines;
 using ModularPipelines.Context;
 using ModularPipelines.DotNet.Options;
@@ -13,7 +14,7 @@ public record PackedProject(string Name, string Version);
 [DependsOn<RunStressTestsUnitTestsModule>(Optional = true)]
 [DependsOn<RunUnitTestsModule>(Optional = true)]
 [DependsOn<GenerateVersionModule>]
-public class PackModule : Module<List<PackedProject>>
+public partial class PackModule : Module<List<PackedProject>>
 {
     protected override async Task<List<PackedProject>> ExecuteAsync(IModuleContext context, CancellationToken cancellationToken)
     {
@@ -30,6 +31,11 @@ public class PackModule : Module<List<PackedProject>>
         {
             var projectName = Path.GetFileNameWithoutExtension(projectFile);
 
+            // Directory.Build.targets appends a project's PrereleaseLabel to its package version. The
+            // upload looks packages up by file name, so the same version is derived here.
+            var label = PrereleaseLabelRegex().Match(await File.ReadAllTextAsync(projectFile, cancellationToken));
+            var packageVersion = label.Success ? $"{version}-{label.Groups[1].Value}" : version;
+
             await context.Tools.DotNet.PackAsync(new DotNetPackOptions
             {
                 ProjectSolution = projectFile,
@@ -39,17 +45,21 @@ public class PackModule : Module<List<PackedProject>>
                 IncludeSource = true,
                 Properties =
                 [
+                    // PackageVersion is not passed: as a global property it would override the
+                    // per-project prerelease version, here and in every referenced project.
                     new KeyValue("Version", version),
-                    new KeyValue("PackageVersion", version),
                     new KeyValue("ContinuousIntegrationBuild", "true"),
                     new KeyValue("Deterministic", "true"),
                     new KeyValue("PublishRepositoryUrl", "true")
                 ]
             }, null, cancellationToken);
 
-            packedProjects.Add(new PackedProject(projectName, version));
+            packedProjects.Add(new PackedProject(projectName, packageVersion));
         }
 
         return packedProjects;
     }
+
+    [GeneratedRegex(@"<PrereleaseLabel>\s*([0-9A-Za-z.-]+)\s*</PrereleaseLabel>")]
+    private static partial Regex PrereleaseLabelRegex();
 }

@@ -1,0 +1,4 @@
+#nullable enable
+Dekaf.Streams.Extensions.Hosting.StreamsServiceCollectionExtensions
+static Dekaf.Streams.Extensions.Hosting.StreamsServiceCollectionExtensions.AddDekafStreams(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, string! applicationId, System.Action<Dekaf.Streams.StreamsBuilder!>! buildTopology, System.Action<Dekaf.Streams.KafkaStreamsBuilder!>! configure) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+static Dekaf.Streams.Extensions.Hosting.StreamsServiceCollectionExtensions.AddDekafStreams(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, string! applicationId, System.Action<System.IServiceProvider!, Dekaf.Streams.StreamsBuilder!>! buildTopology, System.Action<System.IServiceProvider!, Dekaf.Streams.KafkaStreamsBuilder!>! configure) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!

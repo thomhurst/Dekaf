@@ -1,0 +1,15 @@
+#nullable enable
+Dekaf.Streams.Testing.TestInputTopic<TKey, TValue>
+Dekaf.Streams.Testing.TestInputTopic<TKey, TValue>.Pipe(TKey key, TValue value, System.DateTimeOffset timestamp, Dekaf.Serialization.Headers? headers = null) -> void
+Dekaf.Streams.Testing.TestInputTopic<TKey, TValue>.Pipe(TKey key, TValue value, long timestamp = 0, Dekaf.Serialization.Headers? headers = null) -> void
+Dekaf.Streams.Testing.TestOutputTopic<TKey, TValue>
+Dekaf.Streams.Testing.TestOutputTopic<TKey, TValue>.Count.get -> int
+Dekaf.Streams.Testing.TestOutputTopic<TKey, TValue>.ReadAll() -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.Record<TKey, TValue>>!
+Dekaf.Streams.Testing.TestOutputTopic<TKey, TValue>.TryRead(out Dekaf.Streams.Record<TKey, TValue> record) -> bool
+Dekaf.Streams.Testing.TopologyTestDriver
+Dekaf.Streams.Testing.TopologyTestDriver.CreateInputTopic<TKey, TValue>(string! topic, Dekaf.Serialization.ISerializer<TKey>! keySerializer, Dekaf.Serialization.ISerializer<TValue>! valueSerializer) -> Dekaf.Streams.Testing.TestInputTopic<TKey, TValue>!
+Dekaf.Streams.Testing.TopologyTestDriver.CreateOutputTopic<TKey, TValue>(string! topic, Dekaf.Serialization.IDeserializer<TKey>! keyDeserializer, Dekaf.Serialization.IDeserializer<TValue>! valueDeserializer) -> Dekaf.Streams.Testing.TestOutputTopic<TKey, TValue>!
+Dekaf.Streams.Testing.TopologyTestDriver.Dispose() -> void
+Dekaf.Streams.Testing.TopologyTestDriver.DroppedRecordCount.get -> long
+Dekaf.Streams.Testing.TopologyTestDriver.GetKeyValueStore<TKey, TValue>(string! name) -> Dekaf.Streams.IReadOnlyKeyValueStore<TKey, TValue>!
+Dekaf.Streams.Testing.TopologyTestDriver.TopologyTestDriver(Dekaf.Streams.Topology! topology) -> void

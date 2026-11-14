@@ -3,6 +3,16 @@
     <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="/" Visible="false" />
   </ItemGroup>
 
+  <!--
+    A project that sets PrereleaseLabel ships as a prerelease of the shared version, for example
+    1.28.0-beta, while the other packages ship 1.28.0. It is computed here, per project, so a package
+    that depends on a prerelease project records that project's own version. The release pipeline
+    passes Version only and derives the same package version in PackModule.
+  -->
+  <PropertyGroup Condition="'$(PrereleaseLabel)' != ''">
+    <PackageVersion>$(Version)-$(PrereleaseLabel)</PackageVersion>
+  </PropertyGroup>
+
   <!-- Runtime Async (preview in .NET 11): the runtime, not a compiler-generated state machine, suspends and resumes async methods. -->
   <PropertyGroup Condition="'$([MSBuild]::GetTargetFrameworkIdentifier($(TargetFramework)))' == '.NETCoreApp' and $([MSBuild]::VersionGreaterThanOrEquals($([MSBuild]::GetTargetFrameworkVersion($(TargetFramework))), '11.0'))">
     <Features>$(Features);runtime-async=on</Features>
