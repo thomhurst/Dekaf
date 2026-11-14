@@ -327,6 +327,43 @@ public sealed class InMemoryRebalanceListenerTests
     }
 
     [Test]
+    public async Task AdministrativeRemovalDuringRevocation_DoesNotCommitRevokedOffsets()
+    {
+        var cluster = CreateCluster(partitions: 2);
+        await ProduceAsync(cluster, 1, partition: 0);
+        await ProduceAsync(cluster, 1, partition: 1);
+        var listener = new RecordingListener();
+        var revocationEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRevocation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var first = CreateConsumer(cluster, "a", listener, OffsetCommitMode.Manual);
+        listener.OnRevoked = async () =>
+        {
+            revocationEntered.SetResult();
+            await releaseRevocation.Task;
+            await first.CommitAsync();
+        };
+        first.Subscribe("topic");
+        await Assert.That(await first.ConsumeOneAsync(TimeSpan.Zero)).IsNotNull();
+        await Assert.That(await first.ConsumeOneAsync(TimeSpan.Zero)).IsNotNull();
+
+        await using var second = CreateConsumer(cluster, "b", new RecordingListener(), OffsetCommitMode.Manual);
+        second.Subscribe("topic");
+        var consume = first.ConsumeOneAsync(TimeSpan.Zero).AsTask();
+        await revocationEntered.Task;
+        var moved = second.Assignment.Single();
+
+        cluster.RemoveConsumerGroupMembers("group", [new ConsumerGroupMemberIdentity { MemberId = "a" }]);
+        await ProduceAsync(cluster, 1, partition: moved.Partition);
+        while (second.GetPosition(moved) is not 2)
+            await Assert.That(await second.ConsumeOneAsync(TimeSpan.Zero)).IsNotNull();
+        await second.CommitAsync();
+        releaseRevocation.SetResult();
+        await consume;
+
+        await Assert.That(cluster.GetCommittedOffset("group", moved)).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task CancelledAssignmentCallback_IsReportedAgainOnNextConsume()
     {
         var cluster = CreateCluster(partitions: 1);

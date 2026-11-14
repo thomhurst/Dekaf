@@ -2604,6 +2604,9 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         TopicPartitionOffset? inDoubtOffset)
     {
         var assignment = GetCurrentAssignmentUnderLock(out var consumerGroupGeneration);
+        // An evicted member's revoked partitions may already have newer offsets from their new owner.
+        if (IsGroupMembershipLostUnderLock())
+            _departingOffsets.Clear();
         var inDoubtPartition = inDoubtOffset is { } pending
             ? new TopicPartition(pending.Topic, pending.Partition)
             : (TopicPartition?)null;
@@ -3618,7 +3621,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
                 return;
 
             _listenerConsumerStateVersion = _consumerStateVersion;
-            lost = subscribed && _consumerGroupRegistrationId != 0 && _consumerGroupGeneration < 0;
+            lost = IsGroupMembershipLostUnderLock();
             foreach (var partition in _listenerAssignment)
             {
                 if (current is null || !current.Contains(partition))
@@ -3701,6 +3704,10 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             RemoveDepartingOffsetsUnderLock(revoked);
     }
 
+    // An administrative removal evicted the subscribed member; Unsubscribe clears the registration instead.
+    private bool IsGroupMembershipLostUnderLock() =>
+        _subscriptionTopologyVersion >= 0 && _consumerGroupRegistrationId != 0 && _consumerGroupGeneration < 0;
+
     private void RemoveDepartingOffsetsUnderLock(IEnumerable<TopicPartition> partitions)
     {
         foreach (var partition in partitions)
@@ -3760,7 +3767,7 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
             var subscribed = _subscriptionTopologyVersion >= 0;
             if (subscribed)
                 _ = GetCurrentAssignmentUnderLock();
-            lost = subscribed && _consumerGroupRegistrationId != 0 && _consumerGroupGeneration < 0;
+            lost = IsGroupMembershipLostUnderLock();
             _leavingGroup = true;
             if (lost)
             {
