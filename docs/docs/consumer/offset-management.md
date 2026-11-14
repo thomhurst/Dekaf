@@ -251,8 +251,19 @@ second attempt is observed as another commit. Commits you request with
 `CommitAsync` are not observed. The observer cannot change what is committed: an
 exception it throws is logged and the commit continues.
 
-`CompletedRecordCount` is always zero for these commits: the consumer does not count
-the records behind its stored offsets.
+With `WithAutoOffsetStore(false)`, `CompletedRecordCount` is the number of offsets you
+stored with `StoreOffset` or `StoreOffsets` for the committed partitions since the
+previous successful commit of each, so storing once per processed record gives the
+number of records the commit covers. It is a count of stores, not a difference of
+offsets, so compacted offsets and transaction markers add nothing. When a commit fails,
+the next commit of those partitions reports its count again. Your own `CommitAsync`
+calls are not observed, but they do end the count for the stores they commit: a
+`CommitAsync(offsets)` call ends a partition's count when it commits that partition's
+stored offset or a later one.
+
+With automatic offset storage, `CompletedRecordCount` is zero: the consumer stores
+offsets itself, by default once per fetch rather than once per record, so it has no
+record count to report.
 
 ## Checking Committed Offsets
 

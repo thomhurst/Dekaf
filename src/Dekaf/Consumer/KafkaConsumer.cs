@@ -2926,7 +2926,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int membershipVersion,
         HashSet<TopicPartition> held,
         ConcurrentDictionary<TopicPartition, TopicPartitionOffset> proven,
-        ConcurrentDictionary<TopicPartition, TopicPartitionOffset> vouched)
+        ConcurrentDictionary<TopicPartition, TopicPartitionOffset> vouched,
+        Dictionary<TopicPartition, long>? storedRecordCounts)
     {
         /// <summary>The membership the offsets belong to; they are never sent under another.</summary>
         public int MembershipVersion { get; } = membershipVersion;
@@ -2943,6 +2944,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         public ConcurrentDictionary<TopicPartition, TopicPartitionOffset> Proven { get; } = proven;
 
         public ConcurrentDictionary<TopicPartition, TopicPartitionOffset> Explicit { get; } = vouched;
+
+        /// <summary>
+        /// For the commit observer: how many offsets the application stored for each partition
+        /// since its last commit, or null with automatic offset storage. Read and changed only
+        /// under <see cref="CommitLock"/>; a partition's count leaves once a commit covered it.
+        /// </summary>
+        public Dictionary<TopicPartition, long>? StoredRecordCounts { get; } = storedRecordCounts;
     }
 
     /// <remarks>
@@ -2954,7 +2962,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private LeaveCommitSnapshot CaptureLeaveCommitSnapshot(HashSet<TopicPartition> held, int membershipVersion)
     {
         var proven = new ConcurrentDictionary<TopicPartition, TopicPartitionOffset>();
-        foreach (var offset in SnapshotStoredOffsets(held))
+        var storedRecordCounts = ReportsStoredRecordCount ? new Dictionary<TopicPartition, long>() : null;
+        foreach (var offset in SnapshotStoredOffsets(held, storedRecordCounts))
             proven[new TopicPartition(offset.Topic, offset.Partition)] = offset;
 
         var vouched = new ConcurrentDictionary<TopicPartition, TopicPartitionOffset>(proven);
@@ -2969,7 +2978,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             AddDepartingPosition(vouched, partition, position, leaderEpoch);
         }
 
-        return new LeaveCommitSnapshot(membershipVersion, held, proven, vouched);
+        return new LeaveCommitSnapshot(membershipVersion, held, proven, vouched, storedRecordCounts);
     }
 
     /// <summary>
@@ -3087,7 +3096,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    private TopicPartitionOffset[] SnapshotStoredOffsets(TopicPartitionSet partitions)
+    /// <param name="storedRecordCounts">
+    /// When not null, receives for each returned partition the stores no commit has covered yet.
+    /// </param>
+    private TopicPartitionOffset[] SnapshotStoredOffsets(
+        TopicPartitionSet partitions,
+        Dictionary<TopicPartition, long>? storedRecordCounts)
     {
         // Only offsets stored under the partition's current ownership: one stored under an ended
         // ownership never commits (see SnapshotCommittableStoredOffsets).
@@ -3095,10 +3109,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         foreach (var (partition, slot) in _storedOffsetSlots)
         {
             if (partitions.Contains(partition)
-                && slot.TryReadDirty(out var ownership, out var offset, out var leaderEpoch)
+                && slot.TryReadDirty(out var ownership, out var offset, out var leaderEpoch, out _, out var unsettledStoreCount)
                 && ownership == GetCurrentStoreOwnership(partition))
             {
                 (offsets ??= []).Add(new TopicPartitionOffset(partition.Topic, partition.Partition, offset, leaderEpoch));
+                if (storedRecordCounts is not null)
+                    storedRecordCounts[partition] = unsettledStoreCount;
             }
         }
 
@@ -3132,16 +3148,29 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 return false;
             }
 
+            long storedRecordCount = 0;
+            if (state.StoredRecordCounts is { } storedRecordCounts)
+            {
+                foreach (var offset in offsets)
+                    storedRecordCount += storedRecordCounts.GetValueOrDefault(new TopicPartition(offset.Topic, offset.Partition));
+            }
+
             await CommitObservedOffsetsAsync(
                     GetCommitCoordinator(),
                     offsets,
                     observedReason,
+                    storedRecordCount,
                     retryUntilApiTimeout,
                     state.MembershipVersion,
                     cancellationToken)
                 .ConfigureAwait(false);
 
             RemoveCommittedDepartingOffsets(state, offsets, vouched);
+            if (state.StoredRecordCounts is { } committedRecordCounts)
+            {
+                foreach (var offset in offsets)
+                    committedRecordCounts.Remove(new TopicPartition(offset.Topic, offset.Partition));
+            }
             InvokeOnCommitInterceptors(offsets);
             return true;
         }
@@ -6469,6 +6498,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// it changed since the last successful commit. Writers take the slot with one CAS (a store is
     /// otherwise uncontended: the consume loop or the application) and readers retry while a write
     /// is in progress, so a reader always sees one store's values together. Never allocates.
+    /// <para>
+    /// The slot also counts its stores, for the commit observer: the stores a commit newly covers
+    /// are those since the count the last successful commit (or a discard of the stored offset)
+    /// recorded. Both counts only grow, so a failed commit changes neither and its stores are
+    /// reported by the next commit.
+    /// </para>
     /// </summary>
     private sealed class StoredOffsetSlot
     {
@@ -6477,6 +6512,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         private long _offset;
         private int _leaderEpoch = -1;
         private bool _dirty;
+        private long _storeCount; // every store made in this slot
+        private long _settledStoreCount; // the stores a commit covered or a discard dropped
         private bool _retired; // removed (or being removed) from the map: stores go to a new slot
 
         /// <summary>
@@ -6490,6 +6527,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             var retired = _retired;
             if (!retired && (ownership == 0 || ownership >= _ownership))
             {
+                // The stores of an ownership that ended never commit.
+                if (ownership != _ownership)
+                    _settledStoreCount = _storeCount;
+                _storeCount++;
                 _ownership = ownership;
                 _offset = offset;
                 _leaderEpoch = leaderEpoch;
@@ -6519,19 +6560,44 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             var sequence = Enter();
             _dirty = false;
             _ownership = 0;
+            _settledStoreCount = _storeCount;
             Exit(sequence);
         }
 
-        /// <summary>Marks the slot clean if it still holds exactly what was committed.</summary>
-        public void ClearIfUnchanged(long ownership, long offset, int leaderEpoch)
+        /// <summary>
+        /// Marks the slot clean if it still holds exactly what was committed, and settles the
+        /// stores the commit covered: those up to <paramref name="storeCount"/>, a count read from
+        /// this slot before the commit was sent, so a store made since stays counted. With -1 the
+        /// commit had no count of this slot, and settles every store only when the slot still
+        /// holds what was committed.
+        /// </summary>
+        public void ClearIfUnchanged(long ownership, long offset, int leaderEpoch, long storeCount = -1)
         {
             var sequence = Enter();
             if (_dirty && _ownership == ownership && _offset == offset && _leaderEpoch == leaderEpoch)
+            {
                 _dirty = false;
+                if (storeCount < 0)
+                    storeCount = _storeCount;
+            }
+
+            if (storeCount > _settledStoreCount)
+                _settledStoreCount = storeCount;
+
             Exit(sequence);
         }
 
         public bool TryReadDirty(out long ownership, out long offset, out int leaderEpoch)
+            => TryReadDirty(out ownership, out offset, out leaderEpoch, out _, out _);
+
+        /// <param name="storeCount">Every store made so far; pass it back when the commit succeeds.</param>
+        /// <param name="unsettledStoreCount">The stores no commit has covered yet.</param>
+        public bool TryReadDirty(
+            out long ownership,
+            out long offset,
+            out int leaderEpoch,
+            out long storeCount,
+            out long unsettledStoreCount)
         {
             var spinner = new SpinWait();
             while (true)
@@ -6543,6 +6609,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     ownership = _ownership;
                     offset = _offset;
                     leaderEpoch = _leaderEpoch;
+                    storeCount = _storeCount;
+                    unsettledStoreCount = storeCount - _settledStoreCount;
                     Interlocked.MemoryBarrier();
                     if (Volatile.Read(ref _sequence) == sequence)
                         return dirty;
@@ -6622,17 +6690,64 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return lastConsumedLeaderEpochs?.GetValueOrDefault(partition, -1) ?? -1;
     }
 
-    private void MarkOffsetCommitted(TopicPartition partition, long committedOffset, int leaderEpoch)
-        => MarkOffsetCommitted(partition, GetCurrentStoreOwnership(partition), committedOffset, leaderEpoch);
-
-    private void MarkOffsetCommitted(TopicPartition partition, long ownership, long committedOffset, int leaderEpoch)
+    /// <param name="countedSlot">The slot <paramref name="storeCount"/> was read from, if any.</param>
+    /// <param name="storeCount">The stores of <paramref name="countedSlot"/> the commit covered.</param>
+    private void MarkOffsetCommitted(
+        TopicPartition partition,
+        long ownership,
+        long committedOffset,
+        int leaderEpoch,
+        StoredOffsetSlot? countedSlot = null,
+        long storeCount = -1)
     {
         _ = TryCacheCommittedOffset(
             partition,
             committedOffset,
             Interlocked.Increment(ref _committedOffsetGeneration));
         if (_storedOffsetSlots.TryGetValue(partition, out var slot))
-            slot.ClearIfUnchanged(ownership, committedOffset, leaderEpoch);
+        {
+            // A count belongs to the slot it was read from: the partition's slot is replaced when
+            // it leaves the assignment and returns, and the new slot counts from zero.
+            slot.ClearIfUnchanged(
+                ownership,
+                committedOffset,
+                leaderEpoch,
+                ReferenceEquals(slot, countedSlot) ? storeCount : -1);
+        }
+    }
+
+    /// <summary>
+    /// For a commit of offsets the application names: the slot and store count of each offset
+    /// whose partition has nothing stored past it, so the commit covers every store made so far
+    /// and ends their count. Null with automatic offset storage, which counts nothing. The array
+    /// is rented; return it with <see cref="ReturnCoveredStoreCounts"/>. Per commit.
+    /// </summary>
+    private (StoredOffsetSlot? Slot, long StoreCount)[]? SnapshotCoveredStoreCounts(
+        IReadOnlyList<TopicPartitionOffset> offsets)
+    {
+        if (!ReportsStoredRecordCount)
+            return null;
+
+        var covered = ArrayPool<(StoredOffsetSlot? Slot, long StoreCount)>.Shared.Rent(offsets.Count);
+        for (var i = 0; i < offsets.Count; i++)
+        {
+            var offset = offsets[i];
+            var partition = new TopicPartition(offset.Topic, offset.Partition);
+            covered[i] = _storedOffsetSlots.TryGetValue(partition, out var slot)
+                         && slot.TryReadDirty(out var ownership, out var storedOffset, out _, out var storeCount, out _)
+                         && ownership == GetCurrentStoreOwnership(partition)
+                         && storedOffset <= offset.Offset
+                ? (slot, storeCount)
+                : (null, -1);
+        }
+
+        return covered;
+    }
+
+    private static void ReturnCoveredStoreCounts((StoredOffsetSlot? Slot, long StoreCount)[]? covered)
+    {
+        if (covered is not null)
+            ArrayPool<(StoredOffsetSlot? Slot, long StoreCount)>.Shared.Return(covered, clearArray: true);
     }
 
     internal void UpdateFetchPositionsFromPrefetch(
@@ -8912,6 +9027,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             try
             {
                 int index = 0;
+                long storedRecordCount = 0;
                 foreach (var stored in dirtyOffsetsSnapshot)
                 {
                     offsetsArray[index++] = new TopicPartitionOffset(
@@ -8919,6 +9035,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         stored.Partition.Partition,
                         stored.Offset,
                         stored.LeaderEpoch);
+                    storedRecordCount += stored.UnsettledStoreCount;
                 }
 
                 // Create array segment to pass only the used portion
@@ -8930,6 +9047,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             _coordinator,
                             offsets,
                             observedReason,
+                            ReportsStoredRecordCount ? storedRecordCount : 0,
                             retryUntilApiTimeout,
                             commitMembershipVersion,
                             cancellationToken,
@@ -8955,7 +9073,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                 // Update committed offsets tracking
                 foreach (var stored in dirtyOffsetsSnapshot)
-                    MarkOffsetCommitted(stored.Partition, stored.Ownership, stored.Offset, stored.LeaderEpoch);
+                {
+                    MarkOffsetCommitted(
+                        stored.Partition, stored.Ownership, stored.Offset, stored.LeaderEpoch, stored.Slot, stored.StoreCount);
+                }
 
                 // Invoke OnCommit interceptors - wrap array as ArraySegment to avoid Span→Array copy
                 InvokeOnCommitInterceptors(new ArraySegment<TopicPartitionOffset>(offsetsArray, 0, offsetCount));
@@ -8978,10 +9099,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// configured <see cref="ConsumerOptions.CommitObserver"/>'s callbacks. Observer failures are
     /// logged and never change the commit or its outcome. A null reason is not observed.
     /// </summary>
+    /// <param name="storedRecordCount">
+    /// The offsets the application stored that this commit newly covers; zero with automatic
+    /// offset storage (see <see cref="ReportsStoredRecordCount"/>).
+    /// </param>
     private async ValueTask CommitObservedOffsetsAsync(
         ConsumerCoordinator coordinator,
         IReadOnlyList<TopicPartitionOffset> offsets,
         OffsetCommitReason? reason,
+        long storedRecordCount,
         bool retryUntilApiTimeout,
         int membershipVersion,
         CancellationToken cancellationToken,
@@ -9007,7 +9133,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var observation = new OffsetCommitObservation(
             observedReason,
             new System.Collections.ObjectModel.ReadOnlyCollection<TopicPartitionOffset>(copy),
-            completedRecordCount: 0); // The consumer does not count stored records yet (#4137).
+            completedRecordCount: storedRecordCount);
 
         object? state = null;
         try
@@ -9076,8 +9202,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             if (partitions is not null && !partitions.Contains(partition))
                 continue;
-            if (!slot.TryReadDirty(out var ownership, out var offset, out var leaderEpoch))
+            if (!slot.TryReadDirty(
+                    out var ownership,
+                    out var offset,
+                    out var leaderEpoch,
+                    out var storeCount,
+                    out var unsettledStoreCount))
+            {
                 continue;
+            }
 
             // Stored under an ended ownership (or while unassigned): it never commits, and the slot
             // is marked clean unless a newer store landed meanwhile.
@@ -9098,13 +9231,28 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 continue;
             }
 
-            committable.Add(new StoredOffsetSnapshot(partition, ownership, offset, leaderEpoch));
+            committable.Add(new StoredOffsetSnapshot(
+                partition, ownership, offset, leaderEpoch, slot, storeCount, unsettledStoreCount));
         }
 
         return committable;
     }
 
-    private readonly record struct StoredOffsetSnapshot(TopicPartition Partition, long Ownership, long Offset, int LeaderEpoch);
+    private readonly record struct StoredOffsetSnapshot(
+        TopicPartition Partition,
+        long Ownership,
+        long Offset,
+        int LeaderEpoch,
+        StoredOffsetSlot Slot,
+        long StoreCount,
+        long UnsettledStoreCount);
+
+    /// <summary>
+    /// Whether observed commits report how many offsets the application stored. With automatic
+    /// offset storage the consumer stores offsets itself, by default per fetch rather than per
+    /// record, so its stores count nothing an application could use and the observed count stays zero.
+    /// </summary>
+    private bool ReportsStoredRecordCount => !_options.EnableAutoOffsetStore;
 
     // A partition whose revocation awaits sync is committed by the revocation commit only, which
     // passes its partitions explicitly: a later commit could follow it with an offset stored
@@ -9186,6 +9334,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         var coordinator = GetCommitCoordinator();
         using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
+        (StoredOffsetSlot? Slot, long StoreCount)[]? coveredStoreCounts = null;
         try
         {
             // From a revoke callback the leave stopped waiting for: the membership these offsets
@@ -9209,13 +9358,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             var offsetsList = offsets as IReadOnlyList<TopicPartitionOffset> ?? offsets.ToArray();
             TopicPartitionOffsetValidator.Validate(offsetsList, nameof(offsets));
 
+            // Read before the send: a store made while the commit is in flight stays counted.
+            coveredStoreCounts = SnapshotCoveredStoreCounts(offsetsList);
+
             await coordinator.CommitOffsetsAsync(offsetsList, retryUntilApiTimeout: true, membershipVersion, apiTimeout.Token)
                 .ConfigureAwait(false);
 
-            foreach (var offset in offsetsList)
+            for (var i = 0; i < offsetsList.Count; i++)
             {
+                var offset = offsetsList[i];
                 var partition = new TopicPartition(offset.Topic, offset.Partition);
-                MarkOffsetCommitted(partition, offset.Offset, offset.LeaderEpoch);
+                var (countedSlot, storeCount) = coveredStoreCounts is null ? (null, -1) : coveredStoreCounts[i];
+                MarkOffsetCommitted(
+                    partition,
+                    GetCurrentStoreOwnership(partition),
+                    offset.Offset,
+                    offset.LeaderEpoch,
+                    countedSlot,
+                    storeCount);
             }
 
             // Invoke OnCommit interceptors
@@ -9224,6 +9384,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         catch (OperationCanceledException ex) when (apiTimeout.DefaultTimeoutExpired)
         {
             throw apiTimeout.CreateTimeoutException(nameof(CommitAsync), ex);
+        }
+        finally
+        {
+            ReturnCoveredStoreCounts(coveredStoreCounts);
         }
     }
 
