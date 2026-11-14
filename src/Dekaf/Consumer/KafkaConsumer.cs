@@ -6568,8 +6568,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         /// Marks the slot clean if it still holds exactly what was committed, and settles the
         /// stores the commit covered: those up to <paramref name="storeCount"/>, a count read from
         /// this slot before the commit was sent, so a store made since stays counted. With -1 the
-        /// commit had no count of this slot, and settles every store only when the slot still
-        /// holds what was committed.
+        /// caller read no count, and settles every store only when the slot still holds what was
+        /// committed.
         /// </summary>
         public void ClearIfUnchanged(long ownership, long offset, int leaderEpoch, long storeCount = -1)
         {
@@ -6707,19 +6707,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (_storedOffsetSlots.TryGetValue(partition, out var slot))
         {
             // A count belongs to the slot it was read from: the partition's slot is replaced when
-            // it leaves the assignment and returns, and the new slot counts from zero.
+            // it leaves the assignment and returns, and the new slot counts from zero. A commit
+            // that read a count settles nothing in any other slot, since its stores came later.
             slot.ClearIfUnchanged(
                 ownership,
                 committedOffset,
                 leaderEpoch,
-                ReferenceEquals(slot, countedSlot) ? storeCount : -1);
+                storeCount < 0 || ReferenceEquals(slot, countedSlot) ? storeCount : 0);
         }
     }
 
     /// <summary>
     /// For a commit of offsets the application names: the slot and store count of each offset
     /// whose partition has nothing stored past it, so the commit covers every store made so far
-    /// and ends their count. Null with automatic offset storage, which counts nothing. The array
+    /// and ends their count. Any other offset gets no slot and a count of 0, so the commit settles
+    /// no store, including one made while it is in flight. Null with automatic offset storage,
+    /// which counts nothing. The array
     /// is rented; return it with <see cref="ReturnCoveredStoreCounts"/>. Per commit.
     /// </summary>
     private (StoredOffsetSlot? Slot, long StoreCount)[]? SnapshotCoveredStoreCounts(
@@ -6738,7 +6741,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                          && ownership == GetCurrentStoreOwnership(partition)
                          && storedOffset <= offset.Offset
                 ? (slot, storeCount)
-                : (null, -1);
+                : (null, 0);
         }
 
         return covered;

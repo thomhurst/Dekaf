@@ -314,6 +314,32 @@ public sealed partial class ConsumerDirtyCommitTests
     }
 
     [Test]
+    public async Task CommitObserver_WithoutAutoOffsetStore_StoreMadeDuringAnExplicitCommitOfAnUnstoredPartitionStaysCounted()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        var observer = new RecordingCommitObserver(requests);
+        var firstCommit = new HeldFirstCommit();
+        await using var consumer = CreateConsumer(
+            requests,
+            ErrorCode.None,
+            OffsetCommitMode.Auto,
+            enableAutoOffsetStore: false,
+            onOffsetCommitAsync: firstCommit.OnCommitAsync,
+            commitObserver: observer);
+        SetCoordinatorState(consumer, CoordinatorState.Stable);
+
+        var commit = consumer.CommitAsync([new TopicPartitionOffset("topic-a", 0, 10)], CancellationToken.None);
+        await firstCommit.Started;
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 10));
+        firstCommit.Release();
+        await commit;
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 11));
+        await RunAutoCommitCycleAsync(consumer);
+
+        await Assert.That(observer.Calls.Single().RecordCount).IsEqualTo(2L);
+    }
+
+    [Test]
     public async Task CommitObserver_WithoutAutoOffsetStore_ExplicitCommitBelowTheStoredOffsetKeepsTheCount()
     {
         var requests = new List<OffsetCommitRequest>();
