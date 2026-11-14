@@ -104,6 +104,42 @@ public sealed partial class PartitionedConsumerRuntimeTests
     }
 
     [Test]
+    public async Task CommitObserver_AssignmentRemovedPartition_ReportsRevokeReason()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.SetAssignment(partition);
+        var observer = new RecordingCommitObserver(consumer);
+        var processed = NewCompletionSource();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            (_, _, _) =>
+            {
+                processed.TrySetResult();
+                return ValueTask.CompletedTask;
+            },
+            new PartitionedProcessingOptions
+            {
+                CommitPolicy = PartitionCommitPolicy.CommitCompletedOnRevoke,
+                CommitObserver = observer
+            },
+            cts.Token).AsTask();
+
+        consumer.Enqueue(CreateResult(partition, 0));
+        await processed.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+
+        // No revoke callback: the runtime finds the removed partition when it syncs the assignment.
+        consumer.SetAssignment();
+
+        var completed = await observer.Completed.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+
+        await Assert.That(completed.Reason).IsEqualTo(OffsetCommitReason.Revoke);
+        await Assert.That(completed.Offsets).IsEquivalentTo(new[] { new TopicPartitionOffset("topic-a", 0, 1) });
+    }
+
+    [Test]
     public async Task CommitObserver_ShutdownCommit_ReportsStopReason()
     {
         var partition = new TopicPartition("topic-a", 0);

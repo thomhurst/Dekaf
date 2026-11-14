@@ -2009,7 +2009,10 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         try
         {
             if (commitProcessed)
-                await CommitStoppedLaneAsync(lane, cancellationToken).ConfigureAwait(false);
+                await CommitStoppedLaneAsync(
+                    lane,
+                    reason == PartitionStopReason.Revoke ? OffsetCommitReason.Revoke : OffsetCommitReason.Stop,
+                    cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -2340,13 +2343,14 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     private async ValueTask CommitLaneAsync(
         PartitionLane<TKey, TValue> lane,
         CancellationToken cancellationToken,
-        bool skipUnchanged = false)
+        bool skipUnchanged = false,
+        OffsetCommitReason reason = OffsetCommitReason.Stop)
     {
         if ((skipUnchanged ? lane.GetUncommittedOffset() : lane.GetCommitOffset()) is not { } offset)
             return;
 
         if (skipUnchanged)
-            await CommitRuntimeOffsetsAsync([offset], OffsetCommitReason.Stop, cancellationToken).ConfigureAwait(false);
+            await CommitRuntimeOffsetsAsync([offset], reason, cancellationToken).ConfigureAwait(false);
         else
             await _consumer.CommitAsync([offset], cancellationToken).ConfigureAwait(false);
         lane.MarkCommitted(offset.Offset);
@@ -2411,11 +2415,12 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
     private async ValueTask CommitStoppedLaneAsync(
         PartitionLane<TKey, TValue> lane,
+        OffsetCommitReason reason,
         CancellationToken cancellationToken)
     {
         try
         {
-            await CommitLaneAsync(lane, cancellationToken, skipUnchanged: true).ConfigureAwait(false);
+            await CommitLaneAsync(lane, cancellationToken, skipUnchanged: true, reason).ConfigureAwait(false);
         }
         catch (GroupException exception) when (IsMembershipLoss(exception))
         {
