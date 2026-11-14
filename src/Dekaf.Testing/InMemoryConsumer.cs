@@ -608,62 +608,65 @@ public sealed partial class InMemoryConsumer<TKey, TValue> :
         int consumerStateVersion;
         int consumerGroupGeneration;
         // Report assignment changes before capturing the snapshot bounds, as the single-record
-        // path does, so the listener can seek first. Repeat for a change made during a callback.
-        while (_rebalanceListener is { } listener)
+        // path does, so the listener can seek first. The capture lock rechecks after refreshing
+        // ownership and repeats delivery for a change made during a callback or before the lock.
+        while (true)
         {
-            await DeliverRebalanceEventsAsync(listener, cancellationToken).ConfigureAwait(false);
+            if (_rebalanceListener is { } listener)
+                await DeliverRebalanceEventsAsync(listener, cancellationToken).ConfigureAwait(false);
+
             lock (_gate)
             {
                 ThrowIfDisposed();
-                _ = GetCurrentAssignmentUnderLock();
-                if (_leavingGroup || _listenerConsumerStateVersion == _consumerStateVersion)
-                    break;
-            }
-        }
-
-        lock (_gate)
-        {
-            ThrowIfDisposed();
-            if (_snapshotActive)
-            {
-                throw new InvalidOperationException(
-                    "Only one snapshot enumeration can be active on a consumer.");
-            }
-
-            _snapshotActive = true;
-            try
-            {
-                var assignment = GetCurrentAssignmentUnderLock(out consumerGroupGeneration);
-                partitions = new SnapshotPartitionBound[assignment.Count];
-                var partitionIndex = 0;
-                foreach (var partition in assignment)
+                if (_snapshotActive)
                 {
-                    if (_paused.Contains(partition))
-                    {
-                        throw new InvalidOperationException(
-                            $"Cannot start a snapshot while assigned partition {partition} is paused.");
-                    }
-
-                    partitions[partitionIndex++] = new SnapshotPartitionBound(
-                        partition,
-                        _cluster.GetWatermarks(partition, _options.IsolationLevel).High);
+                    throw new InvalidOperationException(
+                        "Only one snapshot enumeration can be active on a consumer.");
                 }
 
-                Array.Sort(partitions, static (left, right) =>
+                var assignment = GetCurrentAssignmentUnderLock(out consumerGroupGeneration);
+                if (_rebalanceListener is not null && !_leavingGroup &&
+                    _listenerConsumerStateVersion != _consumerStateVersion)
                 {
-                    var topicComparison = StringComparer.Ordinal.Compare(
-                        left.Partition.Topic,
-                        right.Partition.Topic);
-                    return topicComparison != 0
-                        ? topicComparison
-                        : left.Partition.Partition.CompareTo(right.Partition.Partition);
-                });
-                consumerStateVersion = _consumerStateVersion;
-            }
-            catch
-            {
-                _snapshotActive = false;
-                throw;
+                    continue;
+                }
+
+                _snapshotActive = true;
+                try
+                {
+                    partitions = new SnapshotPartitionBound[assignment.Count];
+                    var partitionIndex = 0;
+                    foreach (var partition in assignment)
+                    {
+                        if (_paused.Contains(partition))
+                        {
+                            throw new InvalidOperationException(
+                                $"Cannot start a snapshot while assigned partition {partition} is paused.");
+                        }
+
+                        partitions[partitionIndex++] = new SnapshotPartitionBound(
+                            partition,
+                            _cluster.GetWatermarks(partition, _options.IsolationLevel).High);
+                    }
+
+                    Array.Sort(partitions, static (left, right) =>
+                    {
+                        var topicComparison = StringComparer.Ordinal.Compare(
+                            left.Partition.Topic,
+                            right.Partition.Topic);
+                        return topicComparison != 0
+                            ? topicComparison
+                            : left.Partition.Partition.CompareTo(right.Partition.Partition);
+                    });
+                    consumerStateVersion = _consumerStateVersion;
+                }
+                catch
+                {
+                    _snapshotActive = false;
+                    throw;
+                }
+
+                break;
             }
         }
 
