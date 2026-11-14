@@ -12,9 +12,10 @@ namespace Dekaf.Testing;
 /// partition, and members by join order. A task exists for each partition of a subtopology's source and
 /// repartition source topics (the largest partition count among them; source topic regexes are not matched).
 /// Tasks move when a member joins or leaves, and on any heartbeat after the topology or a source topic's
-/// partition count changes. A static member that closes while remaining in the group keeps its tasks until a
-/// member with the same instance ID joins and takes them over. A dynamic member always leaves the group on close,
-/// so its tasks move. Standby and warmup tasks are never assigned.
+/// partition count changes. A static member that closes while remaining in the group stays a member, as on a
+/// broker within its session timeout: it keeps its place in the round-robin, and its tasks do not run until a
+/// member with the same instance ID joins and takes over its member ID and tasks without moving any task. A
+/// dynamic member always leaves the group on close, so its tasks move. Standby and warmup tasks are never assigned.
 /// </remarks>
 public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGroupOffsetCommitter
 {
@@ -392,21 +393,15 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
     }
 
     /// <summary>
-    /// Assigns active tasks round-robin across the group's live members. A closed static member keeps the tasks
-    /// it holds and gains none. Called under the group lock.
+    /// Assigns active tasks round-robin across the group's members. A closed static member still in the group
+    /// keeps its place, as on a broker within its session timeout, so its replacement takes over the same tasks.
+    /// Called under the group lock.
     /// </summary>
     private static void Rebalance(InMemoryStreamsGroup group, InMemoryKafkaCluster cluster)
     {
         var members = group.Members;
         if (members.Count == 0)
             return;
-
-        var liveMembers = new List<int>(members.Count);
-        for (var index = 0; index < members.Count; index++)
-        {
-            if (!members[index]._snapshot.IsClosed)
-                liveMembers.Add(index);
-        }
 
         var assigned = new List<StreamsGroupTaskSet>?[members.Count];
         var subtopologies = group.Topology?.Subtopologies ?? [];
@@ -419,18 +414,7 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
 
             var partitions = new List<int>?[members.Count];
             for (var partition = 0; partition < taskCount; partition++)
-            {
-                var owner = FindClosedOwner(members, subtopology.SubtopologyId, partition);
-                if (owner < 0)
-                {
-                    if (liveMembers.Count == 0)
-                        continue;
-
-                    owner = liveMembers[next++ % liveMembers.Count];
-                }
-
-                (partitions[owner] ??= []).Add(partition);
-            }
+                (partitions[next++ % members.Count] ??= []).Add(partition);
 
             for (var index = 0; index < members.Count; index++)
             {
@@ -447,27 +431,6 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember, IStreamsGr
 
         for (var index = 0; index < members.Count; index++)
             members[index].ApplyAssignment(assigned[index]?.ToArray() ?? []);
-    }
-
-    private static int FindClosedOwner(List<InMemoryStreamsGroupMember> members, string subtopologyId, int partition)
-    {
-        for (var index = 0; index < members.Count; index++)
-        {
-            var snapshot = members[index]._snapshot;
-            if (!snapshot.IsClosed)
-                continue;
-
-            foreach (var taskSet in snapshot.Assignment.ActiveTasks)
-            {
-                if (string.Equals(taskSet.SubtopologyId, subtopologyId, StringComparison.Ordinal)
-                    && taskSet.Partitions.Contains(partition))
-                {
-                    return index;
-                }
-            }
-        }
-
-        return -1;
     }
 
     private static int GetTaskCount(StreamsGroupSubtopology subtopology, InMemoryKafkaCluster cluster)

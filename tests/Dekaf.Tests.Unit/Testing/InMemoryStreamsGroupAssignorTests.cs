@@ -80,7 +80,7 @@ public sealed class InMemoryStreamsGroupAssignorTests
     }
 
     [Test]
-    public async Task StaticMember_ClosedMemberGainsNoTasksWhenAnotherMemberLeaves()
+    public async Task StaticMember_ClosedMemberKeepsItsPlaceWhenAnotherMemberLeaves()
     {
         var cluster = CreateCluster();
         await using var first = await JoinAsync(cluster, "streams-group");
@@ -91,8 +91,26 @@ public sealed class InMemoryStreamsGroupAssignorTests
         await staticMember.CloseAsync();
         await third.CloseAsync();
 
+        await Assert.That(Tasks(staticMember)).IsEquivalentTo(["sub-0:1", "sub-0:3"]);
+        await Assert.That(Tasks(first)).IsEquivalentTo(["sub-0:0", "sub-0:2"]);
+    }
+
+    [Test]
+    public async Task StaticMember_ReplacementMovesNoTasksAfterMembershipChangedWhileAway()
+    {
+        var cluster = CreateCluster();
+        await using var first = await JoinAsync(cluster, "streams-group");
+        var staticMember = await JoinAsync(cluster, "streams-group", instanceId: "static-a");
+        await staticMember.CloseAsync();
+        await using var third = await JoinAsync(cluster, "streams-group");
         await Assert.That(Tasks(staticMember)).IsEquivalentTo(["sub-0:1"]);
-        await Assert.That(Tasks(first)).IsEquivalentTo(["sub-0:0", "sub-0:2", "sub-0:3"]);
+
+        await using var replacement = await JoinAsync(cluster, "streams-group", instanceId: "static-a");
+        await replacement.UpdateAsync(new StreamsGroupMemberUpdate());
+
+        await Assert.That(Tasks(replacement)).IsEquivalentTo(["sub-0:1"]);
+        await Assert.That(Tasks(first)).IsEquivalentTo(["sub-0:0", "sub-0:3"]);
+        await Assert.That(Tasks(third)).IsEquivalentTo(["sub-0:2"]);
     }
 
     [Test]
