@@ -13,7 +13,7 @@
     "target-framework": "net10.0",
     "configuration": "Release",
     "mutation-level": "Standard",
-    "coverage-analysis": "all",
+    "coverage-analysis": "perTest",
     "concurrency": 4,
     "additional-timeout": 10000,
     "break-on-initial-test-failure": true,

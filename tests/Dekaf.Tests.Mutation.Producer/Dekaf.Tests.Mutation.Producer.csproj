@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- MTP cannot yet select covering tests per mutant, so link only direct core-producer suites. -->
+    <!-- Link only direct core-producer suites: per-test coverage capture runs every linked test once, and a mutant runs every test that covers it. -->
     <Compile Include="..\Dekaf.Tests.Unit\AssemblyInfo.cs" Link="AssemblyInfo.cs" />
     <!-- Module initializers configure the whole Dekaf.Tests.Unit host (thread pool, test-only switches);
          link all of them so the linked suites run as they do in the unit project. -->
@@ -57,6 +57,13 @@
     <Compile Include="..\Dekaf.Tests.Unit\Producer\ProducerMetadataResilienceTests.cs" Link="Producer\ProducerMetadataResilienceTests.cs" />
     <Compile Include="..\Dekaf.Tests.Unit\Producer\TransactionOffsetCommitTests.cs" Link="Producer\TransactionOffsetCommitTests.cs" />
     <Compile Include="..\Dekaf.Tests.Unit\Producer\TransactionTests.cs" Link="Producer\TransactionTests.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Cap each Stryker test host's GC heap at 2 GiB. Some RecordAccumulator mutants allocate without
+         bound until Stryker's per-mutant timeout; with four hosts that exhausts a hosted runner's memory
+         and the runner is lost. Under the cap such a mutant fails with OutOfMemoryException instead. -->
+    <RuntimeHostConfigurationOption Include="System.GC.HeapHardLimit" Value="2147483648" />
   </ItemGroup>
 
   <ItemGroup>
