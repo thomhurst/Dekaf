@@ -57,6 +57,15 @@ consumer.Subscribe("orders");
 var record = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
 ```
 
+## Batch consumption
+
+`InMemoryConsumer` supports `ConsumeBatchAsync` and `ConsumeRawBatchAsync`. Each batch holds every
+record currently readable from one partition, starting at the consumer's position. As with the real
+consumer, requesting the next batch proves only the records you enumerated: a batch you skip is
+redelivered, and a partially enumerated batch resumes after its last enumerated record. Pausing the
+partition during iteration holds the rest of the batch; revoking or seeking it stops the batch.
+`ConsumeBatchAsync` rejects asynchronous deserializers, like the real consumer.
+
 ## Transactions
 
 Call `InitTransactionsAsync()` successfully on each in-memory producer before `BeginTransaction()`.

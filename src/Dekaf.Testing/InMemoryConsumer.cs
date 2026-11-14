@@ -12,7 +12,7 @@ namespace Dekaf.Testing;
 /// <summary>
 /// In-memory <see cref="IKafkaConsumer{TKey,TValue}"/> backed by an <see cref="InMemoryKafkaCluster"/>.
 /// </summary>
-public sealed class InMemoryConsumer<TKey, TValue> :
+public sealed partial class InMemoryConsumer<TKey, TValue> :
     IKafkaConsumer<TKey, TValue>,
     IBoundedKafkaConsumer<TKey, TValue>,
     IConsumerPositions,
@@ -839,28 +839,6 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 return null;
             }
         }
-    }
-
-    public async IAsyncEnumerable<ConsumeBatch<TKey, TValue>> ConsumeBatchAsync(
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        await Task.CompletedTask.ConfigureAwait(false);
-        throw new NotSupportedException("In-memory consumer does not support batch fetch wrappers. Use ConsumeAsync or ConsumeOneAsync.");
-#pragma warning disable CS0162
-        yield break;
-#pragma warning restore CS0162
-    }
-
-    public async IAsyncEnumerable<ConsumeRawBatch> ConsumeRawBatchAsync(
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        await Task.CompletedTask.ConfigureAwait(false);
-        throw new NotSupportedException("In-memory consumer does not support raw batch fetch wrappers. Use InMemoryKafkaCluster.ReadRecords for raw records.");
-#pragma warning disable CS0162
-        yield break;
-#pragma warning restore CS0162
     }
 
     public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
