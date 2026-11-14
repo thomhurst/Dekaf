@@ -956,3 +956,9 @@ Dekaf.Consumer.ConsumerOptions.CommitObserver.get -> Dekaf.Consumer.IOffsetCommi
 Dekaf.Consumer.ConsumerOptions.CommitObserver.init -> void
 Dekaf.ConsumerBuilder<TKey, TValue>.WithCommitObserver(Dekaf.Consumer.IOffsetCommitObserver! observer) -> Dekaf.ConsumerBuilder<TKey, TValue>!
 static Dekaf.Producer.ProducerExtensions.FireAsync<TKey, TValue>(this Dekaf.Producer.IKafkaProducer<TKey, TValue>! producer, string! topic, TKey? key, TValue value, Dekaf.Serialization.Headers? headers, int? partition, System.DateTimeOffset? timestamp, System.Action<Dekaf.Producer.RecordMetadata, System.Exception?>? deliveryHandler) -> System.Threading.Tasks.ValueTask
+Dekaf.Streams.IStreamsGroupAssignmentListener
+Dekaf.Streams.IStreamsGroupAssignmentListener.OnTasksAssignedAsync(Dekaf.Streams.StreamsGroupAssignment! tasks, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask
+Dekaf.Streams.IStreamsGroupAssignmentListener.OnTasksLostAsync(Dekaf.Streams.StreamsGroupAssignment! tasks, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask
+Dekaf.Streams.IStreamsGroupAssignmentListener.OnTasksRevokedAsync(Dekaf.Streams.StreamsGroupAssignment! tasks, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask
+Dekaf.Streams.StreamsGroupMemberOptions.AssignmentListener.get -> Dekaf.Streams.IStreamsGroupAssignmentListener?
+Dekaf.Streams.StreamsGroupMemberOptions.AssignmentListener.init -> void

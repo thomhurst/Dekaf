@@ -43,6 +43,7 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
     private readonly StreamsGroupHeartbeatRequestCache _steadyRequestCache = new();
     private readonly Action _requestWriteStartedCallback;
     private readonly Timer _heartbeatTimer;
+    private readonly StreamsGroupAssignmentNotifier? _assignmentNotifier;
     private readonly Task _workerTask;
     private readonly int _retryBackoffMs;
     private readonly int _retryBackoffMaxMs;
@@ -108,6 +109,8 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
         _retryBackoffMs = retryBackoffMs;
         _retryBackoffMaxMs = retryBackoffMaxMs;
         _requestWriteStartedCallback = MarkRequestWriteStarted;
+        if (options.AssignmentListener is { } assignmentListener)
+            _assignmentNotifier = new StreamsGroupAssignmentNotifier(assignmentListener, _logger);
         _heartbeatTimer = new Timer(
             static state => ((StreamsGroupMember)state!).QueueHeartbeat(),
             this,
@@ -352,6 +355,7 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
             }
         }
 
+        ExceptionDispatchInfo? closeFailure = null;
         try
         {
             await WaitForInitializationDrainAsync(cancellationToken).ConfigureAwait(false);
@@ -362,7 +366,24 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
             TaskFaultObserver.ObserveFault(command.Completion.Task);
             throw;
         }
-        await _workerTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+        catch (Exception exception)
+        {
+            // A failed terminal heartbeat still stops the worker; wait for it and the running callback first.
+            closeFailure = ExceptionDispatchInfo.Capture(exception);
+        }
+
+        try
+        {
+            await _workerTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+            if (_assignmentNotifier is not null)
+                await _assignmentNotifier.StopAsync().WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception) when (closeFailure is not null && !cancellationToken.IsCancellationRequested)
+        {
+            // The close command's failure is the one callers observe.
+        }
+
+        closeFailure?.Throw();
     }
 
     private async ValueTask WaitForInitializationDrainAsync(CancellationToken cancellationToken)
@@ -545,6 +566,12 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
         finally
         {
             _heartbeatTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            // The worker publishes every change, so none can follow. CloseAsync waits for the running callback.
+            // A worker that stopped on a failure, not a close, still delivers what it queued, such as lost tasks.
+            if (Volatile.Read(ref _closeCommand) is null)
+                _assignmentNotifier?.Complete();
+            else
+                _ = _assignmentNotifier?.StopAsync();
         }
     }
 
@@ -1136,6 +1163,16 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
     private void ResetTaskAssignment(bool markUnjoined)
     {
         // Every path here ends the membership the tasks were held under: fencing, expiry or a failed rejoin.
+        if (_assignmentNotifier is not null)
+        {
+            _assignmentNotifier.PublishLost(new StreamsGroupAssignment
+            {
+                ActiveTasks = MapTaskSets(_activeTasks ?? []),
+                StandbyTasks = MapTaskSets(_standbyTasks ?? []),
+                WarmupTasks = MapTaskSets(_warmupTasks ?? [])
+            });
+        }
+
         _membershipGeneration++;
         _activeTasks = [];
         _standbyTasks = [];
@@ -1366,6 +1403,9 @@ internal sealed partial class StreamsGroupMember : IStreamsGroupMember, IStreams
                 TaskOffsetInterval = taskOffsetInterval
             };
         }
+
+        // A steady-state heartbeat keeps the same assignment instance, which the notifier skips without work.
+        _assignmentNotifier?.PublishAssignment(assignment);
 
         if (response.TopologyDescriptionRequired)
             StartTopologyDescriptionPublication();

@@ -197,6 +197,121 @@ public sealed class InMemoryStreamsGroupAssignorTests
         await Assert.That(Tasks(member)).IsEquivalentTo(["sub-0:0", "sub-0:1", "sub-0:2", "sub-0:3"]);
     }
 
+    [Test]
+    public async Task AssignmentListener_SeesTasksMovedByAnotherMembersJoinAndLeave()
+    {
+        var cluster = CreateCluster();
+        var listener = new RecordingListener();
+        var first = new InMemoryStreamsGroupMember(
+            cluster,
+            new StreamsGroupMemberOptions { GroupId = "streams-group", AssignmentListener = listener });
+        await using var _ = first;
+        await first.InitializeAsync();
+        await first.JoinAsync(new StreamsGroupMemberUpdate { Topology = CreateTopology() });
+        await Assert.That(await listener.NextAsync()).IsEqualTo("assigned sub-0:0,1,2,3");
+
+        var second = await JoinAsync(cluster, "streams-group");
+        await Assert.That(await listener.NextAsync()).IsEqualTo("revoked sub-0:1,3");
+
+        await second.CloseAsync();
+        await Assert.That(await listener.NextAsync()).IsEqualTo("assigned sub-0:1,3");
+    }
+
+    [Test]
+    public async Task AssignmentListener_WithoutClusterSeesCallerReportedTasks()
+    {
+        var listener = new RecordingListener();
+        await using var member = new InMemoryStreamsGroupMember(
+            new StreamsGroupMemberOptions { GroupId = "streams-group", AssignmentListener = listener });
+        await member.InitializeAsync();
+        await member.JoinAsync(new StreamsGroupMemberUpdate { Topology = CreateTopology() });
+
+        await member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
+            ActiveTasks = [new StreamsGroupTaskSet { SubtopologyId = "sub-0", Partitions = [2] }]
+        });
+
+        await Assert.That(await listener.NextAsync()).IsEqualTo("assigned sub-0:2");
+    }
+
+    [Test]
+    public async Task AssignmentListener_CloseCancellationStopsWaitingForTheRunningCallback()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var listener = new BlockingListener(started, release.Task);
+        await using var member = new InMemoryStreamsGroupMember(
+            new StreamsGroupMemberOptions { GroupId = "streams-group", AssignmentListener = listener });
+        await member.InitializeAsync();
+        await member.JoinAsync(new StreamsGroupMemberUpdate { Topology = CreateTopology() });
+        await member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
+            ActiveTasks = [new StreamsGroupTaskSet { SubtopologyId = "sub-0", Partitions = [2] }]
+        });
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        using var cts = new CancellationTokenSource();
+        try
+        {
+            var close = member.CloseAsync(cts.Token).AsTask();
+            await Assert.That(close.IsCompleted).IsFalse();
+
+            cts.Cancel();
+            await Assert.ThrowsAsync<OperationCanceledException>(() => close.WaitAsync(TimeSpan.FromSeconds(30)));
+
+            // A repeated close still waits for the callback, and finishes once it returns.
+            var secondClose = member.CloseAsync().AsTask();
+            await Assert.That(secondClose.IsCompleted).IsFalse();
+            release.SetResult();
+            await secondClose.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        finally
+        {
+            // A failed assertion must not leave disposal waiting on the blocked callback.
+            release.TrySetResult();
+        }
+    }
+
+    private sealed class BlockingListener(TaskCompletionSource started, Task release) : IStreamsGroupAssignmentListener
+    {
+        public async ValueTask OnTasksAssignedAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken)
+        {
+            started.TrySetResult();
+            await release;
+        }
+
+        public ValueTask OnTasksRevokedAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+
+        public ValueTask OnTasksLostAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+    }
+
+    private sealed class RecordingListener : IStreamsGroupAssignmentListener
+    {
+        private readonly System.Threading.Channels.Channel<string> _events =
+            System.Threading.Channels.Channel.CreateUnbounded<string>();
+
+        public ValueTask OnTasksAssignedAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken) =>
+            Record("assigned", tasks);
+
+        public ValueTask OnTasksRevokedAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken) =>
+            Record("revoked", tasks);
+
+        public ValueTask OnTasksLostAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken) =>
+            Record("lost", tasks);
+
+        public async Task<string> NextAsync() =>
+            await _events.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+
+        private ValueTask Record(string kind, StreamsGroupAssignment tasks)
+        {
+            var parts = tasks.ActiveTasks.Select(static set => $"{set.SubtopologyId}:{string.Join(',', set.Partitions)}");
+            _events.Writer.TryWrite($"{kind} {string.Join(' ', parts)}");
+            return ValueTask.CompletedTask;
+        }
+    }
+
     private static InMemoryKafkaCluster CreateCluster()
     {
         var cluster = new InMemoryKafkaCluster();

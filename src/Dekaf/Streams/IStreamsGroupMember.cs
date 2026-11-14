@@ -128,6 +128,60 @@ public sealed class StreamsGroupMemberOptions
 
     /// <summary>Gets the maximum time allowed for a rebalance.</summary>
     public TimeSpan RebalanceTimeout { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Gets the listener told when the coordinator assigns, revokes or takes away tasks, or
+    /// <see langword="null"/> to poll <see cref="IStreamsGroupMember.Snapshot"/> instead.
+    /// </summary>
+    public IStreamsGroupAssignmentListener? AssignmentListener { get; init; }
+}
+
+/// <summary>
+/// Receives the task-assignment changes of a Streams group member, including those that background
+/// heartbeats make.
+/// </summary>
+/// <remarks>
+/// Callbacks run one at a time, in the order the changes happened, on a loop separate from the member's
+/// heartbeats: a slow callback delays later callbacks but not heartbeats, and a callback may call the
+/// member, for example <see cref="IStreamsGroupMember.UpdateAsync"/>. When one change both revokes and
+/// assigns tasks, the revoke callback runs first. Each callback receives only the tasks that changed.
+/// <para>
+/// The member reports the tasks it owns to the coordinator only through
+/// <see cref="StreamsGroupMemberUpdate.ActiveTasks"/> and the other task lists, never on its own, so a
+/// revocation stays unacknowledged until the caller reports the reduced set. Do that from
+/// <see cref="OnTasksRevokedAsync"/> once the revoked tasks are drained, or after it.
+/// </para>
+/// <para>
+/// An exception thrown by a callback is logged and delivery continues. Closing the member drops changes not
+/// yet delivered and cancels the token of the running callback.
+/// </para>
+/// </remarks>
+public interface IStreamsGroupAssignmentListener
+{
+    /// <summary>Called when the coordinator assigns tasks to the member.</summary>
+    /// <param name="tasks">The newly assigned active, standby and warmup tasks.</param>
+    /// <param name="cancellationToken">Cancelled when the member closes.</param>
+    ValueTask OnTasksAssignedAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Called when the coordinator revokes tasks from the member. The coordinator keeps them with this member
+    /// until it reports the reduced task set through <see cref="IStreamsGroupMember.UpdateAsync"/>.
+    /// </summary>
+    /// <param name="tasks">The revoked active, standby and warmup tasks.</param>
+    /// <param name="cancellationToken">Cancelled when the member closes.</param>
+    ValueTask OnTasksRevokedAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Called when the member loses its membership (it was fenced, its session expired, or a rejoin failed)
+    /// and with it every task. The tasks already belong to other members: discard their uncommitted work
+    /// instead of committing it. Tasks assigned after the member rejoins arrive through
+    /// <see cref="OnTasksAssignedAsync"/>.
+    /// </summary>
+    /// <param name="tasks">
+    /// Every active, standby and warmup task the member held, including revoked tasks not yet reported as released.
+    /// </param>
+    /// <param name="cancellationToken">Cancelled when the member closes.</param>
+    ValueTask OnTasksLostAsync(StreamsGroupAssignment tasks, CancellationToken cancellationToken);
 }
 
 /// <summary>A nullable state delta sent by a join or subsequent heartbeat.</summary>
