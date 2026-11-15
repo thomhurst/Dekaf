@@ -272,6 +272,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? _cachedOwnedTopicPartitions;
     private int _cachedOwnedTopicPartitionsVersion = -1;
     private int _sentOwnedTopicPartitionsVersion = -1;
+    // 1 after a steady heartbeat failed: the broker may have processed it and sent an assignment
+    // the response never delivered. KIP-848 brokers resend the assignment only on a full request
+    // (rebalance timeout, subscription and owned partitions all set), so the next heartbeat sends
+    // one. Cleared by a successful response.
+    private int _heartbeatFullRequestPending;
 
     internal static int GetCoordinationConnectionIndex(int connectionsPerBroker)
         => connectionsPerBroker - 1;
@@ -2973,6 +2978,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // static member by its instance id, and treats -2 as a temporary static leave), or
             // the current epoch for steady-state heartbeats.
             var memberEpoch = isInitial ? 0 : memberEpochSnapshot;
+            var fullRequest = isInitial || Volatile.Read(ref _heartbeatFullRequestPending) != 0;
 
             // On initial join, send empty array (owns nothing). null means "unchanged" in KIP-848
             // which is invalid when there's no previous state.
@@ -2987,7 +2993,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             }
             else
             {
-                ownedTopicPartitions = isInitial ? [] : GetOwnedTopicPartitionsForHeartbeat(assignmentVersion);
+                ownedTopicPartitions = isInitial
+                    ? []
+                    : GetOwnedTopicPartitionsForHeartbeat(assignmentVersion, forceSend: fullRequest);
             }
 
             // Snapshot the subscription once, so the topics, regex, stamp and version this request
@@ -3003,7 +3011,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             requestSubscriptionGeneration = stamp;
             sentSubscriptionVersion = subscriptionVersion;
             lastSentSubscriptionVersion = lastSentVersion;
-            var subscriptionShouldBeSent = isInitial || subscriptionChanged;
+            var subscriptionShouldBeSent = fullRequest || subscriptionChanged;
             var subscribedTopics = subscriptionShouldBeSent ? currentSubscribedTopics?.ToList() : null;
             subscribedTopicRegex = subscriptionShouldBeSent && version >= 1
                 ? currentSubscribedTopicRegex ?? (isInitial ? null : string.Empty)
@@ -3015,11 +3023,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 MemberId = memberId,
                 MemberEpoch = memberEpoch,
                 InstanceId = _options.GroupInstanceId,
-                RebalanceTimeoutMs = isInitial ? _options.RebalanceTimeoutMs : -1,
-                RackId = isInitial ? _options.ClientRack : null,
+                RebalanceTimeoutMs = fullRequest ? _options.RebalanceTimeoutMs : -1,
+                RackId = fullRequest ? _options.ClientRack : null,
                 SubscribedTopicNames = subscribedTopics,
                 SubscribedTopicRegex = subscribedTopicRegex,
-                ServerAssignor = isInitial ? _options.GroupRemoteAssignor : null,
+                ServerAssignor = fullRequest ? _options.GroupRemoteAssignor : null,
                 TopicPartitions = ownedTopicPartitions
             };
 
@@ -3030,7 +3038,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // The broker accepted the subscription this request carried, even when the response is
         // discarded below because the local membership moved on.
         if (response.ErrorCode == ErrorCode.None)
+        {
             MarkSubscriptionSent(sentSubscriptionVersion, lastSentSubscriptionVersion);
+            Volatile.Write(ref _heartbeatFullRequestPending, 0);
+        }
 
         // The broker sends an assignment only when it changes. One that names a topic this
         // client's metadata does not know yet (created after the last refresh) is published
@@ -3357,9 +3368,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     }
 
     private IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? GetOwnedTopicPartitionsForHeartbeat(
-        int assignmentVersion)
+        int assignmentVersion,
+        bool forceSend)
     {
-        if (Volatile.Read(ref _sentOwnedTopicPartitionsVersion) == assignmentVersion)
+        if (!forceSend && Volatile.Read(ref _sentOwnedTopicPartitionsVersion) == assignmentVersion)
             return null;
 
         if (Volatile.Read(ref _cachedOwnedTopicPartitionsVersion) == assignmentVersion)
@@ -4124,6 +4136,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                 if (TryKeepHeartbeating(ex, heartbeatCoordinatorId))
                 {
+                    // The failed request may still have reached the broker (#4162).
+                    Volatile.Write(ref _heartbeatFullRequestPending, 1);
                     transientFailureCount++;
                     continue;
                 }

@@ -3938,6 +3938,72 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task ConsumerProtocol_HeartbeatAfterTransportFailure_SendsFullRequest(
+        CancellationToken cancellationToken)
+    {
+        // The broker may have processed a heartbeat whose response was lost, and it resends an
+        // assignment only on a full request. Without one a revocation sent in the lost response is
+        // never seen again and the member keeps its partitions (#4162).
+        SetupSuccessfulConsumerProtocolJoin();
+        var options = CreateConsumerProtocolOptions(
+            heartbeatIntervalMs: 60_000,
+            retryBackoffMs: 1,
+            retryBackoffMaxMs: 1);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, cancellationToken);
+        await coordinator.StopHeartbeatAsync();
+
+        var requests = new System.Collections.Concurrent.ConcurrentQueue<ConsumerGroupHeartbeatRequest>();
+        var thirdSent = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                requests.Enqueue(call.Arg<ConsumerGroupHeartbeatRequest>());
+                if (requests.Count == 1)
+                {
+                    return ValueTask.FromException<ConsumerGroupHeartbeatResponse>(
+                        new IOException("coordinator connection closed"));
+                }
+
+                if (requests.Count == 3)
+                    thirdSent.TrySetResult(true);
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = 1,
+                    HeartbeatIntervalMs = 1
+                });
+            });
+        SetPrivateField(coordinator, "_heartbeatIntervalMs", 1);
+
+        using var loopCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var loop = InvokeConsumerProtocolHeartbeatLoopAsync(coordinator, loopCts.Token);
+        await thirdSent.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        await loopCts.CancelAsync();
+        await loop.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+
+        var sent = requests.ToArray();
+        await Assert.That(sent[0].RebalanceTimeoutMs).IsEqualTo(-1);
+        await Assert.That(sent[0].SubscribedTopicNames).IsNull();
+
+        await Assert.That(sent[1].MemberEpoch).IsEqualTo(1);
+        await Assert.That(sent[1].RebalanceTimeoutMs).IsEqualTo(options.RebalanceTimeoutMs);
+        await Assert.That(sent[1].SubscribedTopicNames).IsNotNull();
+        await Assert.That(sent[1].SubscribedTopicNames!).Contains("test-topic");
+        await Assert.That(sent[1].TopicPartitions).IsNotNull();
+
+        // A successful response ends it: the next heartbeat is incremental again.
+        await Assert.That(sent[2].RebalanceTimeoutMs).IsEqualTo(-1);
+        await Assert.That(sent[2].SubscribedTopicNames).IsNull();
+        await Assert.That(sent[2].TopicPartitions).IsNull();
+    }
+
+    [Test]
     public async Task ConsumerProtocol_PersistentTransportFailureDuringHeartbeat_HandsBackAfterSessionTimeout()
     {
         // Once a whole session timeout passes without a successful heartbeat the broker has
