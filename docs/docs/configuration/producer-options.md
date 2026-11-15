@@ -85,7 +85,7 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithBufferMemory(...)` | `BufferMemory` | Bytes; omit to keep auto-tuning |
 | `WithBufferMemoryAllocationStrategy(...)` | `BufferMemoryAllocationStrategy` | `Full` or `Incremental` |
 | `WithMaxBlock(...)` | `MaxBlockMs` | Milliseconds |
-| `WithDeliveryLatencyTarget(...)` | `DeliveryLatencyTargetMs` | TimeSpan; `TimeSpan.Zero` disables |
+| `WithDeliveryLatencyTarget(...)` | `DeliveryLatencyTargetMs` | Milliseconds; `0` disables; default 10 |
 | `WithDeliveryTimeout(...)` | `DeliveryTimeoutMs` | Milliseconds |
 | `WithRequestTimeout(...)` | `RequestTimeoutMs` | Milliseconds |
 | `WithIdempotence(...)` | `EnableIdempotence` | Boolean |

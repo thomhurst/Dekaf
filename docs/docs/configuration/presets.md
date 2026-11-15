@@ -168,7 +168,7 @@ var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForHighThroughput()
     .WithAcks(Acks.All)        // Override: want reliability too
-    .WithLinger(TimeSpan.FromMilliseconds(10)) // Override: even more batching
+    .WithLinger(TimeSpan.FromMilliseconds(200)) // Override: even more batching (preset uses 100ms)
     .BuildAsync();
 ```
 
