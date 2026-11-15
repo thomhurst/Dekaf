@@ -3944,7 +3944,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         // The broker may have processed a heartbeat whose response was lost, and it resends an
         // assignment only on a full request. Without one a revocation sent in the lost response is
         // never seen again and the member keeps its partitions (#4162).
-        SetupSuccessfulConsumerProtocolJoin();
+        SetupSuccessfulConsumerProtocolJoin(assignment: CreateAssignment(TestTopicId, 0));
         var options = CreateConsumerProtocolOptions(
             heartbeatIntervalMs: 60_000,
             retryBackoffMs: 1,
@@ -3954,8 +3954,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, cancellationToken);
         await coordinator.StopHeartbeatAsync();
 
+        // 1 reports the owned partition and succeeds, 2 fails, 3 must resend it, 4 is incremental.
         var requests = new System.Collections.Concurrent.ConcurrentQueue<ConsumerGroupHeartbeatRequest>();
-        var thirdSent = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var fourthSent = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
                 Arg.Any<ConsumerGroupHeartbeatRequest>(),
                 Arg.Any<short>(),
@@ -3963,14 +3964,14 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             .Returns(call =>
             {
                 requests.Enqueue(call.Arg<ConsumerGroupHeartbeatRequest>());
-                if (requests.Count == 1)
+                if (requests.Count == 2)
                 {
                     return ValueTask.FromException<ConsumerGroupHeartbeatResponse>(
                         new IOException("coordinator connection closed"));
                 }
 
-                if (requests.Count == 3)
-                    thirdSent.TrySetResult(true);
+                if (requests.Count == 4)
+                    fourthSent.TrySetResult(true);
                 return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                 {
                     ErrorCode = ErrorCode.None,
@@ -3983,24 +3984,31 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 
         using var loopCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var loop = InvokeConsumerProtocolHeartbeatLoopAsync(coordinator, loopCts.Token);
-        await thirdSent.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        await fourthSent.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
         await loopCts.CancelAsync();
         await loop.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
 
         var sent = requests.ToArray();
-        await Assert.That(sent[0].RebalanceTimeoutMs).IsEqualTo(-1);
-        await Assert.That(sent[0].SubscribedTopicNames).IsNull();
+        await Assert.That(sent[0].TopicPartitions).IsNotNull();
+        await Assert.That(sent[0].TopicPartitions!.Count).IsEqualTo(1);
 
-        await Assert.That(sent[1].MemberEpoch).IsEqualTo(1);
-        await Assert.That(sent[1].RebalanceTimeoutMs).IsEqualTo(options.RebalanceTimeoutMs);
-        await Assert.That(sent[1].SubscribedTopicNames).IsNotNull();
-        await Assert.That(sent[1].SubscribedTopicNames!).Contains("test-topic");
-        await Assert.That(sent[1].TopicPartitions).IsNotNull();
+        await Assert.That(sent[1].RebalanceTimeoutMs).IsEqualTo(-1);
+        await Assert.That(sent[1].SubscribedTopicNames).IsNull();
+        await Assert.That(sent[1].TopicPartitions).IsNull();
+
+        await Assert.That(sent[2].MemberEpoch).IsEqualTo(1);
+        await Assert.That(sent[2].RebalanceTimeoutMs).IsEqualTo(options.RebalanceTimeoutMs);
+        await Assert.That(sent[2].SubscribedTopicNames).IsNotNull();
+        await Assert.That(sent[2].SubscribedTopicNames!).Contains("test-topic");
+        await Assert.That(sent[2].TopicPartitions).IsNotNull();
+        await Assert.That(sent[2].TopicPartitions!.Count).IsEqualTo(1);
+        await Assert.That(sent[2].TopicPartitions![0].TopicId).IsEqualTo(TestTopicId);
+        await Assert.That(sent[2].TopicPartitions![0].Partitions).Contains(0);
 
         // A successful response ends it: the next heartbeat is incremental again.
-        await Assert.That(sent[2].RebalanceTimeoutMs).IsEqualTo(-1);
-        await Assert.That(sent[2].SubscribedTopicNames).IsNull();
-        await Assert.That(sent[2].TopicPartitions).IsNull();
+        await Assert.That(sent[3].RebalanceTimeoutMs).IsEqualTo(-1);
+        await Assert.That(sent[3].SubscribedTopicNames).IsNull();
+        await Assert.That(sent[3].TopicPartitions).IsNull();
     }
 
     [Test]
