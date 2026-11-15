@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.Protocol.Messages;
@@ -76,9 +75,12 @@ public sealed class PartitionedTransactionalCommitIntegrationTests(KafkaTestCont
             .BuildAsync(cancellationToken);
         consumer.Subscribe(input);
 
-        var processed = new ConcurrentDictionary<string, byte>();
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(TimeSpan.FromSeconds(90));
+        // A run that does not fail stops once the group committed every input record. The second
+        // run resumes after the first run's commits, so counting its own records cannot tell.
+        var reachedEnd = false;
+        var stopAtEnd = failAt is null ? StopAtInputEndAsync() : Task.CompletedTask;
         try
         {
             await consumer.RunPartitionedAsync(
@@ -88,9 +90,6 @@ public sealed class PartitionedTransactionalCommitIntegrationTests(KafkaTestCont
                         throw new InvalidOperationException("handler failed");
 
                     await producer.ProduceAsync(output, message.Key, message.Value, handlerCancellation).ConfigureAwait(false);
-                    processed[message.Value] = 0;
-                    if (processed.Count == 2 * RecordsPerPartition)
-                        await cts.CancelAsync().ConfigureAwait(false);
                 },
                 new PartitionedProcessingOptions
                 {
@@ -109,8 +108,43 @@ public sealed class PartitionedTransactionalCommitIntegrationTests(KafkaTestCont
         {
             return exception;
         }
+        finally
+        {
+            await cts.CancelAsync();
+            try
+            {
+                await stopAtEnd;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
 
-        return null;
+        // Without a handler failure, only reaching the input end counts as completion, not the safety timeout.
+        return failAt is null && !reachedEnd
+            ? new TimeoutException("The run did not commit every input record in time.")
+            : null;
+
+        async Task StopAtInputEndAsync()
+        {
+            while (true)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(200), cts.Token);
+                var committedToEnd = true;
+                for (var partition = 0; partition < 2 && committedToEnd; partition++)
+                {
+                    var committed = await consumer.GetCommittedOffsetAsync(new TopicPartition(input, partition), cts.Token);
+                    committedToEnd = committed >= RecordsPerPartition;
+                }
+
+                if (committedToEnd)
+                {
+                    reachedEnd = true;
+                    await cts.CancelAsync();
+                    return;
+                }
+            }
+        }
     }
 
     private async Task<List<string>> ReadCommittedAsync(string topic, int expected, CancellationToken cancellationToken)
