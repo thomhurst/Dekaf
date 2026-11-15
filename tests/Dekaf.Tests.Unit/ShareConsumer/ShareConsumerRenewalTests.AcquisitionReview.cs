@@ -200,6 +200,38 @@ public sealed partial class ShareConsumerRenewalTests
     }
 
     [Test]
+    [Arguments(ErrorCode.UnknownTopicId)]
+    [Arguments(ErrorCode.UnknownTopicOrPartition)]
+    public async Task Poll_RevokedPartitionOfDeletedTopic_ReportsLostAcknowledgementsAndKeepsDelivering(ErrorCode errorCode)
+    {
+        // Deleting a topic revokes its partition while the poll still holds its acknowledgements.
+        // The broker can never accept them, so the poll reports the loss and keeps delivering.
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2, includeShareAcknowledge: true)
+        {
+            ShareFetchResponses = new([CreateFetchResponse(0, 100, 3), CreateFetchResponse(1, 200)]),
+            ShareAcknowledgeHandler = (_, _) => new(CreateAcknowledgeResponse((0, errorCode)))
+        };
+        var outcomes = new List<ShareAcknowledgementCommitResult>();
+        await using var fixture = CreateFixture(connection, ShareAcknowledgementMode.Implicit,
+            maxPollRecords: 4, acknowledgementCommitCallback: results => outcomes.AddRange(results.ToArray()),
+            valueDeserializer: Serializers.String);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Subscribe("topic");
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using (var first = fixture.Consumer.PollAsync(stop.Token).GetAsyncEnumerator())
+            await Assert.That(await first.MoveNextAsync()).IsTrue();
+
+        PrepareForPoll(fixture.Consumer, new TopicPartition("topic", 1));
+        await using var next = fixture.Consumer.PollAsync(stop.Token).GetAsyncEnumerator();
+
+        await Assert.That(await next.MoveNextAsync()).IsTrue();
+        await Assert.That(next.Current.Offset).IsEqualTo(200);
+        await Assert.That(connection.ShareAcknowledgeRequests).HasSingleItem();
+        var lost = outcomes.Single(static outcome => outcome.TopicPartition.Partition == 0);
+        await Assert.That(((KafkaException)lost.Exception!).ErrorCode).IsEqualTo(errorCode);
+    }
+
+    [Test]
     [Arguments(1, false)]
     [Arguments(2, false)]
     [Arguments(1, true)]

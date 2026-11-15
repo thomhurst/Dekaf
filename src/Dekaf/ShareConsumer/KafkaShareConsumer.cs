@@ -409,6 +409,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     {
                         await CommitCoreAsync(cancellationToken, holdWithoutSession: true).ConfigureAwait(false);
                     }
+                    catch (KafkaException ex) when (ex is not BrokerVersionException
+                                                    && !_ackTracker.HasPendingOutsideAssignment(assignment))
+                    {
+                        // Every failed removed-partition acknowledgement lost its acquisition, for
+                        // example to a deleted topic, and was dropped. The commit callback reported
+                        // it and there is nothing left to retry, so keep delivering the assignment.
+                    }
                     finally
                     {
                         ShareMetrics?.EndPollWait();
