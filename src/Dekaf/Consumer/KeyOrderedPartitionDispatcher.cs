@@ -166,6 +166,10 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
         {
             try
             {
+                // The lane reports this failure only after every handler exits, so handlers
+                // parked on StopRequestedToken must see it now.
+                if (_failure is not null && _activeWorkers != 0)
+                    await _context.RequestStopAsync().ConfigureAwait(false);
                 if (_activeWorkers != 0 || _inputPending)
                     await stopping.CancelAsync().ConfigureAwait(false);
             }

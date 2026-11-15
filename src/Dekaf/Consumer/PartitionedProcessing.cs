@@ -509,6 +509,9 @@ public sealed class PartitionProcessorContext<TKey, TValue>
     internal bool IsDiscardingQueuedRecords => _lane.IsDiscardingQueuedRecords;
 
     internal void WakeOnDiscard(AsyncAutoResetSignal signal) => _lane.WakeOnDiscard(signal);
+
+    /// <summary>Signals <see cref="StopRequestedToken"/> so parked handlers leave during failure cleanup.</summary>
+    internal Task RequestStopAsync() => _lane.RequestStopAsync();
 }
 
 /// <summary>
@@ -2663,7 +2666,10 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     private readonly Action<PartitionLane<TKey, TValue>, Exception> _failed;
     private readonly CancellationTokenSource _stopping = new();
     // Signaled when StopAsync begins, before any drain wait, so handlers can leave early.
+    // A key-ordered dispatcher also signals it when a handler fails, before waiting for the others.
     private readonly CancellationTokenSource _stopRequested = new();
+    // Set when StopAsync begins. Only a stop makes a handler's cancellation a clean exit.
+    private int _stopStarted;
     private readonly PartitionProcessorContext<TKey, TValue> _context;
     private readonly int _capacity;
     private readonly PartitionedProcessingLimits? _limits;
@@ -2734,6 +2740,9 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     public CancellationToken StoppingToken => _stopping.Token;
 
     public CancellationToken StopRequestedToken => _stopRequested.Token;
+
+    /// <summary>Signals <see cref="StopRequestedToken"/> without stopping the lane.</summary>
+    public Task RequestStopAsync() => _stopRequested.CancelAsync();
 
     public bool IsCompleted => Volatile.Read(ref _completed) != 0;
 
@@ -2831,8 +2840,8 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
                             $"Partition processor for {TopicPartition.Topic}:{TopicPartition.Partition} completed before the partition stopped."));
                 }
             }
-            // StopAsync signals _stopRequested before _stopping, so this covers both stop tokens.
-            catch (OperationCanceledException) when (_stopRequested.IsCancellationRequested)
+            // StopAsync sets the flag before it signals either stop token.
+            catch (OperationCanceledException) when (Volatile.Read(ref _stopStarted) != 0)
             {
             }
             catch (Exception ex)
@@ -3180,6 +3189,7 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
         CancellationToken cancellationToken = default)
     {
         CompleteWriter();
+        Volatile.Write(ref _stopStarted, 1);
 
         // Callback completion and processor completion share one stop budget.
         // CancelAsync signals the token synchronously but runs callbacks asynchronously.
