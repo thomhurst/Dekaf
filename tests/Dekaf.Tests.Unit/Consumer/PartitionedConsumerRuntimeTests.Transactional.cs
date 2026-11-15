@@ -316,6 +316,38 @@ public sealed partial class PartitionedConsumerRuntimeTests
     }
 
     [Test]
+    public async Task Transactional_BackwardSeekWithoutCompletedRecords_UsesFreshCommittedOffset()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        // The cached single-partition lookup is stale (0); the coordinator has the transactional commit (5).
+        var consumer = new FreshCommittedOffsetsConsumer(new TopicPartitionOffset(partition.Topic, partition.Partition, 5))
+        {
+            RedeliverUnenumeratedBatches = true,
+            CommittedOffset = 0
+        };
+        consumer.SetAssignment(partition);
+        var transactions = new FakeTransactions();
+        var control = new PartitionedProcessingControl();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            (_, message, _) =>
+            {
+                transactions.Produce(message.Offset);
+                return ValueTask.CompletedTask;
+            },
+            TransactionalOptions(transactions, TimeSpan.FromMinutes(5), control: control),
+            cts.Token).AsTask();
+
+        await control.SeekAsync(new TopicPartitionOffset(partition.Topic, partition.Partition, 2), cts.Token)
+            .ConfigureAwait(false);
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+
+        var committed = await transactions.WaitForCommitAsync(offset: 2, cts.Token).ConfigureAwait(false);
+        await Assert.That(committed.Offsets).IsEquivalentTo(new[] { new TopicPartitionOffset("topic-a", 0, 2) });
+    }
+
+    [Test]
     public async Task Transactional_RevokeCommitThatDoesNotFinish_AbortsWithinStopTimeout()
     {
         var partition = new TopicPartition("topic-a", 0);
@@ -472,6 +504,19 @@ public sealed partial class PartitionedConsumerRuntimeTests
     /// Records the output handlers produce into each transaction, the offsets each commit carries,
     /// and checks that committed output is exactly the records the committed offsets cover.
     /// </summary>
+    private sealed class FreshCommittedOffsetsConsumer(TopicPartitionOffset committed)
+        : TestConsumer, IConsumerCommittedOffsets
+    {
+        public ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> GetCommittedOffsetsAsync(
+            IReadOnlyCollection<TopicPartition> partitions,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>>(
+                new Dictionary<TopicPartition, TopicPartitionOffset>
+                {
+                    [new TopicPartition(committed.Topic, committed.Partition)] = committed
+                });
+    }
+
     private sealed class FakeTransactions
     {
         private readonly object _gate = new();

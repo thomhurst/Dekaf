@@ -1492,7 +1492,8 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     /// <summary>
     /// Returns the seek target when a transactional seek must commit it in place of the stopped
     /// lane's progress: the target is behind the lane's completed offset, or, when no record
-    /// finished, behind the group's committed offset. Like <see cref="CommitSeekPositionAsync"/>, a
+    /// finished, behind the group's committed offset (fetched from the coordinator, because the
+    /// consumer's cache does not see transactional commits). Like <see cref="CommitSeekPositionAsync"/>, a
     /// failed lookup skips the seek commit, and the new lane commits its own progress.
     /// </summary>
     private async ValueTask<TopicPartitionOffset?> GetTransactionalSeekCommitAsync(
@@ -1509,9 +1510,24 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
         try
         {
-            var committed = await _consumer.GetCommittedOffsetAsync(
-                new TopicPartition(target.Topic, target.Partition),
-                lookupCancellation.Token).ConfigureAwait(false);
+            // Transactional commits go through the producer, so the consumer's cached committed
+            // offset can be stale. Use the uncached bulk lookup when the consumer has one.
+            var partition = new TopicPartition(target.Topic, target.Partition);
+            long? committed;
+            if (_consumer is IConsumerCommittedOffsets committedOffsets)
+            {
+                var offsets = await committedOffsets.GetCommittedOffsetsAsync(
+                    [partition],
+                    lookupCancellation.Token).ConfigureAwait(false);
+                committed = offsets.TryGetValue(partition, out var fetched) ? fetched.Offset : null;
+            }
+            else
+            {
+                committed = await _consumer.GetCommittedOffsetAsync(
+                    partition,
+                    lookupCancellation.Token).ConfigureAwait(false);
+            }
+
             return committed is { } committedOffset && committedOffset > target.Offset ? target : null;
         }
         catch (Exception exception) when (!cancellationToken.IsCancellationRequested)

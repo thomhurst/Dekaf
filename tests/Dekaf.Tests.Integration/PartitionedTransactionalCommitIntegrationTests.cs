@@ -130,12 +130,11 @@ public sealed class PartitionedTransactionalCommitIntegrationTests(KafkaTestCont
             while (true)
             {
                 await Task.Delay(TimeSpan.FromMilliseconds(200), cts.Token);
-                var committedToEnd = true;
-                for (var partition = 0; partition < 2 && committedToEnd; partition++)
-                {
-                    var committed = await consumer.GetCommittedOffsetAsync(new TopicPartition(input, partition), cts.Token);
-                    committedToEnd = committed >= RecordsPerPartition;
-                }
+                // The bulk lookup asks the coordinator; the single-partition lookup returns the consumer's
+                // cached offset, which does not see commits made through the transactional producer.
+                var committed = await consumer.GetCommittedOffsetsAsync(
+                    [new TopicPartition(input, 0), new TopicPartition(input, 1)], cts.Token);
+                var committedToEnd = committed.Count == 2 && committed.Values.All(offset => offset.Offset >= RecordsPerPartition);
 
                 if (committedToEnd)
                 {
