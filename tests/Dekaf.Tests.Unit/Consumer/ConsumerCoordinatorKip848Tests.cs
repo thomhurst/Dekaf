@@ -4074,6 +4074,89 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task ConsumerProtocol_HeartbeatCancelledBeforeApplyingAssignment_NextHeartbeatSendsFullRequest(
+        CancellationToken cancellationToken)
+    {
+        // A steady heartbeat that is cancelled while it waits to apply the assignment its response
+        // carried drops it. The broker counts it as delivered, so the next heartbeat must be a full
+        // request or the assignment is never sent again.
+        SetupSuccessfulConsumerProtocolJoin(assignment: CreateAssignment(TestTopicId, 0));
+        var options = CreateConsumerProtocolOptions(
+            heartbeatIntervalMs: 60_000,
+            retryBackoffMs: 1,
+            retryBackoffMaxMs: 1);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, cancellationToken);
+        await coordinator.StopHeartbeatAsync();
+
+        // 1 reports the owned partition, 2 carries an assignment the loop never applies, 3 must
+        // be a full request.
+        var requests = new System.Collections.Concurrent.ConcurrentQueue<ConsumerGroupHeartbeatRequest>();
+        var secondSent = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thirdSent = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stateLock = GetPrivateField<SemaphoreSlim>(coordinator, "_lock");
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                requests.Enqueue(call.Arg<ConsumerGroupHeartbeatRequest>());
+                var count = requests.Count;
+                if (count == 2)
+                {
+                    // Hold the state lock so the loop waits to apply this response.
+                    stateLock.Wait(CancellationToken.None);
+                    secondSent.TrySetResult(true);
+                }
+
+                if (count == 3)
+                    thirdSent.TrySetResult(true);
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = 1,
+                    HeartbeatIntervalMs = 1,
+                    Assignment = count == 2 ? CreateAssignment(TestTopicId) : null
+                });
+            });
+        SetPrivateField(coordinator, "_heartbeatIntervalMs", 1);
+
+        using (var loopCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+        {
+            var loop = InvokeConsumerProtocolHeartbeatLoopAsync(coordinator, loopCts.Token);
+            await secondSent.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            await loopCts.CancelAsync();
+            try
+            {
+                await loop.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            }
+            finally
+            {
+                stateLock.Release();
+            }
+        }
+
+        using (var loopCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+        {
+            var loop = InvokeConsumerProtocolHeartbeatLoopAsync(coordinator, loopCts.Token);
+            await thirdSent.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            await loopCts.CancelAsync();
+            await loop.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        }
+
+        var sent = requests.ToArray();
+        await Assert.That(sent[1].RebalanceTimeoutMs).IsEqualTo(-1);
+        await Assert.That(sent[2].MemberEpoch).IsEqualTo(1);
+        await Assert.That(sent[2].RebalanceTimeoutMs).IsEqualTo(options.RebalanceTimeoutMs);
+        await Assert.That(sent[2].SubscribedTopicNames).IsNotNull();
+        await Assert.That(sent[2].TopicPartitions).IsNotNull();
+        await Assert.That(sent[2].TopicPartitions!.Count).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ConsumerProtocol_PersistentTransportFailureDuringHeartbeat_HandsBackAfterSessionTimeout()
     {
         // Once a whole session timeout passes without a successful heartbeat the broker has

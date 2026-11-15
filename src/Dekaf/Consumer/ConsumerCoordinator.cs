@@ -272,10 +272,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? _cachedOwnedTopicPartitions;
     private int _cachedOwnedTopicPartitionsVersion = -1;
     private int _sentOwnedTopicPartitionsVersion = -1;
-    // 1 after a steady heartbeat failed: the broker may have processed it and sent an assignment
-    // the response never delivered. KIP-848 brokers resend the assignment only on a full request
-    // (rebalance timeout, subscription and owned partitions all set), so the next heartbeat sends
-    // one. Cleared by a successful response.
+    // Nonzero after a steady heartbeat failed, or its assignment was not applied: the broker may
+    // count an assignment as delivered that this client never applied. KIP-848 brokers resend
+    // the assignment only on a full request (rebalance timeout, subscription and owned partitions
+    // all set), so the next heartbeat sends one. Each mark increments it, and a successful
+    // response clears it only if nothing marked it after its request was built.
     private int _heartbeatFullRequestPending;
 
     internal static int GetCoordinationConnectionIndex(int connectionsPerBroker)
@@ -2905,6 +2906,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         string? memberIdSnapshot;
         int memberEpochSnapshot;
         ConsumerGroupHeartbeatResponse response;
+        int fullRequestPendingSnapshot;
         int assignmentVersion;
         IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? ownedTopicPartitions;
         string? subscribedTopicRegex;
@@ -2978,7 +2980,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // static member by its instance id, and treats -2 as a temporary static leave), or
             // the current epoch for steady-state heartbeats.
             var memberEpoch = isInitial ? 0 : memberEpochSnapshot;
-            var fullRequest = isInitial || Volatile.Read(ref _heartbeatFullRequestPending) != 0;
+            fullRequestPendingSnapshot = Volatile.Read(ref _heartbeatFullRequestPending);
+            var fullRequest = isInitial || fullRequestPendingSnapshot != 0;
 
             // On initial join, send empty array (owns nothing). null means "unchanged" in KIP-848
             // which is invalid when there's no previous state.
@@ -3040,7 +3043,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (response.ErrorCode == ErrorCode.None)
         {
             MarkSubscriptionSent(sentSubscriptionVersion, lastSentSubscriptionVersion);
-            Volatile.Write(ref _heartbeatFullRequestPending, 0);
+            // A steady heartbeat's assignment is not applied until the membership guard below
+            // accepts it, and waiting for the locks can be cancelled, so it stays pending until
+            // then (#4162).
+            if (discardIfMembershipChanged && response.Assignment is not null)
+                fullRequestPendingSnapshot = Interlocked.Increment(ref _heartbeatFullRequestPending);
+            else
+                Interlocked.CompareExchange(ref _heartbeatFullRequestPending, 0, fullRequestPendingSnapshot);
         }
 
         // The broker sends an assignment only when it changes. One that names a topic this
@@ -3131,16 +3140,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         _joinStateVersion != joinStateVersion ||
                         Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
                         IsCurrentPollGenerationExpired())
-                    {
-                        // The broker counts this assignment as delivered. A rejoin that resumes
-                        // this epoch must send a full request so the broker sends it again.
-                        if (response.Assignment is not null)
-                            Volatile.Write(ref _heartbeatFullRequestPending, 1);
                         return default;
-                    }
 
                     if (response.Assignment is not null)
                     {
+                        Interlocked.CompareExchange(ref _heartbeatFullRequestPending, 0, fullRequestPendingSnapshot);
                         _deferredHeartbeatAssignment = response.Assignment;
                         _deferredHeartbeatAssignmentSubscriptionGeneration = requestSubscriptionGeneration;
                         _deferredHeartbeatAssignmentStarted = rebalanceStarted;
@@ -4143,7 +4147,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 if (TryKeepHeartbeating(ex, heartbeatCoordinatorId))
                 {
                     // The failed request may still have reached the broker (#4162).
-                    Volatile.Write(ref _heartbeatFullRequestPending, 1);
+                    Interlocked.Increment(ref _heartbeatFullRequestPending);
                     transientFailureCount++;
                     continue;
                 }
