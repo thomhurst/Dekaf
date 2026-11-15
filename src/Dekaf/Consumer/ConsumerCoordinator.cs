@@ -3131,7 +3131,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         _joinStateVersion != joinStateVersion ||
                         Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
                         IsCurrentPollGenerationExpired())
+                    {
+                        // The broker counts this assignment as delivered. A rejoin that resumes
+                        // this epoch must send a full request so the broker sends it again.
+                        if (response.Assignment is not null)
+                            Volatile.Write(ref _heartbeatFullRequestPending, 1);
                         return default;
+                    }
 
                     if (response.Assignment is not null)
                     {

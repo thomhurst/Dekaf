@@ -4012,6 +4012,68 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task ConsumerProtocol_DiscardedHeartbeatAssignment_RejoinSendsFullRequest(
+        CancellationToken cancellationToken)
+    {
+        // A rejoin requested while a heartbeat is in flight discards the assignment its response
+        // carries. The broker counts it as delivered, so the rejoin, which resumes the same epoch,
+        // must be a full request or the assignment is never sent again.
+        SetupSuccessfulConsumerProtocolJoin(assignment: CreateAssignment(TestTopicId, 0));
+        var options = CreateConsumerProtocolOptions(
+            heartbeatIntervalMs: 60_000,
+            retryBackoffMs: 1,
+            retryBackoffMaxMs: 1);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        var topics = new HashSet<string> { "test-topic" };
+
+        await coordinator.EnsureActiveGroupAsync(topics, cancellationToken);
+        await coordinator.StopHeartbeatAsync();
+
+        // 1 fails, 2 is the full retry and is discarded by a rejoin, 3 is the resumed join.
+        var requests = new System.Collections.Concurrent.ConcurrentQueue<ConsumerGroupHeartbeatRequest>();
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                requests.Enqueue(call.Arg<ConsumerGroupHeartbeatRequest>());
+                if (requests.Count == 1)
+                {
+                    return ValueTask.FromException<ConsumerGroupHeartbeatResponse>(
+                        new IOException("coordinator connection closed"));
+                }
+
+                if (requests.Count == 2)
+                    coordinator.RequestRejoin();
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = 1,
+                    HeartbeatIntervalMs = 60_000,
+                    Assignment = requests.Count == 2 ? CreateAssignment(TestTopicId) : null
+                });
+            });
+        SetPrivateField(coordinator, "_heartbeatIntervalMs", 1);
+
+        // The loop stops once the rejoin is requested.
+        await InvokeConsumerProtocolHeartbeatLoopAsync(coordinator, cancellationToken)
+            .WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        await coordinator.EnsureActiveGroupAsync(topics, cancellationToken);
+        await coordinator.StopHeartbeatAsync();
+
+        var sent = requests.ToArray();
+        await Assert.That(sent.Length).IsGreaterThanOrEqualTo(3);
+        await Assert.That(sent[1].RebalanceTimeoutMs).IsEqualTo(options.RebalanceTimeoutMs);
+        await Assert.That(sent[2].MemberEpoch).IsEqualTo(1);
+        await Assert.That(sent[2].RebalanceTimeoutMs).IsEqualTo(options.RebalanceTimeoutMs);
+        await Assert.That(sent[2].SubscribedTopicNames).IsNotNull();
+        await Assert.That(sent[2].TopicPartitions).IsNotNull();
+        await Assert.That(sent[2].TopicPartitions!.Count).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ConsumerProtocol_PersistentTransportFailureDuringHeartbeat_HandsBackAfterSessionTimeout()
     {
         // Once a whole session timeout passes without a successful heartbeat the broker has
