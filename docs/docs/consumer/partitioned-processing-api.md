@@ -384,6 +384,8 @@ the same way and `SeekAsync` throws the commit's error instead of moving to the
 target.
 A lost partition aborts the transaction the same way, because its offsets can no
 longer be committed. When the abort itself fails, the run ends with that error.
+During a revoke or a lost partition the abort also gets one `StopTimeout`; an
+abort that does not finish in time ends the run with a `TimeoutException`.
 
 The policy requires a record or batch handler overload, a consumer group and
 `PartitionWorkerErrorPolicy.StopConsumer`: a failed handler may have produced part

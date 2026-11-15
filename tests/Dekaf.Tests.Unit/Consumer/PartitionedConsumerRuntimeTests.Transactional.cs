@@ -350,6 +350,39 @@ public sealed partial class PartitionedConsumerRuntimeTests
     }
 
     [Test]
+    public async Task Transactional_RevokeAbortThatDoesNotFinish_ReleasesRevokeAndEndsRun()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.SetAssignment(partition);
+        var transactions = new FakeTransactions { BlockCommits = true, BlockAborts = true };
+        var processed = NewCompletionSource();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            (_, message, _) =>
+            {
+                transactions.Produce(message.Offset);
+                processed.TrySetResult();
+                return ValueTask.CompletedTask;
+            },
+            TransactionalOptions(transactions, TimeSpan.FromMinutes(5), stopTimeout: TimeSpan.FromMilliseconds(200)),
+            cts.Token).AsTask();
+
+        consumer.Enqueue(CreateResult(partition, 0));
+        await processed.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+
+        // The abort after a stuck revoke commit gets its own StopTimeout, then the run ends.
+        await consumer.RevokeFromCoordinatorAsync(partition).WaitAsync(TimeSpan.FromSeconds(5), cts.Token)
+            .ConfigureAwait(false);
+
+        await Assert.That(async () => await runTask.WaitAsync(TimeSpan.FromSeconds(5), cts.Token).ConfigureAwait(false))
+            .Throws<TimeoutException>()
+            .WithMessageContaining("abort");
+        await Assert.That(transactions.CommittedCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Transactional_CommitProcessedAsync_IsRejected()
     {
         var partition = new TopicPartition("topic-a", 0);
@@ -457,6 +490,8 @@ public sealed partial class PartitionedConsumerRuntimeTests
 
         /// <summary>When set, commits never finish until their cancellation token fires.</summary>
         public bool BlockCommits { get; init; }
+
+        public bool BlockAborts { get; init; }
 
         public int CommittedCount
         {
@@ -618,10 +653,11 @@ public sealed partial class PartitionedConsumerRuntimeTests
                 owner.Complete(this, commit: true, offsets, consumerGroupMetadata);
             }
 
-            public ValueTask AbortAsync(CancellationToken cancellationToken)
+            public async ValueTask AbortAsync(CancellationToken cancellationToken)
             {
+                if (owner.BlockAborts)
+                    await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
                 owner.Complete(this, commit: false, offsets: null, metadata: null);
-                return ValueTask.CompletedTask;
             }
         }
     }

@@ -1206,7 +1206,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             finally
             {
                 // A run that ends before its final commit leaves nothing of the transaction visible.
-                await AbortOpenTransactionAsync().ConfigureAwait(false);
+                await AbortOpenTransactionAsync(Timeout.InfiniteTimeSpan).ConfigureAwait(false);
                 _readGate?.Dispose();
                 await StopScheduledRestartsAsync().ConfigureAwait(false);
                 _options.Control?.Detach(this);
@@ -2753,7 +2753,8 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
                         new InvalidOperationException(
                             $"Partition {lane.TopicPartition.Topic}-{lane.TopicPartition.Partition} was lost with output in the open transaction."),
                         beginNext: true,
-                        cancellationToken).ConfigureAwait(false);
+                        cancellationToken,
+                        bounded: true).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -2846,7 +2847,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             {
                 // Every record read so far is committed, so the transaction holds no output.
                 if (!beginNext)
-                    await AbortOpenTransactionAsync().ConfigureAwait(false);
+                    await AbortOpenTransactionAsync(Timeout.InfiniteTimeSpan).ConfigureAwait(false);
 
                 return null;
             }
@@ -2872,7 +2873,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         }
         catch (Exception exception) when (_transaction is not null || _uncommittedTransaction is not null)
         {
-            await AbortAndRewindAsync(exception, beginNext, cancellationToken).ConfigureAwait(false);
+            await AbortAndRewindAsync(exception, beginNext, cancellationToken, bounded).ConfigureAwait(false);
             return exception;
         }
         finally
@@ -2926,15 +2927,22 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     /// committed offset under a new transaction, so the aborted output is produced again. The gate
     /// is closed on entry: the active lanes discard their queued records before it opens, and they
     /// stop before the new transaction begins, so a cancelled handler's output cannot join it.
+    /// A <paramref name="bounded"/> abort runs inside a revocation callback, so it gets one
+    /// <see cref="PartitionedProcessingOptions.StopTimeout"/>; one that does not finish ends the run.
     /// </summary>
-    private async ValueTask AbortAndRewindAsync(Exception exception, bool beginNext, CancellationToken cancellationToken)
+    private async ValueTask AbortAndRewindAsync(
+        Exception exception,
+        bool beginNext,
+        CancellationToken cancellationToken,
+        bool bounded = false)
     {
+        var abortTimeout = bounded ? _options.StopTimeout : Timeout.InfiniteTimeSpan;
         if (!beginNext
             || _failure is not null
             || cancellationToken.IsCancellationRequested
             || _shutdownCancellation.IsCancellationRequested)
         {
-            await AbortOpenTransactionAsync().ConfigureAwait(false);
+            await AbortOpenTransactionAsync(abortTimeout).ConfigureAwait(false);
             ExceptionDispatchInfo.Capture(exception).Throw();
         }
 
@@ -2955,7 +2963,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
         try
         {
-            await AbortOpenTransactionAsync(throwOnFailure: true).ConfigureAwait(false);
+            await AbortOpenTransactionAsync(abortTimeout, throwOnFailure: true).ConfigureAwait(false);
         }
         catch (Exception abortException)
         {
@@ -2991,8 +2999,11 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
     private void BeginNextTransaction() => _transaction = _transactionalProducer!.BeginTransaction();
 
-    /// <summary>Aborts the open transaction, or one whose commit failed. Logs a failure unless asked to throw it.</summary>
-    private async ValueTask AbortOpenTransactionAsync(bool throwOnFailure = false)
+    /// <summary>
+    /// Aborts the open transaction, or one whose commit failed, giving up after
+    /// <paramref name="timeout"/>. Logs a failure unless asked to throw it.
+    /// </summary>
+    private async ValueTask AbortOpenTransactionAsync(TimeSpan timeout, bool throwOnFailure = false)
     {
         var transaction = _transaction ?? _uncommittedTransaction;
         _transaction = null;
@@ -3000,9 +3011,17 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         if (transaction is null)
             return;
 
+        using var abortCancellation = timeout == Timeout.InfiniteTimeSpan ? null : new CancellationTokenSource(timeout);
         try
         {
-            await transaction.AbortAsync(CancellationToken.None).ConfigureAwait(false);
+            await transaction.AbortAsync(abortCancellation?.Token ?? CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (abortCancellation?.IsCancellationRequested == true)
+        {
+            var timeoutException = new TimeoutException($"The transaction abort did not finish within {timeout}.");
+            if (throwOnFailure)
+                throw timeoutException;
+            LogTransactionAbortFailed(timeoutException);
         }
         catch (Exception exception) when (!throwOnFailure)
         {
