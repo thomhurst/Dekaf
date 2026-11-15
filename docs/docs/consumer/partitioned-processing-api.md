@@ -445,6 +445,27 @@ The `CancellationToken` passed to the processor is the partition stopping token.
 With `Drain`, the normal signal is stream completion. With `Cancel`, lost
 partitions, processor failure cleanup, or drain timeout, the token is cancelled.
 
+`context.StopRequestedToken` is cancelled as soon as a partition starts stopping
+for any reason (revoke, loss, seek, failure or shutdown), under either policy. A
+handler that is waiting on something outside Kafka, such as a dependency held
+behind an open circuit breaker, can watch it and throw `OperationCanceledException`
+to leave without completing its record. The stop then finishes promptly without
+failing the run, and the record is replayed from the committed offset:
+
+```csharp
+// Completed by your circuit breaker when the dependency recovers.
+var dependencyAvailable = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+await consumer.RunPartitionedAsync(
+    async (context, message, cancellationToken) =>
+    {
+        await dependencyAvailable.Task.WaitAsync(context.StopRequestedToken);
+        await ProcessOrderAsync(message.Value, cancellationToken);
+    },
+    new PartitionedProcessingOptions { StopPolicy = PartitionStopPolicy.Drain },
+    stoppingToken);
+```
+
 If a processor does not finish within `StopTimeout`, Dekaf treats the timeout as
 fatal because it can no longer guarantee a single active processor for that
 partition. During shutdown, `StopTimeout` also bounds the final runtime-managed

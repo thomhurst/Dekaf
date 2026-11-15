@@ -435,6 +435,19 @@ public sealed class PartitionProcessorContext<TKey, TValue>
     public CancellationToken StoppingToken => _lane.StoppingToken;
 
     /// <summary>
+    /// Gets the token signaled as soon as this partition starts stopping, for any reason
+    /// (revoke, loss, seek, failure or shutdown) and under either <see cref="PartitionStopPolicy"/>.
+    /// </summary>
+    /// <remarks>
+    /// Under <see cref="PartitionStopPolicy.Drain"/>, <see cref="StoppingToken"/> is signaled only once
+    /// <see cref="PartitionedProcessingOptions.StopTimeout"/> expires. A handler waiting on something
+    /// outside Kafka can observe this token instead and throw <see cref="OperationCanceledException"/>
+    /// to leave without completing its records; the stop then finishes without failing the run, and
+    /// the records it did not complete are replayed from the committed offset.
+    /// </remarks>
+    public CancellationToken StopRequestedToken => _lane.StopRequestedToken;
+
+    /// <summary>
     /// Marks a message as processed and eligible for commit.
     /// </summary>
     public void MarkProcessed(ConsumeResult<TKey, TValue> message)
@@ -496,6 +509,9 @@ public sealed class PartitionProcessorContext<TKey, TValue>
     internal bool IsDiscardingQueuedRecords => _lane.IsDiscardingQueuedRecords;
 
     internal void WakeOnDiscard(AsyncAutoResetSignal signal) => _lane.WakeOnDiscard(signal);
+
+    /// <summary>Signals <see cref="StopRequestedToken"/> so parked handlers leave during failure cleanup.</summary>
+    internal Task RequestStopAsync() => _lane.RequestStopAsync();
 }
 
 /// <summary>
@@ -519,6 +535,19 @@ public sealed class PartitionRecordProcessorContext<TKey, TValue>
     /// Gets the token signaled when this partition handler should stop.
     /// </summary>
     public CancellationToken StoppingToken => _partition.StoppingToken;
+
+    /// <summary>
+    /// Gets the token signaled as soon as this partition starts stopping, for any reason
+    /// (revoke, loss, seek, failure or shutdown) and under either <see cref="PartitionStopPolicy"/>.
+    /// </summary>
+    /// <remarks>
+    /// Under <see cref="PartitionStopPolicy.Drain"/>, <see cref="StoppingToken"/> is signaled only once
+    /// <see cref="PartitionedProcessingOptions.StopTimeout"/> expires. A handler waiting on something
+    /// outside Kafka can observe this token instead and throw <see cref="OperationCanceledException"/>
+    /// to leave without completing its records; the stop then finishes without failing the run, and
+    /// the records it did not complete are replayed from the committed offset.
+    /// </remarks>
+    public CancellationToken StopRequestedToken => _partition.StopRequestedToken;
 
     /// <summary>
     /// Commits the last contiguous offset completed for this partition.
@@ -555,6 +584,19 @@ public sealed class PartitionBatchProcessorContext<TKey, TValue>
     /// Gets the token signaled when this partition handler should stop.
     /// </summary>
     public CancellationToken StoppingToken => _partition.StoppingToken;
+
+    /// <summary>
+    /// Gets the token signaled as soon as this partition starts stopping, for any reason
+    /// (revoke, loss, seek, failure or shutdown) and under either <see cref="PartitionStopPolicy"/>.
+    /// </summary>
+    /// <remarks>
+    /// Under <see cref="PartitionStopPolicy.Drain"/>, <see cref="StoppingToken"/> is signaled only once
+    /// <see cref="PartitionedProcessingOptions.StopTimeout"/> expires. A handler waiting on something
+    /// outside Kafka can observe this token instead and throw <see cref="OperationCanceledException"/>
+    /// to leave without completing its records; the stop then finishes without failing the run, and
+    /// the records it did not complete are replayed from the committed offset.
+    /// </remarks>
+    public CancellationToken StopRequestedToken => _partition.StopRequestedToken;
 
     /// <summary>
     /// Commits the last contiguous offset completed for this partition.
@@ -2623,6 +2665,13 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     private readonly Action<PartitionLane<TKey, TValue>> _capacityAvailable;
     private readonly Action<PartitionLane<TKey, TValue>, Exception> _failed;
     private readonly CancellationTokenSource _stopping = new();
+    // Signaled when StopAsync begins, before any drain wait, so handlers can leave early.
+    // A key-ordered dispatcher also signals it when a handler fails, before waiting for the others.
+    private readonly CancellationTokenSource _stopRequested = new();
+    // The first CancelAsync of _stopRequested; only that task tracks its callbacks.
+    private Task? _stopRequest;
+    // Set when StopAsync begins. Only a stop makes a handler's cancellation a clean exit.
+    private int _stopStarted;
     private readonly PartitionProcessorContext<TKey, TValue> _context;
     private readonly int _capacity;
     private readonly PartitionedProcessingLimits? _limits;
@@ -2691,6 +2740,20 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     public TopicPartition TopicPartition { get; }
 
     public CancellationToken StoppingToken => _stopping.Token;
+
+    public CancellationToken StopRequestedToken => _stopRequested.Token;
+
+    /// <summary>
+    /// Signals <see cref="StopRequestedToken"/> without stopping the lane. Every caller gets the
+    /// same task, which completes when the token's callbacks have run, so <see cref="StopAsync"/>
+    /// bounds them by its stop budget even when a dispatcher signalled the token first.
+    /// </summary>
+    public Task RequestStopAsync()
+    {
+        // A later CancelAsync returns an already completed task, so keep the first one.
+        lock (_stopRequested)
+            return _stopRequest ??= _stopRequested.CancelAsync();
+    }
 
     public bool IsCompleted => Volatile.Read(ref _completed) != 0;
 
@@ -2788,7 +2851,8 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
                             $"Partition processor for {TopicPartition.Topic}:{TopicPartition.Partition} completed before the partition stopped."));
                 }
             }
-            catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
+            // StopAsync sets the flag before it signals either stop token.
+            catch (OperationCanceledException) when (Volatile.Read(ref _stopStarted) != 0)
             {
             }
             catch (Exception ex)
@@ -3136,14 +3200,13 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
         CancellationToken cancellationToken = default)
     {
         CompleteWriter();
+        Volatile.Write(ref _stopStarted, 1);
 
-        var stopping = _processorTask ?? Task.CompletedTask;
+        // Callback completion and processor completion share one stop budget.
+        // CancelAsync signals the token synchronously but runs callbacks asynchronously.
+        var stopping = Task.WhenAll(_processorTask ?? Task.CompletedTask, RequestStopAsync());
         if (stopPolicy == PartitionStopPolicy.Cancel)
-        {
-            // Callback completion and processor completion share one stop budget.
-            // CancelAsync signals the token synchronously but runs callbacks asynchronously.
             stopping = Task.WhenAll(stopping, _stopping.CancelAsync());
-        }
 
         try
         {
