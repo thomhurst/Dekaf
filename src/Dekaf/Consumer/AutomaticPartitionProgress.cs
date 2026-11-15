@@ -2,7 +2,7 @@ namespace Dekaf.Consumer;
 
 // Automatic handlers have one completion coordinator. Readers may run concurrently.
 // The sequence protects the offset/epoch/count triple without an object per publication.
-internal sealed class AutomaticPartitionProgress(TopicPartition partition)
+internal sealed class AutomaticPartitionProgress(TopicPartition partition, TransactionReadGate? readGate = null)
 {
     private int _sequence;
     private long _offset = -1;
@@ -49,6 +49,7 @@ internal sealed class AutomaticPartitionProgress(TopicPartition partition)
         Volatile.Write(ref _completedRecords, completedRecords);
         Volatile.Write(ref _offset, offset);
         Interlocked.Increment(ref _sequence);
+        readGate?.NotifyProgress();
     }
 
     internal TopicPartitionOffset? GetCommitOffset(out long completedRecords)

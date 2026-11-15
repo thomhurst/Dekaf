@@ -263,6 +263,7 @@ Commit policies:
 | `UserManaged` | Dekaf tracks processed offsets, but only your code calls `CommitProcessedAsync` or another commit mechanism. |
 | `CommitCompletedOnRevoke` | Dekaf commits completed offsets when a partition is revoked and during graceful shutdown. This is the default. |
 | `CommitCompletedPeriodically` | Dekaf commits completed offsets on `CommitInterval`, then again on revoke and graceful shutdown. |
+| `CommitCompletedInTransaction` | Dekaf commits completed offsets through `TransactionalProducer`'s transactions on `CommitInterval`, on revoke, seek and graceful shutdown. See [Exactly-once processing](#exactly-once-processing). |
 
 Manual per-partition commits are useful when you want a tighter commit cadence
 without waiting for a rebalance:
@@ -317,7 +318,8 @@ silently voiding the runtime's at-least-once tracking. This applies to both
 `OffsetStoreTiming` values, since neither ties staging to worker completion.
 `RunPartitionedAsync` therefore throws `InvalidOperationException` when the
 consumer uses that combination together with a runtime-managed commit policy
-(`CommitCompletedOnRevoke` or `CommitCompletedPeriodically`). For at-least-once
+(`CommitCompletedOnRevoke`, `CommitCompletedPeriodically` or
+`CommitCompletedInTransaction`). For at-least-once
 partitioned processing, configure the consumer with `OffsetCommitMode.Manual`, or
 with `WithAutoOffsetStore(false)` — with the automatic store disabled, the
 background loop has nothing of its own to commit, so only the runtime's
@@ -333,9 +335,59 @@ implementations and wrappers can opt into the same guard by implementing
 interface cannot be inspected and will not fail fast, so ensure their underlying
 configuration follows the rules above.
 
-Transactions remain user-managed. If a processor writes transactionally, send
-the processed offsets to that transaction and do not also let the partitioned
-runtime commit them outside the transaction.
+## Exactly-Once Processing
+
+`CommitCompletedInTransaction` commits completed offsets through a transactional
+producer, so records your handlers produce become visible together with the
+offsets of the records that produced them. Handlers produce with the producer's
+own `ProduceAsync`; those records join the transaction the runtime keeps open.
+
+```csharp
+await using var producer = await Kafka.CreateProducer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithTransactionalId($"orders-transformer-{Environment.MachineName}")
+    .BuildAsync();
+await producer.InitTransactionsAsync();
+
+await consumer.RunPartitionedAsync(
+    async (context, message, ct) =>
+    {
+        await producer.ProduceAsync("orders-enriched", message.Key, message.Value.ToUpperInvariant(), ct);
+    },
+    new PartitionedProcessingOptions
+    {
+        Ordering = PartitionedProcessingOrder.Key,
+        MaxConcurrentHandlersPerPartition = 8,
+        CommitPolicy = PartitionCommitPolicy.CommitCompletedInTransaction,
+        CommitInterval = TimeSpan.FromSeconds(1),
+        TransactionalProducer = PartitionedTransactionalProducer.Create(producer)
+    },
+    stoppingToken);
+```
+
+One transaction is open at a time and covers every partition. At each commit,
+processors stop taking queued records, the runtime waits until every record they
+already took has completed, then sends the completed offsets with
+`ConsumerGroupMetadata` and commits. Key-ordered handlers can complete out of
+order, so waiting for the records already taken keeps committed output limited to
+the records below the committed offsets. Commits happen every `CommitInterval`,
+when a partition is revoked (waiting at most `StopTimeout` for in-flight records),
+before a seek, and at graceful shutdown. `CommitInterval` sets the transaction
+length: a longer interval commits less often, and downstream readers see the
+output later.
+
+When a commit fails, or a revoke's records do not complete within `StopTimeout`,
+the runtime aborts the transaction and rewinds every partition it still owns to
+its committed offset, so those records are processed again in a new transaction.
+A lost partition aborts the transaction the same way, because its offsets can no
+longer be committed. When the abort itself fails, the run ends with that error.
+
+The policy requires a record or batch handler overload, a consumer group and
+`PartitionWorkerErrorPolicy.StopConsumer`: a failed handler may have produced part
+of its output, so the run ends and the open transaction aborts. Handlers cannot
+call `CommitProcessedAsync`. Consumers of the output topics must read with
+`IsolationLevel.ReadCommitted` to skip aborted output. The run owns the producer's
+transactions while it is active, so do not begin transactions on it yourself.
 
 ## Assignment Lifecycle
 
@@ -588,8 +640,10 @@ stuck record is never hidden.
 
 ## Observing Runtime Commits
 
-Under `CommitCompletedOnRevoke` or `CommitCompletedPeriodically`, the runtime sends
-commits itself. To measure them, for example with a span per commit, pass an
+Under `CommitCompletedOnRevoke`, `CommitCompletedPeriodically` or
+`CommitCompletedInTransaction`, the runtime sends commits itself; under the
+transactional policy each observed commit covers sending the offsets to the
+transaction and committing it. To measure them, for example with a span per commit, pass an
 `IOffsetCommitObserver`:
 
 ```csharp
