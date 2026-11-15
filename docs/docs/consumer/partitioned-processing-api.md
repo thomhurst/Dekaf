@@ -371,14 +371,17 @@ already took has completed, then sends the completed offsets with
 `ConsumerGroupMetadata` and commits. Key-ordered handlers can complete out of
 order, so waiting for the records already taken keeps committed output limited to
 the records below the committed offsets. Commits happen every `CommitInterval`,
-when a partition is revoked (waiting at most `StopTimeout` for in-flight records),
-before a seek, and at graceful shutdown. `CommitInterval` sets the transaction
+when a partition is revoked (waiting at most `StopTimeout` for in-flight records
+and the commit together), before a seek, and at graceful shutdown. `CommitInterval` sets the transaction
 length: a longer interval commits less often, and downstream readers see the
 output later.
 
-When a commit fails, or a revoke's records do not complete within `StopTimeout`,
-the runtime aborts the transaction and rewinds every partition it still owns to
-its committed offset, so those records are processed again in a new transaction.
+When a commit fails, or a revoke's records and commit do not finish within
+`StopTimeout`, the runtime aborts the transaction and rewinds every partition it
+still owns to its committed offset, so those records are processed again in a new
+transaction. When the failed commit was a seek's, the seeked partition rewinds
+the same way and `SeekAsync` throws the commit's error instead of moving to the
+target.
 A lost partition aborts the transaction the same way, because its offsets can no
 longer be committed. When the abort itself fails, the run ends with that error.
 

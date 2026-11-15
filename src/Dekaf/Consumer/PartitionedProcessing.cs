@@ -1452,9 +1452,27 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             }
 
             if (ShouldCommitOnPartitionStop())
+            {
                 await CommitSeekPositionAsync(lane, target, cancellationToken).ConfigureAwait(false);
-            else if (IsTransactional && lane is not null)
-                await CommitTransactionAsync(OffsetCommitReason.Seek, [lane], target, cancellationToken).ConfigureAwait(false);
+            }
+            else if (IsTransactional)
+            {
+                var seekCommit = await GetTransactionalSeekCommitAsync(lane, target, cancellationToken).ConfigureAwait(false);
+                if ((lane is not null || seekCommit is not null)
+                    && await CommitTransactionAsync(
+                        OffsetCommitReason.Seek,
+                        lane is null ? null : [lane],
+                        seekCommit,
+                        cancellationToken).ConfigureAwait(false) is { } abortedCommit)
+                {
+                    // The abort discarded this lane's output with the others', so it rewinds like
+                    // them instead of moving to the target, and the seek fails.
+                    if (lane is not null)
+                        RestartRewoundLane(lane);
+                    completion.TrySetException(abortedCommit);
+                    return;
+                }
+            }
 
             _consumer.Seek(target);
             (_seekedPartitions ??= []).Add(partition);
@@ -1468,6 +1486,38 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         {
             completion.TrySetException(exception);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Returns the seek target when a transactional seek must commit it in place of the stopped
+    /// lane's progress: the target is behind the lane's completed offset, or, when no record
+    /// finished, behind the group's committed offset. Like <see cref="CommitSeekPositionAsync"/>, a
+    /// failed lookup skips the seek commit, and the new lane commits its own progress.
+    /// </summary>
+    private async ValueTask<TopicPartitionOffset?> GetTransactionalSeekCommitAsync(
+        PartitionLane<TKey, TValue>? lane,
+        TopicPartitionOffset target,
+        CancellationToken cancellationToken)
+    {
+        if (lane?.GetCommitOffset() is { } completed)
+            return target.Offset < completed.Offset ? target : null;
+
+        using var lookupCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (_options.StopTimeout != Timeout.InfiniteTimeSpan)
+            lookupCancellation.CancelAfter(_options.StopTimeout);
+
+        try
+        {
+            var committed = await _consumer.GetCommittedOffsetAsync(
+                new TopicPartition(target.Topic, target.Partition),
+                lookupCancellation.Token).ConfigureAwait(false);
+            return committed is { } committedOffset && committedOffset > target.Offset ? target : null;
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            LogSeekCommitFailed(target, exception);
+            return null;
         }
     }
 
@@ -2386,7 +2436,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             {
                 try
                 {
-                    await CommitTransactionAsync(OffsetCommitReason.Stop, lanes, seekTarget: null, cancellationToken, beginNext: false)
+                    await CommitTransactionAsync(OffsetCommitReason.Stop, lanes, seekCommit: null, cancellationToken, beginNext: false)
                         .ConfigureAwait(false);
                 }
                 catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
@@ -2460,7 +2510,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
         if (IsTransactional)
         {
-            await CommitTransactionAsync(OffsetCommitReason.Periodic, stoppedLanes: null, seekTarget: null, cancellationToken)
+            await CommitTransactionAsync(OffsetCommitReason.Periodic, stoppedLanes: null, seekCommit: null, cancellationToken)
                 .ConfigureAwait(false);
             return;
         }
@@ -2681,7 +2731,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     {
         if (reason == PartitionStopReason.Revoke)
         {
-            await CommitTransactionAsync(OffsetCommitReason.Revoke, lanes, seekTarget: null, cancellationToken)
+            await CommitTransactionAsync(OffsetCommitReason.Revoke, lanes, seekCommit: null, cancellationToken)
                 .ConfigureAwait(false);
             return;
         }
@@ -2721,30 +2771,44 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     /// every record they read has completed, so the transaction holds the output of exactly the
     /// records its offsets cover. A commit that cannot finish aborts the transaction and rewinds the
     /// active lanes to their committed offsets. Runs on the runtime loop, once per commit.
+    /// A revoke's wait and commit share one <see cref="PartitionedProcessingOptions.StopTimeout"/>,
+    /// because the member holds the revocation callback until they finish.
     /// </summary>
-    /// <param name="seekTarget">For a seek, the target of <paramref name="stoppedLanes"/>' only lane: a
-    /// backward seek commits the target, so a restart resumes from it.</param>
-    private async ValueTask CommitTransactionAsync(
+    /// <param name="seekCommit">For a seek, the offset to commit for the seeked partition in place
+    /// of its stopped lane's progress, so a restart resumes from the seek target.</param>
+    /// <returns>The commit's failure when the transaction was aborted and the active lanes rewound;
+    /// otherwise null.</returns>
+    private async ValueTask<Exception?> CommitTransactionAsync(
         OffsetCommitReason reason,
         PartitionLane<TKey, TValue>?[]? stoppedLanes,
-        TopicPartitionOffset? seekTarget,
+        TopicPartitionOffset? seekCommit,
         CancellationToken cancellationToken,
         bool beginNext = true)
     {
         if (_transaction is null)
-            return;
+            return null;
+
+        var bounded = reason == OffsetCommitReason.Revoke;
+        using var revokeCancellation = bounded && _options.StopTimeout != Timeout.InfiniteTimeSpan
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+            : null;
+        revokeCancellation?.CancelAfter(_options.StopTimeout);
+        var commitToken = revokeCancellation?.Token ?? cancellationToken;
 
         var gate = _readGate!;
         gate.Close();
         try
         {
-            if (!await WaitForCompletedReadsAsync(reason == OffsetCommitReason.Revoke, cancellationToken).ConfigureAwait(false))
+            if (!await WaitForCompletedReadsAsync(bounded, commitToken).ConfigureAwait(false))
             {
                 throw new TimeoutException(
                     $"Partition processors did not complete the records they read within {_options.StopTimeout}.");
             }
 
-            List<(PartitionLane<TKey, TValue> Lane, TopicPartitionOffset Offset, long CompletedRecords)>? pending = null;
+            List<(PartitionLane<TKey, TValue>? Lane, TopicPartitionOffset Offset, long CompletedRecords)>? pending = null;
+            if (stoppedLanes is null && seekCommit is { } partitionOnly)
+                (pending ??= []).Add((null, partitionOnly, 0));
+
             if (stoppedLanes is not null)
             {
                 foreach (var lane in stoppedLanes)
@@ -2760,7 +2824,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
                     }
 
                     var offset = lane.GetUncommittedOffset(out var completedRecords);
-                    if (seekTarget is { } target && lane.GetCommitOffset() is { } completed && target.Offset < completed.Offset)
+                    if (seekCommit is { } target)
                     {
                         // Like a non-transactional seek commit, a position behind the frontier counts no records.
                         offset = target;
@@ -2784,7 +2848,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
                 if (!beginNext)
                     await AbortOpenTransactionAsync().ConfigureAwait(false);
 
-                return;
+                return null;
             }
 
             var offsets = new TopicPartitionOffset[pending.Count];
@@ -2792,21 +2856,24 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             for (var i = 0; i < offsets.Length; i++)
             {
                 offsets[i] = pending[i].Offset;
-                newlyCompleted += GetNewlyCompletedRecords(pending[i].Lane, pending[i].CompletedRecords);
+                if (pending[i].Lane is { } lane)
+                    newlyCompleted += GetNewlyCompletedRecords(lane, pending[i].CompletedRecords);
             }
 
-            await CommitRuntimeOffsetsAsync(offsets, newlyCompleted, reason, cancellationToken).ConfigureAwait(false);
+            await CommitRuntimeOffsetsAsync(offsets, newlyCompleted, reason, commitToken).ConfigureAwait(false);
             _uncommittedTransaction = null;
 
             foreach (var (lane, offset, completedRecords) in pending)
-                lane.MarkCommitted(offset.Offset, completedRecords);
+                lane?.MarkCommitted(offset.Offset, completedRecords);
 
             if (beginNext)
                 BeginNextTransaction();
+            return null;
         }
         catch (Exception exception) when (_transaction is not null || _uncommittedTransaction is not null)
         {
             await AbortAndRewindAsync(exception, beginNext, cancellationToken).ConfigureAwait(false);
+            return exception;
         }
         finally
         {
@@ -2903,19 +2970,23 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         BeginNextTransaction();
 
         foreach (var lane in lanes)
+            RestartRewoundLane(lane);
+    }
+
+    /// <summary>Starts a stopped lane's partition again from where an aborted transaction rewinds it.</summary>
+    private void RestartRewoundLane(PartitionLane<TKey, TValue> lane)
+    {
+        var partition = lane.TopicPartition;
+        if (lane.GetRewindOffset() is { } offset)
         {
-            var partition = lane.TopicPartition;
-            if (lane.GetRewindOffset() is { } offset)
-            {
-                _consumer.Seek(offset);
-                (_seekedPartitions ??= []).Add(partition);
-            }
-
-            if (_pausedByRuntime.Remove(partition))
-                _consumer.Partitions.Resume(partition);
-
-            StartLane(partition);
+            _consumer.Seek(offset);
+            (_seekedPartitions ??= []).Add(partition);
         }
+
+        if (_pausedByRuntime.Remove(partition))
+            _consumer.Partitions.Resume(partition);
+
+        StartLane(partition);
     }
 
     private void BeginNextTransaction() => _transaction = _transactionalProducer!.BeginTransaction();

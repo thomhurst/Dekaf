@@ -247,6 +247,109 @@ public sealed partial class PartitionedConsumerRuntimeTests
     }
 
     [Test]
+    public async Task Transactional_FailedSeekCommit_FailsSeekAndRewindsSeekedPartition()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer { RedeliverUnenumeratedBatches = true };
+        consumer.SetAssignment(partition);
+        consumer.Enqueue(Enumerable.Range(0, 5).Select(offset => CreateResult(partition, offset)).ToArray());
+        var transactions = new FakeTransactions();
+        transactions.CommitFailures.Enqueue(new InvalidOperationException("commit failed"));
+        var control = new PartitionedProcessingControl();
+        var firstPass = NewCompletionSource();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            (_, message, _) =>
+            {
+                transactions.Produce(message.Offset);
+                if (message.Offset == 4)
+                    firstPass.TrySetResult();
+                return ValueTask.CompletedTask;
+            },
+            TransactionalOptions(transactions, TimeSpan.FromMinutes(5), control: control),
+            cts.Token).AsTask();
+
+        await firstPass.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        await Assert.That(async () => await control.SeekAsync(
+                new TopicPartitionOffset(partition.Topic, partition.Partition, 3), cts.Token).ConfigureAwait(false))
+            .Throws<InvalidOperationException>().WithMessage("commit failed");
+
+        // The aborted output is produced again from the rewind position, not skipped by the seek.
+        var seeks = consumer.SeekCalls.Select(offset => offset.Offset).ToArray();
+        var abortedCount = transactions.AbortedCount;
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+
+        await Assert.That(seeks).IsEquivalentTo(new long[] { 0 });
+        await Assert.That(abortedCount).IsEqualTo(1);
+        transactions.AssertOutputMatchesOffsets(partition);
+    }
+
+    [Test]
+    public async Task Transactional_BackwardSeekWithoutCompletedRecords_CommitsSeekTarget()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer { RedeliverUnenumeratedBatches = true, CommittedOffset = 5 };
+        consumer.SetAssignment(partition);
+        var transactions = new FakeTransactions();
+        var control = new PartitionedProcessingControl();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            (_, message, _) =>
+            {
+                transactions.Produce(message.Offset);
+                return ValueTask.CompletedTask;
+            },
+            TransactionalOptions(transactions, TimeSpan.FromMinutes(5), control: control),
+            cts.Token).AsTask();
+
+        await control.SeekAsync(new TopicPartitionOffset(partition.Topic, partition.Partition, 2), cts.Token)
+            .ConfigureAwait(false);
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+
+        // With no completed record, the seek still moves the group's restart position back.
+        await Assert.That(transactions.CommittedCount).IsEqualTo(1);
+        var committed = await transactions.WaitForCommitAsync(offset: 2, cts.Token).ConfigureAwait(false);
+        await Assert.That(committed.Offsets).IsEquivalentTo(new[] { new TopicPartitionOffset("topic-a", 0, 2) });
+        await Assert.That(committed.Produced).IsEmpty();
+    }
+
+    [Test]
+    public async Task Transactional_RevokeCommitThatDoesNotFinish_AbortsWithinStopTimeout()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.SetAssignment(partition);
+        var transactions = new FakeTransactions { BlockCommits = true };
+        var processed = NewCompletionSource();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            (_, message, _) =>
+            {
+                transactions.Produce(message.Offset);
+                processed.TrySetResult();
+                return ValueTask.CompletedTask;
+            },
+            TransactionalOptions(transactions, TimeSpan.FromMinutes(5), stopTimeout: TimeSpan.FromMilliseconds(200)),
+            cts.Token).AsTask();
+
+        consumer.Enqueue(CreateResult(partition, 0));
+        await processed.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+
+        // The member holds the revocation callback, so a stuck commit gives up after StopTimeout.
+        await consumer.RevokeFromCoordinatorAsync(partition).WaitAsync(TimeSpan.FromSeconds(5), cts.Token)
+            .ConfigureAwait(false);
+        var committedCount = transactions.CommittedCount;
+        var abortedCount = transactions.AbortedCount;
+        await StopRuntimeAsync(cts, runTask).ConfigureAwait(false);
+
+        await Assert.That(committedCount).IsEqualTo(0);
+        await Assert.That(abortedCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Transactional_CommitProcessedAsync_IsRejected()
     {
         var partition = new TopicPartition("topic-a", 0);
@@ -317,9 +420,13 @@ public sealed partial class PartitionedConsumerRuntimeTests
         TimeSpan? commitInterval = null,
         PartitionedProcessingOrder ordering = PartitionedProcessingOrder.Partition,
         int maxConcurrentHandlersPerPartition = 1,
-        IOffsetCommitObserver? observer = null)
+        IOffsetCommitObserver? observer = null,
+        PartitionedProcessingControl? control = null,
+        TimeSpan? stopTimeout = null)
         => new()
         {
+            Control = control,
+            StopTimeout = stopTimeout ?? new PartitionedProcessingOptions().StopTimeout,
             CommitPolicy = PartitionCommitPolicy.CommitCompletedInTransaction,
             TransactionalProducer = transactions.Producer,
             CommitInterval = commitInterval ?? TimeSpan.FromMilliseconds(20),
@@ -347,6 +454,9 @@ public sealed partial class PartitionedConsumerRuntimeTests
         public PartitionedTransactionalProducer Producer { get; }
 
         public Queue<Exception> CommitFailures { get; } = new();
+
+        /// <summary>When set, commits never finish until their cancellation token fires.</summary>
+        public bool BlockCommits { get; init; }
 
         public int CommittedCount
         {
@@ -498,13 +608,14 @@ public sealed partial class PartitionedConsumerRuntimeTests
 
             public bool IsOpen => !Committed && !Aborted;
 
-            public ValueTask CommitAsync(
+            public async ValueTask CommitAsync(
                 IReadOnlyList<TopicPartitionOffset> offsets,
                 ConsumerGroupMetadata consumerGroupMetadata,
                 CancellationToken cancellationToken)
             {
+                if (owner.BlockCommits)
+                    await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
                 owner.Complete(this, commit: true, offsets, consumerGroupMetadata);
-                return ValueTask.CompletedTask;
             }
 
             public ValueTask AbortAsync(CancellationToken cancellationToken)
