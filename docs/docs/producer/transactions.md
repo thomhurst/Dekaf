@@ -176,6 +176,11 @@ This pattern guarantees:
 - Output messages are produced exactly once
 - Consumer offsets are committed atomically with outputs
 
+This loop processes one message per transaction. To process partitions and keys in
+parallel with the same guarantee, use `RunPartitionedAsync` with
+`PartitionCommitPolicy.CommitCompletedInTransaction`; see
+[Exactly-once processing](../consumer/partitioned-processing-api.md#exactly-once-processing).
+
 ## Transaction Isolation Levels
 
 Consumers can choose whether to read uncommitted messages:

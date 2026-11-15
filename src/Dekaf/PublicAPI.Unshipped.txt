@@ -297,3 +297,8 @@ Dekaf.Consumer.PartitionedProcessingOptions.CommitObserver.init -> void
 Dekaf.Consumer.PartitionBatchProcessorContext<TKey, TValue>.StopRequestedToken.get -> System.Threading.CancellationToken
 Dekaf.Consumer.PartitionRecordProcessorContext<TKey, TValue>.StopRequestedToken.get -> System.Threading.CancellationToken
 Dekaf.Consumer.PartitionProcessorContext<TKey, TValue>.StopRequestedToken.get -> System.Threading.CancellationToken
+Dekaf.Consumer.PartitionCommitPolicy.CommitCompletedInTransaction = 3 -> Dekaf.Consumer.PartitionCommitPolicy
+Dekaf.Consumer.PartitionedProcessingOptions.TransactionalProducer.get -> Dekaf.Consumer.PartitionedTransactionalProducer?
+Dekaf.Consumer.PartitionedProcessingOptions.TransactionalProducer.init -> void
+Dekaf.Consumer.PartitionedTransactionalProducer
+static Dekaf.Consumer.PartitionedTransactionalProducer.Create<TKey, TValue>(Dekaf.Producer.IKafkaProducer<TKey, TValue>! producer) -> Dekaf.Consumer.PartitionedTransactionalProducer!

@@ -741,6 +741,16 @@ public sealed class PartitionedProcessingOptions
     /// </remarks>
     public IOffsetCommitObserver? CommitObserver { get; init; }
 
+    /// <summary>
+    /// Gets the transactional producer whose transactions carry the run's commits under
+    /// <see cref="PartitionCommitPolicy.CommitCompletedInTransaction"/>.
+    /// </summary>
+    /// <remarks>
+    /// Required by that policy and rejected by the others. Create it with
+    /// <see cref="PartitionedTransactionalProducer.Create{TKey, TValue}"/>.
+    /// </remarks>
+    public PartitionedTransactionalProducer? TransactionalProducer { get; init; }
+
     // Runs on the runtime loop after a seek marks a lane to discard its queued records and before
     // the lane stops, so tests can release an in-flight handler at a deterministic point.
     internal Action<TopicPartition>? SeekDiscardingLaneForTest { get; init; }
@@ -750,7 +760,10 @@ public sealed class PartitionedProcessingOptions
     /// </summary>
     internal bool IsRuntimeManagedCommitPolicy => CommitPolicy
         is PartitionCommitPolicy.CommitCompletedOnRevoke
-        or PartitionCommitPolicy.CommitCompletedPeriodically;
+        or PartitionCommitPolicy.CommitCompletedPeriodically
+        or PartitionCommitPolicy.CommitCompletedInTransaction;
+
+    internal bool IsTransactionalCommitPolicy => CommitPolicy == PartitionCommitPolicy.CommitCompletedInTransaction;
 
     internal void Validate()
     {
@@ -778,6 +791,29 @@ public sealed class PartitionedProcessingOptions
 
         if (CommitInterval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(CommitInterval));
+
+        if (IsTransactionalCommitPolicy)
+        {
+            if (TransactionalProducer is null)
+            {
+                throw new InvalidOperationException(
+                    $"{nameof(PartitionCommitPolicy)}.{nameof(PartitionCommitPolicy.CommitCompletedInTransaction)} requires {nameof(TransactionalProducer)}.");
+            }
+
+            // A failed handler's partial output is in the open transaction. StopConsumer aborts it;
+            // StopPartition and Ignore would commit it with offsets that replay or skip its records.
+            if (ErrorPolicy != PartitionWorkerErrorPolicy.StopConsumer)
+            {
+                throw new InvalidOperationException(
+                    $"{nameof(PartitionCommitPolicy)}.{nameof(PartitionCommitPolicy.CommitCompletedInTransaction)} requires " +
+                    $"{nameof(PartitionWorkerErrorPolicy)}.{nameof(PartitionWorkerErrorPolicy.StopConsumer)}.");
+            }
+        }
+        else if (TransactionalProducer is not null)
+        {
+            throw new InvalidOperationException(
+                $"{nameof(TransactionalProducer)} requires {nameof(PartitionCommitPolicy)}.{nameof(PartitionCommitPolicy.CommitCompletedInTransaction)}.");
+        }
     }
 
     internal void ValidatePartitionProcessor()
@@ -787,6 +823,12 @@ public sealed class PartitionedProcessingOptions
 
         if (MaxConcurrentHandlers.HasValue)
             throw new InvalidOperationException($"{nameof(MaxConcurrentHandlers)} requires a record or batch handler overload.");
+
+        if (IsTransactionalCommitPolicy)
+        {
+            throw new InvalidOperationException(
+                $"{nameof(PartitionCommitPolicy)}.{nameof(PartitionCommitPolicy.CommitCompletedInTransaction)} requires a record or batch handler overload.");
+        }
     }
 
     internal PartitionedProcessingLimits? CreateLimits(Action bufferCapacityAvailable, Action bufferResumeAvailable)
@@ -890,7 +932,33 @@ public enum PartitionCommitPolicy
     /// <summary>
     /// Commit completed offsets periodically and when partitions stop or are revoked.
     /// </summary>
-    CommitCompletedPeriodically
+    CommitCompletedPeriodically,
+
+    /// <summary>
+    /// Commit completed offsets through <see cref="PartitionedProcessingOptions.TransactionalProducer"/>'s
+    /// transactions, so records handlers produce with that producer become visible with the offsets
+    /// of the records that produced them: periodically, and when partitions stop, are revoked or seek.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// One transaction is open at a time and covers every partition. At each commit, processors stop
+    /// reading queued records, the runtime waits for the records they already read to complete, then
+    /// sends their offsets to the transaction and commits it. A revoke waits at most
+    /// <see cref="PartitionedProcessingOptions.StopTimeout"/> for those records.
+    /// </para>
+    /// <para>
+    /// When the transaction cannot commit, the runtime aborts it and rewinds the partitions it still
+    /// owns to their committed offsets, so their records are processed again in a new transaction.
+    /// A lost partition aborts the transaction the same way. When the abort itself fails, or a
+    /// handler fails, the run ends and the open transaction is aborted.
+    /// </para>
+    /// <para>
+    /// Requires a record or batch handler overload, <see cref="PartitionWorkerErrorPolicy.StopConsumer"/>
+    /// and a consumer group. Handlers cannot call <c>CommitProcessedAsync</c>. Downstream consumers read
+    /// only committed output with <c>IsolationLevel.ReadCommitted</c>.
+    /// </para>
+    /// </remarks>
+    CommitCompletedInTransaction
 }
 
 internal enum PartitionStopReason
@@ -945,6 +1013,13 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     // A consumer without a group has nowhere to commit, so the runtime skips its own commits.
     // Consumers that do not report their configuration are assumed to have a group.
     private readonly bool _hasConsumerGroup;
+    // Set under CommitCompletedInTransaction: the run's commits go through these transactions.
+    private readonly PartitionedTransactionalProducer? _transactionalProducer;
+    private readonly TransactionReadGate? _readGate;
+    private IPartitionedTransaction? _transaction;
+    // A transaction whose commit was sent but did not succeed; it still needs an abort.
+    private IPartitionedTransaction? _uncommittedTransaction;
+    private const int TransactionWaitPollMilliseconds = 100;
 
     public PartitionedConsumerRuntime(
         IKafkaConsumer<TKey, TValue> consumer,
@@ -968,7 +1043,14 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             () => Volatile.Read(ref _capacitySignal)?.Signal(),
             () => TryQueueCommand(RuntimeCommand<TKey, TValue>.ResumeBudgetPaused()));
         _bufferBudget = _limits?.Buffer;
+        if (options.IsTransactionalCommitPolicy)
+        {
+            _transactionalProducer = options.TransactionalProducer;
+            _readGate = new TransactionReadGate();
+        }
     }
+
+    private bool IsTransactional => _readGate is not null;
 
     public async ValueTask RunAsync(CancellationToken cancellationToken)
     {
@@ -1004,6 +1086,17 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
         try
         {
+            if (IsTransactional)
+            {
+                if (!_hasConsumerGroup)
+                {
+                    throw new InvalidOperationException(
+                        $"{nameof(PartitionCommitPolicy)}.{nameof(PartitionCommitPolicy.CommitCompletedInTransaction)} requires a consumer group.");
+                }
+
+                _transaction = _transactionalProducer!.BeginTransaction();
+            }
+
             await SyncAssignmentAsync(linkedCancellation.Token).ConfigureAwait(false);
             var batchEnumerator = _consumer
                 .ConsumeBatchAsync(linkedCancellation.Token)
@@ -1112,6 +1205,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             }
             finally
             {
+                // A run that ends before its final commit leaves nothing of the transaction visible.
+                await AbortOpenTransactionAsync(Timeout.InfiniteTimeSpan).ConfigureAwait(false);
+                _readGate?.Dispose();
                 await StopScheduledRestartsAsync().ConfigureAwait(false);
                 _options.Control?.Detach(this);
                 _commands.Writer.TryComplete();
@@ -1244,6 +1340,14 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         if (cancellationToken.IsCancellationRequested)
             return new ValueTask(Task.FromCanceled(cancellationToken));
 
+        // A transaction commit waits for this handler's records, so it cannot wait for the commit.
+        if (IsTransactional)
+        {
+            return new ValueTask(Task.FromException(new InvalidOperationException(
+                $"CommitProcessedAsync is not supported under {nameof(PartitionCommitPolicy)}.{nameof(PartitionCommitPolicy.CommitCompletedInTransaction)}; " +
+                "the runtime commits completed offsets through the transaction.")));
+        }
+
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var command = RuntimeCommand<TKey, TValue>.Commit(lane, completion, cancellationToken);
 
@@ -1348,7 +1452,27 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             }
 
             if (ShouldCommitOnPartitionStop())
+            {
                 await CommitSeekPositionAsync(lane, target, cancellationToken).ConfigureAwait(false);
+            }
+            else if (IsTransactional)
+            {
+                var seekCommit = await GetTransactionalSeekCommitAsync(lane, target, cancellationToken).ConfigureAwait(false);
+                if ((lane is not null || seekCommit is not null)
+                    && await CommitTransactionAsync(
+                        OffsetCommitReason.Seek,
+                        lane is null ? null : [lane],
+                        seekCommit,
+                        cancellationToken).ConfigureAwait(false) is { } abortedCommit)
+                {
+                    // The abort discarded this lane's output with the others', so it rewinds like
+                    // them instead of moving to the target, and the seek fails.
+                    if (lane is not null)
+                        RestartRewoundLane(lane);
+                    completion.TrySetException(abortedCommit);
+                    return;
+                }
+            }
 
             _consumer.Seek(target);
             (_seekedPartitions ??= []).Add(partition);
@@ -1362,6 +1486,54 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         {
             completion.TrySetException(exception);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Returns the seek target when a transactional seek must commit it in place of the stopped
+    /// lane's progress: the target is behind the lane's completed offset, or, when no record
+    /// finished, behind the group's committed offset (fetched from the coordinator, because the
+    /// consumer's cache does not see transactional commits). Like <see cref="CommitSeekPositionAsync"/>, a
+    /// failed lookup skips the seek commit, and the new lane commits its own progress.
+    /// </summary>
+    private async ValueTask<TopicPartitionOffset?> GetTransactionalSeekCommitAsync(
+        PartitionLane<TKey, TValue>? lane,
+        TopicPartitionOffset target,
+        CancellationToken cancellationToken)
+    {
+        if (lane?.GetCommitOffset() is { } completed)
+            return target.Offset < completed.Offset ? target : null;
+
+        using var lookupCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (_options.StopTimeout != Timeout.InfiniteTimeSpan)
+            lookupCancellation.CancelAfter(_options.StopTimeout);
+
+        try
+        {
+            // Transactional commits go through the producer, so the consumer's cached committed
+            // offset can be stale. Use the uncached bulk lookup when the consumer has one.
+            var partition = new TopicPartition(target.Topic, target.Partition);
+            long? committed;
+            if (_consumer is IConsumerCommittedOffsets committedOffsets)
+            {
+                var offsets = await committedOffsets.GetCommittedOffsetsAsync(
+                    [partition],
+                    lookupCancellation.Token).ConfigureAwait(false);
+                committed = offsets.TryGetValue(partition, out var fetched) ? fetched.Offset : null;
+            }
+            else
+            {
+                committed = await _consumer.GetCommittedOffsetAsync(
+                    partition,
+                    lookupCancellation.Token).ConfigureAwait(false);
+            }
+
+            return committed is { } committedOffset && committedOffset > target.Offset ? target : null;
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            LogSeekCommitFailed(target, exception);
+            return null;
         }
     }
 
@@ -1699,7 +1871,8 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             OnLaneCapacityAvailable,
             OnLaneFailed,
             _limits,
-            _options.Monitor);
+            _options.Monitor,
+            _readGate);
 
         lane.InheritUncommittedRecords(inheritedRecords);
         _lanes.Add(partition, lane);
@@ -1826,6 +1999,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
                 exception);
             CaptureFailure(exception);
             _shutdownCancellation.Cancel();
+            _readGate?.NotifyProgress();
             return;
         }
 
@@ -2204,6 +2378,8 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         {
             if (reason == PartitionStopReason.Revoke && ShouldCommitOnPartitionStop())
                 await CommitRevokedLanesAsync(lanes, cancellationToken).ConfigureAwait(false);
+            else if (IsTransactional && failure is null)
+                await FinishStoppedLanesTransactionAsync(lanes, reason, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
@@ -2232,6 +2408,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             reason,
             commitProcessed: reason == PartitionStopReason.Revoke && ShouldCommitOnPartitionStop(),
             cancellationToken).ConfigureAwait(false);
+
+        if (IsTransactional)
+            await FinishStoppedLanesTransactionAsync([lane], reason, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Removes <paramref name="partition"/>'s lane and its runtime pause and restart state.</summary>
@@ -2249,7 +2428,8 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
     {
         try
         {
-            foreach (var lane in _lanes.Values.ToArray())
+            var lanes = _lanes.Values.ToArray();
+            foreach (var lane in lanes)
             {
                 _lanes.Remove(lane.TopicPartition);
                 try
@@ -2263,6 +2443,20 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
                 catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
                 {
                     // A canceled final commit must not leave the remaining lanes running.
+                    CaptureFailure(exception);
+                }
+            }
+
+            // A failed run aborts instead: a failed handler's partial output is in the transaction.
+            if (IsTransactional && _failure is null)
+            {
+                try
+                {
+                    await CommitTransactionAsync(OffsetCommitReason.Stop, lanes, seekCommit: null, cancellationToken, beginNext: false)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
+                {
                     CaptureFailure(exception);
                 }
             }
@@ -2318,14 +2512,24 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
     private async ValueTask CommitPeriodicallyAsync(CancellationToken cancellationToken)
     {
-        if (_options.CommitPolicy != PartitionCommitPolicy.CommitCompletedPeriodically || !_hasConsumerGroup)
+        if (_options.CommitPolicy is not (PartitionCommitPolicy.CommitCompletedPeriodically or PartitionCommitPolicy.CommitCompletedInTransaction)
+            || !_hasConsumerGroup)
+        {
             return;
+        }
 
         var now = DateTimeOffset.UtcNow;
         if (now < _nextPeriodicCommit)
             return;
 
         _nextPeriodicCommit = now.Add(_options.CommitInterval);
+
+        if (IsTransactional)
+        {
+            await CommitTransactionAsync(OffsetCommitReason.Periodic, stoppedLanes: null, seekCommit: null, cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
 
         List<(PartitionLane<TKey, TValue> Lane, TopicPartitionOffset Offset, long CompletedRecords)>? pending = null;
         foreach (var lane in _lanes.Values)
@@ -2452,7 +2656,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         var observer = _options.CommitObserver;
         if (observer is null)
         {
-            await _consumer.CommitAsync(offsets, cancellationToken).ConfigureAwait(false);
+            await SendRuntimeCommitAsync(offsets, cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -2473,7 +2677,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
 
         try
         {
-            await _consumer.CommitAsync(offsets, cancellationToken).ConfigureAwait(false);
+            await SendRuntimeCommitAsync(offsets, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
@@ -2515,6 +2719,332 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
         }
     }
 
+    private ValueTask SendRuntimeCommitAsync(TopicPartitionOffset[] offsets, CancellationToken cancellationToken)
+    {
+        if (!IsTransactional)
+            return _consumer.CommitAsync(offsets, cancellationToken);
+
+        var metadata = _consumer.ConsumerGroupMetadata
+            ?? throw new InvalidOperationException("The consumer has no group membership to send offsets to the transaction with.");
+        var transaction = _transaction
+            ?? throw new InvalidOperationException("No transaction is open.");
+
+        // The transaction ends here whatever the outcome: a failed commit is aborted by the caller.
+        _transaction = null;
+        _uncommittedTransaction = transaction;
+        return transaction.CommitAsync(offsets, metadata, cancellationToken);
+    }
+
+    /// <summary>
+    /// Commits the open transaction after revoked or lost lanes stopped. A revoke commits it with
+    /// their completed offsets. A lost partition's output cannot commit without its offsets, so a
+    /// loss aborts the transaction when a lost lane read records no commit covers.
+    /// </summary>
+    private async ValueTask FinishStoppedLanesTransactionAsync(
+        PartitionLane<TKey, TValue>?[] lanes,
+        PartitionStopReason reason,
+        CancellationToken cancellationToken)
+    {
+        if (reason == PartitionStopReason.Revoke)
+        {
+            await CommitTransactionAsync(OffsetCommitReason.Revoke, lanes, seekCommit: null, cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        if (reason != PartitionStopReason.Lost)
+            return;
+
+        foreach (var lane in lanes)
+        {
+            if (lane is not null && lane.HasUncommittedReads)
+            {
+                _readGate!.Close();
+                try
+                {
+                    // Let the remaining lanes' handlers finish what they read, so none produces
+                    // after the abort. A lane that does not finish in time stops cancelled.
+                    await WaitForCompletedReadsAsync(bounded: true, cancellationToken).ConfigureAwait(false);
+                    await AbortAndRewindAsync(
+                        new InvalidOperationException(
+                            $"Partition {lane.TopicPartition.Topic}-{lane.TopicPartition.Partition} was lost with output in the open transaction."),
+                        beginNext: true,
+                        cancellationToken,
+                        bounded: true).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _readGate.Open();
+                }
+
+                return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Commits the open transaction with the completed offsets of every active lane and of
+    /// <paramref name="stoppedLanes"/>. Processors stop reading first, and the commit waits until
+    /// every record they read has completed, so the transaction holds the output of exactly the
+    /// records its offsets cover. A commit that cannot finish aborts the transaction and rewinds the
+    /// active lanes to their committed offsets. Runs on the runtime loop, once per commit.
+    /// A revoke's wait and commit share one <see cref="PartitionedProcessingOptions.StopTimeout"/>,
+    /// because the member holds the revocation callback until they finish.
+    /// </summary>
+    /// <param name="seekCommit">For a seek, the offset to commit for the seeked partition in place
+    /// of its stopped lane's progress, so a restart resumes from the seek target.</param>
+    /// <returns>The commit's failure when the transaction was aborted and the active lanes rewound;
+    /// otherwise null.</returns>
+    private async ValueTask<Exception?> CommitTransactionAsync(
+        OffsetCommitReason reason,
+        PartitionLane<TKey, TValue>?[]? stoppedLanes,
+        TopicPartitionOffset? seekCommit,
+        CancellationToken cancellationToken,
+        bool beginNext = true)
+    {
+        if (_transaction is null)
+            return null;
+
+        var bounded = reason == OffsetCommitReason.Revoke;
+        using var revokeCancellation = bounded && _options.StopTimeout != Timeout.InfiniteTimeSpan
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+            : null;
+        revokeCancellation?.CancelAfter(_options.StopTimeout);
+        var commitToken = revokeCancellation?.Token ?? cancellationToken;
+
+        var gate = _readGate!;
+        gate.Close();
+        try
+        {
+            if (!await WaitForCompletedReadsAsync(bounded, commitToken).ConfigureAwait(false))
+            {
+                throw new TimeoutException(
+                    $"Partition processors did not complete the records they read within {_options.StopTimeout}.");
+            }
+
+            List<(PartitionLane<TKey, TValue>? Lane, TopicPartitionOffset Offset, long CompletedRecords)>? pending = null;
+            if (stoppedLanes is null && seekCommit is { } partitionOnly)
+                (pending ??= []).Add((null, partitionOnly, 0));
+
+            if (stoppedLanes is not null)
+            {
+                foreach (var lane in stoppedLanes)
+                {
+                    if (lane is null)
+                        continue;
+
+                    // A handler the stop cancelled may have produced part of its output.
+                    if (lane.HasUncompletedReads)
+                    {
+                        throw new InvalidOperationException(
+                            $"Partition processor for {lane.TopicPartition.Topic}-{lane.TopicPartition.Partition} stopped before completing the records it read.");
+                    }
+
+                    var offset = lane.GetUncommittedOffset(out var completedRecords);
+                    if (seekCommit is { } target)
+                    {
+                        // Like a non-transactional seek commit, a position behind the frontier counts no records.
+                        offset = target;
+                        completedRecords = 0;
+                    }
+
+                    if (offset is { } value)
+                        (pending ??= []).Add((lane, value, completedRecords));
+                }
+            }
+
+            foreach (var lane in _lanes.Values)
+            {
+                if (lane.GetUncommittedOffset(out var completedRecords) is { } offset)
+                    (pending ??= []).Add((lane, offset, completedRecords));
+            }
+
+            if (pending is null)
+            {
+                // Every record read so far is committed, so the transaction holds no output.
+                if (!beginNext)
+                    await AbortOpenTransactionAsync(Timeout.InfiniteTimeSpan).ConfigureAwait(false);
+
+                return null;
+            }
+
+            var offsets = new TopicPartitionOffset[pending.Count];
+            var newlyCompleted = 0L;
+            for (var i = 0; i < offsets.Length; i++)
+            {
+                offsets[i] = pending[i].Offset;
+                if (pending[i].Lane is { } lane)
+                    newlyCompleted += GetNewlyCompletedRecords(lane, pending[i].CompletedRecords);
+            }
+
+            await CommitRuntimeOffsetsAsync(offsets, newlyCompleted, reason, commitToken).ConfigureAwait(false);
+            _uncommittedTransaction = null;
+
+            foreach (var (lane, offset, completedRecords) in pending)
+                lane?.MarkCommitted(offset.Offset, completedRecords);
+
+            if (beginNext)
+                BeginNextTransaction();
+            return null;
+        }
+        catch (Exception exception) when (_transaction is not null || _uncommittedTransaction is not null)
+        {
+            await AbortAndRewindAsync(exception, beginNext, cancellationToken, bounded).ConfigureAwait(false);
+            return exception;
+        }
+        finally
+        {
+            gate.Open();
+        }
+    }
+
+    /// <summary>
+    /// Waits until every active lane's processor completed the records it read. Completions signal
+    /// the gate; the wait also wakes periodically to observe a failure or cancellation.
+    /// </summary>
+    private async ValueTask<bool> WaitForCompletedReadsAsync(bool bounded, CancellationToken cancellationToken)
+    {
+        var gate = _readGate!;
+        var timeout = bounded ? _options.StopTimeout : Timeout.InfiniteTimeSpan;
+        var deadline = timeout == Timeout.InfiniteTimeSpan
+            ? DateTimeOffset.MaxValue
+            : DateTimeOffset.UtcNow.Add(timeout);
+
+        while (true)
+        {
+            var pending = false;
+            foreach (var lane in _lanes.Values)
+            {
+                if (lane.HasUncompletedReads)
+                {
+                    pending = true;
+                    break;
+                }
+            }
+
+            if (!pending)
+                return true;
+
+            ThrowIfFailed();
+            cancellationToken.ThrowIfCancellationRequested();
+            _shutdownCancellation.Token.ThrowIfCancellationRequested();
+
+            var remaining = deadline - DateTimeOffset.UtcNow;
+            if (remaining <= TimeSpan.Zero)
+                return false;
+
+            await gate.WaitForProgressAsync((int)Math.Min(remaining.TotalMilliseconds, TransactionWaitPollMilliseconds))
+                .ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Aborts the transaction and, unless the run is ending, rewinds every active lane to its
+    /// committed offset under a new transaction, so the aborted output is produced again. The gate
+    /// is closed on entry: the active lanes discard their queued records before it opens, and they
+    /// stop before the new transaction begins, so a cancelled handler's output cannot join it.
+    /// A <paramref name="bounded"/> abort runs inside a revocation callback, so it gets one
+    /// <see cref="PartitionedProcessingOptions.StopTimeout"/>; one that does not finish ends the run.
+    /// </summary>
+    private async ValueTask AbortAndRewindAsync(
+        Exception exception,
+        bool beginNext,
+        CancellationToken cancellationToken,
+        bool bounded = false)
+    {
+        var abortTimeout = bounded ? _options.StopTimeout : Timeout.InfiniteTimeSpan;
+        if (!beginNext
+            || _failure is not null
+            || cancellationToken.IsCancellationRequested
+            || _shutdownCancellation.IsCancellationRequested)
+        {
+            await AbortOpenTransactionAsync(abortTimeout).ConfigureAwait(false);
+            ExceptionDispatchInfo.Capture(exception).Throw();
+        }
+
+        LogTransactionAborted(exception);
+
+        // Allocated once per abort, never per message.
+        var lanes = _lanes.Values.ToArray();
+        foreach (var lane in lanes)
+        {
+            lane.DiscardQueuedRecords();
+            _lanes.Remove(lane.TopicPartition);
+        }
+
+        _readGate!.Open();
+        var stopping = new ValueTask<Exception?>[lanes.Length];
+        for (var i = 0; i < lanes.Length; i++)
+            stopping[i] = lanes[i].StopAsync(PartitionStopPolicy.Cancel, _options.StopTimeout, CancellationToken.None);
+
+        try
+        {
+            await AbortOpenTransactionAsync(abortTimeout, throwOnFailure: true).ConfigureAwait(false);
+        }
+        catch (Exception abortException)
+        {
+            CaptureFailure(abortException);
+            _shutdownCancellation.Cancel();
+        }
+
+        for (var i = 0; i < stopping.Length; i++)
+            FailOnLaneStopException(await stopping[i].ConfigureAwait(false));
+
+        ThrowIfFailed();
+        BeginNextTransaction();
+
+        foreach (var lane in lanes)
+            RestartRewoundLane(lane);
+    }
+
+    /// <summary>Starts a stopped lane's partition again from where an aborted transaction rewinds it.</summary>
+    private void RestartRewoundLane(PartitionLane<TKey, TValue> lane)
+    {
+        var partition = lane.TopicPartition;
+        if (lane.GetRewindOffset() is { } offset)
+        {
+            _consumer.Seek(offset);
+            (_seekedPartitions ??= []).Add(partition);
+        }
+
+        if (_pausedByRuntime.Remove(partition))
+            _consumer.Partitions.Resume(partition);
+
+        StartLane(partition);
+    }
+
+    private void BeginNextTransaction() => _transaction = _transactionalProducer!.BeginTransaction();
+
+    /// <summary>
+    /// Aborts the open transaction, or one whose commit failed, giving up after
+    /// <paramref name="timeout"/>. Logs a failure unless asked to throw it.
+    /// </summary>
+    private async ValueTask AbortOpenTransactionAsync(TimeSpan timeout, bool throwOnFailure = false)
+    {
+        var transaction = _transaction ?? _uncommittedTransaction;
+        _transaction = null;
+        _uncommittedTransaction = null;
+        if (transaction is null)
+            return;
+
+        using var abortCancellation = timeout == Timeout.InfiniteTimeSpan ? null : new CancellationTokenSource(timeout);
+        try
+        {
+            await transaction.AbortAsync(abortCancellation?.Token ?? CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (abortCancellation?.IsCancellationRequested == true)
+        {
+            var timeoutException = new TimeoutException($"The transaction abort did not finish within {timeout}.");
+            if (throwOnFailure)
+                throw timeoutException;
+            LogTransactionAbortFailed(timeoutException);
+        }
+        catch (Exception exception) when (!throwOnFailure)
+        {
+            LogTransactionAbortFailed(exception);
+        }
+    }
+
     // CommitAsync reports a commit attempted outside an active membership with these codes.
     // The coordinator rejected it before anything changed, and polling rejoins the group.
     private static bool IsMembershipLoss(GroupException exception) =>
@@ -2522,7 +3052,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             or ErrorCode.UnknownMemberId
             or ErrorCode.StaleMemberEpoch;
 
-    private bool ShouldCommitOnPartitionStop() => _options.IsRuntimeManagedCommitPolicy && _hasConsumerGroup;
+    private bool ShouldCommitOnPartitionStop() => _options.IsRuntimeManagedCommitPolicy && !IsTransactional && _hasConsumerGroup;
 
     private int RecordIgnoreRestartFailure(TopicPartition partition)
     {
@@ -2616,6 +3146,18 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue> : IPartitionedPro
             offset.Partition);
     }
 
+    private void LogTransactionAborted(Exception exception)
+    {
+        _logger.LogWarning(
+            exception,
+            "Partitioned consumer aborted its transaction; partitions it still owns rewind to their committed offsets and process those records again.");
+    }
+
+    private void LogTransactionAbortFailed(Exception exception)
+    {
+        _logger.LogWarning(exception, "Partitioned consumer failed to abort its open transaction.");
+    }
+
     private void LogCommitObserverFailed(Exception exception)
     {
         _logger.LogWarning(
@@ -2703,6 +3245,11 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     private int _discardQueuedRecords;
     private AsyncAutoResetSignal? _discardWake;
     private AsyncHandlerSlotWaiter? _discardSlotWaiter;
+    // Transactional commits only: the gate the processor reads through, the last record it read,
+    // and the first record queued to the lane, where an aborted transaction rewinds it.
+    private readonly TransactionReadGate? _readGate;
+    private long _lastReadOffset = -1;
+    private long _firstEnqueuedOffset = -1;
 
     public PartitionLane(
         TopicPartition topicPartition,
@@ -2711,9 +3258,11 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
         Action<PartitionLane<TKey, TValue>> capacityAvailable,
         Action<PartitionLane<TKey, TValue>, Exception> failed,
         PartitionedProcessingLimits? limits = null,
-        PartitionedProcessingMonitor? monitor = null)
+        PartitionedProcessingMonitor? monitor = null,
+        TransactionReadGate? readGate = null)
     {
         TopicPartition = topicPartition;
+        _readGate = readGate;
         if (monitor is not null)
         {
             _monitor = monitor;
@@ -2963,7 +3512,8 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
         if (!isEof)
         {
             completionBatch?.PublishRecord();
-            _enqueuedRecords++;
+            if (_enqueuedRecords++ == 0)
+                _firstEnqueuedOffset = result.Offset;
             // Monitor reads race this write; the volatile store keeps it atomic on 32-bit runtimes.
             Volatile.Write(ref _lastEnqueuedOffset, result.Offset);
         }
@@ -3000,12 +3550,88 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
 
     public ValueTask<bool> WaitToReadMessageAsync(CancellationToken cancellationToken)
     {
+        if (_readGate is { IsOpen: false } gate)
+            return WaitToReadAfterGateAsync(gate, cancellationToken);
+
         return _channel.Reader.WaitToReadAsync(cancellationToken);
+    }
+
+    // Once per lane per transaction commit, while the gate is closed.
+    private async ValueTask<bool> WaitToReadAfterGateAsync(TransactionReadGate gate, CancellationToken cancellationToken)
+    {
+        await gate.WaitOpenAsync(cancellationToken).ConfigureAwait(false);
+        return await _channel.Reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public bool HasQueuedMessage => _channel.Reader.TryPeek(out _);
 
     public bool TryReadMessage(out ConsumeResult<TKey, TValue> message)
+    {
+        var gate = _readGate;
+        if (gate is null)
+            return TryReadQueuedMessage(out message);
+
+        if (!gate.TryEnter())
+        {
+            message = default!;
+            return false;
+        }
+
+        try
+        {
+            if (!TryReadQueuedMessage(out message))
+                return false;
+
+            if (!message.IsPartitionEof)
+                Volatile.Write(ref _lastReadOffset, message.Offset);
+            return true;
+        }
+        finally
+        {
+            gate.Exit();
+        }
+    }
+
+    /// <summary>
+    /// True when the processor read a record it has not completed. Transactional commits only.
+    /// </summary>
+    public bool HasUncompletedReads
+    {
+        get
+        {
+            var lastRead = Volatile.Read(ref _lastReadOffset);
+            return lastRead >= 0 && GetNextUnprocessedOffset() <= lastRead;
+        }
+    }
+
+    /// <summary>
+    /// True when the processor read a record no commit of this lane covers. Transactional commits only.
+    /// </summary>
+    public bool HasUncommittedReads
+    {
+        get
+        {
+            var lastRead = Volatile.Read(ref _lastReadOffset);
+            return lastRead >= 0 && Volatile.Read(ref _committedOffset) <= lastRead;
+        }
+    }
+
+    /// <summary>
+    /// Where a restarted lane resumes after an aborted transaction: this lane's committed offset,
+    /// else its first queued record, else the record a backpressured route holds, or null when the
+    /// lane queued nothing. Read only after the processor stops.
+    /// </summary>
+    public TopicPartitionOffset? GetRewindOffset()
+    {
+        var committed = Volatile.Read(ref _committedOffset);
+        var offset = committed >= 0 ? committed : _firstEnqueuedOffset;
+        if (offset >= 0)
+            return new TopicPartitionOffset(TopicPartition.Topic, TopicPartition.Partition, offset);
+
+        return HeldRecordOffset;
+    }
+
+    private bool TryReadQueuedMessage(out ConsumeResult<TKey, TValue> message)
     {
         if (!_channel.Reader.TryRead(out message))
             return false;
@@ -3177,7 +3803,7 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
 
     internal AutomaticPartitionProgress EnableAutomaticCompletion()
     {
-        var progress = new AutomaticPartitionProgress(TopicPartition);
+        var progress = new AutomaticPartitionProgress(TopicPartition, _readGate);
         lock (_completedRanges)
         {
             // Startup may race the first queued batch. Abandon its manual reservations;
