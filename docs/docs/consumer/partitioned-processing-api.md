@@ -453,14 +453,17 @@ to leave without completing its record. The stop then finishes promptly without
 failing the run, and the record is replayed from the committed offset:
 
 ```csharp
+// Completed by your circuit breaker when the dependency recovers.
+var dependencyAvailable = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
 await consumer.RunPartitionedAsync(
     async (context, message, cancellationToken) =>
     {
-        await breaker.WaitUntilClosedAsync(context.StopRequestedToken);
+        await dependencyAvailable.Task.WaitAsync(context.StopRequestedToken);
         await ProcessOrderAsync(message.Value, cancellationToken);
     },
-    options,
-    cancellationToken);
+    new PartitionedProcessingOptions { StopPolicy = PartitionStopPolicy.Drain },
+    stoppingToken);
 ```
 
 If a processor does not finish within `StopTimeout`, Dekaf treats the timeout as
