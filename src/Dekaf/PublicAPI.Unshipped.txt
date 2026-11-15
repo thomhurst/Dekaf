@@ -294,3 +294,6 @@ Dekaf.Consumer.OffsetCommitReason.Seek = 3 -> Dekaf.Consumer.OffsetCommitReason
 Dekaf.Consumer.OffsetCommitReason.Stop = 2 -> Dekaf.Consumer.OffsetCommitReason
 Dekaf.Consumer.PartitionedProcessingOptions.CommitObserver.get -> Dekaf.Consumer.IOffsetCommitObserver?
 Dekaf.Consumer.PartitionedProcessingOptions.CommitObserver.init -> void
+Dekaf.Consumer.PartitionBatchProcessorContext<TKey, TValue>.StopRequestedToken.get -> System.Threading.CancellationToken
+Dekaf.Consumer.PartitionRecordProcessorContext<TKey, TValue>.StopRequestedToken.get -> System.Threading.CancellationToken
+Dekaf.Consumer.PartitionProcessorContext<TKey, TValue>.StopRequestedToken.get -> System.Threading.CancellationToken

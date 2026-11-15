@@ -101,6 +101,83 @@ public sealed class PartitionedSeekIntegrationTests(KafkaTestContainer kafka) : 
             .IsEqualTo(RecordCount);
     }
 
+    [Test]
+    public async Task SeekAsync_ParkedHandlerLeavesThroughStopRequestedTokenAndRecordReplays()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+
+        await using (var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync())
+        {
+            for (var i = 0; i < 2; i++)
+            {
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Partition = 0,
+                    Key = "key",
+                    Value = $"value-{i}"
+                }, CancellationToken.None);
+            }
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId($"partitioned-parked-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        consumer.Subscribe(topic);
+
+        var control = new PartitionedProcessingControl();
+        var received = new ConcurrentQueue<long>();
+        var parked = NewCompletionSource();
+        var replayed = NewCompletionSource();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, message, _) =>
+            {
+                received.Enqueue(message.Offset);
+                if (message.Offset != 1)
+                    return;
+
+                if (parked.TrySetResult())
+                    await Task.Delay(Timeout.Infinite, context.StopRequestedToken).ConfigureAwait(false);
+                else
+                    replayed.TrySetResult();
+            },
+            new PartitionedProcessingOptions
+            {
+                Ordering = PartitionedProcessingOrder.Key,
+                Control = control,
+                CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
+                // Longer than the test deadline: the seek must not wait for the timeout.
+                StopTimeout = TimeSpan.FromMinutes(5)
+            },
+            cts.Token).AsTask();
+
+        await parked.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        await control.SeekAsync(new TopicPartitionOffset(topic, 0, 0), cts.Token).ConfigureAwait(false);
+        await replayed.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        await Assert.That(runTask.IsCompleted).IsFalse();
+
+        await cts.CancelAsync().ConfigureAwait(false);
+        try
+        {
+            await runTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+        }
+
+        await Assert.That(string.Join(",", received)).IsEqualTo("0,1,0,1");
+    }
+
     private static TaskCompletionSource NewCompletionSource()
         => new(TaskCreationOptions.RunContinuationsAsynchronously);
 }
