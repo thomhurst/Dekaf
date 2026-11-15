@@ -170,6 +170,16 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
                 // parked on StopRequestedToken must see it now.
                 if (_failure is not null && _activeWorkers != 0)
                     await _context.RequestStopAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                _failure ??= ExceptionDispatchInfo.Capture(exception);
+            }
+
+            // Separate from the request above: a throwing StopRequestedToken callback must not
+            // skip cancelling handlers that watch only their own token.
+            try
+            {
                 if (_activeWorkers != 0 || _inputPending)
                     await stopping.CancelAsync().ConfigureAwait(false);
             }

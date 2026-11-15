@@ -132,4 +132,43 @@ public sealed partial class PartitionedConsumerRuntimeTests
             async () => await runTask.WaitAsync(cts.Token).ConfigureAwait(false));
         await Assert.That(exception!.Message).IsEqualTo("sibling failed");
     }
+
+    [Test]
+    public async Task StopRequestedToken_ThrowingCallbackStillCancelsHandlerToken()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.SetAssignment(partition);
+        consumer.Enqueue(CreateResult(partition, 0, key: "a"), CreateResult(partition, 1, key: "b"));
+
+        var parked = NewCompletionSource();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, message, cancellationToken) =>
+            {
+                if (message.Key == "a")
+                {
+                    using var registration = context.StopRequestedToken.Register(
+                        static () => throw new InvalidOperationException("callback failed"));
+                    parked.TrySetResult();
+                    // Watches only the handler token, so it needs the dispatcher's own cancellation.
+                    await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+
+                await parked.Task.ConfigureAwait(false);
+                throw new InvalidOperationException("sibling failed");
+            },
+            new PartitionedProcessingOptions
+            {
+                Ordering = PartitionedProcessingOrder.Key,
+                MaxConcurrentHandlersPerPartition = 2,
+                StopTimeout = TimeSpan.FromSeconds(30)
+            },
+            cts.Token).AsTask();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await runTask.WaitAsync(cts.Token).ConfigureAwait(false));
+        await Assert.That(exception!.Message).IsEqualTo("sibling failed");
+    }
 }
