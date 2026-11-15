@@ -164,20 +164,13 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
         }
         finally
         {
-            try
-            {
-                // The lane reports this failure only after every handler exits, so handlers
-                // parked on StopRequestedToken must see it now.
-                if (_failure is not null && _activeWorkers != 0)
-                    await _context.RequestStopAsync().ConfigureAwait(false);
-            }
-            catch (Exception exception)
-            {
-                _failure ??= ExceptionDispatchInfo.Capture(exception);
-            }
+            // The lane reports this failure only after every handler exits, so handlers
+            // parked on StopRequestedToken must see it now. Not awaited: a callback may wait
+            // for a handler that exits only on the cancellation below. The lane's StopAsync
+            // awaits the same task within StopTimeout and observes a throwing callback.
+            if (_failure is not null && _activeWorkers != 0)
+                _ = _context.RequestStopAsync();
 
-            // Separate from the request above: a throwing StopRequestedToken callback must not
-            // skip cancelling handlers that watch only their own token.
             try
             {
                 if (_activeWorkers != 0 || _inputPending)

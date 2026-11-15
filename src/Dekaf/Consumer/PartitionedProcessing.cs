@@ -2668,6 +2668,8 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
     // Signaled when StopAsync begins, before any drain wait, so handlers can leave early.
     // A key-ordered dispatcher also signals it when a handler fails, before waiting for the others.
     private readonly CancellationTokenSource _stopRequested = new();
+    // The first CancelAsync of _stopRequested; only that task tracks its callbacks.
+    private Task? _stopRequest;
     // Set when StopAsync begins. Only a stop makes a handler's cancellation a clean exit.
     private int _stopStarted;
     private readonly PartitionProcessorContext<TKey, TValue> _context;
@@ -2741,8 +2743,17 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
 
     public CancellationToken StopRequestedToken => _stopRequested.Token;
 
-    /// <summary>Signals <see cref="StopRequestedToken"/> without stopping the lane.</summary>
-    public Task RequestStopAsync() => _stopRequested.CancelAsync();
+    /// <summary>
+    /// Signals <see cref="StopRequestedToken"/> without stopping the lane. Every caller gets the
+    /// same task, which completes when the token's callbacks have run, so <see cref="StopAsync"/>
+    /// bounds them by its stop budget even when a dispatcher signalled the token first.
+    /// </summary>
+    public Task RequestStopAsync()
+    {
+        // A later CancelAsync returns an already completed task, so keep the first one.
+        lock (_stopRequested)
+            return _stopRequest ??= _stopRequested.CancelAsync();
+    }
 
     public bool IsCompleted => Volatile.Read(ref _completed) != 0;
 
@@ -3193,7 +3204,7 @@ internal sealed class PartitionLane<TKey, TValue> : IOutstandingRecordSource
 
         // Callback completion and processor completion share one stop budget.
         // CancelAsync signals the token synchronously but runs callbacks asynchronously.
-        var stopping = Task.WhenAll(_processorTask ?? Task.CompletedTask, _stopRequested.CancelAsync());
+        var stopping = Task.WhenAll(_processorTask ?? Task.CompletedTask, RequestStopAsync());
         if (stopPolicy == PartitionStopPolicy.Cancel)
             stopping = Task.WhenAll(stopping, _stopping.CancelAsync());
 

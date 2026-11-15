@@ -171,4 +171,53 @@ public sealed partial class PartitionedConsumerRuntimeTests
             async () => await runTask.WaitAsync(cts.Token).ConfigureAwait(false));
         await Assert.That(exception!.Message).IsEqualTo("sibling failed");
     }
+
+    [Test]
+    public async Task StopRequestedToken_BlockingCallbackStillCancelsHandlerToken()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.SetAssignment(partition);
+        consumer.Enqueue(CreateResult(partition, 0, key: "a"), CreateResult(partition, 1, key: "b"));
+
+        var parked = NewCompletionSource();
+        var exited = NewCompletionSource();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            async (context, message, cancellationToken) =>
+            {
+                if (message.Key == "a")
+                {
+                    // The callback waits for this handler to exit, which needs the dispatcher's
+                    // own cancellation, so the dispatcher must not wait for the callback first.
+                    using var registration = context.StopRequestedToken.Register(
+                        static state => ((TaskCompletionSource)state!).Task.Wait(TimeSpan.FromSeconds(20)),
+                        exited);
+                    parked.TrySetResult();
+                    try
+                    {
+                        await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        exited.TrySetResult();
+                    }
+                    return;
+                }
+
+                await parked.Task.ConfigureAwait(false);
+                throw new InvalidOperationException("sibling failed");
+            },
+            new PartitionedProcessingOptions
+            {
+                Ordering = PartitionedProcessingOrder.Key,
+                MaxConcurrentHandlersPerPartition = 2,
+                StopTimeout = TimeSpan.FromSeconds(30)
+            },
+            cts.Token).AsTask();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await runTask.WaitAsync(cts.Token).ConfigureAwait(false));
+        await Assert.That(exception!.Message).IsEqualTo("sibling failed");
+    }
 }
