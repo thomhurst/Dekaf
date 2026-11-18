@@ -19,7 +19,7 @@ jobs:
         with:
           fetch-depth: 1
 
-      - uses: anthropics/claude-code-action@469588f42e6b1e94cd14ad09dccfeaec772ce0fd # v1
+      - uses: anthropics/claude-code-action@e5812cd75691ca7bbfc57c0ecf4441db3a1ab7dd # v1
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           GH_REPO: ${{ github.repository }}
