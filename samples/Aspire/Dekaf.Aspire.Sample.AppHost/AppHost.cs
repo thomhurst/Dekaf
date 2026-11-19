@@ -5,7 +5,7 @@ var kafka = builder.AddDekafKafka("messaging")
 
 var registry = builder.AddDekafSchemaRegistry("schema-registry", kafka);
 
-builder.AddProject<Projects.Dekaf_Aspire_Sample_ApiService>("api")
+builder.AddDotnetProject("api", "../Dekaf.Aspire.Sample.ApiService/Dekaf.Aspire.Sample.ApiService.csproj")
     .WithHttpHealthCheck("/health")
     .WithReference(kafka)
     .WithReference(registry)
