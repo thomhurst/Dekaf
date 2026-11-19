@@ -803,8 +803,6 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 inflightPool.PreWarm(Math.Min(options.MaxInFlightRequestsPerConnection * PoolSizing.InflightEntriesPerBatch, inflightPool.MaxPoolSize));
             _inflightTracker = new PartitionInflightTracker(inflightPool);
 
-            GcConfigurationCheck.WarnIfWorkstationGc(_logger);
-
             _senderCts = new CancellationTokenSource();
             _senderTask = Task.Factory.StartNew(
                 () => SenderLoopAsync(_senderCts.Token),
