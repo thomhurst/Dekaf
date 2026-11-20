@@ -9,8 +9,10 @@
     <PackageVersion Include="Apache.Avro" Version="1.12.2" />
     <PackageVersion Include="AlibabaCloud.SDK.Kms20160120" Version="2.2.2" />
     <PackageVersion Include="Aliyun.Credentials" Version="1.5.4" />
-    <PackageVersion Include="Aspire.Hosting" Version="13.6.5" />
-    <PackageVersion Include="Aspire.Hosting.Testing" Version="13.6.5" />
+    <PackageVersion Include="Aspire.Hosting" Version="17.0.0" />
+    <PackageVersion Include="Aspire.Hosting.AppHost" Version="17.0.0" />
+    <PackageVersion Include="Aspire.Hosting.Dotnet" Version="17.0.0" />
+    <PackageVersion Include="Aspire.Hosting.Testing" Version="17.0.0" />
     <PackageVersion Include="AWSSDK.DynamoDBv2" Version="4.1.0" />
     <PackageVersion Include="AWSSDK.KeyManagementService" Version="4.1.0" />
     <PackageVersion Include="Azure.Identity" Version="1.21.0" />

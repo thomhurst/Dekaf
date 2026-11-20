@@ -1,0 +1,8 @@
+{
+  "appHost": {
+    "path": "samples/Aspire/Dekaf.Aspire.Sample.AppHost/Dekaf.Aspire.Sample.AppHost.csproj"
+  },
+  "sdk": {
+    "version": "17.0.0"
+  }
+}

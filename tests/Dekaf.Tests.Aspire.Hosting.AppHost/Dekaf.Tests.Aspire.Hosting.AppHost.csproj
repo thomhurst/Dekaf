@@ -1,4 +1,4 @@
-<Project Sdk="Aspire.AppHost.Sdk/13.6.5">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <!-- Test AppHost for Dekaf.Tests.Aspire.Hosting: only the hosting package, no Dekaf clients. -->
@@ -7,10 +7,10 @@
     <OutputType>Exe</OutputType>
     <IsPackable>false</IsPackable>
     <UserSecretsId>dekaf-tests-aspire-hosting-apphost</UserSecretsId>
-    <NoWarn>$(NoWarn);ASPIRE010</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Aspire.Hosting.AppHost" />
     <ProjectReference Include="..\..\src\Dekaf.Aspire.Hosting\Dekaf.Aspire.Hosting.csproj" IsAspireProjectResource="false" />
   </ItemGroup>
 
